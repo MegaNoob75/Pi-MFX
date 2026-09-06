@@ -26,14 +26,20 @@
 }
 
 html,
-body,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--mfx-bg);
+    color: var(--mfx-text);
+}
+
 #root {
     margin: 0;
     width: 100%;
     height: 100%;
     overflow: hidden;
     background: var(--mfx-bg);
-    color: var(--mfx-text);
 }
 
 * {

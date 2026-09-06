@@ -217,14 +217,36 @@ write_chromium_autostart() {
     mkdir -p /etc/xdg/labwc
     cat > /etc/xdg/labwc/autostart <<AUTOSTART
 #!/bin/bash
+export GTK_IM_MODULE=none
+export QT_IM_MODULE=none
+export SDL_IM_MODULE=none
 exec /usr/bin/chromium \\
     --ozone-platform=wayland \\
     --start-maximized \\
-    --disable-features=WaylandWindowDecorations,VirtualKeyboard \\
-    --app=${url} \\
+    --disable-features=WaylandWindowDecorations,VirtualKeyboard,OnScreenKeyboard \\
+    --app='${url}' \\
     --password-store=basic
 AUTOSTART
     chmod 0755 /etc/xdg/labwc/autostart
+}
+
+restart_touchscreen_browser() {
+    local user uid runtime
+    user="$(cat "$DISPLAY_STATE_DIR/configured-user" 2>/dev/null || true)"
+    [[ -n "$user" ]] || return 0
+    uid="$(id -u "$user" 2>/dev/null || true)"
+    [[ -n "$uid" ]] || return 0
+    runtime="/run/user/$uid"
+    pkill -u "$user" -x chromium >/dev/null 2>&1 || true
+    pkill -u "$user" -f '/usr/bin/chromium' >/dev/null 2>&1 || true
+    sleep 0.4
+    if [[ -d "$runtime" ]]; then
+        log "Restarting the touchscreen browser"
+        sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
+            /etc/xdg/labwc/autostart >/dev/null 2>&1 &
+    else
+        log "Reboot to reload the touchscreen browser (no graphical session yet)"
+    fi
 }
 
 refresh_touchscreen_session() {
@@ -236,6 +258,7 @@ refresh_touchscreen_session() {
         log "Removing the system on-screen keyboard so Pi-MFX can use its own"
         DEBIAN_FRONTEND=noninteractive apt-get purge -y squeekboard || true
     fi
+    restart_touchscreen_browser
 }
 
 configure_touchscreen() {

@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { LETTER_ROWS, NUMERIC_ROWS, SYMBOL_ROWS, type KeyboardLayer, type KeyboardLayout } from "./layouts";
-import { eraseSelection, replaceSelection, type EditableElement } from "./utils";
+import { eraseSelection, overlayRoot, replaceSelection, type EditableElement } from "./utils";
 import "./Keyboard.css";
 
 export interface KeyboardSession {
     id: number;
-    target: EditableElement;
+    target: EditableElement | null;
     label: string;
     layout: KeyboardLayout;
     value: string;
     selectionStart: number;
     selectionEnd: number;
+    resolve?: (value: string | null) => void;
 }
 
 export function Keyboard({
@@ -140,6 +141,6 @@ export function Keyboard({
                 </div>
             </div>
         </div>,
-        document.body
+        overlayRoot()
     );
 }

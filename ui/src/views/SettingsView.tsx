@@ -215,6 +215,7 @@ function ControllerSettings({
                     <input
                         key={str(controller.name)}
                         defaultValue={str(controller.name)}
+                        onChange={(event) => save({ ...controller, name: event.target.value })}
                         onBlur={(event) => save({ ...controller, name: event.target.value })}
                     />
                 </label>
@@ -284,6 +285,11 @@ function ControllerSettings({
                             className="input"
                             style={{ maxWidth: 160 }}
                             defaultValue={str(control.label)}
+                            onChange={(event) => {
+                                const next = controls.slice();
+                                next[index] = { ...control, label: event.target.value };
+                                save({ ...controller, controls: next });
+                            }}
                             onBlur={(event) => {
                                 const next = controls.slice();
                                 next[index] = { ...control, label: event.target.value };
@@ -350,8 +356,9 @@ function UiSettings({
             <div className="panel stack">
                 <h2>ON-SCREEN KEYBOARD</h2>
                 <div className="muted">
-                    On (the default) uses the Pi-MFX keyboard and blocks the system edit box.
-                    Auto does the same on the attached screen. Off uses the system popup.
+                    On (the default) uses the Pi-MFX keyboard on every screen, including a
+                    tablet used as a controller. Auto does the same on the Pi kiosk and on
+                    tablets; phones keep their own keyboard. Off uses the system popup.
                 </div>
                 <div className="row">
                     {(["auto", "on", "off"] as KeyboardMode[]).map((mode) => (

@@ -3,10 +3,18 @@ textarea[data-pimfx-osk="1"] {
     caret-color: transparent;
 }
 
+#pimfx-overlays {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483000;
+    pointer-events: none;
+}
+
 .pimfx-keyboard-backdrop {
     position: fixed;
     inset: 0;
     z-index: 2147483000;
+    pointer-events: auto;
     display: flex;
     align-items: center;
     justify-content: center;

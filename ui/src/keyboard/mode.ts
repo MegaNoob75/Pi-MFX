@@ -29,19 +29,43 @@ export function onKeyboardModeChange(listener: () => void): () => void {
     };
 }
 
-function isPhoneOrTablet(): boolean {
+export function isKioskDisplay(): boolean {
+    try {
+        if (new URLSearchParams(window.location.search).get("kiosk") === "1") {
+            return true;
+        }
+    } catch {
+        // ignore
+    }
+    const host = window.location.hostname;
+    const local = host === "localhost" || host === "127.0.0.1"
+        || host === "[::1]" || host === "::1";
+    const touch = (navigator.maxTouchPoints ?? 0) > 0
+        || window.matchMedia?.("(pointer: coarse)").matches === true;
+    return local && touch;
+}
+
+function isPhone(): boolean {
+    const ua = navigator.userAgent;
+    if (/iPad|Tablet|Android(?!.*Mobile)/i.test(ua)) {
+        return false;
+    }
     const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
     return nav.userAgentData?.mobile === true
-        || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+        || /iPhone|iPod|Android.*Mobile/i.test(ua);
 }
 
 export function shouldUseOnScreenKeyboard(mode = loadKeyboardMode()): boolean {
     if (mode === "off") {
         return false;
     }
-    if (mode === "on") {
+    if (mode === "on" || isKioskDisplay()) {
         return true;
     }
-    // Auto: Pi screen, PC browser, and --app= kiosk. Phones keep their own keyboard.
-    return !isPhoneOrTablet();
+    // Auto: Pi kiosk and tablet controllers. Phones keep their own keyboard.
+    if (isPhone()) {
+        return false;
+    }
+    return (navigator.maxTouchPoints ?? 0) > 0
+        || window.matchMedia?.("(pointer: coarse)").matches === true;
 }

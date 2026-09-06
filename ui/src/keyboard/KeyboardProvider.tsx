@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ASK_EVENT, type AskRequest } from "./ask";
 import { Keyboard, type KeyboardSession } from "./Keyboard";
 import { onKeyboardModeChange, shouldUseOnScreenKeyboard } from "./mode";
 import {
@@ -28,6 +29,20 @@ export function KeyboardProvider() {
     const sessionRef = useRef<KeyboardSession | null>(null);
     const nextId = useRef(0);
     sessionRef.current = session;
+
+    const finish = useCallback((current: KeyboardSession, value: string | null) => {
+        const resolve = current.resolve;
+        current.resolve = undefined;
+        if (value !== null && current.target) {
+            commitValue(current.target, value);
+        }
+        if (current.target && document.activeElement === current.target) {
+            current.target.blur();
+        }
+        sessionRef.current = null;
+        setSession(null);
+        resolve?.(value);
+    }, []);
 
     const open = useCallback((element: EditableElement) => {
         if (!shouldUseOnScreenKeyboard()) {
@@ -61,12 +76,28 @@ export function KeyboardProvider() {
         setSession(next);
     }, []);
 
-    const close = useCallback((current: KeyboardSession) => {
-        if (document.activeElement === current.target) {
-            current.target.blur();
+    const openPrompt = useCallback((request: AskRequest) => {
+        if (!shouldUseOnScreenKeyboard()) {
+            request.resolve(window.prompt(request.label, request.value));
+            return;
         }
-        sessionRef.current = null;
-        setSession(null);
+        const current = sessionRef.current;
+        if (current?.resolve) {
+            current.resolve(null);
+        }
+        const start = request.value.length;
+        const next: KeyboardSession = {
+            id: ++nextId.current,
+            target: null,
+            label: request.label,
+            layout: request.layout,
+            value: request.value,
+            selectionStart: start,
+            selectionEnd: start,
+            resolve: request.resolve
+        };
+        sessionRef.current = next;
+        setSession(next);
     }, []);
 
     useEffect(() => {
@@ -86,7 +117,6 @@ export function KeyboardProvider() {
                 return;
             }
             event.preventDefault();
-            event.stopPropagation();
             open(element);
         };
 
@@ -101,6 +131,13 @@ export function KeyboardProvider() {
             open(element);
         };
 
+        const onAsk = (event: Event) => {
+            const request = (event as CustomEvent<AskRequest>).detail;
+            if (request) {
+                openPrompt(request);
+            }
+        };
+
         armTree();
         const active = editableFromTarget(document.activeElement);
         if (active) {
@@ -111,6 +148,7 @@ export function KeyboardProvider() {
         document.addEventListener("mousedown", intercept, true);
         document.addEventListener("touchstart", intercept, { capture: true, passive: false });
         document.addEventListener("focusin", focusIn, true);
+        window.addEventListener(ASK_EVENT, onAsk);
 
         const observer = new MutationObserver((records) => {
             for (const record of records) {
@@ -132,8 +170,10 @@ export function KeyboardProvider() {
                 armTree();
             } else {
                 forEachSupportedEditable(document, disarmForOnScreenKeyboard);
-                sessionRef.current = null;
-                setSession(null);
+                const current = sessionRef.current;
+                if (current) {
+                    finish(current, null);
+                }
             }
         });
 
@@ -142,10 +182,11 @@ export function KeyboardProvider() {
             document.removeEventListener("mousedown", intercept, true);
             document.removeEventListener("touchstart", intercept, true);
             document.removeEventListener("focusin", focusIn, true);
+            window.removeEventListener(ASK_EVENT, onAsk);
             observer.disconnect();
             stopWatchingMode();
         };
-    }, [open]);
+    }, [finish, open, openPrompt]);
 
     if (!session) {
         return null;
@@ -155,11 +196,8 @@ export function KeyboardProvider() {
         <Keyboard
             key={session.id}
             session={session}
-            onCancel={() => close(session)}
-            onDone={(value) => {
-                commitValue(session.target, value);
-                close(session);
-            }}
+            onCancel={() => finish(session, null)}
+            onDone={(value) => finish(session, value)}
         />
     );
 }

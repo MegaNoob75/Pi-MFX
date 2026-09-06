@@ -1,5 +1,6 @@
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { obj, str, objects } from "../json";
+import { askText } from "../keyboard/ask";
 
 export function BanksView({
     engine,
@@ -14,8 +15,8 @@ export function BanksView({
     const activePreset = findPreset(state);
     const presets = objects(obj(activeBank).presets);
 
-    const ask = (message: string, fallback = "") => {
-        const value = window.prompt(message, fallback);
+    const ask = async (message: string, fallback = "") => {
+        const value = await askText(message, fallback);
         return value?.trim() ?? "";
     };
 
@@ -25,16 +26,18 @@ export function BanksView({
                 <h2>BANKS</h2>
                 <div className="row">
                     <button type="button" className="btn btn-accent" onClick={() => {
-                        const name = ask("New bank name", "Bank");
-                        if (name) {
-                            void run(() => client.request("bank/create", { name }));
-                        }
+                        void ask("New bank name", "Bank").then((name) => {
+                            if (name) {
+                                void run(() => client.request("bank/create", { name }));
+                            }
+                        });
                     }}>NEW BANK</button>
                     <button type="button" className="btn" disabled={!activeBank} onClick={() => {
-                        const name = ask("Rename bank", str(obj(activeBank).name));
-                        if (name && activeBank) {
-                            void run(() => client.request("bank/rename", { bankId: str(activeBank.id), name }));
-                        }
+                        void ask("Rename bank", str(obj(activeBank).name)).then((name) => {
+                            if (name && activeBank) {
+                                void run(() => client.request("bank/rename", { bankId: str(activeBank.id), name }));
+                            }
+                        });
                     }}>RENAME</button>
                     <button type="button" className="btn btn-danger" disabled={banks.length < 2} onClick={() => {
                         if (activeBank && window.confirm(`Delete bank “${str(activeBank.name)}”?`)) {
@@ -69,19 +72,21 @@ export function BanksView({
                 <h2>PRESETS</h2>
                 <div className="row">
                     <button type="button" className="btn btn-accent" onClick={() => {
-                        const name = ask("New preset name", "Untitled");
-                        if (name) {
-                            void run(() => client.request("preset/saveAs", { name }));
-                        }
+                        void ask("New preset name", "Untitled").then((name) => {
+                            if (name) {
+                                void run(() => client.request("preset/saveAs", { name }));
+                            }
+                        });
                     }}>SAVE AS</button>
                     <button type="button" className="btn" onClick={() => void run(() => client.request("preset/save"))}>
                         SAVE
                     </button>
                     <button type="button" className="btn" disabled={!activePreset} onClick={() => {
-                        const name = ask("Rename preset", str(obj(activePreset).name));
-                        if (name && activePreset) {
-                            void run(() => client.request("preset/rename", { presetId: str(activePreset.id), name }));
-                        }
+                        void ask("Rename preset", str(obj(activePreset).name)).then((name) => {
+                            if (name && activePreset) {
+                                void run(() => client.request("preset/rename", { presetId: str(activePreset.id), name }));
+                            }
+                        });
                     }}>RENAME</button>
                     <button type="button" className="btn btn-danger" disabled={presets.length < 2} onClick={() => {
                         if (activePreset && window.confirm(`Delete preset “${str(activePreset.name)}”?`)) {

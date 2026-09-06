@@ -1,5 +1,6 @@
 import { findBank, findPreset, formatMs, peakDb, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects } from "../json";
+import { askText } from "../keyboard/ask";
 
 export function PerformanceView({
     engine,
@@ -115,10 +116,11 @@ export function PerformanceView({
                         </button>
                     ))}
                     <button type="button" className="btn" onClick={() => {
-                        const name = window.prompt("Snapshot name", `Snap ${snapshots.length + 1}`);
-                        if (name) {
-                            void run(() => client.request("snapshot/capture", { name }));
-                        }
+                        void askText("Snapshot name", `Snap ${snapshots.length + 1}`).then((name) => {
+                            if (name?.trim()) {
+                                void run(() => client.request("snapshot/capture", { name: name.trim() }));
+                            }
+                        });
                     }}>CAPTURE</button>
                 </div>
             )}

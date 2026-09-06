@@ -2,6 +2,17 @@ import type { KeyboardLayout } from "./layouts";
 
 export type EditableElement = HTMLInputElement | HTMLTextAreaElement;
 
+export function overlayRoot(): HTMLElement {
+    const id = "pimfx-overlays";
+    let node = document.getElementById(id);
+    if (!node) {
+        node = document.createElement("div");
+        node.id = id;
+        document.documentElement.appendChild(node);
+    }
+    return node;
+}
+
 const SUPPORTED_TYPES = new Set(["", "text", "search", "email", "url", "tel", "password", "number"]);
 const OSK_ATTR = "data-pimfx-osk";
 
