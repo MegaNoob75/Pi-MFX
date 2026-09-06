@@ -74,8 +74,10 @@ public:
     static bool parseIdentity(const std::vector<uint8_t>& sysex, Identity& identity);
 
     /// The most recent physical position of each control, for the on-screen
-    /// mirror of the board.
+    /// mirror of the board. Values are 0-1 as the hardware (or virtual) control
+    /// is pointing, before invert is applied to the bound parameter.
     std::vector<std::pair<std::string, float>> controlPositions() const;
+    void setPosition(const std::string& controlId, float normalised);
 
 private:
     struct HeldControl {

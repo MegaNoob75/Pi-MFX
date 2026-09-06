@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace pimfx {
@@ -535,6 +536,11 @@ void Engine::syncPresetFromChain() {
     if (!preset || !chain) {
         return;
     }
+    // A recalled snapshot is only live parameters. Writing those back into the
+    // stored chain would promote the snapshot into the base preset.
+    if (preset->activeSnapshot >= 0) {
+        return;
+    }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         EffectSlot* stored = preset->findSlot(slot->id);
         if (!stored || !slot->plugin) {
@@ -1002,6 +1008,7 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
                 slot.plugin->setControl(port.index, clamped);
             }
+            notifyPerformance();
             return true;
         }
         error = "no such control on this effect";
@@ -1166,6 +1173,78 @@ bool Engine::updateSnapshot(const std::string& snapshotId, std::string& error) {
     return false;
 }
 
+bool Engine::renameSnapshot(const std::string& snapshotId, const std::string& name, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    for (Snapshot& snapshot : preset->snapshots) {
+        if (snapshot.id != snapshotId) {
+            continue;
+        }
+        snapshot.name = name.empty() ? snapshot.name : name;
+        storage_.saveBank(*activeBank());
+        notify();
+        return true;
+    }
+    error = "no such snapshot";
+    return false;
+}
+
+bool Engine::colorSnapshot(const std::string& snapshotId, const std::string& color, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    for (Snapshot& snapshot : preset->snapshots) {
+        if (snapshot.id != snapshotId) {
+            continue;
+        }
+        snapshot.color = color;
+        storage_.saveBank(*activeBank());
+        notify();
+        return true;
+    }
+    error = "no such snapshot";
+    return false;
+}
+
+bool Engine::setSnapshotMode(bool enabled) {
+    snapshotMode_.store(enabled, std::memory_order_relaxed);
+    notify();
+    notifyPerformance();
+    return true;
+}
+
+bool Engine::restoreLiveFromStoredPreset(std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!preset || !chain) {
+        error = "no active preset";
+        return false;
+    }
+    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+        if (!slot->plugin) {
+            continue;
+        }
+        const EffectSlot* stored = preset->findSlot(slot->id);
+        if (!stored) {
+            continue;
+        }
+        slot->plugin->loadState(stored->state);
+        slot->enabled.store(stored->enabled, std::memory_order_relaxed);
+    }
+    preset->activeSnapshot = -1;
+    refreshLeds();
+    notify();
+    return true;
+}
+
 bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
     Preset* preset = activePreset();
@@ -1257,6 +1336,12 @@ bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std
         if (control.id != controlId) {
             continue;
         }
+        const bool continuous = control.kind == ControlKind::Pot
+                             || control.kind == ControlKind::Slider
+                             || control.kind == ControlKind::Expression;
+        if (continuous) {
+            return true;
+        }
         ActionRequest request;
         request.controlId = control.id;
         request.binding = control.binding;
@@ -1266,6 +1351,32 @@ bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std
         if (pressed) {
             runAction(request);
         }
+        return true;
+    }
+    error = "no such control";
+    return false;
+}
+
+bool Engine::setVirtualControlValue(const std::string& controlId, float value, std::string& error) {
+    const ControllerConfig config = controller_.config();
+    for (const ControllerControl& control : config.controls) {
+        if (control.id != controlId) {
+            continue;
+        }
+        const float visual = std::max(0.0f, std::min(1.0f, value));
+        controller_.setPosition(control.id, visual);
+        float normalised = visual;
+        if (control.binding.inverted) {
+            normalised = 1.0f - normalised;
+        }
+        ActionRequest request;
+        request.controlId = control.id;
+        request.binding = control.binding;
+        request.action = control.binding.action;
+        request.pressed = true;
+        request.value = control.binding.minimum
+            + normalised * (control.binding.maximum - control.binding.minimum);
+        runAction(request);
         return true;
     }
     error = "no such control";
@@ -1331,6 +1442,8 @@ void Engine::runAction(const ActionRequest& request) {
         notifyPerformance();
     } else if (request.action == "bypassAll") {
         setBypassAll(!bypassAll_.load(std::memory_order_relaxed));
+    } else if (request.action == "snapshotMode") {
+        setSnapshotMode(!snapshotMode_.load(std::memory_order_relaxed));
     } else if (request.action == "tapTempo") {
         tapTempo();
     } else if (request.action == "tuner") {
@@ -1382,6 +1495,15 @@ void Engine::refreshLeds() {
                 break;
             }
         }
+        const Json& themeColor = settings_.ui.ledColors[led.role];
+        if (themeColor.isString()) {
+            const std::string hex = themeColor.asString();
+            if (hex.size() == 7 && hex[0] == '#') {
+                state.red = static_cast<uint8_t>(std::strtol(hex.substr(1, 2).c_str(), nullptr, 16));
+                state.green = static_cast<uint8_t>(std::strtol(hex.substr(3, 2).c_str(), nullptr, 16));
+                state.blue = static_cast<uint8_t>(std::strtol(hex.substr(5, 2).c_str(), nullptr, 16));
+            }
+        }
 
         // An LED tied to a control follows what that control currently does,
         // so a switch bound to an effect lights only while that effect is on.
@@ -1417,11 +1539,18 @@ void Engine::refreshLeds() {
 
 bool Engine::applyUiSettings(const Json& json, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
-    settings_.ui = UiSettings::fromJson(json);
+    Json merged = settings_.ui.toJson();
+    if (json.isObject()) {
+        for (const auto& member : json.members()) {
+            merged.set(member.first, member.second);
+        }
+    }
+    settings_.ui = UiSettings::fromJson(merged);
     if (!persistSettings()) {
         error = "could not save settings";
         return false;
     }
+    refreshLeds();
     notify();
     return true;
 }
@@ -1618,6 +1747,7 @@ Json Engine::fullState() const {
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
+    json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
     json.set("audioRunning", backend_ && backend_->isRunning());
     json.set("audioBackend", backend_ ? backend_->name() : std::string("none"));
     if (!audioError_.empty()) {
@@ -1641,12 +1771,23 @@ Json Engine::fullState() const {
             slotJson.set("id", slot->id);
             slotJson.set("uri", slot->plugin->uri());
             slotJson.set("enabled", slot->enabled.load(std::memory_order_relaxed));
+            if (const Preset* preset = activePreset()) {
+                if (const EffectSlot* stored = preset->findSlot(slot->id)) {
+                    slotJson.set("name", stored->name);
+                }
+            }
             slotJson.set("plugin", slot->plugin->info().toJson(true));
             slotJson.set("state", slot->plugin->saveState());
             chainArray.push(slotJson);
         }
     }
     json.set("chain", chainArray);
+
+    Json positions = Json::object();
+    for (const auto& entry : controller_.controlPositions()) {
+        positions.set(entry.first, Json(entry.second));
+    }
+    json.set("controlPositions", positions);
     return json;
 }
 
@@ -1656,6 +1797,7 @@ Json Engine::performanceState() const {
     json.set("activeBankId", activeBankId_);
     json.set("activePresetId", activePresetId_);
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
+    json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
 
     if (const Preset* preset = activePreset()) {
         json.set("tempo", preset->tempo);

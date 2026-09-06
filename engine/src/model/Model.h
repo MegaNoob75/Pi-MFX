@@ -33,9 +33,8 @@ struct EffectSlot {
 struct Snapshot {
     std::string id;
     std::string name;
-    /// Slot id -> saved state, in the same shape as `EffectSlot::state`, plus
-    /// an "enabled" flag.
     Json slots = Json::object();
+    std::string color;
 
     Json toJson() const;
     static Snapshot fromJson(const Json& json);
@@ -192,6 +191,13 @@ struct ControllerConfig {
     std::vector<ControllerControl> controls;
     std::vector<ControllerLed> leds;
 
+    /// Freeform status widgets, unplaced ids, and layout defaults. Opaque JSON
+    /// so the UI can grow without a protocol bump.
+    Json performanceLayout;
+    Json layoutDefaults;
+    /// Per-bank switch -> preset assignments: { bankId: { controlId: presetId } }
+    Json presetAssignments;
+
     Json toJson() const;
     static ControllerConfig fromJson(const Json& json);
 };
@@ -203,8 +209,9 @@ struct ControllerConfig {
 /// UI preferences that live on the Pi rather than in the browser, so every
 /// device that connects sees the same rig.
 struct UiSettings {
-    std::string themeId = "mfx-purple";
+    std::string themeId = "MultiFX Purple";
     Json customThemes = Json::array();
+    Json ledColors = Json::object();
     double scale = 1.0;
     bool showTuner = true;
     bool showLatencyMeter = true;

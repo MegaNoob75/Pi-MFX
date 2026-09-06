@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { LETTER_ROWS, NUMERIC_ROWS, SYMBOL_ROWS, type KeyboardLayer, type KeyboardLayout } from "./layouts";
+import { loadKeyboardAppearance, onKeyboardAppearanceChange } from "./settings";
 import { eraseSelection, overlayRoot, replaceSelection, type EditableElement } from "./utils";
 import "./Keyboard.css";
 
@@ -32,8 +33,14 @@ export function Keyboard({
     const [layer, setLayer] = useState<KeyboardLayer>("letters");
     const [shift, setShift] = useState(false);
     const [caps, setCaps] = useState(false);
+    const [appearance, setAppearance] = useState(loadKeyboardAppearance);
+
+    useEffect(() => onKeyboardAppearanceChange(() => setAppearance(loadKeyboardAppearance())), []);
 
     const insert = (text: string) => {
+        if (appearance.hapticFeedback) {
+            navigator.vibrate?.(8);
+        }
         const result = replaceSelection(value, selection.start, selection.end, text);
         setValue(result.value);
         setSelection({ start: result.start, end: result.end });
@@ -94,7 +101,19 @@ export function Keyboard({
     );
 
     return createPortal(
-        <div className="pimfx-keyboard-backdrop" role="dialog" aria-modal="true" aria-label={`Keyboard for ${session.label}`}>
+        <div
+            className={[
+                "pimfx-keyboard-backdrop",
+                appearance.transparentBackground ? "is-transparent" : "",
+                `is-${appearance.placement}`,
+                `is-${appearance.size}`,
+                `is-text-${appearance.textSize}`,
+                `is-keys-${appearance.keyShape}`
+            ].filter(Boolean).join(" ")}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Keyboard for ${session.label}`}
+        >
             <div className="pimfx-keyboard-panel">
                 <div className="pimfx-keyboard-value">
                     <div className="pimfx-keyboard-label">{session.label}</div>

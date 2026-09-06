@@ -1,18 +1,42 @@
 import { useEffect, useState } from "react";
-import { formatMs, type EngineSnapshot } from "../api";
+import { findBank, findPreset, formatMs, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "../keyboard/mode";
+import {
+    loadKeyboardAppearance,
+    saveKeyboardAppearance,
+    type KeyboardAppearance,
+    type KeyboardKeyShape,
+    type KeyboardPlacement,
+    type KeyboardSize,
+    type KeyboardTextSize
+} from "../keyboard/settings";
+import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
+import { Tone3000View } from "./Tone3000View";
 
-export type SettingsPage = "audio" | "controller" | "ui" | "library" | "system";
+export type SettingsPage =
+    | "audio"
+    | "controller"
+    | "ui"
+    | "library"
+    | "system"
+    | "theme"
+    | "layout"
+    | "keyboard"
+    | "backup";
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
     return (
         <div className="page-scroll">
             <div className="grid-cards">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen("audio")} />
-                <HubCard title="CONTROLLER" subtitle="MIDI floorboard layout and virtual switches" onClick={() => onOpen("controller")} />
-                <HubCard title="UI" subtitle="Tuner, meters, on-screen keyboard and switch count" onClick={() => onOpen("ui")} />
-                <HubCard title="LIBRARY" subtitle="NAM models and impulse responses" onClick={() => onOpen("library")} />
+                <HubCard title="CONTROLLER" subtitle="Hardware inputs, MIDI learn and switch actions" onClick={() => onOpen("controller")} />
+                <HubCard title="LAYOUT" subtitle="Grid or freeform Performance board" onClick={() => onOpen("layout")} />
+                <HubCard title="THEME" subtitle="Built-in looks, custom colours, lights and export" onClick={() => onOpen("theme")} />
+                <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode" onClick={() => onOpen("keyboard")} />
+                <HubCard title="UI" subtitle="Tuner, meters, scale and virtual switches" onClick={() => onOpen("ui")} />
+                <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
+                <HubCard title="BACKUP" subtitle="Download and restore themes, layout and settings" onClick={() => onOpen("backup")} />
                 <HubCard title="SYSTEM" subtitle="Realtime threads, diagnostics and rescan" onClick={() => onOpen("system")} />
             </div>
         </div>
@@ -43,8 +67,8 @@ export function SettingsPage({
     if (page === "controller") {
         return <ControllerSettings engine={engine} run={run} />;
     }
-    if (page === "ui") {
-        return <UiSettings engine={engine} run={run} />;
+    if (page === "ui" || page === "keyboard") {
+        return <UiSettings engine={engine} run={run} keyboardOnly={page === "keyboard"} />;
     }
     if (page === "library") {
         return <LibrarySettings engine={engine} run={run} />;
@@ -257,12 +281,21 @@ function ControllerSettings({
                     <button type="button" className="btn" onClick={() => void run(() => client.request("controller/disconnect"))}>
                         DISCONNECT
                     </button>
+                    <button type="button" className={`btn ${bool(controller.mirrorLayoutOnScreen, true) ? "btn-active" : ""}`}
+                        onClick={() => save({ ...controller, mirrorLayoutOnScreen: !bool(controller.mirrorLayoutOnScreen, true) })}>
+                        MIRROR LAYOUT
+                    </button>
+                    <button type="button" className={`btn ${bool(controller.syncLedColours, true) ? "btn-active" : ""}`}
+                        onClick={() => save({ ...controller, syncLedColours: !bool(controller.syncLedColours, true) })}>
+                        RGB FOLLOWS THEME
+                    </button>
                 </div>
             </div>
 
             <div className="panel stack">
                 <h2>CONTROLS</h2>
-                <button type="button" className="btn btn-accent" onClick={() => {
+                <div className="row">
+                    <button type="button" className="btn btn-accent" onClick={() => {
                     const nextId = `ctl-${Date.now().toString(36)}`;
                     save({
                         ...controller,
@@ -274,40 +307,185 @@ function ControllerSettings({
                                 kind: "switch",
                                 row: Math.floor(controls.length / num(controller.gridColumns, 4)),
                                 column: controls.length % num(controller.gridColumns, 4),
-                                binding: { action: "presetUp", min: 0, max: 1, inverted: false }
+                                binding: { action: "selectPreset", min: 0, max: 1, inverted: false }
                             }
                         ]
                     });
                 }}>ADD SWITCH</button>
-                {controls.map((control, index) => (
-                    <div key={str(control.id)} className="list-item" style={{ flexWrap: "wrap" }}>
+                    <button type="button" className="btn" onClick={() => {
+                        const nextId = `ctl-${Date.now().toString(36)}`;
+                        save({
+                            ...controller,
+                            controls: [
+                                ...controls,
+                                {
+                                    id: nextId,
+                                    label: `POT ${controls.length + 1}`,
+                                    kind: "pot",
+                                    binding: { action: "setParameter", min: 0, max: 1, inverted: false }
+                                }
+                            ]
+                        });
+                    }}>ADD POT</button>
+                    <button type="button" className="btn" onClick={() => {
+                        const nextId = `ctl-${Date.now().toString(36)}`;
+                        save({
+                            ...controller,
+                            controls: [
+                                ...controls,
+                                {
+                                    id: nextId,
+                                    label: `SL ${controls.length + 1}`,
+                                    kind: "slider",
+                                    binding: { action: "setParameter", min: 0, max: 1, inverted: false }
+                                }
+                            ]
+                        });
+                    }}>ADD SLIDER</button>
+                    <button type="button" className="btn" onClick={() => {
+                        const nextId = `ctl-${Date.now().toString(36)}`;
+                        save({
+                            ...controller,
+                            controls: [
+                                ...controls,
+                                {
+                                    id: nextId,
+                                    label: `EXP ${controls.length + 1}`,
+                                    kind: "expression",
+                                    binding: { action: "setParameter", min: 0, max: 1, inverted: false }
+                                }
+                            ]
+                        });
+                    }}>ADD EXP</button>
+                    <button type="button" className="btn" onClick={() => {
+                        const nextId = `led-${Date.now().toString(36)}`;
+                        save({
+                            ...controller,
+                            leds: [
+                                ...objects(controller.leds),
+                                { id: nextId, label: `LED ${objects(controller.leds).length + 1}`, rgb: true, role: "preset", brightness: 1 }
+                            ]
+                        });
+                    }}>ADD LED</button>
+                </div>
+                {controls.map((control, index) => {
+                    const bank = findBank(state);
+                    const presets = objects(obj(bank).presets);
+                    const chain = objects(state.chain);
+                    const binding = obj(control.binding);
+                    const patch = (nextControl: JsonObject) => {
+                        const next = controls.slice();
+                        next[index] = nextControl;
+                        save({ ...controller, controls: next });
+                    };
+                    const patchBinding = (next: JsonObject) => patch({ ...control, binding: next });
+                    const selectedSlot = chain.find((slot) => str(slot.id) === str(binding.slotId));
+                    const ports = objects(obj(obj(selectedSlot).plugin).ports)
+                        .filter((port) => str(port.kind) === "control");
+                    return (
+                    <div key={str(control.id)} className="list-item" style={{ flexWrap: "wrap", alignItems: "flex-end" }}>
                         <input
                             className="input"
-                            style={{ maxWidth: 160 }}
+                            style={{ maxWidth: 140 }}
                             defaultValue={str(control.label)}
-                            onChange={(event) => {
-                                const next = controls.slice();
-                                next[index] = { ...control, label: event.target.value };
-                                save({ ...controller, controls: next });
-                            }}
-                            onBlur={(event) => {
-                                const next = controls.slice();
-                                next[index] = { ...control, label: event.target.value };
-                                save({ ...controller, controls: next });
-                            }}
+                            onBlur={(event) => patch({ ...control, label: event.target.value })}
                         />
+                        <select value={str(control.kind, "switch")} onChange={(event) => patch({ ...control, kind: event.target.value })}>
+                            {["switch", "momentary", "pot", "slider", "encoder", "expression"].map((kind) => (
+                                <option key={kind} value={kind}>{kind}</option>
+                            ))}
+                        </select>
                         <select
-                            value={str(obj(control.binding).action, "none")}
-                            onChange={(event) => {
-                                const next = controls.slice();
-                                next[index] = { ...control, binding: { ...obj(control.binding), action: event.target.value } };
-                                save({ ...controller, controls: next });
-                            }}
+                            value={str(binding.action, "none")}
+                            onChange={(event) => patchBinding({ ...binding, action: event.target.value })}
                         >
-                            {["none", "presetUp", "presetDown", "bankUp", "bankDown", "selectPreset", "selectSnapshot", "toggleEffect", "bypassAll", "tapTempo", "tuner"].map((action) => (
+                            {["none", "selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "selectSnapshot", "snapshotMode", "toggleEffect", "setParameter", "bypassAll", "tapTempo", "tuner"].map((action) => (
                                 <option key={action} value={action}>{action}</option>
                             ))}
                         </select>
+                        <select
+                            value={str(binding.holdAction)}
+                            onChange={(event) => patchBinding({ ...binding, holdAction: event.target.value })}
+                        >
+                            <option value="">hold: none</option>
+                            {["selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll"].map((action) => (
+                                <option key={action} value={action}>hold: {action}</option>
+                            ))}
+                        </select>
+                        {str(binding.action) === "selectPreset" && (
+                            <select
+                                value={str(binding.presetId)}
+                                onChange={(event) => patchBinding({ ...binding, presetId: event.target.value, bankId: str(obj(bank).id) })}
+                            >
+                                <option value="">Assign preset</option>
+                                {presets.map((preset) => (
+                                    <option key={str(preset.id)} value={str(preset.id)}>{str(preset.name)}</option>
+                                ))}
+                            </select>
+                        )}
+                        {str(binding.action) === "selectSnapshot" && (
+                            <select
+                                value={str(binding.snapshotId)}
+                                onChange={(event) => patchBinding({ ...binding, snapshotId: event.target.value })}
+                            >
+                                <option value="">Assign snapshot</option>
+                                {objects(obj(findPreset(state)).snapshots).map((snapshot) => (
+                                    <option key={str(snapshot.id)} value={str(snapshot.id)}>{str(snapshot.name)}</option>
+                                ))}
+                            </select>
+                        )}
+                        {(str(binding.action) === "toggleEffect" || str(binding.action) === "setParameter") && (
+                            <select
+                                value={str(binding.slotId)}
+                                onChange={(event) => patchBinding({ ...binding, slotId: event.target.value })}
+                            >
+                                <option value="">Effect</option>
+                                {chain.map((slot) => (
+                                    <option key={str(slot.id)} value={str(slot.id)}>
+                                        {str(slot.name) || str(obj(slot.plugin).name, str(slot.id))}
+                                    </option>
+                                ))}
+                            </select>
+                        )}
+                        {str(binding.action) === "setParameter" && (
+                            <select
+                                value={str(binding.portSymbol)}
+                                onChange={(event) => patchBinding({ ...binding, portSymbol: event.target.value })}
+                            >
+                                <option value="">Parameter</option>
+                                {ports.map((port) => (
+                                    <option key={str(port.symbol)} value={str(port.symbol)}>{str(port.name, str(port.symbol))}</option>
+                                ))}
+                            </select>
+                        )}
+                        <label className="field" style={{ minWidth: 72 }}>
+                            <span>Min</span>
+                            <input type="number" step="0.01" value={num(binding.min, 0)}
+                                onChange={(event) => patchBinding({ ...binding, min: Number(event.target.value) })} />
+                        </label>
+                        <label className="field" style={{ minWidth: 72 }}>
+                            <span>Max</span>
+                            <input type="number" step="0.01" value={num(binding.max, 1)}
+                                onChange={(event) => patchBinding({ ...binding, max: Number(event.target.value) })} />
+                        </label>
+                        <button type="button" className={`btn ${bool(binding.inverted) ? "btn-active" : ""}`}
+                            onClick={() => patchBinding({ ...binding, inverted: !bool(binding.inverted) })}>
+                            INV
+                        </button>
+                        <select
+                            value={str(control.ledId)}
+                            onChange={(event) => patch({ ...control, ledId: event.target.value })}
+                        >
+                            <option value="">LED</option>
+                            {objects(controller.leds).map((led) => (
+                                <option key={str(led.id)} value={str(led.id)}>{str(led.label, str(led.id))}</option>
+                            ))}
+                        </select>
+                        <span className="muted">
+                            {num(control.channel, -1) >= 0
+                                ? `ch ${num(control.midiChannel) || "any"} ${bool(control.useNoteMessages) ? "note" : "CC"} ${num(control.channel)}`
+                                : "not learned"}
+                        </span>
                         <button type="button" className="btn" onClick={() => void run(() => client.request("controller/learn", { controlId: str(control.id) }))}>
                             {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
                         </button>
@@ -315,18 +493,77 @@ function ControllerSettings({
                             save({ ...controller, controls: controls.filter((item) => str(item.id) !== str(control.id)) });
                         }}>REMOVE</button>
                     </div>
-                ))}
+                    );
+                })}
             </div>
+
+            <BankAssignmentPanel state={state} controller={controller} save={save} />
+        </div>
+    );
+}
+
+function BankAssignmentPanel({
+    state,
+    controller,
+    save
+}: {
+    state: JsonObject;
+    controller: JsonObject;
+    save: (next: JsonObject) => void;
+}) {
+    const bank = findBank(state);
+    const presets = objects(obj(bank).presets);
+    const controls = objects(controller.controls).filter((control) => str(obj(control.binding).action, "selectPreset") === "selectPreset"
+        || str(control.kind, "switch") === "switch");
+    const bankId = str(obj(bank).id);
+    const assignments = obj(obj(controller.presetAssignments)[bankId]);
+    if (!bankId || controls.length === 0) {
+        return null;
+    }
+    return (
+        <div className="panel stack">
+            <h2>PRESET ASSIGNMENTS · {str(obj(bank).name)}</h2>
+            <div className="muted">
+                Per-bank switch to preset map. Performance uses this instead of the
+                control’s default preset when a value is set here.
+            </div>
+            {controls.map((control) => (
+                <label key={str(control.id)} className="field">
+                    <span>{str(control.label, str(control.id))}</span>
+                    <select
+                        value={str(assignments[str(control.id)])}
+                        onChange={(event) => {
+                            save({
+                                ...controller,
+                                presetAssignments: {
+                                    ...obj(controller.presetAssignments),
+                                    [bankId]: {
+                                        ...assignments,
+                                        [str(control.id)]: event.target.value
+                                    }
+                                }
+                            });
+                        }}
+                    >
+                        <option value="">Default binding</option>
+                        {presets.map((preset) => (
+                            <option key={str(preset.id)} value={str(preset.id)}>{str(preset.name)}</option>
+                        ))}
+                    </select>
+                </label>
+            ))}
         </div>
     );
 }
 
 function UiSettings({
     engine,
-    run
+    run,
+    keyboardOnly = false
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    keyboardOnly?: boolean;
 }) {
     const ui = obj(engine.state.ui);
     const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(loadKeyboardMode);
@@ -339,6 +576,7 @@ function UiSettings({
     };
     return (
         <div className="page-scroll stack">
+            {!keyboardOnly && (
             <div className="panel stack">
                 <h2>ON-SCREEN SURFACE</h2>
                 <label className="field">
@@ -346,13 +584,22 @@ function UiSettings({
                     <input type="number" min={1} max={64} value={num(ui.virtualSwitchCount, 8)}
                         onChange={(event) => save({ ...ui, virtualSwitchCount: Number(event.target.value) })} />
                 </label>
+                <label className="field">
+                    <span>UI scale</span>
+                    <input type="number" min={0.7} max={1.6} step={0.05} value={num(ui.scale, 1)}
+                        onChange={(event) => save({ ...ui, scale: Number(event.target.value) })} />
+                </label>
                 <div className="row">
                     <button type="button" className={`btn ${bool(ui.showTuner, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...ui, showTuner: !bool(ui.showTuner, true) })}>TUNER</button>
                     <button type="button" className={`btn ${bool(ui.showLatencyMeter, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...ui, showLatencyMeter: !bool(ui.showLatencyMeter, true) })}>LATENCY</button>
+                    <button type="button" className={`btn ${bool(ui.confirmPresetOverwrite, true) ? "btn-active" : ""}`}
+                        onClick={() => save({ ...ui, confirmPresetOverwrite: !bool(ui.confirmPresetOverwrite, true) })}>CONFIRM SAVE</button>
                 </div>
+                <UiBehaviorEditor />
             </div>
+            )}
             <div className="panel stack">
                 <h2>ON-SCREEN KEYBOARD</h2>
                 <div className="muted">
@@ -372,6 +619,7 @@ function UiSettings({
                         </button>
                     ))}
                 </div>
+                <KeyboardAppearanceEditor />
             </div>
         </div>
     );
@@ -403,6 +651,7 @@ function LibrarySettings({
             <LibraryList title="IMPULSE RESPONSES" kind="ir" files={irs} onUpload={upload} onDelete={(path) => {
                 void run(() => engine.client.request("library/delete", { path }));
             }} />
+            <Tone3000View engine={engine} run={run} />
         </div>
     );
 }
@@ -515,4 +764,79 @@ function readBase64(file: File): Promise<string> {
         };
         reader.readAsDataURL(file);
     });
+}
+
+function KeyboardAppearanceEditor() {
+    const [settings, setSettings] = useState(loadKeyboardAppearance);
+    const apply = (next: KeyboardAppearance) => {
+        saveKeyboardAppearance(next);
+        setSettings(next);
+    };
+    return (
+        <>
+            <div className="row">
+                {(["full", "large", "compact"] as KeyboardSize[]).map((size) => (
+                    <button key={size} type="button" className={`btn ${settings.size === size ? "btn-active" : ""}`}
+                        onClick={() => apply({ ...settings, size })}>{size.toUpperCase()}</button>
+                ))}
+            </div>
+            <div className="row">
+                {(["top", "center", "bottom"] as KeyboardPlacement[]).map((placement) => (
+                    <button key={placement} type="button" className={`btn ${settings.placement === placement ? "btn-active" : ""}`}
+                        onClick={() => apply({ ...settings, placement })}>{placement.toUpperCase()}</button>
+                ))}
+            </div>
+            <div className="row">
+                {(["rounded", "square"] as KeyboardKeyShape[]).map((keyShape) => (
+                    <button key={keyShape} type="button" className={`btn ${settings.keyShape === keyShape ? "btn-active" : ""}`}
+                        onClick={() => apply({ ...settings, keyShape })}>{keyShape.toUpperCase()}</button>
+                ))}
+                {(["normal", "large", "extra-large"] as KeyboardTextSize[]).map((textSize) => (
+                    <button key={textSize} type="button" className={`btn ${settings.textSize === textSize ? "btn-active" : ""}`}
+                        onClick={() => apply({ ...settings, textSize })}>{textSize.toUpperCase()}</button>
+                ))}
+            </div>
+            <div className="row">
+                <button type="button" className={`btn ${settings.transparentBackground ? "btn-active" : ""}`}
+                    onClick={() => apply({ ...settings, transparentBackground: !settings.transparentBackground })}>
+                    TRANSPARENT
+                </button>
+                <button type="button" className={`btn ${settings.hapticFeedback ? "btn-active" : ""}`}
+                    onClick={() => apply({ ...settings, hapticFeedback: !settings.hapticFeedback })}>
+                    HAPTIC
+                </button>
+            </div>
+        </>
+    );
+}
+
+function UiBehaviorEditor() {
+    const [settings, setSettings] = useState(loadUiBehavior);
+    const apply = (next: UiBehavior) => {
+        saveUiBehavior(next);
+        setSettings(next);
+    };
+    return (
+        <div className="stack">
+            <div className="muted">On-screen pots enlarge while you drag them, and show the bound parameter name.</div>
+            <div className="row">
+                <button type="button" className={`btn ${settings.controlPopout ? "btn-active" : ""}`}
+                    onClick={() => apply({ ...settings, controlPopout: !settings.controlPopout })}>
+                    CONTROL POP-OUT
+                </button>
+                <button type="button" className={`btn ${settings.parameterFeedback ? "btn-active" : ""}`}
+                    onClick={() => apply({ ...settings, parameterFeedback: !settings.parameterFeedback })}>
+                    PARAMETER FEEDBACK
+                </button>
+                <button type="button" className="btn" onClick={() => apply({ ...DEFAULT_UI_BEHAVIOR })}>
+                    RESET
+                </button>
+            </div>
+            <label className="field">
+                <span>Pop-out duration (ms)</span>
+                <input type="number" min={500} max={10000} value={settings.controlPopoutDurationMs}
+                    onChange={(event) => apply({ ...settings, controlPopoutDurationMs: Number(event.target.value) })} />
+            </label>
+        </div>
+    );
 }

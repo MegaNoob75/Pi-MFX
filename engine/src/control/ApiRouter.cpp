@@ -174,6 +174,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.savePresetAs(payload["name"].asString(), error);
         return Json::object();
     }
+    if (command == "preset/restoreLive") {
+        ok = engine_.restoreLiveFromStoredPreset(error);
+        return Json::object();
+    }
     if (command == "preset/rename") {
         ok = engine_.renamePreset(payload["presetId"].asString(), payload["name"].asString(), error);
         return Json::object();
@@ -276,6 +280,18 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.deleteSnapshot(payload["snapshotId"].asString(), error);
         return Json::object();
     }
+    if (command == "snapshot/rename") {
+        ok = engine_.renameSnapshot(payload["snapshotId"].asString(), payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "snapshot/color") {
+        ok = engine_.colorSnapshot(payload["snapshotId"].asString(), payload["color"].asString(), error);
+        return Json::object();
+    }
+    if (command == "snapshot/mode") {
+        engine_.setSnapshotMode(payload["enabled"].asBool(false));
+        return Json::object();
+    }
 
     // --- controller --------------------------------------------------------
     if (command == "controller/config") {
@@ -301,6 +317,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "controller/press") {
         ok = engine_.pressVirtualControl(payload["controlId"].asString(),
                                          payload["pressed"].asBool(true), error);
+        return Json::object();
+    }
+    if (command == "controller/value") {
+        ok = engine_.setVirtualControlValue(payload["controlId"].asString(),
+                                            payload["value"].asFloat(0.0f), error);
         return Json::object();
     }
 

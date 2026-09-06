@@ -40,6 +40,9 @@ Json Snapshot::toJson() const {
     json.set("id", id);
     json.set("name", name);
     json.set("slots", slots);
+    if (!color.empty()) {
+        json.set("color", color);
+    }
     return json;
 }
 
@@ -48,6 +51,7 @@ Snapshot Snapshot::fromJson(const Json& json) {
     snapshot.id = json["id"].asString(newId("snap"));
     snapshot.name = json["name"].asString("Snapshot");
     snapshot.slots = json["slots"].isObject() ? json["slots"] : Json::object();
+    snapshot.color = json["color"].asString();
     return snapshot;
 }
 
@@ -286,6 +290,9 @@ Json ControllerConfig::toJson() const {
         ledJson.push(led.toJson());
     }
     json.set("leds", ledJson);
+    json.set("performanceLayout", performanceLayout.isObject() ? performanceLayout : Json::object());
+    json.set("layoutDefaults", layoutDefaults.isObject() ? layoutDefaults : Json::object());
+    json.set("presetAssignments", presetAssignments.isObject() ? presetAssignments : Json::object());
     return json;
 }
 
@@ -308,6 +315,15 @@ ControllerConfig ControllerConfig::fromJson(const Json& json) {
     const Json& ledJson = json["leds"];
     for (size_t i = 0; i < ledJson.size(); ++i) {
         config.leds.push_back(ControllerLed::fromJson(ledJson.at(i)));
+    }
+    if (json["performanceLayout"].isObject()) {
+        config.performanceLayout = json["performanceLayout"];
+    }
+    if (json["layoutDefaults"].isObject()) {
+        config.layoutDefaults = json["layoutDefaults"];
+    }
+    if (json["presetAssignments"].isObject()) {
+        config.presetAssignments = json["presetAssignments"];
     }
     return config;
 }
@@ -406,6 +422,7 @@ Json UiSettings::toJson() const {
     Json json = Json::object();
     json.set("themeId", themeId);
     json.set("customThemes", customThemes);
+    json.set("ledColors", ledColors.isObject() ? ledColors : Json::object());
     json.set("scale", scale);
     json.set("showTuner", showTuner);
     json.set("showLatencyMeter", showLatencyMeter);
@@ -417,8 +434,9 @@ Json UiSettings::toJson() const {
 
 UiSettings UiSettings::fromJson(const Json& json) {
     UiSettings settings;
-    settings.themeId = json["themeId"].asString("mfx-purple");
+    settings.themeId = json["themeId"].asString("MultiFX Purple");
     settings.customThemes = json["customThemes"].isArray() ? json["customThemes"] : Json::array();
+    settings.ledColors = json["ledColors"].isObject() ? json["ledColors"] : Json::object();
     settings.scale = std::max(0.6, std::min(2.0, json["scale"].asDouble(1.0)));
     settings.showTuner = json["showTuner"].asBool(true);
     settings.showLatencyMeter = json["showLatencyMeter"].asBool(true);

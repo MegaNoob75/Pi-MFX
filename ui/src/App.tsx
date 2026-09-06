@@ -1,34 +1,45 @@
 import { useMemo, useState } from "react";
 import { useEngine } from "./api";
-import { bool } from "./json";
+import { bool, obj } from "./json";
 import { AboutView } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
 import { EditorView } from "./views/EditorView";
 import { PerformanceView } from "./views/PerformanceView";
 import { KeyboardProvider } from "./keyboard/KeyboardProvider";
-import { SettingsHub, SettingsPage as SettingsDetail } from "./views/SettingsView";
+import { SettingsHub, SettingsPage as SettingsDetail, type SettingsPage } from "./views/SettingsView";
+import ThemeManagerView from "./views/ThemeManagerView";
+import { LayoutEditorView } from "./views/LayoutEditorView";
+import { SnapshotManagerView } from "./views/SnapshotManagerView";
+import { SnapshotEditView } from "./views/SnapshotEditView";
+import { BackupView } from "./views/BackupView";
+import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
+import { loadCustomMultiFXThemes, themeLedColors } from "./theme/theme";
 
 export type View =
     | "performance"
     | "banks"
     | "edit"
+    | "snapshots"
+    | "snapshotEdit"
     | "settings"
-    | "audio"
-    | "controller"
-    | "ui"
-    | "library"
-    | "system"
+    | SettingsPage
     | "about";
 
-const titles: Record<View, string> = {
+const titles: Record<string, string> = {
     performance: "PERFORMANCE",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
+    snapshots: "SNAPSHOTS",
+    snapshotEdit: "EDIT SNAPSHOT",
     settings: "SETTINGS",
     audio: "AUDIO",
     controller: "CONTROLLER",
+    layout: "LAYOUT",
+    theme: "THEME",
+    keyboard: "KEYBOARD",
     ui: "UI",
     library: "LIBRARY",
+    backup: "BACKUP",
     system: "SYSTEM",
     about: "ABOUT"
 };
@@ -39,8 +50,12 @@ export function App() {
     const [menuOpen, setMenuOpen] = useState(false);
     const [, setHistory] = useState<View[]>([]);
     const [toast, setToast] = useState("");
+    const [snapshotEditId, setSnapshotEditId] = useState("");
 
-    const settingsActive = ["settings", "audio", "controller", "ui", "library", "system"].includes(view);
+    const settingsPages: SettingsPage[] = [
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "backup", "system"
+    ];
+    const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
 
     const goTo = (next: View) => {
         setMenuOpen(false);
@@ -70,10 +85,12 @@ export function App() {
     };
 
     const audioRunning = bool(engine.state.audioRunning);
-    const title = useMemo(() => titles[view], [view]);
+    const title = useMemo(() => titles[view] ?? "PI-MFX", [view]);
+    const ui = obj(engine.state.ui);
 
     return (
         <div className="app">
+            <ThemeRoot ui={ui} />
             <header className="shell">
                 <button type="button" className="btn-mfx" onClick={() => setMenuOpen((open) => !open)}>
                     PI-MFX
@@ -94,13 +111,46 @@ export function App() {
             </header>
 
             <main className="page">
-                {view === "performance" && <PerformanceView engine={engine} run={run} />}
+                {view === "performance" && (
+                    <PerformanceView engine={engine} run={run} onSnapshots={() => goTo("snapshots")} />
+                )}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && <EditorView engine={engine} run={run} />}
+                {view === "snapshots" && (
+                    <SnapshotManagerView
+                        engine={engine}
+                        run={run}
+                        onEdit={(snapshotId) => {
+                            setSnapshotEditId(snapshotId);
+                            goTo("snapshotEdit");
+                        }}
+                    />
+                )}
+                {view === "snapshotEdit" && snapshotEditId && (
+                    <SnapshotEditView
+                        engine={engine}
+                        run={run}
+                        snapshotId={snapshotEditId}
+                        onComplete={() => goTo("snapshots")}
+                    />
+                )}
                 {view === "settings" && (
                     <SettingsHub onOpen={(page) => goTo(page)} />
                 )}
-                {(view === "audio" || view === "controller" || view === "ui" || view === "library" || view === "system") && (
+                {view === "theme" && (
+                    <ThemeManagerView persistTheme={async (theme) => {
+                        await engine.client.request("ui/settings", persistThemeSettings(
+                            obj(engine.state.ui),
+                            theme.name,
+                            loadCustomMultiFXThemes(),
+                            themeLedColors(theme)
+                        ));
+                    }} />
+                )}
+                {view === "layout" && <LayoutEditorView engine={engine} run={run} />}
+                {view === "backup" && <BackupView engine={engine} run={run} />}
+                {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
+                    || view === "library" || view === "system") && (
                     <SettingsDetail page={view} engine={engine} run={run} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}
@@ -125,8 +175,10 @@ export function App() {
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
                             active={view === "edit"} onClick={() => goTo("edit")} />
+                        <MenuButton label="SNAPSHOTS" subtitle="Capture, recall, rename and colour"
+                            active={view === "snapshots"} onClick={() => goTo("snapshots")} />
                         <div className="menu-divider" />
-                        <MenuButton label="SETTINGS" subtitle="Audio, controller, library and system"
+                        <MenuButton label="SETTINGS" subtitle="Audio, theme, layout, controller and system"
                             active={settingsActive} onClick={() => goTo("settings")} />
                         <MenuButton label="ABOUT" subtitle="About Pi-MFX"
                             active={view === "about"} onClick={() => goTo("about")} />
@@ -160,4 +212,3 @@ function MenuButton({
         </button>
     );
 }
-

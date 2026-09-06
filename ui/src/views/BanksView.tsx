@@ -1,5 +1,5 @@
 import { findBank, findPreset, type EngineSnapshot } from "../api";
-import { obj, str, objects } from "../json";
+import { obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 
 export function BanksView({
@@ -44,6 +44,35 @@ export function BanksView({
                             void run(() => client.request("bank/delete", { bankId: str(activeBank.id) }));
                         }
                     }}>DELETE</button>
+                    <button type="button" className="btn" disabled={!activeBank} onClick={() => {
+                        if (!activeBank) {
+                            return;
+                        }
+                        void run(async () => {
+                            const result = await client.request("bank/export", { bankId: str(activeBank.id) });
+                            const blob = new Blob([JSON.stringify(result.bank, null, 2)], { type: "application/json" });
+                            const url = URL.createObjectURL(blob);
+                            const link = document.createElement("a");
+                            link.href = url;
+                            link.download = `${str(activeBank.name, "bank")}.pimfx-bank.json`;
+                            link.click();
+                            URL.revokeObjectURL(url);
+                        });
+                    }}>DOWNLOAD</button>
+                    <label className="btn">
+                        UPLOAD
+                        <input type="file" accept="application/json" hidden onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) {
+                                return;
+                            }
+                            void file.text().then((text) => {
+                                const bank = JSON.parse(text) as JsonObject;
+                                void run(() => client.request("bank/import", { bank }));
+                            });
+                            event.target.value = "";
+                        }} />
+                    </label>
                 </div>
                 <div className="stack" style={{ marginTop: 10 }}>
                     {banks.map((bank) => (
@@ -88,6 +117,24 @@ export function BanksView({
                             }
                         });
                     }}>RENAME</button>
+                    <button type="button" className="btn" disabled={!activePreset} onClick={() => {
+                        if (!activePreset) {
+                            return;
+                        }
+                        const index = presets.findIndex((preset) => str(preset.id) === str(activePreset.id));
+                        if (index > 0) {
+                            void run(() => client.request("preset/reorder", { presetId: str(activePreset.id), index: index - 1 }));
+                        }
+                    }}>↑</button>
+                    <button type="button" className="btn" disabled={!activePreset} onClick={() => {
+                        if (!activePreset) {
+                            return;
+                        }
+                        const index = presets.findIndex((preset) => str(preset.id) === str(activePreset.id));
+                        if (index >= 0 && index < presets.length - 1) {
+                            void run(() => client.request("preset/reorder", { presetId: str(activePreset.id), index: index + 1 }));
+                        }
+                    }}>↓</button>
                     <button type="button" className="btn btn-danger" disabled={presets.length < 2} onClick={() => {
                         if (activePreset && window.confirm(`Delete preset “${str(activePreset.name)}”?`)) {
                             void run(() => client.request("preset/delete", { presetId: str(activePreset.id) }));

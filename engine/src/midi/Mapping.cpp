@@ -113,19 +113,19 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
                          || control->kind == ControlKind::Slider
                          || control->kind == ControlKind::Expression;
 
-    float normalised = static_cast<float>(message.data2) / 127.0f;
-    if (control->binding.inverted) {
-        normalised = 1.0f - normalised;
-    }
-
+    float visual = static_cast<float>(message.data2) / 127.0f;
     auto position = std::find_if(positions_.begin(), positions_.end(),
                                  [&](const std::pair<std::string, float>& entry) {
                                      return entry.first == control->id;
                                  });
     if (position == positions_.end()) {
-        positions_.emplace_back(control->id, normalised);
+        positions_.emplace_back(control->id, visual);
     } else {
-        position->second = normalised;
+        position->second = visual;
+    }
+    float normalised = visual;
+    if (control->binding.inverted) {
+        normalised = 1.0f - normalised;
     }
 
     ActionRequest request;
@@ -213,6 +213,18 @@ std::vector<ActionRequest> ControllerRuntime::pollHolds() {
 std::vector<std::pair<std::string, float>> ControllerRuntime::controlPositions() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return positions_;
+}
+
+void ControllerRuntime::setPosition(const std::string& controlId, float normalised) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const float clamped = std::max(0.0f, std::min(1.0f, normalised));
+    for (std::pair<std::string, float>& entry : positions_) {
+        if (entry.first == controlId) {
+            entry.second = clamped;
+            return;
+        }
+    }
+    positions_.emplace_back(controlId, clamped);
 }
 
 std::vector<uint8_t> ControllerRuntime::encodeLedMessage(const std::vector<LedState>& leds,

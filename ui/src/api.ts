@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { arr, bool, isObj, num, obj, str, type Json, type JsonObject } from "./json";
+import { arr, bool, isObj, num, obj, objects, str, type Json, type JsonObject } from "./json";
 
 export interface EngineSnapshot {
     connected: boolean;
@@ -121,14 +121,45 @@ export class EngineClient {
             return;
         }
         if (type === "performance") {
-            this.patch({
-                state: {
-                    ...this.snapshot.state,
-                    activeBankId: message.activeBankId ?? this.snapshot.state.activeBankId,
-                    activePresetId: message.activePresetId ?? this.snapshot.state.activePresetId,
-                    bypassAll: message.bypassAll ?? this.snapshot.state.bypassAll
-                }
-            });
+            const nextState: JsonObject = {
+                ...this.snapshot.state,
+                activeBankId: message.activeBankId ?? this.snapshot.state.activeBankId,
+                activePresetId: message.activePresetId ?? this.snapshot.state.activePresetId,
+                bypassAll: message.bypassAll ?? this.snapshot.state.bypassAll,
+                snapshotMode: message.snapshotMode ?? this.snapshot.state.snapshotMode,
+                tempo: message.tempo ?? this.snapshot.state.tempo,
+                controlPositions: message.controlPositions ?? this.snapshot.state.controlPositions
+            };
+            if (typeof message.activeSnapshot === "number") {
+                const banks = arr(nextState.banks).map((bank) => {
+                    if (!isObj(bank) || str(bank.id) !== str(nextState.activeBankId)) {
+                        return bank;
+                    }
+                    return {
+                        ...bank,
+                        presets: arr(bank.presets).map((preset) => {
+                            if (!isObj(preset) || str(preset.id) !== str(nextState.activePresetId)) {
+                                return preset;
+                            }
+                            return { ...preset, activeSnapshot: message.activeSnapshot };
+                        })
+                    };
+                });
+                nextState.banks = banks;
+            }
+            const liveSlots = objects(message.slots);
+            if (liveSlots.length > 0) {
+                nextState.chain = arr(this.snapshot.state.chain).map((slot) => {
+                    if (!isObj(slot)) {
+                        return slot;
+                    }
+                    const live = liveSlots.find((item) => str(item.id) === str(slot.id));
+                    return live
+                        ? { ...slot, enabled: live.enabled ?? slot.enabled, state: live.state ?? slot.state }
+                        : slot;
+                });
+            }
+            this.patch({ state: nextState });
         }
     }
 
@@ -188,4 +219,12 @@ export function formatMs(value: number): string {
 export function controlValue(slot: JsonObject, symbol: string, fallback: number): number {
     const controls = obj(obj(slot.state).controls);
     return num(controls[symbol], fallback);
+}
+
+export function isAnalogKind(kind: string): boolean {
+    return kind === "pot" || kind === "slider" || kind === "expression";
+}
+
+export function clampUnit(value: number): number {
+    return Math.min(1, Math.max(0, value));
 }
