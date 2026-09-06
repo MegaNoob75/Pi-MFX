@@ -536,6 +536,26 @@ struct PluginInstance::Impl {
             workerThread.join();
         }
     }
+
+    static LV2_Worker_Status scheduleWork(LV2_Worker_Schedule_Handle handle,
+                                          uint32_t size,
+                                          const void* data) {
+        Impl* impl = static_cast<Impl*>(handle);
+        if (!impl->workRequests.write(data, size)) {
+            return LV2_WORKER_ERR_NO_SPACE;
+        }
+        impl->workerSignal.notify_one();
+        return LV2_WORKER_SUCCESS;
+    }
+
+    static LV2_Worker_Status respond(LV2_Worker_Respond_Handle handle,
+                                     uint32_t size,
+                                     const void* data) {
+        Impl* impl = static_cast<Impl*>(handle);
+        return impl->workResponses.write(data, size)
+            ? LV2_WORKER_SUCCESS
+            : LV2_WORKER_ERR_NO_SPACE;
+    }
 };
 
 namespace {
@@ -551,24 +571,6 @@ const char* uridUnmapCallback(LV2_URID_Unmap_Handle handle, LV2_URID urid) {
     static thread_local std::string cached;
     cached = static_cast<UridMap*>(handle)->unmap(urid);
     return cached.c_str();
-}
-
-LV2_Worker_Status scheduleWorkCallback(LV2_Worker_Schedule_Handle handle,
-                                       uint32_t size,
-                                       const void* data) {
-    PluginInstance::Impl* impl = static_cast<PluginInstance::Impl*>(handle);
-    if (!impl->workRequests.write(data, size)) {
-        return LV2_WORKER_ERR_NO_SPACE;
-    }
-    impl->workerSignal.notify_one();
-    return LV2_WORKER_SUCCESS;
-}
-
-LV2_Worker_Status workerRespondCallback(LV2_Worker_Respond_Handle handle,
-                                        uint32_t size,
-                                        const void* data) {
-    PluginInstance::Impl* impl = static_cast<PluginInstance::Impl*>(handle);
-    return impl->workResponses.write(data, size) ? LV2_WORKER_SUCCESS : LV2_WORKER_ERR_NO_SPACE;
 }
 
 } // namespace
@@ -634,7 +636,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.uridUnmap.handle = &urids;
     impl.uridUnmap.unmap = uridUnmapCallback;
     impl.workerSchedule.handle = &impl;
-    impl.workerSchedule.schedule_work = scheduleWorkCallback;
+    impl.workerSchedule.schedule_work = Impl::scheduleWork;
 
     impl.options[0] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.bufMaxBlockLength,
                        sizeof(int32_t), urids.map(LV2_ATOM__Int), &impl.maxBlockLength};
@@ -741,7 +743,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                 }
                 while (raw->workRequests.read(request)) {
                     raw->workerInterface->work(lilv_instance_get_handle(raw->instance),
-                                               workerRespondCallback,
+                                               Impl::respond,
                                                raw,
                                                static_cast<uint32_t>(request.size()),
                                                request.data());
