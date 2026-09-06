@@ -4,6 +4,7 @@ import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
+import { BackupView } from "./BackupView";
 
 export type SettingsPage =
     | "audio"
@@ -18,17 +19,54 @@ export type SettingsPage =
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
     return (
-        <div className="page-scroll">
-            <div className="grid-cards">
-                <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen("audio")} />
-                <HubCard title="CONTROLLER" subtitle="Hardware setup, Performance layout and diagnostics" onClick={() => onOpen("controller")} />
-                <HubCard title="LAYOUT" subtitle="Grid or freeform Performance board" onClick={() => onOpen("layout")} />
-                <HubCard title="THEME" subtitle="Built-in looks, custom colours, lights and export" onClick={() => onOpen("theme")} />
-                <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode, themes and overlay" onClick={() => onOpen("keyboard")} />
-                <HubCard title="UI" subtitle="Tuner, meters, scale and control pop-out" onClick={() => onOpen("ui")} />
-                <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
-                <HubCard title="BACKUP" subtitle="Download and restore themes, layout and settings" onClick={() => onOpen("backup")} />
-                <HubCard title="SYSTEM" subtitle="Realtime threads, diagnostics and rescan" onClick={() => onOpen("system")} />
+        <div className="mfx-screen">
+            <div className="mfx-screen-intro">
+                <div className="mfx-screen-intro-title">PI-MFX SETTINGS</div>
+                <div className="mfx-screen-intro-sub">Configure Pi-MFX without editing files</div>
+            </div>
+            <div className="mfx-hub-grid">
+                <HubCard title="CONTROLLER" subtitle="Switch layout, hardware inputs and actions" onClick={() => onOpen("controller")} />
+                <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
+                <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
+                <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="SYSTEM" subtitle="Audio, library, realtime threads and diagnostics" onClick={() => onOpen("system")} />
+            </div>
+        </div>
+    );
+}
+
+function SystemHub({
+    engine,
+    run,
+    onOpen
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    onOpen?: (page: SettingsPage) => void;
+}) {
+    const [realtime, setRealtime] = useState(false);
+    if (realtime) {
+        return (
+            <div className="mfx-screen">
+                <div className="mfx-screen-intro">
+                    <button type="button" className="btn" onClick={() => setRealtime(false)}>← SYSTEM</button>
+                </div>
+                <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
+                    <SystemSettings engine={engine} run={run} />
+                </div>
+            </div>
+        );
+    }
+    return (
+        <div className="mfx-screen">
+            <div className="mfx-screen-intro">
+                <div className="mfx-screen-intro-title">SYSTEM</div>
+                <div className="mfx-screen-intro-sub">Audio device, NAM/IR library and Pi realtime</div>
+            </div>
+            <div className="mfx-hub-grid">
+                <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen?.("audio")} />
+                <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen?.("library")} />
+                <HubCard title="REALTIME" subtitle="Audio thread, memory lock, LV2 rescan and diagnostics" onClick={() => setRealtime(true)} />
             </div>
         </div>
     );
@@ -63,11 +101,14 @@ export function SettingsPage({
     if (page === "keyboard") {
         return <KeyboardSettingsView />;
     }
-    if (page === "ui") {
+    if (page === "ui" || page === "backup") {
         return <UiSettings engine={engine} run={run} />;
     }
     if (page === "library") {
         return <LibrarySettings engine={engine} run={run} />;
+    }
+    if (page === "system") {
+        return <SystemHub engine={engine} run={run} onOpen={onOpen} />;
     }
     return <SystemSettings engine={engine} run={run} />;
 }
@@ -256,7 +297,7 @@ function ControllerHub({
                     <span className="muted">{str(controller.name, "NO CONTROLLER")}</span>
                 </div>
             </div>
-            <div className="grid-cards">
+            <div className="mfx-hub-grid">
                 <HubCard
                     title="HARDWARE SETUP"
                     subtitle={`Add switches, pots and encoders; assign MIDI Learn and actions. ${objects(controller.controls).length} controls · ${objects(controller.leds).length} LEDs`}
@@ -591,6 +632,7 @@ function UiSettings({
                 </div>
                 <UiBehaviorEditor />
             </div>
+            <BackupView engine={engine} run={run} embedded />
         </div>
     );
 }

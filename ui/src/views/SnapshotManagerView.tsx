@@ -1,7 +1,19 @@
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { askText } from "../keyboard/ask";
 import type { EngineSnapshot } from "../api";
 import { findPreset } from "../api";
 import { num, obj, str, objects } from "../json";
+
+const SNAPSHOT_SLOTS = 6;
+const DEFAULT_SNAPSHOT_COLORS = [
+    "#22C55E",
+    "#06B6D4",
+    "#8B5CF6",
+    "#F59E0B",
+    "#EC4899",
+    "#EF4444"
+];
 
 export function SnapshotManagerView({
     engine,
@@ -16,77 +28,175 @@ export function SnapshotManagerView({
     const preset = findPreset(state);
     const snapshots = objects(obj(preset).snapshots);
     const active = num(obj(preset).activeSnapshot, -1);
+    const slotCount = Math.max(SNAPSHOT_SLOTS, snapshots.length);
+    const [renameIndex, setRenameIndex] = useState<number | null>(null);
+    const [renameValue, setRenameValue] = useState("");
+    const [message, setMessage] = useState("");
+
+    useEffect(() => {
+        if (!message) {
+            return;
+        }
+        const timer = window.setTimeout(() => setMessage(""), 1800);
+        return () => window.clearTimeout(timer);
+    }, [message]);
+
+    const show = (text: string) => setMessage(text);
 
     return (
-        <div className="page-scroll stack">
-            <div className="panel stack">
-                <h2>SNAPSHOTS</h2>
-                <div className="muted">
-                    Six sound scenes on the current preset. Recalling a snapshot only moves
-                    parameters — the chain stays put. Capture stores the live sound without
-                    overwriting the saved preset.
+        <div className="mfx-screen snapshot-manager">
+            {message && createPortal(
+                <div className="toast toast-ok" role="status" aria-live="polite">{message}</div>,
+                document.body
+            )}
+            <div className="snapshot-manager-header">
+                <div>
+                    <div className="field-label">SNAPSHOT MANAGER</div>
+                    <div className="snapshot-preset-name">{str(obj(preset).name, "Current Preset")}</div>
                 </div>
-                <div className="row">
-                    <button type="button" className="btn btn-accent" onClick={() => {
-                        void askText("Snapshot name", `Snap ${snapshots.length + 1}`).then((name) => {
-                            if (name?.trim()) {
-                                void run(() => client.request("snapshot/capture", { name: name.trim() }));
-                            }
-                        });
-                    }}>CAPTURE</button>
-                    <button
-                        type="button"
-                        className={`btn ${engine.state.snapshotMode ? "btn-active" : ""}`}
-                        onClick={() => void run(() => client.request("snapshot/mode", {
-                            enabled: !engine.state.snapshotMode
-                        }))}
-                    >
-                        SNAPSHOT MODE
-                    </button>
+                <div className="muted snapshot-help">
+                    Capture stores the live sound without overwriting the saved preset.
+                    Recalling a snapshot only moves parameters — the chain stays put.
                 </div>
             </div>
-            {snapshots.length === 0 && (
-                <div className="panel muted">No snapshots yet. Capture the sound that is playing now.</div>
-            )}
-            {snapshots.map((snapshot, index) => (
-                <div key={str(snapshot.id)} className={`list-item${index === active ? " selected" : ""}`} style={{ flexWrap: "wrap" }}>
-                    <button type="button" className="btn" onClick={() => {
-                        void askText("Snapshot colour (hex)", str(snapshot.color, "#22d3ee")).then((color) => {
-                            if (color) {
-                                void run(() => client.request("snapshot/color", {
-                                    snapshotId: str(snapshot.id),
-                                    color
-                                }));
-                            }
-                        });
-                    }}>●</button>
-                    <strong style={{ flex: 1 }}>{str(snapshot.name, `SNAP ${index + 1}`)}</strong>
-                    <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))}>
-                        RECALL
-                    </button>
-                    {onEdit && (
-                        <button type="button" className="btn" onClick={() => onEdit(str(snapshot.id))}>EDIT</button>
-                    )}
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("snapshot/update", { snapshotId: str(snapshot.id) }))}>
-                        UPDATE
-                    </button>
-                    <button type="button" className="btn" onClick={() => {
-                        void askText("Rename snapshot", str(snapshot.name)).then((name) => {
-                            if (name) {
-                                void run(() => client.request("snapshot/rename", {
-                                    snapshotId: str(snapshot.id),
-                                    name
-                                }));
-                            }
-                        });
-                    }}>RENAME</button>
-                    <button type="button" className="btn btn-danger" onClick={() => {
-                        if (window.confirm(`Delete snapshot “${str(snapshot.name)}”?`)) {
-                            void run(() => client.request("snapshot/delete", { snapshotId: str(snapshot.id) }));
+            <div className="snapshot-notice">
+                Create/update captures the current live sound. Recall, rename, colour
+                and delete follow the same lifecycle as MultiFX.
+            </div>
+            <div className="snapshot-grid" style={{ gridTemplateRows: `repeat(${Math.ceil(slotCount / 3)}, minmax(0, 1fr))` }}>
+                {Array.from({ length: slotCount }, (_, index) => {
+                    const snapshot = snapshots[index];
+                    const selected = snapshot && index === active;
+                    const color = str(obj(snapshot).color, DEFAULT_SNAPSHOT_COLORS[index] ?? "#22d3ee");
+                    return (
+                        <div key={snapshot ? str(snapshot.id) : `empty-${index}`} className={`snapshot-card${selected ? " selected" : ""}`}>
+                            <div className="snapshot-card-top">
+                                <span>SNAPSHOT {index + 1}</span>
+                                <span className={`snapshot-led${selected ? " on" : ""}`} />
+                            </div>
+                            {snapshot ? (
+                                <>
+                                    {renameIndex === index ? (
+                                        <div className="row" style={{ marginTop: 10 }}>
+                                            <input
+                                                className="input"
+                                                autoFocus
+                                                value={renameValue}
+                                                onChange={(event) => setRenameValue(event.target.value)}
+                                                onKeyDown={(event) => {
+                                                    if (event.key === "Enter" && renameValue.trim()) {
+                                                        void run(() => client.request("snapshot/rename", {
+                                                            snapshotId: str(snapshot.id),
+                                                            name: renameValue.trim()
+                                                        })).then(() => {
+                                                            setRenameIndex(null);
+                                                            show("SNAPSHOT RENAMED");
+                                                        });
+                                                    }
+                                                    if (event.key === "Escape") {
+                                                        setRenameIndex(null);
+                                                    }
+                                                }}
+                                            />
+                                            <button type="button" className="btn" onClick={() => {
+                                                if (!renameValue.trim()) {
+                                                    return;
+                                                }
+                                                void run(() => client.request("snapshot/rename", {
+                                                    snapshotId: str(snapshot.id),
+                                                    name: renameValue.trim()
+                                                })).then(() => {
+                                                    setRenameIndex(null);
+                                                    show("SNAPSHOT RENAMED");
+                                                });
+                                            }}>SAVE</button>
+                                        </div>
+                                    ) : (
+                                        <div className="snapshot-card-name">{str(snapshot.name, `Snapshot ${index + 1}`)}</div>
+                                    )}
+                                    <div className="snapshot-card-state">
+                                        <label className="snapshot-color">
+                                            <input
+                                                type="color"
+                                                value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#22C55E"}
+                                                onChange={(event) => {
+                                                    void run(() => client.request("snapshot/color", {
+                                                        snapshotId: str(snapshot.id),
+                                                        color: event.target.value
+                                                    })).then(() => show("SNAPSHOT COLOR SAVED"));
+                                                }}
+                                            />
+                                            <span style={{ background: color }} />
+                                        </label>
+                                        {selected ? "ACTIVE" : "READY"}
+                                    </div>
+                                    <div className="snapshot-card-actions">
+                                        <button type="button" className="btn btn-accent" onClick={() => {
+                                            void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
+                                                .then(() => show(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} ACTIVE`));
+                                        }}>RECALL</button>
+                                        <button type="button" className="btn" onClick={() => {
+                                            void run(() => client.request("snapshot/update", { snapshotId: str(snapshot.id) }))
+                                                .then(() => show(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} UPDATED`));
+                                        }}>UPDATE</button>
+                                        {onEdit && (
+                                            <button type="button" className="btn" onClick={() => onEdit(str(snapshot.id))}>EDIT</button>
+                                        )}
+                                        <button type="button" className="btn" onClick={() => {
+                                            setRenameIndex(index);
+                                            setRenameValue(str(snapshot.name, `Snapshot ${index + 1}`));
+                                        }}>RENAME</button>
+                                        <button type="button" className="btn btn-danger" onClick={() => {
+                                            void run(() => client.request("snapshot/delete", { snapshotId: str(snapshot.id) }))
+                                                .then(() => show(`SNAPSHOT ${index + 1} DELETED`));
+                                        }}>DELETE</button>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="snapshot-empty-name">EMPTY</div>
+                                    <div className="muted snapshot-empty-help">Capture the current effect state into this slot.</div>
+                                    <div style={{ marginTop: "auto" }}>
+                                        <button type="button" className="btn btn-accent" style={{ width: "100%" }} onClick={() => {
+                                            void run(async () => {
+                                                const result = await client.request("snapshot/capture", {
+                                                    name: `Snapshot ${index + 1}`
+                                                });
+                                                const snapshotId = str(result.snapshotId);
+                                                if (snapshotId && DEFAULT_SNAPSHOT_COLORS[index]) {
+                                                    await client.request("snapshot/color", {
+                                                        snapshotId,
+                                                        color: DEFAULT_SNAPSHOT_COLORS[index]
+                                                    });
+                                                }
+                                            }).then(() => show(`SNAPSHOT ${index + 1} CREATED`));
+                                        }}>CREATE SNAPSHOT</button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+            <div className="row" style={{ padding: "8px 4px 0" }}>
+                <button
+                    type="button"
+                    className={`btn ${engine.state.snapshotMode ? "btn-active" : ""}`}
+                    onClick={() => void run(() => client.request("snapshot/mode", {
+                        enabled: !engine.state.snapshotMode
+                    }))}
+                >
+                    SNAPSHOT MODE
+                </button>
+                <button type="button" className="btn" onClick={() => {
+                    void askText("Snapshot name", `Snapshot ${snapshots.length + 1}`).then((name) => {
+                        if (name?.trim()) {
+                            void run(() => client.request("snapshot/capture", { name: name.trim() }))
+                                .then(() => show("SNAPSHOT CREATED"));
                         }
-                    }}>DELETE</button>
-                </div>
-            ))}
+                    });
+                }}>CAPTURE</button>
+            </div>
         </div>
     );
 }

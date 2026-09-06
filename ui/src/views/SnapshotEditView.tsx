@@ -8,11 +8,15 @@ export function SnapshotEditView({
     engine,
     run,
     snapshotId,
+    saveRequest = 0,
+    cancelRequest = 0,
     onComplete
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     snapshotId: string;
+    saveRequest?: number;
+    cancelRequest?: number;
     onComplete: () => void;
 }) {
     const preset = findPreset(engine.state);
@@ -21,6 +25,8 @@ export function SnapshotEditView({
     const originalIndex = useRef(num(obj(preset).activeSnapshot, -1));
     const originalId = useRef(str(objects(obj(preset).snapshots)[originalIndex.current]?.id));
     const started = useRef(false);
+    const saveStarted = useRef(0);
+    const cancelStarted = useRef(0);
 
     useEffect(() => {
         if (started.current || !snapshotId) {
@@ -40,29 +46,38 @@ export function SnapshotEditView({
         }).finally(onComplete);
     };
 
+    const save = () => {
+        void run(() => engine.client.request("snapshot/update", { snapshotId })).then(onComplete);
+    };
+
+    useEffect(() => {
+        if (saveRequest > 0 && saveRequest !== saveStarted.current) {
+            saveStarted.current = saveRequest;
+            save();
+        }
+    }, [saveRequest]);
+
+    useEffect(() => {
+        if (cancelRequest > 0 && cancelRequest !== cancelStarted.current) {
+            cancelStarted.current = cancelRequest;
+            cancel();
+        }
+    }, [cancelRequest]);
+
     return (
-        <div className="page-scroll stack">
-            <div className="panel stack">
-                <h2>EDIT SNAPSHOT</h2>
-                <div className="muted">
-                    The chain stays put. Change the sound, then save it back into
-                    “{str(obj(snapshot).name, "this snapshot")}”. Cancel restores what was
-                    playing before you opened this screen.
-                </div>
-                <div className="row">
-                    <button type="button" className="btn" onClick={cancel}>CANCEL</button>
-                    <button
-                        type="button"
-                        className="btn btn-accent"
-                        onClick={() => {
-                            void run(() => engine.client.request("snapshot/update", { snapshotId })).then(onComplete);
-                        }}
-                    >
-                        SAVE SNAPSHOT
-                    </button>
+        <div className="mfx-screen">
+            <div className="mfx-screen-intro">
+                <div>
+                    <div className="mfx-screen-intro-title">{str(obj(snapshot).name, "SNAPSHOT")}</div>
+                    <div className="mfx-screen-intro-sub">
+                        The chain stays put. Change the sound, then save it back into this snapshot.
+                        Cancel restores what was playing before you opened this screen.
+                    </div>
                 </div>
             </div>
-            <EditorView engine={engine} run={run} lockChain />
+            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+                <EditorView engine={engine} run={run} lockChain />
+            </div>
         </div>
     );
 }

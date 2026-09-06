@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { controlValue, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
@@ -9,11 +9,15 @@ type EditPage = "chain" | "controls" | "bindings";
 export function EditorView({
     engine,
     run,
-    lockChain = false
+    lockChain = false,
+    backRequest = 0,
+    onPageChange
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     lockChain?: boolean;
+    backRequest?: number;
+    onPageChange?: (page: EditPage, title?: string) => void;
 }) {
     const { client, state, catalog, library } = engine;
     const chain = objects(state.chain);
@@ -21,6 +25,9 @@ export function EditorView({
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
     const [browser, setBrowser] = useState<{ mode: "add" | "replace"; index: number } | null>(null);
+    const [dragId, setDragId] = useState("");
+    const [dragOverTrash, setDragOverTrash] = useState(false);
+    const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
 
     const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
     const plugin = obj(obj(selected).plugin);
@@ -30,86 +37,174 @@ export function EditorView({
     const irs = objects(library.impulseResponses);
     const controller = obj(state.controller);
     const controls = objects(controller.controls);
-
     const selectedIndex = chain.findIndex((slot) => str(slot.id) === str(obj(selected).id));
+    const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
+
+    useEffect(() => {
+        onPageChange?.(page, page === "chain" ? undefined : effectTitle);
+    }, [page, effectTitle]);
+
+    useEffect(() => {
+        if (backRequest > 0) {
+            setPage("chain");
+        }
+    }, [backRequest]);
+
+    const openControls = (slotId: string) => {
+        setSelectedId(slotId);
+        setPage("controls");
+    };
+
+    const onPointerDown = (slot: JsonObject, index: number, event: React.PointerEvent) => {
+        if (lockChain) {
+            return;
+        }
+        dragRef.current = {
+            id: str(slot.id),
+            title: str(slot.name) || str(obj(slot.plugin).name, "Effect"),
+            from: index,
+            x: event.clientX,
+            y: event.clientY,
+            dragging: false
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+    };
+
+    const onPointerMove = (event: React.PointerEvent) => {
+        const drag = dragRef.current;
+        if (!drag) {
+            return;
+        }
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 8) {
+            drag.dragging = true;
+            setDragId(drag.id);
+        }
+        const trash = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-trash]");
+        setDragOverTrash(Boolean(trash));
+    };
+
+    const onPointerUp = (slot: JsonObject, event: React.PointerEvent) => {
+        const drag = dragRef.current;
+        dragRef.current = null;
+        const wasDragging = Boolean(drag?.dragging);
+        setDragId("");
+        setDragOverTrash(false);
+        if (!drag || !wasDragging) {
+            openControls(str(slot.id));
+            return;
+        }
+        const trash = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-trash]");
+        if (trash) {
+            if (window.confirm(`Remove ${drag.title}?`)) {
+                void run(() => client.request("chain/remove", { slotId: drag.id }));
+            }
+            return;
+        }
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
+        if (target) {
+            const index = Number(target.dataset.chainIndex);
+            if (Number.isInteger(index) && index !== drag.from) {
+                void run(() => client.request("chain/move", { slotId: drag.id, index }));
+            }
+        }
+    };
 
     return (
-        <div className={lockChain ? "stack" : "page-scroll stack"}>
-            {!lockChain && (
-                <div className="panel stack">
-                    <div className="row">
-                        <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("preset/save"))}>
-                            SAVE PRESET
-                        </button>
-                        <button type="button" className="btn" onClick={() => {
-                            void askText("Save preset as", "").then((name) => {
-                                if (name?.trim()) {
-                                    void run(() => client.request("preset/saveAs", { name: name.trim() }));
-                                }
-                            });
-                        }}>SAVE AS</button>
-                    </div>
-                </div>
-            )}
-
-            <div className="panel">
-                <div className="row">
-                    {(["chain", "controls", "bindings"] as EditPage[]).map((item) => (
-                        <button
-                            key={item}
-                            type="button"
-                            className={`btn ${page === item ? "btn-active" : ""}`}
-                            onClick={() => setPage(item)}
-                            disabled={item !== "chain" && !selected}
-                        >
-                            {item === "chain" ? "CHAIN" : item === "controls" ? "CONTROLS" : "BINDINGS"}
-                        </button>
-                    ))}
-                </div>
-            </div>
-
+        <div className="mfx-screen editor-screen">
             {page === "chain" && (
-                <div className="panel">
-                    <h2>CHAIN</h2>
-                    {lockChain && (
-                        <div className="muted" style={{ marginBottom: 8 }}>
-                            Snapshot editing cannot add, remove or reorder effects.
-                        </div>
-                    )}
-                    <div className="chain">
-                        {chain.map((slot, index) => {
-                            const info = obj(slot.plugin);
-                            const on = bool(slot.enabled, true);
-                            return (
-                                <button
-                                    key={str(slot.id)}
-                                    type="button"
-                                    className={`chain-slot${str(obj(selected).id) === str(slot.id) ? " selected" : ""}${on ? "" : " off"}`}
-                                    onClick={() => {
-                                        setSelectedId(str(slot.id));
-                                        setPage("controls");
-                                    }}
-                                >
-                                    <div className="field-label">{on ? "ON" : "OFF"}</div>
-                                    <strong>{str(slot.name) || str(info.name, str(slot.uri))}</strong>
-                                    <div className="muted">{str(info.brand) || str(info.category)}</div>
-                                    <div className="muted">#{index + 1}</div>
-                                </button>
-                            );
-                        })}
+                <>
+                    <div className="editor-toolbar">
                         {!lockChain && (
-                            <button type="button" className="chain-slot chain-add" onClick={() => setBrowser({ mode: "add", index: chain.length })}>
-                                + ADD
-                            </button>
+                            <>
+                                <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("preset/save"))}>
+                                    SAVE PRESET
+                                </button>
+                                <button type="button" className="btn" onClick={() => {
+                                    void askText("Save preset as", "").then((name) => {
+                                        if (name?.trim()) {
+                                            void run(() => client.request("preset/saveAs", { name: name.trim() }));
+                                        }
+                                    });
+                                }}>SAVE AS</button>
+                            </>
+                        )}
+                        <div className="editor-toolbar-copy">
+                            <strong>PRESET EDITOR</strong>
+                            <span>{lockChain ? "Snapshot editing cannot add, remove or reorder effects." : "Tap to edit • drag to reorder • + inserts an effect"}</span>
+                        </div>
+                    </div>
+                    <div className="chain-page">
+                        <div className="chain-wrap">
+                            <div className="chain-slot endpoint">
+                                <strong>INPUT</strong>
+                                <div className="muted">SIGNAL IN</div>
+                            </div>
+                            {chain.map((slot, index) => {
+                                const info = obj(slot.plugin);
+                                const on = bool(slot.enabled, true);
+                                const active = str(obj(selected).id) === str(slot.id) && page !== "chain";
+                                return (
+                                    <button
+                                        key={str(slot.id)}
+                                        type="button"
+                                        data-chain-index={index}
+                                        className={`chain-slot${active ? " selected" : ""}${on ? "" : " off"}${dragId === str(slot.id) ? " dragging" : ""}`}
+                                        onPointerDown={(event) => onPointerDown(slot, index, event)}
+                                        onPointerMove={onPointerMove}
+                                        onPointerUp={(event) => onPointerUp(slot, event)}
+                                        onPointerCancel={() => {
+                                            dragRef.current = null;
+                                            setDragId("");
+                                            setDragOverTrash(false);
+                                        }}
+                                    >
+                                        <div className="chain-slot-top">
+                                            <span className="chain-handle">⋮⋮</span>
+                                            <strong>{str(slot.name) || str(info.name, str(slot.uri))}</strong>
+                                            <span
+                                                className={`chain-led${on ? " on" : ""}`}
+                                                role="switch"
+                                                aria-checked={on}
+                                                onPointerDown={(event) => event.stopPropagation()}
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    void run(() => client.request("chain/enable", {
+                                                        slotId: str(slot.id),
+                                                        enabled: !on
+                                                    }));
+                                                }}
+                                            />
+                                        </div>
+                                        <div className="muted">{str(info.brand) || str(info.category)}</div>
+                                    </button>
+                                );
+                            })}
+                            {!lockChain && (
+                                <button type="button" className="chain-slot chain-add" onClick={() => setBrowser({ mode: "add", index: chain.length })}>
+                                    + ADD
+                                </button>
+                            )}
+                            <div className="chain-slot endpoint">
+                                <strong>OUTPUT</strong>
+                                <div className="muted">SIGNAL OUT</div>
+                            </div>
+                        </div>
+                        {dragId && (
+                            <div className={`chain-trash${dragOverTrash ? " active" : ""}`} data-chain-trash="true">
+                                DROP HERE TO REMOVE
+                            </div>
                         )}
                     </div>
-                </div>
+                </>
             )}
 
             {page !== "chain" && selected && (
-                <div className="panel stack">
-                    <div className="row">
-                        <h2 style={{ margin: 0 }}>{str(selected.name) || str(plugin.name, "Effect")}</h2>
+                <>
+                    <div className="editor-toolbar">
+                        <div className="editor-toolbar-copy">
+                            <strong>{effectTitle}</strong>
+                            <span>{str(plugin.category) || str(plugin.brand) || "Effect settings"}</span>
+                        </div>
                         <button
                             type="button"
                             className={`btn ${bool(selected.enabled, true) ? "btn-active" : ""}`}
@@ -118,12 +213,12 @@ export function EditorView({
                                 enabled: !bool(selected.enabled, true)
                             }))}
                         >
-                            {bool(selected.enabled, true) ? "ENABLED" : "BYPASSED"}
+                            {bool(selected.enabled, true) ? "ON" : "BYPASS"}
                         </button>
                         {!lockChain && (
                             <>
                                 <button type="button" className="btn" onClick={() => {
-                                    void askText("Effect name", str(selected.name) || str(plugin.name)).then((name) => {
+                                    void askText("Effect name", effectTitle).then((name) => {
                                         if (name) {
                                             void run(() => client.request("chain/name", {
                                                 slotId: str(selected.id),
@@ -132,59 +227,62 @@ export function EditorView({
                                         }
                                     });
                                 }}>RENAME</button>
-                                <button type="button" className="btn" onClick={() => {
-                                    if (selectedIndex > 0) {
-                                        void run(() => client.request("chain/move", { slotId: str(selected.id), index: selectedIndex - 1 }));
-                                    }
+                                <button type="button" className="btn" disabled={selectedIndex <= 0} onClick={() => {
+                                    void run(() => client.request("chain/move", { slotId: str(selected.id), index: selectedIndex - 1 }));
                                 }}>←</button>
-                                <button type="button" className="btn" onClick={() => {
-                                    if (selectedIndex >= 0 && selectedIndex < chain.length - 1) {
-                                        void run(() => client.request("chain/move", { slotId: str(selected.id), index: selectedIndex + 1 }));
-                                    }
+                                <button type="button" className="btn" disabled={selectedIndex >= chain.length - 1} onClick={() => {
+                                    void run(() => client.request("chain/move", { slotId: str(selected.id), index: selectedIndex + 1 }));
                                 }}>→</button>
                                 <button type="button" className="btn" onClick={() => setBrowser({ mode: "replace", index: selectedIndex })}>
                                     REPLACE
                                 </button>
                                 <button type="button" className="btn btn-danger" onClick={() => {
-                                    if (window.confirm(`Remove ${str(plugin.name, "this effect")}?`)) {
-                                        void run(() => client.request("chain/remove", { slotId: str(selected.id) }));
+                                    if (window.confirm(`Remove ${effectTitle}?`)) {
+                                        void run(() => client.request("chain/remove", { slotId: str(selected.id) })).then(() => setPage("chain"));
                                     }
                                 }}>REMOVE</button>
                             </>
                         )}
+                        <button
+                            type="button"
+                            className={`btn ${page === "bindings" ? "btn-active" : ""}`}
+                            onClick={() => setPage(page === "bindings" ? "controls" : "bindings")}
+                        >
+                            BINDINGS
+                        </button>
                     </div>
-
-                    {page === "controls" && (
-                        <EffectControls
-                            selected={selected}
-                            ports={ports}
-                            properties={properties}
-                            plugin={plugin}
-                            models={models}
-                            irs={irs}
-                            run={run}
-                            client={client}
-                        />
-                    )}
-
-                    {page === "bindings" && (
-                        <BindingsPanel
-                            selected={selected}
-                            ports={ports}
-                            controls={controls}
-                            controller={controller}
-                            run={run}
-                            client={client}
-                        />
-                    )}
-                </div>
+                    <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
+                        {page === "controls" && (
+                            <EffectControls
+                                selected={selected}
+                                ports={ports}
+                                properties={properties}
+                                plugin={plugin}
+                                models={models}
+                                irs={irs}
+                                run={run}
+                                client={client}
+                            />
+                        )}
+                        {page === "bindings" && (
+                            <BindingsPanel
+                                selected={selected}
+                                ports={ports}
+                                controls={controls}
+                                controller={controller}
+                                run={run}
+                                client={client}
+                            />
+                        )}
+                    </div>
+                </>
             )}
 
             <PluginBrowser
                 open={browser !== null}
                 catalog={catalog}
-                title={browser?.mode === "replace" ? "REPLACE EFFECT" : "ADD PLUGIN"}
-                actionLabel={browser?.mode === "replace" ? "REPLACE" : "ADD"}
+                title={browser?.mode === "replace" ? "SELECT PLUGIN" : "ADD EFFECT"}
+                actionLabel={browser?.mode === "replace" ? "USE PLUGIN" : "ADD HERE"}
                 onCancel={() => setBrowser(null)}
                 onChoose={(uri) => {
                     const target = browser;
@@ -202,8 +300,8 @@ export function EditorView({
                     });
                 }}
             />
-            {plugins.length === 0 && (
-                <div className="muted">No LV2 plugins in the catalog. Rescan from Settings → System.</div>
+            {plugins.length === 0 && page === "chain" && (
+                <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Rescan from Settings → System.</div>
             )}
         </div>
     );
@@ -229,7 +327,7 @@ function EffectControls({
     client: import("../api").EngineClient;
 }) {
     return (
-        <>
+        <div className="stack">
             {ports.length === 0 && (
                 <div className="muted">This plugin has no control ports, or LV2 is not available on this build.</div>
             )}
@@ -314,7 +412,7 @@ function EffectControls({
                     </label>
                 );
             })}
-        </>
+        </div>
     );
 }
 

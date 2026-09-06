@@ -79,6 +79,7 @@ public:
     bool createBank(const std::string& name, std::string& error);
     bool renameBank(const std::string& bankId, const std::string& name, std::string& error);
     bool deleteBank(const std::string& bankId, std::string& error);
+    bool reorderBank(const std::string& bankId, int newIndex, std::string& error);
     Json exportBank(const std::string& bankId) const;
     bool importBank(const Json& json, std::string& error);
 

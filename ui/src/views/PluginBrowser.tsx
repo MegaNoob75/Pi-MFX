@@ -19,13 +19,13 @@ export function PluginBrowser({
 }) {
     const plugins = objects(catalog.plugins);
     const [query, setQuery] = useState("");
-    const [category, setCategory] = useState("");
+    const [category, setCategory] = useState("All");
     const [selected, setSelected] = useState("");
 
     useEffect(() => {
         if (open) {
             setQuery("");
-            setCategory("");
+            setCategory("All");
             setSelected("");
         }
     }, [open]);
@@ -42,13 +42,13 @@ export function PluginBrowser({
                 names.add(str(item.category));
             }
         }
-        return [...names].sort();
+        return ["All", ...[...names].sort()];
     }, [catalog.categories, plugins]);
 
     const filtered = useMemo(() => {
         const needle = query.trim().toLowerCase();
         return plugins.filter((item) => {
-            if (category && str(item.category) !== category) {
+            if (category !== "All" && str(item.category) !== category) {
                 return false;
             }
             if (!needle) {
@@ -56,61 +56,71 @@ export function PluginBrowser({
             }
             const haystack = `${str(item.name)} ${str(item.brand)} ${str(item.category)} ${str(item.uri)}`.toLowerCase();
             return haystack.includes(needle);
-        });
+        }).sort((a, b) => str(a.name).localeCompare(str(b.name)));
     }, [plugins, query, category]);
 
     if (!open) {
         return null;
     }
 
+    const chosen = plugins.find((item) => str(item.uri) === selected);
+
     return (
-        <div className="dialog-backdrop plugin-browser" onClick={onCancel}>
-            <div className="dialog plugin-browser-dialog" onClick={(event) => event.stopPropagation()}>
-                <div className="row">
-                    <h2 style={{ margin: 0, flex: 1 }}>{title}</h2>
-                    <button type="button" className="btn" onClick={onCancel}>←</button>
+        <div className="plugin-browser-overlay">
+            <button type="button" className="btn-mfx btn-back plugin-browser-back" aria-label="Back" onClick={onCancel}>
+                ←
+            </button>
+            <div className="plugin-browser-header">
+                <div className="mfx-screen-intro-title">{title}</div>
+                <div className="mfx-screen-intro-sub">
+                    Choose the plugin yourself. Nothing is added until you press {actionLabel}.
                 </div>
-                <div className="row">
-                    <label className="field">
-                        <span>Search</span>
-                        <input value={query} onChange={(event) => setQuery(event.target.value)} autoFocus />
-                    </label>
-                    <label className="field">
-                        <span>Category</span>
-                        <select value={category} onChange={(event) => setCategory(event.target.value)}>
-                            <option value="">All</option>
-                            {categoryNames.map((name) => (
-                                <option key={name} value={name}>{name}</option>
-                            ))}
-                        </select>
-                    </label>
-                </div>
-                <div className="plugin-list plugin-browser-list">
+            </div>
+            <div className="plugin-browser-filters">
+                <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search plugins..."
+                    autoComplete="off"
+                    autoFocus
+                    className="input"
+                />
+                <select value={category} onChange={(event) => setCategory(event.target.value)}>
+                    {categoryNames.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                    ))}
+                </select>
+            </div>
+            <div className="plugin-browser-grid-wrap">
+                <div className="plugin-browser-grid">
                     {filtered.map((item) => (
                         <button
                             key={str(item.uri)}
                             type="button"
-                            className={`plugin-row${selected === str(item.uri) ? " selected" : ""}`}
+                            className={`plugin-tile${selected === str(item.uri) ? " selected" : ""}`}
                             onClick={() => setSelected(str(item.uri))}
                             onDoubleClick={() => onChoose(str(item.uri))}
                         >
-                            {str(item.name)}
-                            <small>{[str(item.brand), str(item.category)].filter(Boolean).join(" · ")}</small>
+                            <strong>{str(item.name)}</strong>
+                            <small>{[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}</small>
                         </button>
                     ))}
-                    {filtered.length === 0 && <div className="muted">No plugins match.</div>}
                 </div>
-                <div className="row" style={{ justifyContent: "flex-end" }}>
-                    <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
-                    <button
-                        type="button"
-                        className="btn btn-accent"
-                        disabled={!selected}
-                        onClick={() => selected && onChoose(selected)}
-                    >
-                        {actionLabel}
-                    </button>
+                {filtered.length === 0 && <div className="muted" style={{ padding: 30, textAlign: "center" }}>No plugins match this search.</div>}
+            </div>
+            <div className="plugin-browser-footer">
+                <div className={chosen ? "plugin-browser-choice" : "muted"}>
+                    {chosen ? str(chosen.name) : "Select a plugin"}
                 </div>
+                <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
+                <button
+                    type="button"
+                    className="btn btn-accent"
+                    disabled={!selected}
+                    onClick={() => selected && onChoose(selected)}
+                >
+                    {actionLabel}
+                </button>
             </div>
         </div>
     );

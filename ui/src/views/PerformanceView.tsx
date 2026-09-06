@@ -61,6 +61,7 @@ export function PerformanceView({
     const { client, state, meters } = engine;
     const bank = findBank(state);
     const preset = findPreset(state);
+    const banks = objects(state.banks);
     const ui = obj(state.ui);
     const controller = obj(state.controller);
     const layout = obj(controller.performanceLayout);
@@ -86,6 +87,8 @@ export function PerformanceView({
     const positions = obj(state.controlPositions);
     const chain = objects(state.chain);
     const feedbackOn = loadUiBehavior().parameterFeedback;
+    const [bankMenuOpen, setBankMenuOpen] = useState(false);
+    const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menu, setMenu] = useState<TileMenu | null>(null);
     const [renameValue, setRenameValue] = useState("");
 
@@ -361,12 +364,68 @@ export function PerformanceView({
     return (
         <div className="performance">
             <div className="panel identity">
-                <div>
-                    <div className="field-label">BANK</div>
-                    <h1 className="marquee">{str(obj(bank).name, "No bank")}</h1>
-                    <div className="muted marquee">{str(obj(preset).name, "No preset")}</div>
+                <div className="identity-select">
+                    <div className="field-label">CURRENT BANK</div>
+                    <button type="button" className="identity-value" onClick={() => {
+                        setPresetMenuOpen(false);
+                        setBankMenuOpen((open) => !open);
+                    }}>
+                        {`${str(obj(bank).name, "No Bank")} \u25BE`}
+                    </button>
+                    {bankMenuOpen && (
+                        <div className="identity-menu">
+                            {banks.map((item) => (
+                                <button
+                                    key={str(item.id)}
+                                    type="button"
+                                    className={`mfx-overlay-option${str(item.id) === str(obj(bank).id) ? " selected" : ""}`}
+                                    onClick={() => {
+                                        setBankMenuOpen(false);
+                                        const first = objects(item.presets)[0];
+                                        if (first) {
+                                            void run(() => client.request("preset/select", {
+                                                bankId: str(item.id),
+                                                presetId: str(first.id)
+                                            }));
+                                        }
+                                    }}
+                                >
+                                    {str(item.name)}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
-                <div className="row">
+                <div className="identity-select">
+                    <div className="field-label">ACTIVE PRESET</div>
+                    <button type="button" className="identity-value" onClick={() => {
+                        setBankMenuOpen(false);
+                        setPresetMenuOpen((open) => !open);
+                    }}>
+                        {`${str(obj(preset).name, "No Preset")} \u25BE`}
+                    </button>
+                    {presetMenuOpen && (
+                        <div className="identity-menu">
+                            {presets.map((item) => (
+                                <button
+                                    key={str(item.id)}
+                                    type="button"
+                                    className={`mfx-overlay-option${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
+                                    onClick={() => {
+                                        setPresetMenuOpen(false);
+                                        void run(() => client.request("preset/select", {
+                                            bankId: str(obj(bank).id),
+                                            presetId: str(item.id)
+                                        }));
+                                    }}
+                                >
+                                    {str(item.name)}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                <div className="row identity-actions">
                     <button type="button" className="btn" onClick={() => void run(() => client.request("bank/step", { delta: -1 }))}>BANK −</button>
                     <button type="button" className="btn" onClick={() => void run(() => client.request("bank/step", { delta: 1 }))}>BANK +</button>
                     <button type="button" className="btn" onClick={() => void run(() => client.request("preset/step", { delta: -1 }))}>PRESET −</button>

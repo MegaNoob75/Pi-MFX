@@ -65,8 +65,15 @@ std::vector<Bank> Storage::loadBanks() {
         logInfo("banks: created a starter bank");
     }
 
+    const bool hasExplicitOrder = std::any_of(
+        banks.begin(), banks.end(), [](const Bank& bank) { return bank.order != 0; });
     std::sort(banks.begin(), banks.end(),
-              [](const Bank& a, const Bank& b) { return a.name < b.name; });
+              [hasExplicitOrder](const Bank& a, const Bank& b) {
+                  if (hasExplicitOrder && a.order != b.order) {
+                      return a.order < b.order;
+                  }
+                  return a.name < b.name;
+              });
     return banks;
 }
 

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { arr, str, type Json, type JsonObject } from "../json";
+import { applyUserScale } from "../responsive";
 import { applyMultiFXTheme, resolveTheme } from "./theme";
 import "./performance.css";
 
@@ -7,8 +8,7 @@ export function ThemeRoot({ ui }: { ui: JsonObject }) {
     useEffect(() => {
         const theme = resolveTheme(str(ui.themeId, "MultiFX Purple"), arr(ui.customThemes));
         applyMultiFXTheme(theme);
-        const scale = Number(ui.scale) || 1;
-        document.documentElement.style.setProperty("--mfx-ui-scale", String(scale));
+        applyUserScale(Number(ui.scale) || 1);
     }, [ui.themeId, ui.customThemes, ui.scale]);
     return null;
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEngine } from "./api";
 import { bool, obj } from "./json";
 import { AboutView } from "./views/AboutView";
@@ -11,9 +11,9 @@ import ThemeManagerView from "./views/ThemeManagerView";
 import { LayoutEditorView } from "./views/LayoutEditorView";
 import { SnapshotManagerView } from "./views/SnapshotManagerView";
 import { SnapshotEditView } from "./views/SnapshotEditView";
-import { BackupView } from "./views/BackupView";
 import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
 import { loadCustomMultiFXThemes, themeLedColors } from "./theme/theme";
+import { installResponsiveSizing } from "./responsive";
 
 export type View =
     | "performance"
@@ -25,19 +25,21 @@ export type View =
     | SettingsPage
     | "about";
 
+type EditSubpage = "chain" | "controls" | "bindings";
+
 const titles: Record<string, string> = {
     performance: "PERFORMANCE",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
-    snapshotEdit: "EDIT SNAPSHOT",
+    snapshotEdit: "SNAPSHOT EDITOR",
     settings: "SETTINGS",
     audio: "AUDIO",
     controller: "CONTROLLER",
     layout: "LAYOUT",
     theme: "THEME",
     keyboard: "KEYBOARD",
-    ui: "UI",
+    ui: "PI-MFX UI",
     library: "LIBRARY",
     backup: "BACKUP",
     system: "SYSTEM",
@@ -51,28 +53,67 @@ export function App() {
     const [, setHistory] = useState<View[]>([]);
     const [toast, setToast] = useState("");
     const [snapshotEditId, setSnapshotEditId] = useState("");
+    const [editSubpage, setEditSubpage] = useState<EditSubpage>("chain");
+    const [editEffectTitle, setEditEffectTitle] = useState<string>();
+    const [editBackRequest, setEditBackRequest] = useState(0);
+    const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
+    const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
+    const menuRef = useRef<HTMLElement | null>(null);
+
+    useEffect(() => installResponsiveSizing(), []);
 
     const settingsPages: SettingsPage[] = [
         "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "backup", "system"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
+    const snapshotMode = bool(engine.state.snapshotMode);
 
     const goTo = (next: View) => {
         setMenuOpen(false);
         if (next === view) {
             return;
         }
+        if (next === "edit") {
+            setEditSubpage("chain");
+            setEditEffectTitle(undefined);
+        }
         setHistory((stack) => [...stack, view]);
         setView(next);
     };
 
-    const goBack = () => {
-        setMenuOpen(false);
+    const finishBack = () => {
         setHistory((stack) => {
             const previous = stack[stack.length - 1];
             setView(previous ?? "performance");
             return stack.slice(0, -1);
         });
+    };
+
+    const goBack = () => {
+        setMenuOpen(false);
+        if (view === "performance" && snapshotMode) {
+            void engine.client.request("snapshot/mode", { enabled: false }).catch(() => undefined);
+            return;
+        }
+        if (view === "snapshotEdit") {
+            setSnapshotCancelRequest((value) => value + 1);
+            return;
+        }
+        if (view === "edit" && editSubpage !== "chain") {
+            setEditBackRequest((value) => value + 1);
+            return;
+        }
+        finishBack();
+    };
+
+    const openPerformance = () => {
+        setMenuOpen(false);
+        if (snapshotMode) {
+            void engine.client.request("snapshot/mode", { enabled: false }).catch(() => undefined);
+        }
+        if (view !== "performance") {
+            goTo("performance");
+        }
     };
 
     const run = async (work: () => Promise<unknown>) => {
@@ -84,15 +125,81 @@ export function App() {
         }
     };
 
+    useEffect(() => {
+        if (!menuOpen) {
+            return;
+        }
+        const getButtons = (): HTMLButtonElement[] => {
+            const menu = menuRef.current;
+            if (!menu) {
+                return [];
+            }
+            return Array.from(menu.querySelectorAll("button:not(:disabled)"));
+        };
+        const frame = window.requestAnimationFrame(() => {
+            const buttons = getButtons();
+            const active = buttons.findIndex((button) => button.getAttribute("aria-current") === "page");
+            buttons[active >= 0 ? active : 0]?.focus({ preventScroll: true });
+        });
+        const onKey = (event: KeyboardEvent) => {
+            if (!["ArrowDown", "ArrowUp", "Enter", " ", "Escape"].includes(event.key)) {
+                return;
+            }
+            const buttons = getButtons();
+            if (buttons.length === 0) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.key === "Escape") {
+                setMenuOpen(false);
+                return;
+            }
+            const focused = buttons.findIndex((button) => button === document.activeElement);
+            const current = focused >= 0 ? focused : 0;
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                const next = (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+                buttons[next]?.focus({ preventScroll: true });
+                buttons[next]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                return;
+            }
+            buttons[current]?.click();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => {
+            window.cancelAnimationFrame(frame);
+            window.removeEventListener("keydown", onKey, true);
+        };
+    }, [menuOpen]);
+
     const audioRunning = bool(engine.state.audioRunning);
-    const title = useMemo(() => titles[view] ?? "PI-MFX", [view]);
+    const title = useMemo(() => {
+        if (view === "performance" && snapshotMode) {
+            return "SNAPSHOTS";
+        }
+        if (view === "edit") {
+            if (editSubpage === "bindings") {
+                return `BIND — ${editEffectTitle ?? "EFFECT"}`;
+            }
+            if (editSubpage === "controls") {
+                return `EFFECT — ${editEffectTitle ?? "SETTINGS"}`;
+            }
+        }
+        return titles[view] ?? "PI-MFX";
+    }, [view, snapshotMode, editSubpage, editEffectTitle]);
     const ui = obj(engine.state.ui);
+    const shellBackVisible = view !== "performance" || snapshotMode;
 
     return (
         <div className="app">
             <ThemeRoot ui={ui} />
             <header className="shell">
-                <button type="button" className="btn-mfx" onClick={() => setMenuOpen((open) => !open)}>
+                <button type="button" className="btn-mfx" onClick={() => {
+                    if (view === "snapshotEdit") {
+                        return;
+                    }
+                    setMenuOpen((open) => !open);
+                }}>
                     PI-MFX
                 </button>
                 <div className="shell-title">{title}</div>
@@ -102,7 +209,21 @@ export function App() {
                             ? audioRunning ? "engine connected, audio running" : "engine connected"
                             : "engine disconnected"
                     } />
-                    {view !== "performance" ? (
+                    {view === "edit" && editSubpage === "chain" && (
+                        <button type="button" className="btn-mfx btn-accent" onClick={() => goTo("snapshots")}>
+                            SNAPSHOTS
+                        </button>
+                    )}
+                    {view === "snapshotEdit" && snapshotEditId && (
+                        <button
+                            type="button"
+                            className="btn-mfx btn-accent"
+                            onClick={() => setSnapshotSaveRequest((value) => value + 1)}
+                        >
+                            SAVE SNAPSHOT
+                        </button>
+                    )}
+                    {shellBackVisible ? (
                         <button type="button" className="btn-mfx btn-back" onClick={goBack}>←</button>
                     ) : (
                         <div style={{ width: 48 }} />
@@ -124,7 +245,17 @@ export function App() {
                     />
                 )}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
-                {view === "edit" && <EditorView engine={engine} run={run} />}
+                {view === "edit" && (
+                    <EditorView
+                        engine={engine}
+                        run={run}
+                        backRequest={editBackRequest}
+                        onPageChange={(page, effectTitle) => {
+                            setEditSubpage(page);
+                            setEditEffectTitle(effectTitle);
+                        }}
+                    />
+                )}
                 {view === "snapshots" && (
                     <SnapshotManagerView
                         engine={engine}
@@ -140,7 +271,13 @@ export function App() {
                         engine={engine}
                         run={run}
                         snapshotId={snapshotEditId}
-                        onComplete={() => goTo("snapshots")}
+                        saveRequest={snapshotSaveRequest}
+                        cancelRequest={snapshotCancelRequest}
+                        onComplete={() => {
+                            setSnapshotEditId("");
+                            setHistory([]);
+                            setView("performance");
+                        }}
                     />
                 )}
                 {view === "settings" && (
@@ -157,9 +294,8 @@ export function App() {
                     }} />
                 )}
                 {view === "layout" && <LayoutEditorView engine={engine} run={run} />}
-                {view === "backup" && <BackupView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
-                    || view === "library" || view === "system") && (
+                    || view === "library" || view === "system" || view === "backup") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}
@@ -168,7 +304,7 @@ export function App() {
             {menuOpen && (
                 <>
                     <div className="menu-backdrop" onClick={() => setMenuOpen(false)} />
-                    <nav className="menu">
+                    <nav className="menu" ref={menuRef} data-mfx-shell-menu="true">
                         <div className="menu-brand">
                             <svg className="about-logo" viewBox="0 0 32 32" aria-hidden="true">
                                 <path d="M6 22c0-7 4.2-13 10.4-15.4C14 10 13 14.2 13.6 18.2 16 16 19.6 15 23 16.2 20.8 20 16.8 23.2 12 24.2 9.6 24.6 7.6 23.8 6 22z" />
@@ -178,16 +314,14 @@ export function App() {
                                 <span>GUITAR MULTI-FX</span>
                             </div>
                         </div>
-                        <MenuButton label="PERFORMANCE" subtitle="Presets, snapshots and footswitches"
-                            active={view === "performance"} onClick={() => goTo("performance")} />
+                        <MenuButton label="PERFORMANCE" subtitle="Preset and foot-controller view"
+                            active={view === "performance"} onClick={openPerformance} />
                         <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
                             active={view === "edit"} onClick={() => goTo("edit")} />
-                        <MenuButton label="SNAPSHOTS" subtitle="Capture, recall, rename and colour"
-                            active={view === "snapshots"} onClick={() => goTo("snapshots")} />
                         <div className="menu-divider" />
-                        <MenuButton label="SETTINGS" subtitle="Audio, theme, layout, controller and system"
+                        <MenuButton label="SETTINGS" subtitle="Controller, theme, PI-MFX UI and system"
                             active={settingsActive} onClick={() => goTo("settings")} />
                         <MenuButton label="ABOUT" subtitle="About Pi-MFX"
                             active={view === "about"} onClick={() => goTo("about")} />

@@ -758,6 +758,7 @@ bool Engine::createBank(const std::string& name, std::string& error) {
     Bank bank;
     bank.id = newId("bank");
     bank.name = name.empty() ? "New Bank" : name;
+    bank.order = static_cast<int>(banks_.size());
     Preset preset;
     preset.id = newId("preset");
     preset.name = "Preset 1";
@@ -817,6 +818,26 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
     return true;
 }
 
+bool Engine::reorderBank(const std::string& bankId, int newIndex, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    const auto found = std::find_if(banks_.begin(), banks_.end(),
+                                    [&](const Bank& bank) { return bank.id == bankId; });
+    if (found == banks_.end()) {
+        error = "no such bank";
+        return false;
+    }
+    Bank moved = *found;
+    banks_.erase(found);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(banks_.size())));
+    banks_.insert(banks_.begin() + newIndex, std::move(moved));
+    for (size_t i = 0; i < banks_.size(); ++i) {
+        banks_[i].order = static_cast<int>(i);
+        storage_.saveBank(banks_[i]);
+    }
+    notify();
+    return true;
+}
+
 Json Engine::exportBank(const std::string& bankId) const {
     for (const Bank& bank : banks_) {
         if (bank.id == bankId) {
@@ -840,6 +861,7 @@ bool Engine::importBank(const Json& json, std::string& error) {
     // Fresh identifiers, so importing a bank twice gives two banks rather than
     // silently replacing the first.
     bank.id = newId("bank");
+    bank.order = static_cast<int>(banks_.size());
     for (Preset& preset : bank.presets) {
         preset.id = newId("preset");
         for (EffectSlot& slot : preset.chain) {

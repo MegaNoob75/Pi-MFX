@@ -8,10 +8,12 @@ import { loadUiBehavior, saveUiBehavior } from "../uiBehavior";
 
 export function BackupView({
     engine,
-    run
+    run,
+    embedded = false
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    embedded?: boolean;
 }) {
     const download = () => {
         const payload = {
@@ -74,13 +76,13 @@ export function BackupView({
     };
 
     return (
-        <div className="page-scroll stack">
+        <div className={embedded ? "stack" : "page-scroll stack"}>
             <div className="panel stack">
-                <h2>BACKUP</h2>
+                <h2>BACKUP / RESTORE</h2>
                 <div className="muted">
-                    Download themes, layout, controller wiring and UI settings. Banks stay
-                    in the Banks screen (export a bank there). Restoring does not touch
-                    your audio device or your presets unless you imported a bank.
+                    Save or restore Pi-MFX configuration, including Performance preset
+                    assignments and controller layout. Banks stay on the Banks screen.
+                    Restoring does not change your audio device unless you imported a bank.
                 </div>
                 <div className="row">
                     <button type="button" className="btn btn-accent" onClick={download}>DOWNLOAD BACKUP</button>

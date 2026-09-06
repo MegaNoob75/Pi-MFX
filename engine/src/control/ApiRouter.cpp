@@ -206,6 +206,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.deleteBank(payload["bankId"].asString(), error);
         return Json::object();
     }
+    if (command == "bank/reorder") {
+        ok = engine_.reorderBank(payload["bankId"].asString(), payload["index"].asInt(0), error);
+        return Json::object();
+    }
     if (command == "bank/export") {
         const Json bank = engine_.exportBank(payload["bankId"].asString());
         if (bank.isNull()) {
@@ -219,7 +223,14 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
     if (command == "bank/import") {
         ok = engine_.importBank(payload["bank"], error);
-        return Json::object();
+        Json result = Json::object();
+        if (ok) {
+            const Json banks = engine_.fullState()["banks"];
+            if (banks.size() > 0) {
+                result.set("bankId", banks.at(banks.size() - 1)["id"].asString());
+            }
+        }
+        return result;
     }
 
     // --- chain ------------------------------------------------------------

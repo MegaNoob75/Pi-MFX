@@ -123,6 +123,7 @@ Json Bank::toJson() const {
     Json json = Json::object();
     json.set("id", id);
     json.set("name", name);
+    json.set("order", order);
     Json presetJson = Json::array();
     for (const Preset& preset : presets) {
         presetJson.push(preset.toJson());
@@ -135,6 +136,7 @@ Bank Bank::fromJson(const Json& json) {
     Bank bank;
     bank.id = json["id"].asString(newId("bank"));
     bank.name = json["name"].asString("Bank");
+    bank.order = json["order"].asInt(0);
     const Json& presetJson = json["presets"];
     for (size_t i = 0; i < presetJson.size(); ++i) {
         bank.presets.push_back(Preset::fromJson(presetJson.at(i)));

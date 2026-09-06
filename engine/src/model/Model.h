@@ -64,6 +64,7 @@ struct Preset {
 struct Bank {
     std::string id;
     std::string name = "Bank";
+    int order = 0; ///< user-facing list order; lower values appear first
     std::vector<Preset> presets;
 
     Json toJson() const;
