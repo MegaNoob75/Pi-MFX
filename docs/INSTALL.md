@@ -109,7 +109,7 @@ Performance screen gives you on-screen switches.
 
 ## Optional: touchscreen on the Pi
 
-From the setup menu pick **4) Set up touchscreen display**, or:
+From the setup menu pick **5) Set up touchscreen display**, or:
 
 ```bash
 sudo bash ./scripts/pimfx.sh display
@@ -120,7 +120,7 @@ you used with sudo, and opens `http://127.0.0.1:8080` fullscreen after reboot.
 It does not use Chromium's strict kiosk mode. A tablet or phone on the LAN is
 still a complete control surface if you skip this.
 
-To undo just the screen session: menu item **5**, or
+To undo just the screen session: menu item **6**, or
 `sudo bash ./scripts/pimfx.sh display-remove`.
 
 ## Updating
@@ -163,6 +163,18 @@ servers are masked: `systemctl --global is-enabled pipewire.service`.
 
 **The plugin picker is empty.** `lv2ls` lists what the system can see. If that
 is empty too, no plugins are installed.
+
+**`git pull` says local changes would be overwritten.** A copy from the PC left
+files in `~/Pi-MFX` that differ from GitHub. From `~/Pi-MFX`:
+
+```bash
+git fetch origin
+git reset --hard origin/dev
+sudo bash ./scripts/pimfx.sh update
+```
+
+That throws away the copied files and matches GitHub. Banks stay in
+`/var/lib/pimfx`. `update` must be run from the clone, not from `~`.
 
 **Xruns.** See [LOW_LATENCY.md](LOW_LATENCY.md).
 

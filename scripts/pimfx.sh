@@ -101,7 +101,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|install|update|display|display-remove|status|remove) ;;
+        menu|install|update|rebuild|display|display-refresh|display-remove|status|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }

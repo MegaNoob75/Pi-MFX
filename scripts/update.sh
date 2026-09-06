@@ -24,7 +24,8 @@ if [[ "${SKIP_PULL:-0}" == "1" ]]; then
     log "Skipping git pull (using the files already in this folder)"
 elif [[ -d .git ]]; then
     clone_owner
-    log "Pulling $(git rev-parse --abbrev-ref HEAD)"
+    branch="$(as_clone_owner git rev-parse --abbrev-ref HEAD)"
+    log "Pulling ${branch}"
 
     # A failed UI build can leave npm's lockfile untracked. Once that file is
     # in the repo, git pull refuses to overwrite it.
@@ -33,7 +34,15 @@ elif [[ -d .git ]]; then
         rm -f ui/package-lock.json
     fi
 
-    as_clone_owner git pull --ff-only
+    as_clone_owner git fetch origin
+    # Copies from the PC (MobaXterm) dirty tracked files and block a merge.
+    # This clone is a deployment copy; origin wins. Banks live in /var/lib/pimfx.
+    if ! as_clone_owner git diff --quiet || ! as_clone_owner git diff --cached --quiet; then
+        log "Local files differ from git (often a copy from the PC). Matching origin/${branch}."
+        as_clone_owner git reset --hard "origin/${branch}"
+    else
+        as_clone_owner git merge --ff-only "origin/${branch}"
+    fi
 else
     die "this folder is not a git clone; clone the repo first (see docs/DEV_FLOW.md)"
 fi

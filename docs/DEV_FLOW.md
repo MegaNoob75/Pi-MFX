@@ -58,7 +58,16 @@ cd ~/Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
 
-Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update`. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone.
+Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update` **from `~/Pi-MFX`**. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone.
+
+If you copied files onto the Pi with MobaXterm, `git pull` can refuse to overwrite them. Either pick **4) Rebuild local files** (no pull), or throw the copies away and match GitHub:
+
+```bash
+cd ~/Pi-MFX
+git fetch origin
+git reset --hard origin/dev
+sudo bash ./scripts/pimfx.sh update
+```
 
 ### Test
 
