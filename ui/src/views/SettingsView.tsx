@@ -87,6 +87,8 @@ function AudioSettings({
     const selected = devices.find((device) => str(device.id) === str(draft.device)) ?? devices[0];
     const rates = arr(obj(selected).sampleRates).filter((value): value is number => typeof value === "number");
     const periods = arr(obj(selected).periodSizes).filter((value): value is number => typeof value === "number");
+    const maxInputs = Math.max(1, num(obj(selected).maxInputChannels, num(draft.inputChannels, 2)));
+    const guitarInput = Math.min(maxInputs, Math.max(1, num(draft.guitarInput, 2)));
 
     const set = (key: string, value: string | number | boolean) => {
         setDraft((current) => ({ ...current, [key]: value }));
@@ -137,6 +139,20 @@ function AudioSettings({
                         </select>
                     </label>
                 </div>
+                <label className="field">
+                    <span>Guitar input</span>
+                    <select value={guitarInput} onChange={(event) => set("guitarInput", Number(event.target.value))}>
+                        {Array.from({ length: maxInputs }, (_, index) => (
+                            <option key={index + 1} value={index + 1}>
+                                Input {index + 1}
+                                {index === 0 ? " · often mic / line" : index === 1 ? " · often instrument" : ""}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+                <div className="muted">
+                    Guitar is mono and copied to both headphone channels. On a Scarlett Solo the instrument jack is Input 2.
+                </div>
                 <div className="row">
                     <label className="field">
                         <span>Input gain (dB)</span>
@@ -151,7 +167,7 @@ function AudioSettings({
                     Requested buffer {formatMs(num(draft.bufferMs))} · measured {formatMs(num(meters.roundTripMs))} · {num(meters.xruns)} xruns
                 </div>
                 <div className="row">
-                    <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("audio/settings", draft))}>
+                    <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("audio/settings", { ...draft, guitarInput }))}>
                         APPLY
                     </button>
                     <button type="button" className="btn" onClick={() => refreshDevices()}>
@@ -332,7 +348,10 @@ function UiSettings({
             </div>
             <div className="panel stack">
                 <h2>ON-SCREEN KEYBOARD</h2>
-                <div className="muted">Auto shows it on the Pi touchscreen and stays out of the way on phones.</div>
+                <div className="muted">
+                    Auto uses this keyboard on the attached Pi screen and leaves phones alone.
+                    On forces it everywhere. Off uses the system popup.
+                </div>
                 <div className="row">
                     {(["auto", "on", "off"] as KeyboardMode[]).map((mode) => (
                         <button

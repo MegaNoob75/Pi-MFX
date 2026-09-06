@@ -138,6 +138,7 @@ bool Engine::start(std::string& error) {
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
     targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb), std::memory_order_relaxed);
     outputGain_.store(targetOutputGain_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
     std::string audioError;
     if (!restartAudio(audioError)) {
@@ -213,6 +214,12 @@ bool Engine::restartAudio(std::string& error) {
     settings_.audio.periodCount = actual.periodCount;
     settings_.audio.useMmap = actual.useMmap;
     settings_.audio.device = actual.device;
+    settings_.audio.inputChannels = actual.inputChannels;
+    settings_.audio.outputChannels = actual.outputChannels;
+    if (settings_.audio.inputChannelOffset >= settings_.audio.inputChannels) {
+        settings_.audio.inputChannelOffset = settings_.audio.inputChannels - 1;
+    }
+    guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
     if (const Preset* preset = activePreset()) {
         std::string chainError;
@@ -235,6 +242,7 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
     targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb), std::memory_order_relaxed);
+    guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
     const bool needsRestart = previous != settings_.audio;
     if (needsRestart) {
@@ -308,14 +316,38 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 
     const unsigned channels = chain ? chain->channels : std::min(outputChannels, 2u);
     const float inputGain = inputGain_.load(std::memory_order_relaxed);
+    unsigned guitar = guitarInputChannel_.load(std::memory_order_relaxed);
+    if (inputChannels == 0) {
+        guitar = 0;
+    } else if (guitar >= inputChannels) {
+        guitar = inputChannels - 1;
+    }
+
+    const auto copyGuitar = [&](float* destination) {
+        const float* source = inputs[guitar];
+        for (unsigned frame = 0; frame < frames; ++frame) {
+            destination[frame] = source[frame] * inputGain;
+        }
+    };
+
+    const auto feedTuner = [&]() {
+        if (!tunerEnabled_.load(std::memory_order_relaxed) || inputChannels == 0) {
+            return;
+        }
+        const float* source = inputs[guitar];
+        size_t write = tunerWrite_.load(std::memory_order_relaxed);
+        for (unsigned frame = 0; frame < frames; ++frame) {
+            tunerRing_[write] = source[frame];
+            write = (write + 1) % kTunerRingSize;
+        }
+        tunerWrite_.store(write, std::memory_order_release);
+    };
 
     if (!chain || chain->bufferA.empty()) {
+        feedTuner();
         for (unsigned channel = 0; channel < outputChannels; ++channel) {
-            const unsigned source = std::min(channel, inputChannels > 0 ? inputChannels - 1 : 0u);
             if (inputChannels > 0) {
-                for (unsigned frame = 0; frame < frames; ++frame) {
-                    outputs[channel][frame] = inputs[source][frame] * inputGain;
-                }
+                copyGuitar(outputs[channel]);
             } else {
                 std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
             }
@@ -325,26 +357,14 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 
     for (unsigned channel = 0; channel < channels; ++channel) {
         float* destination = chain->bufferA[channel].data();
-        if (channel < inputChannels) {
-            for (unsigned frame = 0; frame < frames; ++frame) {
-                destination[frame] = inputs[channel][frame] * inputGain;
-            }
-        } else if (inputChannels > 0) {
-            // A mono interface still has to feed a stereo chain.
-            std::memcpy(destination, chain->bufferA[0].data(), frames * sizeof(float));
+        if (inputChannels > 0) {
+            copyGuitar(destination);
         } else {
             std::fill(destination, destination + frames, 0.0f);
         }
     }
 
-    if (tunerEnabled_.load(std::memory_order_relaxed) && inputChannels > 0) {
-        size_t write = tunerWrite_.load(std::memory_order_relaxed);
-        for (unsigned frame = 0; frame < frames; ++frame) {
-            tunerRing_[write] = inputs[0][frame];
-            write = (write + 1) % kTunerRingSize;
-        }
-        tunerWrite_.store(write, std::memory_order_release);
-    }
+    feedTuner();
 
     if (!bypassAll_.load(std::memory_order_relaxed)) {
         std::vector<float*>* source = &chain->pointersA;

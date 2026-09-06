@@ -1,26 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Keyboard, type KeyboardSession } from "./Keyboard";
-import { shouldUseOnScreenKeyboard } from "./mode";
+import { onKeyboardModeChange, shouldUseOnScreenKeyboard } from "./mode";
 import { commitValue, editableFromTarget, inferLabel, inferLayout, type EditableElement } from "./utils";
+
+function hideSystemKeyboard(element: EditableElement): void {
+    element.setAttribute("inputmode", "none");
+    element.setAttribute("virtualkeyboardpolicy", "manual");
+    const nav = navigator as Navigator & {
+        virtualKeyboard?: { overlaysContent: boolean; hide?: () => void };
+    };
+    if (nav.virtualKeyboard) {
+        nav.virtualKeyboard.overlaysContent = true;
+        nav.virtualKeyboard.hide?.();
+    }
+}
 
 export function KeyboardProvider() {
     const [session, setSession] = useState<KeyboardSession | null>(null);
+    const sessionRef = useRef<KeyboardSession | null>(null);
     const nextId = useRef(0);
-    const savedMode = useRef(new WeakMap<EditableElement, string | null>());
-
-    const suppressOsKeyboard = useCallback((element: EditableElement) => {
-        if (savedMode.current.has(element)) {
-            return;
-        }
-        savedMode.current.set(element, element.getAttribute("inputmode"));
-        element.setAttribute("inputmode", "none");
-    }, []);
+    sessionRef.current = session;
 
     const open = useCallback((element: EditableElement) => {
         if (!shouldUseOnScreenKeyboard()) {
             return;
         }
-        suppressOsKeyboard(element);
+        if (sessionRef.current?.target === element) {
+            return;
+        }
+        hideSystemKeyboard(element);
         let start = element.value.length;
         let end = start;
         try {
@@ -29,7 +37,7 @@ export function KeyboardProvider() {
         } catch {
             // number inputs hide selection
         }
-        setSession({
+        const next: KeyboardSession = {
             id: ++nextId.current,
             target: element,
             label: inferLabel(element),
@@ -37,46 +45,59 @@ export function KeyboardProvider() {
             value: element.value,
             selectionStart: start,
             selectionEnd: end
-        });
-    }, [suppressOsKeyboard]);
+        };
+        sessionRef.current = next;
+        setSession(next);
+        // Drop focus so Wayland/Chromium do not open Squeekboard on the field.
+        if (document.activeElement === element) {
+            element.blur();
+        }
+    }, []);
 
     const close = useCallback((current: KeyboardSession) => {
-        const previous = savedMode.current.get(current.target);
-        if (previous === undefined) {
-            // already restored
-        } else if (previous === null) {
-            current.target.removeAttribute("inputmode");
-        } else {
-            current.target.setAttribute("inputmode", previous);
+        if (document.activeElement === current.target) {
+            current.target.blur();
         }
-        savedMode.current.delete(current.target);
-        current.target.blur();
+        sessionRef.current = null;
         setSession(null);
     }, []);
 
     useEffect(() => {
-        const pointerDown = (event: PointerEvent) => {
+        const intercept = (event: Event) => {
             if (!shouldUseOnScreenKeyboard()) {
                 return;
             }
             const element = editableFromTarget(event.target);
-            if (element) {
-                suppressOsKeyboard(element);
+            if (!element) {
+                return;
             }
+            event.preventDefault();
+            open(element);
         };
         const focusIn = (event: FocusEvent) => {
-            const element = editableFromTarget(event.target);
-            if (element) {
-                open(element);
+            if (!shouldUseOnScreenKeyboard()) {
+                return;
             }
+            const element = editableFromTarget(event.target);
+            if (!element) {
+                return;
+            }
+            open(element);
         };
-        document.addEventListener("pointerdown", pointerDown, true);
+        document.addEventListener("pointerdown", intercept, true);
         document.addEventListener("focusin", focusIn, true);
+        const stopWatchingMode = onKeyboardModeChange(() => {
+            if (!shouldUseOnScreenKeyboard()) {
+                sessionRef.current = null;
+                setSession(null);
+            }
+        });
         return () => {
-            document.removeEventListener("pointerdown", pointerDown, true);
+            document.removeEventListener("pointerdown", intercept, true);
             document.removeEventListener("focusin", focusIn, true);
+            stopWatchingMode();
         };
-    }, [open, suppressOsKeyboard]);
+    }, [open]);
 
     if (!session) {
         return null;

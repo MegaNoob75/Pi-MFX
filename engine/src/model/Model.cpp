@@ -325,6 +325,7 @@ Json audioSettingsToJson(const AudioSettings& settings) {
     json.set("periodCount", static_cast<int>(settings.periodCount));
     json.set("inputChannels", static_cast<int>(settings.inputChannels));
     json.set("outputChannels", static_cast<int>(settings.outputChannels));
+    json.set("guitarInput", static_cast<int>(settings.inputChannelOffset + 1));
     json.set("inputChannelOffset", static_cast<int>(settings.inputChannelOffset));
     json.set("outputChannelOffset", static_cast<int>(settings.outputChannelOffset));
     json.set("useMmap", settings.useMmap);
@@ -345,7 +346,14 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     if (json.has("periodCount")) settings.periodCount = static_cast<unsigned>(json["periodCount"].asInt(static_cast<int>(fallback.periodCount)));
     if (json.has("inputChannels")) settings.inputChannels = static_cast<unsigned>(json["inputChannels"].asInt(static_cast<int>(fallback.inputChannels)));
     if (json.has("outputChannels")) settings.outputChannels = static_cast<unsigned>(json["outputChannels"].asInt(static_cast<int>(fallback.outputChannels)));
-    if (json.has("inputChannelOffset")) settings.inputChannelOffset = static_cast<unsigned>(json["inputChannelOffset"].asInt(0));
+    if (json.has("guitarInput")) {
+        const int oneBased = json["guitarInput"].asInt(1);
+        settings.inputChannelOffset = static_cast<unsigned>(std::max(1, oneBased) - 1);
+    } else {
+        // Older files stored inputChannelOffset but the engine never applied it.
+        // Two-channel USB boxes (Scarlett Solo) put the instrument jack on input 2.
+        settings.inputChannelOffset = settings.inputChannels >= 2 ? 1u : 0u;
+    }
     if (json.has("outputChannelOffset")) settings.outputChannelOffset = static_cast<unsigned>(json["outputChannelOffset"].asInt(0));
     if (json.has("useMmap")) settings.useMmap = json["useMmap"].asBool(fallback.useMmap);
     if (json.has("startImmediately")) settings.startImmediately = json["startImmediately"].asBool(fallback.startImmediately);
@@ -360,6 +368,9 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     settings.periodCount = std::max(2u, std::min(16u, settings.periodCount));
     settings.inputChannels = std::max(1u, std::min(64u, settings.inputChannels));
     settings.outputChannels = std::max(1u, std::min(64u, settings.outputChannels));
+    if (settings.inputChannelOffset >= settings.inputChannels) {
+        settings.inputChannelOffset = settings.inputChannels - 1;
+    }
     return settings;
 }
 

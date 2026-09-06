@@ -210,6 +210,7 @@ private:
     std::atomic<float> inputGain_{1.0f};
     std::atomic<float> outputGain_{1.0f};
     std::atomic<float> targetOutputGain_{1.0f};
+    std::atomic<unsigned> guitarInputChannel_{1};
 
     MidiInput midi_;
     ControllerRuntime controller_;

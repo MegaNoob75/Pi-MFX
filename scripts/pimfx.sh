@@ -39,6 +39,7 @@ Actions:
   install          First-time setup: packages, engine, UI, service
   update           Pull, rebuild, restart
   display          Fullscreen touchscreen (Labwc + Chromium)
+  display-refresh  Re-apply Chromium flags and hide the system keyboard
   display-remove   Undo the touchscreen session
   status           Branch, service, audio cards
   remove           Stop the service and undo OS changes
@@ -153,7 +154,7 @@ ui_url() {
         found="$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/pimfx.service | head -1)"
         [[ -n "$found" ]] && port="$found"
     fi
-    printf 'http://127.0.0.1:%s' "$port"
+    printf 'http://127.0.0.1:%s/?kiosk=1' "$port"
 }
 
 resolve_display_user() {
@@ -194,8 +195,50 @@ restore_display_file() {
     fi
 }
 
+disable_system_keyboard() {
+    local user home file
+    pkill -x squeekboard >/dev/null 2>&1 || true
+    pkill -x onboard >/dev/null 2>&1 || true
+    user="$(cat "$DISPLAY_STATE_DIR/configured-user" 2>/dev/null || true)"
+    home=""
+    if [[ -n "$user" ]]; then
+        home="$(getent passwd "$user" | cut -d: -f6 || true)"
+    fi
+    for file in /etc/xdg/labwc/autostart ${home:+$home/.config/labwc/autostart}; do
+        [[ -f "$file" ]] || continue
+        sed -i -E '/squeekboard|onboard/d' "$file" || true
+    done
+}
+
+write_chromium_autostart() {
+    local url
+    url="$(ui_url)"
+    mkdir -p /etc/xdg/labwc
+    cat > /etc/xdg/labwc/autostart <<AUTOSTART
+#!/bin/bash
+exec /usr/bin/chromium \\
+    --ozone-platform=wayland \\
+    --start-maximized \\
+    --disable-features=WaylandWindowDecorations,VirtualKeyboard \\
+    --app=${url} \\
+    --password-store=basic
+AUTOSTART
+    chmod 0755 /etc/xdg/labwc/autostart
+}
+
+refresh_touchscreen_session() {
+    [[ -f "$DISPLAY_STATE_DIR/configured-user" ]] || return 0
+    log "Keeping the system keyboard off the touchscreen"
+    disable_system_keyboard
+    write_chromium_autostart
+    if dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed'; then
+        log "Removing the system on-screen keyboard so Pi-MFX can use its own"
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y squeekboard || true
+    fi
+}
+
 configure_touchscreen() {
-    local profile url
+    local profile
     resolve_display_user
     command -v raspi-config >/dev/null 2>&1 || \
         die "touchscreen setup needs Raspberry Pi OS and raspi-config"
@@ -212,7 +255,6 @@ configure_touchscreen() {
     backup_display_file "$profile" bash-profile
 
     raspi-config nonint do_boot_behaviour B2
-    url="$(ui_url)"
 
     cat > /etc/xdg/labwc/rc.xml <<'RCXML'
 <?xml version="1.0"?>
@@ -225,16 +267,13 @@ configure_touchscreen() {
 </labwc_config>
 RCXML
 
-    cat > /etc/xdg/labwc/autostart <<AUTOSTART
-#!/bin/bash
-exec /usr/bin/chromium \\
-    --ozone-platform=wayland \\
-    --start-maximized \\
-    --disable-features=WaylandWindowDecorations \\
-    --app=${url} \\
-    --password-store=basic
-AUTOSTART
-    chmod 0755 /etc/xdg/labwc/autostart
+    write_chromium_autostart
+    printf '%s\n' "$DISPLAY_USER" > "$DISPLAY_STATE_DIR/configured-user"
+    disable_system_keyboard
+    if dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed'; then
+        log "Removing the system on-screen keyboard so Pi-MFX can use its own"
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y squeekboard || true
+    fi
 
     cat > "$profile" <<'PROFILE'
 # Pi-MFX fullscreen session on the attached screen.
@@ -246,9 +285,8 @@ if [ -z "${DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then
 fi
 PROFILE
     chown "$DISPLAY_USER:$DISPLAY_GROUP" "$profile"
-    printf '%s\n' "$DISPLAY_USER" > "$DISPLAY_STATE_DIR/configured-user"
 
-    log "Touchscreen will open $url after reboot (console auto-login as $DISPLAY_USER)"
+    log "Touchscreen will open $(ui_url) after reboot (console auto-login as $DISPLAY_USER)"
     mark_reboot "console auto-login and the Labwc session were configured"
 }
 
@@ -371,6 +409,7 @@ main() {
         install) do_install ;;
         update) do_update ;;
         display) configure_touchscreen ;;
+        display-refresh) refresh_touchscreen_session ;;
         display-remove) remove_touchscreen ;;
         remove) do_remove ;;
     esac

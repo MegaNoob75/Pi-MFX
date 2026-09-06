@@ -85,4 +85,8 @@ else
 fi
 
 ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
+    log "Refreshing the touchscreen session (Pi-MFX keyboard, no system popup)"
+    bash "$REPO_DIR/scripts/pimfx.sh" display-refresh
+fi
 log "Done. Open http://${ADDRESS:-<this-pi>}:8080"

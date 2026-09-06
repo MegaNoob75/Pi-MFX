@@ -28,9 +28,10 @@ struct AudioSettings {
     unsigned inputChannels = 2;
     unsigned outputChannels = 2;
 
-    /// Which hardware channel carries the guitar, and which pair the amp or
-    /// headphones. Interfaces rarely agree on this.
-    unsigned inputChannelOffset = 0;
+    /// Guitar is mono. This is the capture channel that feeds the chain and
+    /// both headphone/amp outputs. Two-channel USB boxes (Scarlett Solo)
+    /// usually put the instrument jack on input 2, which is offset 1.
+    unsigned inputChannelOffset = 1;
     unsigned outputChannelOffset = 0;
 
     /// mmap access avoids a copy per period. Falls back automatically on
@@ -63,8 +64,6 @@ struct AudioSettings {
             && periodCount == other.periodCount
             && inputChannels == other.inputChannels
             && outputChannels == other.outputChannels
-            && inputChannelOffset == other.inputChannelOffset
-            && outputChannelOffset == other.outputChannelOffset
             && useMmap == other.useMmap
             && startImmediately == other.startImmediately;
     }
