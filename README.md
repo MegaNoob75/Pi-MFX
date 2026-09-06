@@ -77,20 +77,17 @@ instructions, including audio HAT overlays and kiosk mode, are in
 
 ## Development
 
-The engine builds on Linux against ALSA and lilv. On Windows or macOS it builds
-with a mock audio backend so the control protocol and UI can be developed off
-the Pi.
+Work on the **`dev`** branch. Edit on the PC, push, then rebuild on the Pi.
 
-```bash
-# engine
-cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
-cmake --build engine/build
+Daily loop (full detail in [docs/DEV_FLOW.md](docs/DEV_FLOW.md)):
 
-# ui
-cd ui
-npm install
-npm run dev
+```text
+PC:   edit → GitHub Desktop commit/push on dev
+Pi:   cd ~/Pi-MFX && sudo ./scripts/update.sh
+Web:  http://<pi-address>:8080
 ```
+
+First time on a new Pi: [docs/INSTALL.md](docs/INSTALL.md) or the one-time section in DEV_FLOW.
 
 ## Roadmap
 

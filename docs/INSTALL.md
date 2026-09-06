@@ -123,14 +123,19 @@ Lite and control Pi-MFX from a tablet.
 
 ## Updating
 
+After the first install, use the short update script (pull, rebuild, restart).
+It does not redo apt or OS tuning.
+
 ```bash
-cd Pi-MFX
-git pull
-sudo ./scripts/install.sh
+cd ~/Pi-MFX
+sudo ./scripts/update.sh
 ```
 
+Day-to-day PC + Pi steps are in [DEV_FLOW.md](DEV_FLOW.md).
+
 Your banks, settings, models, and IRs live in `/var/lib/pimfx` and are not
-touched by a reinstall.
+touched by an update or a reinstall. Run `sudo ./scripts/install.sh` again only
+if you need new system packages or want to re-apply tuning.
 
 ## Removing
 
