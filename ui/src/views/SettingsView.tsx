@@ -307,6 +307,10 @@ function ControllerSettings({
         <div className="stack">
             <div className="panel stack">
                 <h2>FLOORBOARD</h2>
+                <div className="muted">
+                    Flash the Pi-MFX sketch in firmware/esp32s3/PiMFX_Controller — not the MultiFX .ino.
+                    Stock wiring uses switches CC 20–27 and pots CC 10–13. Learn still captures any CC.
+                </div>
                 {str(state.controllerError) && <div className="danger">{str(state.controllerError)}</div>}
                 <label className="field">
                     <span>Name</span>

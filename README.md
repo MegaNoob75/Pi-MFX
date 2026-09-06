@@ -29,7 +29,7 @@ plan; see [Roadmap](#roadmap).
 | Raspberry Pi 5 | Dedicated to Pi-MFX. Headless Raspberry Pi OS 64-bit. |
 | Audio interface | USB class-compliant **or** an I2S HAT (HiFiBerry, Audio Injector, IQaudIO, ...). Needs a real instrument input. |
 | Display | Optional touchscreen for kiosk mode. Any browser works instead. |
-| Foot controller | Optional. ESP32-S3 DevKit + your switches/pots/LEDs. See [docs/DIY_CONTROLLER.md](docs/DIY_CONTROLLER.md). |
+| Foot controller | Optional. ESP32-S3 DevKit + your switches/pots/LEDs. Firmware is [`firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino`](firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino). See [docs/DIY_CONTROLLER.md](docs/DIY_CONTROLLER.md). |
 
 Pi 5 has no analog audio output and HDMI is not a guitar path, so an interface
 or HAT is required.
@@ -69,7 +69,7 @@ instructions, including audio HAT overlays and kiosk mode, are in
 | --- | --- |
 | `engine/` | C++17 audio engine: ALSA backend, LV2 host, control server |
 | `ui/` | Vite + React browser UI |
-| `firmware/` | ESP32-S3 USB-MIDI controller firmware (PlatformIO) |
+| `firmware/` | ESP32-S3 USB-MIDI controller firmware (Arduino / PlatformIO) |
 | `scripts/` | `pimfx.sh` menu, install / update / uninstall, OS hardening |
 | `systemd/` | `pimfx.service` |
 | `docs/` | Install, low latency, DIY controller, protocol, licenses |
