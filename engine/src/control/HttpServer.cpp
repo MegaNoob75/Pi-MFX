@@ -1,6 +1,7 @@
 #include "control/HttpServer.h"
 
 #include "core/Crypto.h"
+#include "core/Json.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 
