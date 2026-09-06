@@ -20,6 +20,14 @@ cd "$REPO_DIR"
 if [[ -d .git ]]; then
     PULL_USER="${SUDO_USER:-}"
     log "Pulling $(git rev-parse --abbrev-ref HEAD)"
+
+    # A failed UI build can leave npm's lockfile untracked. Once that file is
+    # in the repo, git pull refuses to overwrite it.
+    if [[ -e ui/package-lock.json ]] && ! git ls-files --error-unmatch ui/package-lock.json >/dev/null 2>&1; then
+        log "  Removing leftover untracked ui/package-lock.json"
+        rm -f ui/package-lock.json
+    fi
+
     if [[ -n "$PULL_USER" && "$PULL_USER" != "root" ]]; then
         sudo -u "$PULL_USER" git pull --ff-only
     else
