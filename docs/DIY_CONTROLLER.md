@@ -33,10 +33,16 @@ If the serial port does not appear: hold **BOOT**, tap **RST**, release **BOOT**
 
 ## Flash with Arduino IDE
 
+The sketch will not compile until both Adafruit libraries are installed.
+PlatformIO pulls them automatically; Arduino IDE does not.
+
 1. Open `firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino`.
 2. Board: **ESP32S3 Dev Module**.
 3. USB Mode: **USB-OTG (TinyUSB)**. USB CDC on Boot: **Disabled**.
-4. Upload.
+4. Sketch → Include Library → Manage Libraries, then install:
+   - **Adafruit TinyUSB Library** (by Adafruit)
+   - **Adafruit NeoPixel** (by Adafruit)
+5. Upload.
 
 Windows and the Pi should show a MIDI device named **Pi-MFX Controller**.
 

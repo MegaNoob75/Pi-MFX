@@ -4,6 +4,11 @@
  * Speaks the protocol in docs/CONTROLLER_PROTOCOL.md:
  *   identity request 0x01 / reply 0x10, set-LED 0x02, CC for switches and pots.
  * Flash this sketch, not the earlier MultiFX controller firmware.
+ *
+ * Arduino IDE needs these libraries installed (PlatformIO already lists them):
+ *   Adafruit TinyUSB Library
+ *   Adafruit NeoPixel
+ * Tools → USB Mode must be USB-OTG (TinyUSB).
  */
 
 #include "Adafruit_TinyUSB.h"
