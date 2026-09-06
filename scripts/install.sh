@@ -58,6 +58,10 @@ done
 
 [[ $EUID -eq 0 ]] || die "run this with sudo"
 
+# shellcheck source=clone-owner.inc.sh
+. "$REPO_DIR/scripts/clone-owner.inc.sh"
+clone_owner
+
 # ---------------------------------------------------------------------------
 # 1. Sanity checks
 # ---------------------------------------------------------------------------
@@ -119,15 +123,12 @@ fi
 # ---------------------------------------------------------------------------
 
 log "Building the engine"
-cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
-cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
+ensure_clone_writable
+as_clone_owner cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+as_clone_owner cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
 
 log "Building the user interface"
-(
-    cd "$REPO_DIR/ui"
-    npm ci --silent 2>/dev/null || npm install --silent
-    npm run build --silent
-)
+as_clone_owner bash -c 'cd "$1" && (npm ci --silent 2>/dev/null || npm install --silent) && npm run build --silent' bash "$REPO_DIR/ui"
 
 # ---------------------------------------------------------------------------
 # 4. Service account and files

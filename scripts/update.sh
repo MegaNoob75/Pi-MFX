@@ -16,9 +16,14 @@ die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "run this with sudo:  sudo ./scripts/update.sh"
 
 cd "$REPO_DIR"
+# shellcheck source=clone-owner.inc.sh
+. "$REPO_DIR/scripts/clone-owner.inc.sh"
+ensure_clone_writable
 
-if [[ -d .git ]]; then
-    PULL_USER="${SUDO_USER:-}"
+if [[ "${SKIP_PULL:-0}" == "1" ]]; then
+    log "Skipping git pull (using the files already in this folder)"
+elif [[ -d .git ]]; then
+    clone_owner
     log "Pulling $(git rev-parse --abbrev-ref HEAD)"
 
     # A failed UI build can leave npm's lockfile untracked. Once that file is
@@ -28,11 +33,7 @@ if [[ -d .git ]]; then
         rm -f ui/package-lock.json
     fi
 
-    if [[ -n "$PULL_USER" && "$PULL_USER" != "root" ]]; then
-        sudo -u "$PULL_USER" git pull --ff-only
-    else
-        git pull --ff-only
-    fi
+    as_clone_owner git pull --ff-only
 else
     die "this folder is not a git clone; clone the repo first (see docs/DEV_FLOW.md)"
 fi
@@ -42,16 +43,12 @@ if ! command -v cmake >/dev/null 2>&1; then
 fi
 
 log "Building the engine"
-cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
-cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
+as_clone_owner cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+as_clone_owner cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
 
 if [[ -f "$REPO_DIR/ui/package.json" ]]; then
     log "Building the user interface"
-    (
-        cd "$REPO_DIR/ui"
-        npm ci --silent 2>/dev/null || npm install --silent
-        npm run build --silent
-    )
+    as_clone_owner bash -c 'cd "$1" && (npm ci --silent 2>/dev/null || npm install --silent) && npm run build --silent' bash "$REPO_DIR/ui"
 fi
 
 log "Installing files"

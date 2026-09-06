@@ -59,7 +59,7 @@ sudo bash ./scripts/pimfx.sh install --with-plugins
 sudo bash ./scripts/pimfx.sh install --no-tuning
 sudo bash ./scripts/pimfx.sh install --port 8000
 sudo bash ./scripts/pimfx.sh update
-sudo bash ./scripts/pimfx.sh display --display-user ross
+sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
 ```
 
 Pi-MFX ships no effects. `--with-plugins` installs packages from the Raspberry

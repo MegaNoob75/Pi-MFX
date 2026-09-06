@@ -6,7 +6,7 @@
 #
 #   sudo bash ./scripts/pimfx.sh
 #   sudo bash ./scripts/pimfx.sh update
-#   sudo bash ./scripts/pimfx.sh display --display-user ross
+#   sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
 
 set -euo pipefail
 
@@ -38,6 +38,7 @@ Actions:
   menu             Interactive menu (default)
   install          First-time setup: packages, engine, UI, service
   update           Pull, rebuild, restart
+  rebuild          Rebuild from files already on the Pi (no git pull)
   display          Fullscreen touchscreen (Labwc + Chromium)
   display-refresh  Re-apply Chromium flags and hide the system keyboard
   display-remove   Undo the touchscreen session
@@ -327,6 +328,10 @@ do_update() {
     run_script update.sh
 }
 
+do_rebuild() {
+    SKIP_PULL=1 run_script update.sh
+}
+
 do_status() {
     run_script status.sh
     if [[ -f "$DISPLAY_STATE_DIR/configured-user" ]]; then
@@ -366,30 +371,32 @@ show_menu() {
   1) Complete setup  (install + plugins + touchscreen)
   2) Install / first-time setup
   3) Update  (pull, rebuild, restart)
-  4) Set up touchscreen display
-  5) Remove touchscreen display
-  6) Status
-  7) Remove Pi-MFX
-  8) Exit
+  4) Rebuild local files  (after MobaXterm copy, no git pull)
+  5) Set up touchscreen display
+  6) Remove touchscreen display
+  7) Status
+  8) Remove Pi-MFX
+  9) Exit
 MENU
         echo
-        read -r -p "Choose [1-8]: " choice
+        read -r -p "Choose [1-9]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
             3) do_update || warn "update did not finish" ;;
-            4) configure_touchscreen || warn "touchscreen setup did not finish" ;;
-            5) remove_touchscreen || warn "touchscreen remove did not finish" ;;
-            6) do_status || warn "status failed" ;;
-            7)
+            4) do_rebuild || warn "rebuild did not finish" ;;
+            5) configure_touchscreen || warn "touchscreen setup did not finish" ;;
+            6) remove_touchscreen || warn "touchscreen remove did not finish" ;;
+            7) do_status || warn "status failed" ;;
+            8)
                 PURGE="no"
                 if confirm "Also delete /var/lib/pimfx (banks, models, IRs)?"; then
                     PURGE="yes"
                 fi
                 do_remove confirmed || warn "remove did not finish"
                 ;;
-            8|q|Q) return 0 ;;
-            *) warn "pick a number from 1 to 8"; pause_for_menu; continue ;;
+            9|q|Q) return 0 ;;
+            *) warn "pick a number from 1 to 9"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -408,6 +415,7 @@ main() {
         menu) show_menu ;;
         install) do_install ;;
         update) do_update ;;
+        rebuild) do_rebuild ;;
         display) configure_touchscreen ;;
         display-refresh) refresh_touchscreen_session ;;
         display-remove) remove_touchscreen ;;
