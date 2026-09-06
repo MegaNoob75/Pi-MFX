@@ -1,18 +1,9 @@
 import { useEffect, useState } from "react";
-import { findBank, findPreset, formatMs, type EngineSnapshot } from "../api";
+import { findPreset, formatMs, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
-import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "../keyboard/mode";
-import {
-    loadKeyboardAppearance,
-    saveKeyboardAppearance,
-    type KeyboardAppearance,
-    type KeyboardKeyShape,
-    type KeyboardPlacement,
-    type KeyboardSize,
-    type KeyboardTextSize
-} from "../keyboard/settings";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { Tone3000View } from "./Tone3000View";
+import { KeyboardSettingsView } from "./KeyboardSettingsView";
 
 export type SettingsPage =
     | "audio"
@@ -30,11 +21,11 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
         <div className="page-scroll">
             <div className="grid-cards">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen("audio")} />
-                <HubCard title="CONTROLLER" subtitle="Hardware inputs, MIDI learn and switch actions" onClick={() => onOpen("controller")} />
+                <HubCard title="CONTROLLER" subtitle="Hardware setup, Performance layout and diagnostics" onClick={() => onOpen("controller")} />
                 <HubCard title="LAYOUT" subtitle="Grid or freeform Performance board" onClick={() => onOpen("layout")} />
                 <HubCard title="THEME" subtitle="Built-in looks, custom colours, lights and export" onClick={() => onOpen("theme")} />
-                <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode" onClick={() => onOpen("keyboard")} />
-                <HubCard title="UI" subtitle="Tuner, meters, scale and virtual switches" onClick={() => onOpen("ui")} />
+                <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode, themes and overlay" onClick={() => onOpen("keyboard")} />
+                <HubCard title="UI" subtitle="Tuner, meters, scale and control pop-out" onClick={() => onOpen("ui")} />
                 <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
                 <HubCard title="BACKUP" subtitle="Download and restore themes, layout and settings" onClick={() => onOpen("backup")} />
                 <HubCard title="SYSTEM" subtitle="Realtime threads, diagnostics and rescan" onClick={() => onOpen("system")} />
@@ -55,20 +46,25 @@ function HubCard({ title, subtitle, onClick }: { title: string; subtitle: string
 export function SettingsPage({
     page,
     engine,
-    run
+    run,
+    onOpen
 }: {
     page: SettingsPage;
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    onOpen?: (page: SettingsPage) => void;
 }) {
     if (page === "audio") {
         return <AudioSettings engine={engine} run={run} />;
     }
     if (page === "controller") {
-        return <ControllerSettings engine={engine} run={run} />;
+        return <ControllerHub engine={engine} run={run} onOpenLayout={() => onOpen?.("layout")} />;
     }
-    if (page === "ui" || page === "keyboard") {
-        return <UiSettings engine={engine} run={run} keyboardOnly={page === "keyboard"} />;
+    if (page === "keyboard") {
+        return <KeyboardSettingsView />;
+    }
+    if (page === "ui") {
+        return <UiSettings engine={engine} run={run} />;
     }
     if (page === "library") {
         return <LibrarySettings engine={engine} run={run} />;
@@ -207,6 +203,84 @@ function AudioSettings({
     );
 }
 
+function ControllerHub({
+    engine,
+    run,
+    onOpenLayout
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    onOpenLayout?: () => void;
+}) {
+    const [page, setPage] = useState<"hub" | "hardware" | "diagnostics">("hub");
+    const controller = obj(engine.state.controller);
+    const connected = bool(controller.connected);
+    if (page === "hardware") {
+        return (
+            <div className="page-scroll stack">
+                <div className="row">
+                    <button type="button" className="btn" onClick={() => setPage("hub")}>← CONTROLLER</button>
+                </div>
+                <ControllerSettings engine={engine} run={run} />
+            </div>
+        );
+    }
+    if (page === "diagnostics") {
+        return (
+            <div className="page-scroll stack">
+                <div className="row">
+                    <button type="button" className="btn" onClick={() => setPage("hub")}>← CONTROLLER</button>
+                </div>
+                <div className="panel stack">
+                    <h2>DIAGNOSTICS</h2>
+                    <div className="list-item"><span>Connection</span><strong>{connected ? "CONNECTED" : "OFFLINE"}</strong></div>
+                    <div className="list-item"><span>Name</span><strong>{str(controller.name, "—")}</strong></div>
+                    <div className="list-item"><span>MIDI port</span><strong>{str(controller.activePort) || str(controller.midiPort) || "—"}</strong></div>
+                    <div className="list-item"><span>Switches & pots</span><strong>{objects(controller.controls).length}</strong></div>
+                    <div className="list-item"><span>LEDs</span><strong>{objects(controller.leds).length}</strong></div>
+                    <div className="list-item"><span>Layout</span><strong>{str(controller.layoutMode, "grid").toUpperCase()}</strong></div>
+                    {str(engine.state.controllerError) && <div className="danger">{str(engine.state.controllerError)}</div>}
+                </div>
+            </div>
+        );
+    }
+    return (
+        <div className="page-scroll stack">
+            <div className="panel">
+                <h2>CONTROLLER</h2>
+                <div className="muted">Configure hardware, arrange Performance View, and inspect controller status.</div>
+                <div className="row" style={{ marginTop: 8 }}>
+                    <strong style={{ color: connected ? "var(--mfx-cyan)" : "var(--mfx-muted)" }}>
+                        {connected ? "CONNECTED" : "OFFLINE"}
+                    </strong>
+                    <span className="muted">{str(controller.name, "NO CONTROLLER")}</span>
+                </div>
+            </div>
+            <div className="grid-cards">
+                <HubCard
+                    title="HARDWARE SETUP"
+                    subtitle={`Add switches, pots and encoders; assign MIDI Learn and actions. ${objects(controller.controls).length} controls · ${objects(controller.leds).length} LEDs`}
+                    onClick={() => setPage("hardware")}
+                />
+                <HubCard
+                    title="PERFORMANCE LAYOUT"
+                    subtitle={`${str(controller.layoutMode, "grid").toUpperCase()} · arrange switches, pots and status panels on the touchscreen`}
+                    onClick={() => onOpenLayout?.()}
+                />
+                <HubCard
+                    title="DIAGNOSTICS"
+                    subtitle={`${connected ? "Connected" : "Offline"} · check MIDI, protocol and reported inputs`}
+                    onClick={() => setPage("diagnostics")}
+                />
+            </div>
+            <div className="muted" style={{ padding: 16 }}>
+                Hardware defines what is connected. Layout only changes where it appears.
+                Assign presets by holding a Performance switch, the same way as MultiFX.
+            </div>
+        </div>
+    );
+}
+
 function ControllerSettings({
     engine,
     run
@@ -230,7 +304,7 @@ function ControllerSettings({
     };
 
     return (
-        <div className="page-scroll stack">
+        <div className="stack">
             <div className="panel stack">
                 <h2>FLOORBOARD</h2>
                 {str(state.controllerError) && <div className="danger">{str(state.controllerError)}</div>}
@@ -261,18 +335,6 @@ function ControllerSettings({
                         ))}
                     </select>
                 </label>
-                <div className="row">
-                    <label className="field">
-                        <span>Grid rows</span>
-                        <input type="number" min={1} max={8} value={num(controller.gridRows, 2)}
-                            onChange={(event) => save({ ...controller, gridRows: Number(event.target.value) })} />
-                    </label>
-                    <label className="field">
-                        <span>Grid columns</span>
-                        <input type="number" min={1} max={12} value={num(controller.gridColumns, 4)}
-                            onChange={(event) => save({ ...controller, gridColumns: Number(event.target.value) })} />
-                    </label>
-                </div>
                 <div className="row">
                     <button type="button" className={`btn ${bool(controller.enabled) ? "btn-active" : ""}`}
                         onClick={() => save({ ...controller, enabled: !bool(controller.enabled) })}>
@@ -369,8 +431,6 @@ function ControllerSettings({
                     }}>ADD LED</button>
                 </div>
                 {controls.map((control, index) => {
-                    const bank = findBank(state);
-                    const presets = objects(obj(bank).presets);
                     const chain = objects(state.chain);
                     const binding = obj(control.binding);
                     const patch = (nextControl: JsonObject) => {
@@ -413,15 +473,7 @@ function ControllerSettings({
                             ))}
                         </select>
                         {str(binding.action) === "selectPreset" && (
-                            <select
-                                value={str(binding.presetId)}
-                                onChange={(event) => patchBinding({ ...binding, presetId: event.target.value, bankId: str(obj(bank).id) })}
-                            >
-                                <option value="">Assign preset</option>
-                                {presets.map((preset) => (
-                                    <option key={str(preset.id)} value={str(preset.id)}>{str(preset.name)}</option>
-                                ))}
-                            </select>
+                            <div className="muted">Hold this switch on Performance to assign a preset.</div>
                         )}
                         {str(binding.action) === "selectSnapshot" && (
                             <select
@@ -496,87 +548,23 @@ function ControllerSettings({
                     );
                 })}
             </div>
-
-            <BankAssignmentPanel state={state} controller={controller} save={save} />
-        </div>
-    );
-}
-
-function BankAssignmentPanel({
-    state,
-    controller,
-    save
-}: {
-    state: JsonObject;
-    controller: JsonObject;
-    save: (next: JsonObject) => void;
-}) {
-    const bank = findBank(state);
-    const presets = objects(obj(bank).presets);
-    const controls = objects(controller.controls).filter((control) => str(obj(control.binding).action, "selectPreset") === "selectPreset"
-        || str(control.kind, "switch") === "switch");
-    const bankId = str(obj(bank).id);
-    const assignments = obj(obj(controller.presetAssignments)[bankId]);
-    if (!bankId || controls.length === 0) {
-        return null;
-    }
-    return (
-        <div className="panel stack">
-            <h2>PRESET ASSIGNMENTS · {str(obj(bank).name)}</h2>
-            <div className="muted">
-                Per-bank switch to preset map. Performance uses this instead of the
-                control’s default preset when a value is set here.
-            </div>
-            {controls.map((control) => (
-                <label key={str(control.id)} className="field">
-                    <span>{str(control.label, str(control.id))}</span>
-                    <select
-                        value={str(assignments[str(control.id)])}
-                        onChange={(event) => {
-                            save({
-                                ...controller,
-                                presetAssignments: {
-                                    ...obj(controller.presetAssignments),
-                                    [bankId]: {
-                                        ...assignments,
-                                        [str(control.id)]: event.target.value
-                                    }
-                                }
-                            });
-                        }}
-                    >
-                        <option value="">Default binding</option>
-                        {presets.map((preset) => (
-                            <option key={str(preset.id)} value={str(preset.id)}>{str(preset.name)}</option>
-                        ))}
-                    </select>
-                </label>
-            ))}
         </div>
     );
 }
 
 function UiSettings({
     engine,
-    run,
-    keyboardOnly = false
+    run
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
-    keyboardOnly?: boolean;
 }) {
     const ui = obj(engine.state.ui);
-    const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(loadKeyboardMode);
     const save = (next: JsonObject) => {
         void run(() => engine.client.request("ui/settings", next));
     };
-    const setMode = (mode: KeyboardMode) => {
-        saveKeyboardMode(mode);
-        setKeyboardMode(mode);
-    };
     return (
         <div className="page-scroll stack">
-            {!keyboardOnly && (
             <div className="panel stack">
                 <h2>ON-SCREEN SURFACE</h2>
                 <label className="field">
@@ -598,28 +586,6 @@ function UiSettings({
                         onClick={() => save({ ...ui, confirmPresetOverwrite: !bool(ui.confirmPresetOverwrite, true) })}>CONFIRM SAVE</button>
                 </div>
                 <UiBehaviorEditor />
-            </div>
-            )}
-            <div className="panel stack">
-                <h2>ON-SCREEN KEYBOARD</h2>
-                <div className="muted">
-                    On (the default) uses the Pi-MFX keyboard on every screen, including a
-                    tablet used as a controller. Auto does the same on the Pi kiosk and on
-                    tablets; phones keep their own keyboard. Off uses the system popup.
-                </div>
-                <div className="row">
-                    {(["auto", "on", "off"] as KeyboardMode[]).map((mode) => (
-                        <button
-                            key={mode}
-                            type="button"
-                            className={`btn ${keyboardMode === mode ? "btn-active" : ""}`}
-                            onClick={() => setMode(mode)}
-                        >
-                            {mode.toUpperCase()}
-                        </button>
-                    ))}
-                </div>
-                <KeyboardAppearanceEditor />
             </div>
         </div>
     );
@@ -764,50 +730,6 @@ function readBase64(file: File): Promise<string> {
         };
         reader.readAsDataURL(file);
     });
-}
-
-function KeyboardAppearanceEditor() {
-    const [settings, setSettings] = useState(loadKeyboardAppearance);
-    const apply = (next: KeyboardAppearance) => {
-        saveKeyboardAppearance(next);
-        setSettings(next);
-    };
-    return (
-        <>
-            <div className="row">
-                {(["full", "large", "compact"] as KeyboardSize[]).map((size) => (
-                    <button key={size} type="button" className={`btn ${settings.size === size ? "btn-active" : ""}`}
-                        onClick={() => apply({ ...settings, size })}>{size.toUpperCase()}</button>
-                ))}
-            </div>
-            <div className="row">
-                {(["top", "center", "bottom"] as KeyboardPlacement[]).map((placement) => (
-                    <button key={placement} type="button" className={`btn ${settings.placement === placement ? "btn-active" : ""}`}
-                        onClick={() => apply({ ...settings, placement })}>{placement.toUpperCase()}</button>
-                ))}
-            </div>
-            <div className="row">
-                {(["rounded", "square"] as KeyboardKeyShape[]).map((keyShape) => (
-                    <button key={keyShape} type="button" className={`btn ${settings.keyShape === keyShape ? "btn-active" : ""}`}
-                        onClick={() => apply({ ...settings, keyShape })}>{keyShape.toUpperCase()}</button>
-                ))}
-                {(["normal", "large", "extra-large"] as KeyboardTextSize[]).map((textSize) => (
-                    <button key={textSize} type="button" className={`btn ${settings.textSize === textSize ? "btn-active" : ""}`}
-                        onClick={() => apply({ ...settings, textSize })}>{textSize.toUpperCase()}</button>
-                ))}
-            </div>
-            <div className="row">
-                <button type="button" className={`btn ${settings.transparentBackground ? "btn-active" : ""}`}
-                    onClick={() => apply({ ...settings, transparentBackground: !settings.transparentBackground })}>
-                    TRANSPARENT
-                </button>
-                <button type="button" className={`btn ${settings.hapticFeedback ? "btn-active" : ""}`}
-                    onClick={() => apply({ ...settings, hapticFeedback: !settings.hapticFeedback })}>
-                    HAPTIC
-                </button>
-            </div>
-        </>
-    );
 }
 
 function UiBehaviorEditor() {

@@ -1,6 +1,8 @@
 import type { CSSProperties } from "react";
+import { useState } from "react";
+import { createPortal } from "react-dom";
 import { findBank, findPreset, formatMs, isAnalogKind, peakDb, type EngineSnapshot } from "../api";
-import { bool, num, obj, str, objects } from "../json";
+import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
 import {
@@ -14,14 +16,47 @@ import {
 } from "../layout";
 import { analogFeedback, PerformanceControl, type PerformanceTile } from "./PerformanceControl";
 
+type PresetMenu = {
+    kind: "preset";
+    controlId: string;
+    slotIndex: number;
+    presetId: string;
+    canAssign: boolean;
+};
+
+type AssignMenu = {
+    kind: "assign";
+    controlId: string;
+    slotIndex: number;
+};
+
+type DeleteMenu = {
+    kind: "delete";
+    controlId: string;
+    presetId: string;
+    name: string;
+};
+
+type SnapshotMenu = {
+    kind: "snapshot";
+    snapshotId: string;
+    index: number;
+};
+
+type TileMenu = PresetMenu | AssignMenu | DeleteMenu | SnapshotMenu;
+
 export function PerformanceView({
     engine,
     run,
-    onSnapshots
+    onSnapshots,
+    onEdit,
+    onEditSnapshot
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     onSnapshots?: () => void;
+    onEdit?: () => void;
+    onEditSnapshot?: (snapshotId: string) => void;
 }) {
     const { client, state, meters } = engine;
     const bank = findBank(state);
@@ -45,18 +80,46 @@ export function PerformanceView({
     const layoutMode = str(controller.layoutMode, "grid");
     const mirror = bool(controller.mirrorLayoutOnScreen, true);
     const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
+    const activeSnapshot = num(obj(preset).activeSnapshot, -1);
+    const snapshotWriteBlocked = snapshotMode || activeSnapshot >= 0;
 
     const positions = obj(state.controlPositions);
     const chain = objects(state.chain);
     const feedbackOn = loadUiBehavior().parameterFeedback;
+    const [menu, setMenu] = useState<TileMenu | null>(null);
+    const [renameValue, setRenameValue] = useState("");
 
     const assigned = (controlId: string) => {
         const bankMap = obj(obj(controller.presetAssignments)[str(bank?.id)]);
         return str(bankMap[controlId]);
     };
 
+    const bankMap = () => ({ ...obj(obj(controller.presetAssignments)[str(obj(bank).id)]) });
+
+    const saveAssignments = (nextMap: JsonObject) => {
+        const bankId = str(obj(bank).id);
+        if (!bankId) {
+            return Promise.resolve();
+        }
+        return client.request("controller/config", {
+            ...controller,
+            presetAssignments: {
+                ...obj(controller.presetAssignments),
+                [bankId]: nextMap
+            }
+        });
+    };
+
     const pressControl = (id: string, pressed: boolean) => {
         void client.request("controller/press", { controlId: id, pressed }).catch(() => undefined);
+    };
+
+    const closeMenu = () => setMenu(null);
+
+    const openPresetMenu = (controlId: string, slotIndex: number, presetId: string, canAssign: boolean) => {
+        const item = presets.find((entry) => str(entry.id) === presetId);
+        setRenameValue(str(obj(item).name));
+        setMenu({ kind: "preset", controlId, slotIndex, presetId, canAssign });
     };
 
     const visibleControls = controls.filter((control) => !hidden.has(str(control.id)));
@@ -66,34 +129,39 @@ export function PerformanceView({
         ? snapshots.map((snapshot, index) => ({
             id: str(snapshot.id),
             label: str(snapshot.name, `SNAP ${index + 1}`),
-            active: num(obj(preset).activeSnapshot, -1) === index,
+            active: activeSnapshot === index,
             color: str(snapshot.color),
             rect: gridCellRect(index, 3, 2),
-            onPress: () => void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
+            onPress: () => void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) })),
+            onLongPress: () => setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index })
         }))
         : useConfigured
             ? visibleControls.map((control, index) => {
                 const binding = obj(control.binding);
-                const assignedPreset = assigned(str(control.id));
-                const presetId = assignedPreset || str(binding.presetId);
+                const controlId = str(control.id);
+                const assignedPreset = assigned(controlId);
+                const action = str(binding.action, "selectPreset");
                 const kind = str(control.kind, "switch");
                 const analog = isAnalogKind(kind);
+                const canAssign = !analog && (action === "selectPreset" || action === "none" || action === "");
+                const presetId = assignedPreset || str(binding.presetId);
+                const presetItem = presets.find((entry) => str(entry.id) === presetId);
                 const minSize = analogMinSize(kind);
                 const active = presetId === str(state.activePresetId)
-                    || (str(binding.action) === "bypassAll" && bypassAll)
-                    || (str(binding.action) === "snapshotMode" && snapshotMode)
-                    || (str(binding.action) === "toggleEffect" && bool(
+                    || (action === "bypassAll" && bypassAll)
+                    || (action === "snapshotMode" && snapshotMode)
+                    || (action === "toggleEffect" && bool(
                         obj(chain.find((slot) => str(slot.id) === str(binding.slotId))).enabled,
                         true
                     ));
                 return {
-                    id: str(control.id),
-                    label: str(control.label, str(control.id)),
+                    id: controlId,
+                    label: !analog && canAssign && presetItem ? str(presetItem.name) : str(control.label, controlId),
                     active,
                     color: "",
                     kind,
                     analog,
-                    value: num(positions[str(control.id)], analog ? 0 : (active ? 1 : 0)),
+                    value: num(positions[controlId], analog ? 0 : (active ? 1 : 0)),
                     feedback: feedbackOn ? analogFeedback(control, chain) : "",
                     rect: layoutMode === "freeform"
                         ? clampRect({
@@ -104,28 +172,32 @@ export function PerformanceView({
                         })
                         : gridCellRect(index, columns, rows),
                     onPress: () => {
-                        if (presetId && str(binding.action, "selectPreset") === "selectPreset") {
+                        if (canAssign && presetId) {
                             void run(() => client.request("preset/select", {
                                 bankId: str(obj(bank).id),
                                 presetId
                             }));
                             return;
                         }
-                        pressControl(str(control.id), true);
-                        window.setTimeout(() => pressControl(str(control.id), false), 80);
+                        pressControl(controlId, true);
+                        window.setTimeout(() => pressControl(controlId, false), 80);
                     },
                     onValue: analog
                         ? (value: number) => {
                             void client.request("controller/value", {
-                                controlId: str(control.id),
+                                controlId,
                                 value
                             }).catch(() => undefined);
                         }
+                        : undefined,
+                    onLongPress: canAssign || analog
+                        ? () => openPresetMenu(controlId, index, presetId, true)
                         : undefined
                 };
             })
             : Array.from({ length: Math.min(switchCount, rows * columns) }, (_, index) => {
                 const item = presets[index];
+                const presetId = item ? str(item.id) : "";
                 return {
                     id: item ? str(item.id) : `empty-${index}`,
                     label: item ? str(item.name) : "—",
@@ -139,9 +211,152 @@ export function PerformanceView({
                                 presetId: str(item.id)
                             }));
                         }
-                    }
+                    },
+                    onLongPress: () => openPresetMenu(item ? str(item.id) : `empty-${index}`, index, presetId, false)
                 };
             });
+
+    const presetOptions = (current: PresetMenu) => {
+        if (!current.presetId) {
+            return current.canAssign
+                ? ["Assign Preset to This Switch", "Create New Preset", "Cancel"]
+                : ["Create New Preset", "Cancel"];
+        }
+        const options = ["Load Preset", "Edit Preset"];
+        if (current.presetId === str(state.activePresetId) && !snapshotWriteBlocked) {
+            options.push("Save Loaded Preset");
+        }
+        if (current.canAssign) {
+            options.push("Assign Different Preset", "Remove From Switch");
+        }
+        options.push("Delete Preset", "Cancel");
+        return options;
+    };
+
+    const warnSnapshotWrite = (action: string) => {
+        if (!snapshotWriteBlocked) {
+            return false;
+        }
+        window.alert(
+            `${activeSnapshot >= 0 ? `Snapshot ${activeSnapshot + 1}` : "Snapshot Mode"} is active. ${action} is disabled until you return to the base preset.`
+        );
+        return true;
+    };
+
+    const runPresetOption = (option: string, current: PresetMenu) => {
+        const item = presets.find((entry) => str(entry.id) === current.presetId);
+        switch (option) {
+            case "Load Preset":
+                if (current.presetId) {
+                    closeMenu();
+                    void run(() => client.request("preset/select", {
+                        bankId: str(obj(bank).id),
+                        presetId: current.presetId
+                    }));
+                }
+                break;
+            case "Edit Preset":
+                if (!current.presetId) {
+                    break;
+                }
+                if (current.presetId === str(state.activePresetId) && warnSnapshotWrite("Editing the base preset")) {
+                    return;
+                }
+                closeMenu();
+                void run(async () => {
+                    if (current.presetId !== str(state.activePresetId)) {
+                        await client.request("preset/select", {
+                            bankId: str(obj(bank).id),
+                            presetId: current.presetId
+                        });
+                    }
+                    onEdit?.();
+                });
+                break;
+            case "Save Loaded Preset":
+                if (warnSnapshotWrite("Saving the preset")) {
+                    return;
+                }
+                closeMenu();
+                void run(() => client.request("preset/save"));
+                break;
+            case "Assign Preset to This Switch":
+            case "Assign Different Preset":
+                setMenu({ kind: "assign", controlId: current.controlId, slotIndex: current.slotIndex });
+                break;
+            case "Remove From Switch": {
+                closeMenu();
+                const next = bankMap();
+                delete next[current.controlId];
+                void run(() => saveAssignments(next));
+                break;
+            }
+            case "Create New Preset":
+                if (warnSnapshotWrite("Creating a preset")) {
+                    return;
+                }
+                void askText("New preset name", str(obj(preset).name, "Preset")).then((name) => {
+                    if (!name?.trim()) {
+                        return;
+                    }
+                    closeMenu();
+                    void run(async () => {
+                        const result = await client.request("preset/saveAs", { name: name.trim() });
+                        const newId = str(result.presetId, str(client.snapshot.state.activePresetId));
+                        if (current.canAssign && newId) {
+                            await saveAssignments({ ...bankMap(), [current.controlId]: newId });
+                        }
+                    });
+                });
+                break;
+            case "Delete Preset":
+                if (item) {
+                    setMenu({
+                        kind: "delete",
+                        controlId: current.controlId,
+                        presetId: current.presetId,
+                        name: str(item.name, "this preset")
+                    });
+                }
+                break;
+            default:
+                closeMenu();
+                break;
+        }
+    };
+
+    const renameMenuPreset = () => {
+        if (menu?.kind !== "preset" || !menu.presetId || !renameValue.trim()) {
+            return;
+        }
+        void run(() => client.request("preset/rename", {
+            presetId: menu.presetId,
+            name: renameValue.trim()
+        }));
+    };
+
+    const deleteMenuPreset = (current: DeleteMenu) => {
+        closeMenu();
+        void run(async () => {
+            const next = bankMap();
+            for (const key of Object.keys(next)) {
+                if (str(next[key]) === current.presetId) {
+                    delete next[key];
+                }
+            }
+            await saveAssignments(next);
+            await client.request("preset/delete", { presetId: current.presetId });
+        });
+    };
+
+    const assignPreset = (presetId: string, controlId: string) => {
+        closeMenu();
+        void run(() => saveAssignments({ ...bankMap(), [controlId]: presetId }));
+    };
+
+    const selectedPreset = menu?.kind === "preset"
+        ? presets.find((entry) => str(entry.id) === menu.presetId)
+        : undefined;
 
     return (
         <div className="performance">
@@ -225,9 +440,13 @@ export function PerformanceView({
                     <button
                         key={str(snapshot.id)}
                         type="button"
-                        className={`btn ${num(obj(preset).activeSnapshot, -1) === index ? "btn-active" : ""}`}
+                        className={`btn ${activeSnapshot === index ? "btn-active" : ""}`}
                         style={str(snapshot.color) ? { borderColor: str(snapshot.color) } : undefined}
                         onClick={() => void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))}
+                        onContextMenu={(event) => {
+                            event.preventDefault();
+                            setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index });
+                        }}
                     >
                         {str(snapshot.name, `SNAP ${index + 1}`)}
                     </button>
@@ -273,6 +492,132 @@ export function PerformanceView({
                     </button>
                 </div>
             </div>
+
+            {menu?.kind === "preset" && createPortal(
+                <div className="mfx-overlay" onClick={closeMenu}>
+                    <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">PRESET SWITCH {menu.slotIndex + 1}</div>
+                        {selectedPreset && (
+                            <div className="row" style={{ marginBottom: 10 }}>
+                                <input
+                                    className="input"
+                                    value={renameValue}
+                                    onChange={(event) => setRenameValue(event.target.value)}
+                                />
+                                <button type="button" className="btn" onClick={renameMenuPreset}>RENAME</button>
+                            </div>
+                        )}
+                        {presetOptions(menu).map((option) => (
+                            <button
+                                key={option}
+                                type="button"
+                                className="mfx-overlay-option"
+                                onClick={() => runPresetOption(option, menu)}
+                            >
+                                {option}
+                            </button>
+                        ))}
+                    </div>
+                </div>,
+                document.body
+            )}
+
+            {menu?.kind === "assign" && createPortal(
+                <div className="mfx-overlay" onClick={closeMenu}>
+                    <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">ASSIGN PRESET TO SWITCH</div>
+                        {presets.map((item) => (
+                            <button
+                                key={str(item.id)}
+                                type="button"
+                                className={`mfx-overlay-option${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
+                                onClick={() => assignPreset(str(item.id), menu.controlId)}
+                            >
+                                {str(item.name)}
+                            </button>
+                        ))}
+                        {presets.length === 0 && <div className="muted">This bank has no presets yet.</div>}
+                        <button type="button" className="mfx-overlay-option" onClick={closeMenu}>CANCEL</button>
+                    </div>
+                </div>,
+                document.body
+            )}
+
+            {menu?.kind === "delete" && createPortal(
+                <div className="mfx-overlay">
+                    <div className="mfx-overlay-card">
+                        <div className="mfx-overlay-title danger">DELETE PRESET?</div>
+                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{menu.name}</div>
+                        <div className="row">
+                            <button type="button" className="btn" onClick={closeMenu}>CANCEL</button>
+                            <button type="button" className="btn btn-danger" onClick={() => deleteMenuPreset(menu)}>
+                                DELETE PRESET
+                            </button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+
+            {menu?.kind === "snapshot" && createPortal(
+                <div className="mfx-overlay" onClick={closeMenu}>
+                    <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">SNAPSHOT {menu.index + 1}</div>
+                        <button
+                            type="button"
+                            className="mfx-overlay-option"
+                            onClick={() => {
+                                closeMenu();
+                                void run(() => client.request("snapshot/select", { snapshotId: menu.snapshotId }));
+                            }}
+                        >
+                            RECALL SNAPSHOT
+                        </button>
+                        <button
+                            type="button"
+                            className="mfx-overlay-option"
+                            onClick={() => {
+                                closeMenu();
+                                onEditSnapshot?.(menu.snapshotId);
+                            }}
+                        >
+                            EDIT SNAPSHOT
+                        </button>
+                        <button
+                            type="button"
+                            className="mfx-overlay-option"
+                            onClick={() => {
+                                const current = snapshots.find((item) => str(item.id) === menu.snapshotId);
+                                void askText("Snapshot name", str(obj(current).name, `Snap ${menu.index + 1}`)).then((name) => {
+                                    if (name?.trim()) {
+                                        closeMenu();
+                                        void run(() => client.request("snapshot/rename", {
+                                            snapshotId: menu.snapshotId,
+                                            name: name.trim()
+                                        }));
+                                    }
+                                });
+                            }}
+                        >
+                            RENAME
+                        </button>
+                        <button
+                            type="button"
+                            className="mfx-overlay-option danger"
+                            onClick={() => {
+                                if (window.confirm("Delete this snapshot?")) {
+                                    closeMenu();
+                                    void run(() => client.request("snapshot/delete", { snapshotId: menu.snapshotId }));
+                                }
+                            }}
+                        >
+                            DELETE SNAPSHOT
+                        </button>
+                        <button type="button" className="mfx-overlay-option" onClick={closeMenu}>CANCEL</button>
+                    </div>
+                </div>,
+                document.body
+            )}
         </div>
     );
 }

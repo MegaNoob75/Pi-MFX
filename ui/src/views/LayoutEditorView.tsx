@@ -12,8 +12,7 @@ import {
     snapRect,
     statusWidgetsToJson,
     unplacedIds,
-    type LayoutRect,
-    type StatusWidget
+    type LayoutRect
 } from "../layout";
 
 export function LayoutEditorView({
@@ -26,34 +25,21 @@ export function LayoutEditorView({
     const controller = obj(engine.state.controller);
     const controls = objects(controller.controls);
     const layout = obj(controller.performanceLayout);
+    const [mode, setMode] = useState<"grid" | "freeform">(
+        str(controller.layoutMode, "grid") === "freeform" ? "freeform" : "grid"
+    );
+    const [rows, setRows] = useState(() => Math.max(1, num(controller.gridRows, 2)));
+    const [columns, setColumns] = useState(() => Math.max(1, num(controller.gridColumns, 4)));
     const [widgets, setWidgets] = useState(() => readStatusWidgets(layout));
+    const [hiddenIds, setHiddenIds] = useState(() => unplacedIds(layout));
     const [draftRects, setDraftRects] = useState<Record<string, LayoutRect>>({});
     const [selectedId, setSelectedId] = useState("");
     const [snap, setSnap] = useState(true);
+    const [message, setMessage] = useState("");
     const stageRef = useRef<HTMLDivElement>(null);
     const drag = useRef<{ id: string; startX: number; startY: number; rect: LayoutRect; last: LayoutRect } | null>(null);
 
-    const mode = str(controller.layoutMode, "grid");
-    const rows = Math.max(1, num(controller.gridRows, 2));
-    const columns = Math.max(1, num(controller.gridColumns, 4));
-    const hidden = new Set(unplacedIds(layout));
-
-    const save = (next: JsonObject) => {
-        void run(() => engine.client.request("controller/config", next));
-    };
-
-    const commitWidgets = (nextWidgets: Record<string, StatusWidget>, extra: JsonObject = {}) => {
-        setWidgets(nextWidgets);
-        save({
-            ...controller,
-            performanceLayout: {
-                ...layout,
-                elements: statusWidgetsToJson(nextWidgets),
-                unplacedControlIds: extra.unplacedControlIds ?? layout.unplacedControlIds
-            },
-            ...extra
-        });
-    };
+    const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
 
     const controlRect = (control: JsonObject, index: number): LayoutRect => {
         const id = str(control.id);
@@ -98,6 +84,7 @@ export function LayoutEditorView({
         } else {
             setDraftRects((current) => ({ ...current, [id]: next }));
         }
+        setMessage("");
     };
 
     const onPointerUp = () => {
@@ -108,19 +95,13 @@ export function LayoutEditorView({
         const last = drag.current.last;
         drag.current = null;
         if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
-            commitWidgets({
-                ...widgets,
-                [id]: { ...widgets[id], rect: last }
-            });
+            setWidgets((current) => ({
+                ...current,
+                [id]: { ...current[id], rect: last }
+            }));
             return;
         }
         setDraftRects((current) => ({ ...current, [id]: last }));
-        save({
-            ...controller,
-            controls: controls.map((item) => str(item.id) === id
-                ? { ...item, x: last.x, y: last.y, width: last.width, height: last.height }
-                : item)
-        });
     };
 
     const placedControls = useMemo(
@@ -129,19 +110,46 @@ export function LayoutEditorView({
     );
 
     const toggleHidden = (id: string) => {
-        const next = new Set(hidden);
-        if (next.has(id)) {
-            next.delete(id);
-        } else {
-            next.add(id);
-        }
-        save({
+        setHiddenIds((current) => (
+            current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+        ));
+        setMessage("");
+    };
+
+    const toggleWidget = (id: string) => {
+        setWidgets((current) => ({
+            ...current,
+            [id]: { ...current[id], visible: !current[id].visible }
+        }));
+        setMessage("");
+    };
+
+    const layoutPayload = (): JsonObject => {
+        const nextControls = controls.map((control, index) => {
+            const id = str(control.id);
+            const rect = draftRects[id] ?? controlRect(control, index);
+            return mode === "freeform"
+                ? { ...control, x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+                : control;
+        });
+        return {
             ...controller,
+            layoutMode: mode,
+            gridRows: rows,
+            gridColumns: columns,
             performanceLayout: {
                 ...layout,
                 elements: statusWidgetsToJson(widgets),
-                unplacedControlIds: [...next]
-            }
+                unplacedControlIds: hiddenIds
+            },
+            controls: nextControls
+        };
+    };
+
+    const saveLayout = () => {
+        void run(async () => {
+            await engine.client.request("controller/config", layoutPayload());
+            setMessage("Layout saved. Performance uses this arrangement.");
         });
     };
 
@@ -149,20 +157,7 @@ export function LayoutEditorView({
         const payload = {
             format: "pimfx-layout",
             version: 1,
-            layoutMode: mode,
-            gridRows: rows,
-            gridColumns: columns,
-            performanceLayout: {
-                ...layout,
-                elements: statusWidgetsToJson(widgets)
-            },
-            controls: controls.map((control) => ({
-                id: control.id,
-                x: control.x,
-                y: control.y,
-                width: control.width,
-                height: control.height
-            }))
+            ...layoutPayload()
         };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -179,33 +174,40 @@ export function LayoutEditorView({
             if (str(parsed.format) !== "pimfx-layout") {
                 throw new Error("that is not a Pi-MFX layout file");
             }
+            const importedLayout = obj(parsed.performanceLayout);
             const imported = objects(parsed.controls);
-            save({
-                ...controller,
-                layoutMode: str(parsed.layoutMode, mode),
-                gridRows: num(parsed.gridRows, rows),
-                gridColumns: num(parsed.gridColumns, columns),
-                performanceLayout: obj(parsed.performanceLayout),
-                controls: controls.map((control) => {
-                    const match = imported.find((item) => str(item.id) === str(control.id));
-                    return match
-                        ? { ...control, x: match.x, y: match.y, width: match.width, height: match.height }
-                        : control;
-                })
-            });
-            setWidgets(readStatusWidgets(obj(parsed.performanceLayout)));
+            setMode(str(parsed.layoutMode, mode) === "freeform" ? "freeform" : "grid");
+            setRows(Math.max(1, num(parsed.gridRows, rows)));
+            setColumns(Math.max(1, num(parsed.gridColumns, columns)));
+            setWidgets(readStatusWidgets(importedLayout));
+            setHiddenIds(unplacedIds(importedLayout));
+            const nextRects: Record<string, LayoutRect> = {};
+            for (const item of imported) {
+                const id = str(item.id);
+                if (id) {
+                    nextRects[id] = clampRect({
+                        x: num(item.x),
+                        y: num(item.y),
+                        width: num(item.width, 0.18),
+                        height: num(item.height, 0.2)
+                    });
+                }
+            }
+            setDraftRects(nextRects);
+            setMessage("Layout imported. Choose SAVE LAYOUT to apply it.");
         }).catch((error: unknown) => {
             window.alert(error instanceof Error ? error.message : String(error));
         });
     };
 
     return (
-        <div className="page-scroll stack">
-            <div className="panel stack">
-                <h2>PERFORMANCE LAYOUT</h2>
-                <div className="muted">
-                    Grid lines up switches in rows. Freeform lets you drag tiles to match a
-                    physical board. Layout does not change what a switch does.
+        <div className="layout-editor">
+            <div className="layout-editor-toolbar">
+                <div>
+                    <div className="layout-editor-title">PERFORMANCE LAYOUT</div>
+                    <div className="muted">
+                        Arrange switches, pots and status panels. Layout does not change what a switch does.
+                    </div>
                 </div>
                 <div className="row">
                     {(["grid", "freeform"] as const).map((item) => (
@@ -213,7 +215,10 @@ export function LayoutEditorView({
                             key={item}
                             type="button"
                             className={`btn ${mode === item ? "btn-active" : ""}`}
-                            onClick={() => save({ ...controller, layoutMode: item })}
+                            onClick={() => {
+                                setMode(item);
+                                setMessage("");
+                            }}
                         >
                             {item.toUpperCase()}
                         </button>
@@ -221,9 +226,8 @@ export function LayoutEditorView({
                     <button type="button" className={`btn ${snap ? "btn-active" : ""}`} onClick={() => setSnap((value) => !value)}>
                         SNAP
                     </button>
-                    <button type="button" className="btn" onClick={exportLayout}>DOWNLOAD</button>
                     <label className="btn">
-                        UPLOAD
+                        IMPORT
                         <input type="file" accept="application/json" hidden onChange={(event) => {
                             const file = event.target.files?.[0];
                             if (file) {
@@ -232,45 +236,39 @@ export function LayoutEditorView({
                             event.target.value = "";
                         }} />
                     </label>
+                    <button type="button" className="btn" onClick={exportLayout}>EXPORT</button>
+                    <button type="button" className="btn btn-accent" onClick={saveLayout}>SAVE LAYOUT</button>
                 </div>
                 {mode === "grid" && (
                     <div className="row">
                         <label className="field">
                             <span>Rows</span>
                             <input type="number" min={1} max={8} value={rows}
-                                onChange={(event) => save({ ...controller, gridRows: Number(event.target.value) })} />
+                                onChange={(event) => setRows(Math.max(1, Number(event.target.value)))} />
                         </label>
                         <label className="field">
                             <span>Columns</span>
                             <input type="number" min={1} max={12} value={columns}
-                                onChange={(event) => save({ ...controller, gridColumns: Number(event.target.value) })} />
+                                onChange={(event) => setColumns(Math.max(1, Number(event.target.value)))} />
                         </label>
                     </div>
                 )}
+                {message && <div className="muted">{message}</div>}
             </div>
-
-            <div className="panel stack">
-                <h2>STATUS WIDGETS</h2>
-                <div className="row" style={{ flexWrap: "wrap" }}>
+            <div className="layout-editor-body">
+                <aside className="layout-editor-inspector">
+                    <div className="field-label">ELEMENTS</div>
                     {STATUS_WIDGET_IDS.map((id) => (
                         <button
                             key={id}
                             type="button"
                             className={`btn ${widgets[id].visible ? "btn-active" : ""}`}
-                            onClick={() => commitWidgets({
-                                ...widgets,
-                                [id]: { ...widgets[id], visible: !widgets[id].visible }
-                            })}
+                            onClick={() => toggleWidget(id)}
                         >
                             {STATUS_WIDGET_LABELS[id]}
                         </button>
                     ))}
-                </div>
-            </div>
-
-            <div className="panel stack">
-                <h2>SWITCHES ON THIS BOARD</h2>
-                <div className="row" style={{ flexWrap: "wrap" }}>
+                    <div className="field-label" style={{ marginTop: 12 }}>SWITCHES</div>
                     {controls.map((control) => (
                         <button
                             key={str(control.id)}
@@ -281,51 +279,50 @@ export function LayoutEditorView({
                             {str(control.label, str(control.id))}
                         </button>
                     ))}
-                    {controls.length === 0 && <div className="muted">Add controls in Settings → Controller.</div>}
+                    {controls.length === 0 && <div className="muted">Add controls in Hardware Setup.</div>}
+                </aside>
+                <div
+                    ref={stageRef}
+                    className="layout-stage"
+                    onPointerMove={onPointerMove}
+                    onPointerUp={onPointerUp}
+                    onPointerCancel={onPointerUp}
+                >
+                    {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
+                        const widget = widgets[id];
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                className={`layout-item status${selectedId === id ? " selected" : ""}`}
+                                style={rectStyle(widget.rect)}
+                                onPointerDown={(event) => onPointerDown(id, widget.rect, event)}
+                            >
+                                {STATUS_WIDGET_LABELS[id]}
+                            </button>
+                        );
+                    })}
+                    {placedControls.map((control, index) => {
+                        const id = str(control.id);
+                        const rect = controlRect(control, index);
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                className={`layout-item switch${selectedId === id ? " selected" : ""}`}
+                                style={rectStyle(rect)}
+                                onPointerDown={(event) => onPointerDown(id, rect, event)}
+                            >
+                                {str(control.label, id)}
+                            </button>
+                        );
+                    })}
                 </div>
             </div>
-
-            <div
-                ref={stageRef}
-                className="layout-stage"
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onPointerCancel={onPointerUp}
-            >
-                {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
-                    const widget = widgets[id];
-                    return (
-                        <button
-                            key={id}
-                            type="button"
-                            className={`layout-item status${selectedId === id ? " selected" : ""}`}
-                            style={rectStyle(widget.rect)}
-                            onPointerDown={(event) => onPointerDown(id, widget.rect, event)}
-                        >
-                            {STATUS_WIDGET_LABELS[id]}
-                        </button>
-                    );
-                })}
-                {placedControls.map((control, index) => {
-                    const id = str(control.id);
-                    const rect = controlRect(control, index);
-                    return (
-                        <button
-                            key={id}
-                            type="button"
-                            className={`layout-item switch${selectedId === id ? " selected" : ""}`}
-                            style={rectStyle(rect)}
-                            onPointerDown={(event) => onPointerDown(id, rect, event)}
-                        >
-                            {str(control.label, id)}
-                        </button>
-                    );
-                })}
-            </div>
-            <div className="muted">
+            <div className="muted" style={{ padding: "0 12px 8px" }}>
                 {bool(controller.mirrorLayoutOnScreen, true)
                     ? "This layout is what the Performance screen shows."
-                    : "Turn on mirror layout in Controller settings to show this on Performance."}
+                    : "Turn on mirror layout in Hardware Setup to show this on Performance."}
             </div>
         </div>
     );

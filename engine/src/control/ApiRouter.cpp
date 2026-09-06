@@ -172,7 +172,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
     if (command == "preset/saveAs") {
         ok = engine_.savePresetAs(payload["name"].asString(), error);
-        return Json::object();
+        Json result = Json::object();
+        if (ok) {
+            result.set("presetId", engine_.fullState()["activePresetId"].asString());
+        }
+        return result;
     }
     if (command == "preset/restoreLive") {
         ok = engine_.restoreLiveFromStoredPreset(error);

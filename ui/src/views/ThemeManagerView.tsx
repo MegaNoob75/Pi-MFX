@@ -132,6 +132,22 @@ export default function ThemeManagerView({
     const [customKeyboardThemes, setCustomKeyboardThemes] = useState(
         loadCustomMultiFXKeyboardThemes
     );
+    const themeListRef = useRef<HTMLDivElement>(null);
+    const [activeName, setActiveName] = useState(() => originalRef.current.name);
+
+    useEffect(() => {
+        const list = themeListRef.current;
+        if (!list) {
+            return;
+        }
+        const frame = window.requestAnimationFrame(() => {
+            const node = Array.from(list.querySelectorAll("[data-theme-name]")).find(
+                (item) => item.getAttribute("data-theme-name") === activeName
+            );
+            node?.scrollIntoView({ block: "center", behavior: "auto" });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [activeName, browseMode]);
 
     const groupedBuiltIns = useMemo(() => {
         const categoryOrder: readonly string[] = browseMode === "STYLE"
@@ -244,8 +260,9 @@ export default function ThemeManagerView({
             return;
         }
 
-        originalRef.current = cloneTheme(theme);
-        if (!persistTheme) {
+            originalRef.current = cloneTheme(theme);
+            setActiveName(theme.name);
+            if (!persistTheme) {
             setMessage(`"${theme.name}" is now the active theme.`);
             return;
         }
@@ -562,6 +579,7 @@ export default function ThemeManagerView({
                         </div>
 
                         <div
+                            ref={themeListRef}
                             style={{
                                 flex: "1 1 auto",
                                 minHeight: 0,
@@ -599,10 +617,8 @@ export default function ThemeManagerView({
                                                 <ThemePresetButton
                                                     key={preset.name}
                                                     preset={preset}
-                                                    selected={
-                                                        theme.name
-                                                        === preset.name
-                                                    }
+                                                    selected={theme.name === preset.name}
+                                                    active={activeName === preset.name}
                                                     onClick={() =>
                                                         previewTheme(preset)
                                                     }
@@ -632,10 +648,8 @@ export default function ThemeManagerView({
                                             >
                                                 <ThemePresetButton
                                                     preset={preset}
-                                                    selected={
-                                                        theme.name
-                                                        === preset.name
-                                                    }
+                                                    selected={theme.name === preset.name}
+                                                    active={activeName === preset.name}
                                                     onClick={() => {
                                                         setTheme(
                                                             cloneTheme(preset)
@@ -729,20 +743,6 @@ export default function ThemeManagerView({
                             <button
                                 type="button"
                                 onClick={setThemeActive}
-                                style={{
-                                    ...primaryButtonStyle,
-                                    minHeight:
-                                        "calc(40px * var(--mfx-ui-scale, 1))",
-                                    padding:
-                                        "calc(6px * var(--mfx-ui-scale, 1)) calc(12px * var(--mfx-ui-scale, 1))"
-                                }}
-                            >
-                                SET THEME
-                            </button>
-
-                            <button
-                                type="button"
-                                onClick={() => void syncTheme()}
                                 disabled={syncingTheme}
                                 style={{
                                     ...primaryButtonStyle,
@@ -753,23 +753,7 @@ export default function ThemeManagerView({
                                     opacity: syncingTheme ? 0.62 : 1
                                 }}
                             >
-                                {syncingTheme ? "SAVING..." : "SET ON PI"}
-                            </button>
-
-                            <button
-                                type="button"
-                                onClick={() => void syncTheme()}
-                                disabled={syncingTheme}
-                                style={{
-                                    ...primaryButtonStyle,
-                                    minHeight:
-                                        "calc(40px * var(--mfx-ui-scale, 1))",
-                                    padding:
-                                        "calc(6px * var(--mfx-ui-scale, 1)) calc(12px * var(--mfx-ui-scale, 1))",
-                                    opacity: syncingTheme ? 0.62 : 1
-                                }}
-                            >
-                                {syncingTheme ? "SAVING..." : "SET ON PI"}
+                                {syncingTheme ? "SAVING..." : "SET THEME"}
                             </button>
 
                             <button
@@ -2060,15 +2044,18 @@ function ThemeCategoryHeader({
 function ThemePresetButton({
     preset,
     selected,
+    active = false,
     onClick
 }: {
     preset: MultiFXThemeDefinition;
     selected: boolean;
+    active?: boolean;
     onClick: () => void;
 }) {
     return (
         <button
             type="button"
+            data-theme-name={preset.name}
             onClick={onClick}
             style={{
                 minHeight:
@@ -2077,13 +2064,16 @@ function ThemePresetButton({
                     "calc(7px * var(--mfx-ui-scale, 1)) calc(10px * var(--mfx-ui-scale, 1))",
                 borderRadius: 9,
                 border:
-                    selected
+                    selected || active
                         ? `2px solid ${MFX_COLORS.cyan}`
                         : `1px solid ${MFX_COLORS.border}`,
                 background:
                     selected
                         ? MFX_COLORS.cyanSurface
                         : MFX_COLORS.background,
+                boxShadow: active && !selected
+                    ? `inset 0 0 0 1px ${MFX_COLORS.cyan}`
+                    : undefined,
                 color:
                     selected
                         ? MFX_COLORS.cyanText
@@ -2108,6 +2098,23 @@ function ThemePresetButton({
                 >
                     {preset.name}
                 </div>
+                {active && (
+                    <span
+                        style={{
+                            flex: "0 0 auto",
+                            padding: "2px 5px",
+                            borderRadius: 99,
+                            border: `1px solid ${MFX_COLORS.cyan}`,
+                            background: MFX_COLORS.cyanSurface,
+                            color: MFX_COLORS.cyanText,
+                            fontSize: "0.5rem",
+                            fontWeight: 900,
+                            letterSpacing: ".035em"
+                        }}
+                    >
+                        ACTIVE
+                    </span>
+                )}
                 <span
                     style={{
                         flex: "0 0 auto",

@@ -1,9 +1,12 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { clampUnit, isAnalogKind } from "../api";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { loadUiBehavior } from "../uiBehavior";
 import MultiFXFootswitchGraphic, { MultiFXArcadeButtonGraphic } from "../theme/FootswitchGraphic";
+
+const LONG_PRESS_MS = 600;
+const CANCEL_MOVE_PX = 24;
 
 export interface PerformanceTile {
     id: string;
@@ -17,6 +20,7 @@ export interface PerformanceTile {
     analog?: boolean;
     onPress: () => void;
     onValue?: (value: number) => void;
+    onLongPress?: () => void;
 }
 
 export function PerformanceControl({
@@ -37,41 +41,79 @@ export function PerformanceControl({
         bounds: DOMRect;
         keep: boolean;
     } | null>(null);
+    const hold = useRef<{
+        timer: number | null;
+        pointerId: number;
+        startX: number;
+        startY: number;
+        suppressed: boolean;
+    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false });
     const range = clampUnit(tile.value ?? (tile.active ? 1 : 0));
+
+    const clearHold = () => {
+        if (hold.current.timer !== null) {
+            window.clearTimeout(hold.current.timer);
+            hold.current.timer = null;
+        }
+    };
+
+    useEffect(() => () => clearHold(), []);
+
+    const openHoldMenu = () => {
+        hold.current.timer = null;
+        hold.current.suppressed = true;
+        tile.onLongPress?.();
+    };
 
     const begin = (event: ReactPointerEvent<HTMLButtonElement>, keep: boolean) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!analog || !tile.onValue) {
-            tile.onPress();
+        hold.current.suppressed = false;
+        hold.current.pointerId = event.pointerId;
+        hold.current.startX = event.clientX;
+        hold.current.startY = event.clientY;
+        if (analog && tile.onValue) {
+            const behavior = loadUiBehavior();
+            if (behavior.controlPopout || keep) {
+                setPopout(true);
+            }
+            event.currentTarget.setPointerCapture(event.pointerId);
+            const bounds = event.currentTarget.getBoundingClientRect();
+            drag.current = {
+                pointerId: event.pointerId,
+                startY: event.clientY,
+                startValue: range,
+                bounds,
+                keep
+            };
+            if (tile.onLongPress) {
+                hold.current.timer = window.setTimeout(openHoldMenu, LONG_PRESS_MS);
+            }
             return;
         }
-        const behavior = loadUiBehavior();
-        if (behavior.controlPopout || keep) {
-            setPopout(true);
-        }
         event.currentTarget.setPointerCapture(event.pointerId);
-        const bounds = event.currentTarget.getBoundingClientRect();
-        drag.current = {
-            pointerId: event.pointerId,
-            startY: event.clientY,
-            startValue: range,
-            bounds,
-            keep
-        };
-        if (tile.kind === "slider" || tile.kind === "expression") {
-            tile.onValue(clampUnit(1 - (event.clientY - bounds.top) / Math.max(1, bounds.height)));
+        if (tile.onLongPress) {
+            hold.current.timer = window.setTimeout(openHoldMenu, LONG_PRESS_MS);
         }
     };
 
     const move = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        const dx = event.clientX - hold.current.startX;
+        const dy = event.clientY - hold.current.startY;
+        const cancelPx = analog ? 8 : CANCEL_MOVE_PX;
+        if (hold.current.timer !== null && (dx * dx + dy * dy) > cancelPx * cancelPx) {
+            clearHold();
+        }
+        if (analog && hold.current.suppressed) {
+            return;
+        }
         if (!drag.current || drag.current.pointerId !== event.pointerId || !tile.onValue) {
             return;
         }
         event.preventDefault();
         const kind = tile.kind ?? "pot";
         let next: number;
-        if (kind === "slider" || kind === "expression") {
+        if (kind === "slider" || tile.kind === "expression") {
             next = 1 - (event.clientY - drag.current.bounds.top) / Math.max(1, drag.current.bounds.height);
         } else {
             const sensitivity = Math.max(90, drag.current.bounds.height * 0.9);
@@ -81,12 +123,18 @@ export function PerformanceControl({
     };
 
     const end = (event: ReactPointerEvent<HTMLButtonElement>) => {
-        if (!drag.current || drag.current.pointerId !== event.pointerId) {
+        const analogDrag = drag.current && drag.current.pointerId === event.pointerId;
+        const suppressed = hold.current.suppressed;
+        clearHold();
+        drag.current = null;
+        if (analogDrag) {
+            const behavior = loadUiBehavior();
+            window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
             return;
         }
-        drag.current = null;
-        const behavior = loadUiBehavior();
-        window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
+        if (!suppressed) {
+            tile.onPress();
+        }
     };
 
     const light = bypassed ? "bypass" : tile.active ? "active" : "inactive";
@@ -99,6 +147,16 @@ export function PerformanceControl({
             onPointerMove={move}
             onPointerUp={end}
             onPointerCancel={end}
+            onContextMenu={(event) => {
+                if (!tile.onLongPress) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                clearHold();
+                hold.current.suppressed = true;
+                tile.onLongPress();
+            }}
             style={tile.color ? { borderColor: tile.color } : undefined}
         >
             {analog ? (

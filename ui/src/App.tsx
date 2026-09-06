@@ -112,7 +112,16 @@ export function App() {
 
             <main className="page">
                 {view === "performance" && (
-                    <PerformanceView engine={engine} run={run} onSnapshots={() => goTo("snapshots")} />
+                    <PerformanceView
+                        engine={engine}
+                        run={run}
+                        onSnapshots={() => goTo("snapshots")}
+                        onEdit={() => goTo("edit")}
+                        onEditSnapshot={(snapshotId) => {
+                            setSnapshotEditId(snapshotId);
+                            goTo("snapshotEdit");
+                        }}
+                    />
                 )}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && <EditorView engine={engine} run={run} />}
@@ -151,7 +160,7 @@ export function App() {
                 {view === "backup" && <BackupView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
                     || view === "library" || view === "system") && (
-                    <SettingsDetail page={view} engine={engine} run={run} />
+                    <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}
             </main>

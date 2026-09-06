@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { LETTER_ROWS, NUMERIC_ROWS, SYMBOL_ROWS, type KeyboardLayer, type KeyboardLayout } from "./layouts";
 import { loadKeyboardAppearance, onKeyboardAppearanceChange } from "./settings";
+import { resolveMultiFXKeyboardTheme } from "./keyboardTheme";
+import { themePaintToCss } from "../theme/theme";
 import { eraseSelection, overlayRoot, replaceSelection, type EditableElement } from "./utils";
 import "./Keyboard.css";
 
@@ -34,6 +36,7 @@ export function Keyboard({
     const [shift, setShift] = useState(false);
     const [caps, setCaps] = useState(false);
     const [appearance, setAppearance] = useState(loadKeyboardAppearance);
+    const keyboardTheme = resolveMultiFXKeyboardTheme(appearance.themeId);
 
     useEffect(() => onKeyboardAppearanceChange(() => setAppearance(loadKeyboardAppearance())), []);
 
@@ -113,6 +116,19 @@ export function Keyboard({
             role="dialog"
             aria-modal="true"
             aria-label={`Keyboard for ${session.label}`}
+            style={{
+                ["--mfx-text" as string]: keyboardTheme.text,
+                ["--mfx-border" as string]: keyboardTheme.border,
+                ["--mfx-panel" as string]: themePaintToCss(keyboardTheme.panel),
+                ["--mfx-bg" as string]: themePaintToCss(keyboardTheme.valueBox),
+                ["--mfx-cyan" as string]: keyboardTheme.accent,
+                ["--mfx-cyan-text" as string]: keyboardTheme.pressedText,
+                ["--mfx-cyan-surface" as string]: themePaintToCss(keyboardTheme.pressedKey),
+                ["--mfx-danger" as string]: keyboardTheme.cancel,
+                background: appearance.transparentBackground
+                    ? "transparent"
+                    : themePaintToCss(keyboardTheme.backdrop)
+            }}
         >
             <div className="pimfx-keyboard-panel">
                 <div className="pimfx-keyboard-value">
