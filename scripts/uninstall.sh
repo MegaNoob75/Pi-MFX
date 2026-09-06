@@ -65,6 +65,7 @@ rm -f /etc/systemd/system/pimfx.service
 rm -f /etc/systemd/system/pimfx-governor.service
 rm -f /etc/systemd/system/pimfx-wifi-powersave.service
 rm -f /etc/security/limits.d/95-pimfx-audio.conf
+rm -f /etc/udev/rules.d/95-pimfx-audio.rules
 rm -f /etc/sysctl.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
 rm -rf /usr/share/pimfx

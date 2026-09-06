@@ -164,6 +164,13 @@ else
     # Realtime scheduling and unlimited locked memory for the audio group. A
     # SCHED_FIFO audio thread that can be preempted or paged out is the single
     # most common cause of clicks on Linux.
+    install -Dm644 /dev/stdin /etc/udev/rules.d/95-pimfx-audio.rules <<'EOF'
+# Installed by Pi-MFX. The latency guard needs this node writable by audio.
+KERNEL=="cpu_dma_latency", GROUP="audio", MODE="0660"
+EOF
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --name-match=cpu_dma_latency >/dev/null 2>&1 || true
+
     install -Dm644 /dev/stdin /etc/security/limits.d/95-pimfx-audio.conf <<'EOF'
 # Installed by Pi-MFX. Lets the audio group run realtime threads and lock
 # memory, which the engine needs to avoid xruns. Removed by uninstall.sh.

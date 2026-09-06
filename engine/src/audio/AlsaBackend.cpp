@@ -280,17 +280,32 @@ bool AlsaBackend::start(const AudioSettings& settings,
     AudioSettings resolved = settings;
     if (resolved.device.empty()) {
         const std::vector<AudioDeviceInfo> devices = enumerateDevices();
+        const AudioDeviceInfo* chosen = nullptr;
         for (const AudioDeviceInfo& device : devices) {
             if (device.duplex) {
-                resolved.device = device.id;
+                chosen = &device;
                 break;
             }
         }
-        if (resolved.device.empty()) {
-            error = "no full-duplex audio device found; connect a USB interface or enable an audio HAT";
+        if (!chosen) {
+            for (const AudioDeviceInfo& device : devices) {
+                if (device.maxInputChannels > 0) {
+                    chosen = &device;
+                    break;
+                }
+            }
+        }
+        if (!chosen && !devices.empty()) {
+            chosen = &devices.front();
+        }
+        if (!chosen) {
+            error = "no audio device found; connect a USB interface or enable an audio HAT";
             return false;
         }
-        logInfo("audio: no device configured, using " + resolved.device);
+        resolved.device = chosen->id;
+        logInfo("audio: no device configured, using " + resolved.device
+                + " (" + chosen->name + ", in=" + std::to_string(chosen->maxInputChannels)
+                + " out=" + std::to_string(chosen->maxOutputChannels) + ")");
     }
 
     const std::string captureDevice =
@@ -570,11 +585,110 @@ void AlsaBackend::run() {
     running_.store(false, std::memory_order_release);
 }
 
+namespace {
+
+bool isRawHwDevice(const char* name) {
+    return name && std::strncmp(name, "hw:", 3) == 0;
+}
+
+void probeStream(AudioDeviceInfo& info, bool capture) {
+    static const unsigned kCandidateRates[] = {44100, 48000, 88200, 96000, 176400, 192000};
+    static const unsigned kCandidatePeriods[] = {16, 32, 64, 128, 256, 512, 1024};
+
+    snd_pcm_t* pcm = nullptr;
+    const int opened = snd_pcm_open(&pcm, info.id.c_str(),
+                                    capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK,
+                                    SND_PCM_NONBLOCK);
+    if (opened < 0) {
+        logDebug(std::string("audio: open ") + (capture ? "capture " : "playback ")
+                 + info.id + ": " + snd_strerror(opened));
+        return;
+    }
+
+    snd_pcm_hw_params_t* hw = nullptr;
+    snd_pcm_hw_params_alloca(&hw);
+    if (snd_pcm_hw_params_any(pcm, hw) < 0) {
+        snd_pcm_close(pcm);
+        return;
+    }
+
+    unsigned maxChannels = 0;
+    snd_pcm_hw_params_get_channels_max(hw, &maxChannels);
+    if (capture) {
+        info.maxInputChannels = std::max(info.maxInputChannels, maxChannels);
+    } else {
+        info.maxOutputChannels = std::max(info.maxOutputChannels, maxChannels);
+        info.supportsMmap =
+            snd_pcm_hw_params_test_access(pcm, hw, SND_PCM_ACCESS_MMAP_INTERLEAVED) == 0;
+        for (unsigned rate : kCandidateRates) {
+            if (snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0) {
+                info.sampleRates.push_back(rate);
+            }
+        }
+        for (unsigned period : kCandidatePeriods) {
+            if (snd_pcm_hw_params_test_period_size(pcm, hw, period, 0) == 0) {
+                info.periodSizes.push_back(period);
+            }
+        }
+        snd_pcm_hw_params_get_periods_min(hw, &info.minPeriods, nullptr);
+        snd_pcm_hw_params_get_periods_max(hw, &info.maxPeriods, nullptr);
+    }
+    snd_pcm_close(pcm);
+}
+
+AudioDeviceInfo* findDevice(std::vector<AudioDeviceInfo>& devices, const std::string& id) {
+    for (AudioDeviceInfo& device : devices) {
+        if (device.id == id) {
+            return &device;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
 std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
     std::vector<AudioDeviceInfo> devices;
 
-    static const unsigned kCandidateRates[] = {44100, 48000, 88200, 96000, 176400, 192000};
-    static const unsigned kCandidatePeriods[] = {16, 32, 64, 128, 256, 512, 1024};
+    // ALSA's hint list is how arecord/aplay find cards. Walking only
+    // snd_ctl_pcm_next_device misses some USB interfaces, including the
+    // Scarlett Solo 4th Gen, where capture and playback show up as hints
+    // even when the control-device iterator stays empty.
+    void** hints = nullptr;
+    if (snd_device_name_hint(-1, "pcm", &hints) >= 0 && hints) {
+        for (void** entry = hints; *entry; ++entry) {
+            char* name = snd_device_name_get_hint(*entry, "NAME");
+            char* ioid = snd_device_name_get_hint(*entry, "IOID");
+            char* desc = snd_device_name_get_hint(*entry, "DESC");
+            if (isRawHwDevice(name)) {
+                AudioDeviceInfo* existing = findDevice(devices, name);
+                if (!existing) {
+                    AudioDeviceInfo created;
+                    created.id = name;
+                    created.name = desc && *desc ? desc : name;
+                    if (const char* newline = std::strchr(created.name.c_str(), '\n')) {
+                        created.name.resize(static_cast<size_t>(newline - created.name.c_str()));
+                    }
+                    created.driver = "alsa";
+                    created.isHat = looksLikeHat(created.driver, created.name);
+                    devices.push_back(std::move(created));
+                    existing = &devices.back();
+                }
+                const bool capture = !ioid || std::strcmp(ioid, "Output") != 0;
+                const bool playback = !ioid || std::strcmp(ioid, "Input") != 0;
+                if (capture) {
+                    existing->maxInputChannels = std::max(existing->maxInputChannels, 1u);
+                }
+                if (playback) {
+                    existing->maxOutputChannels = std::max(existing->maxOutputChannels, 1u);
+                }
+            }
+            free(name);
+            free(ioid);
+            free(desc);
+        }
+        snd_device_name_free_hint(hints);
+    }
 
     int card = -1;
     while (snd_card_next(&card) >= 0 && card >= 0) {
@@ -598,92 +712,58 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
         const std::string cardName = snd_ctl_card_info_get_name(cardInfo);
         const std::string cardId = snd_ctl_card_info_get_id(cardInfo);
         const std::string driver = snd_ctl_card_info_get_driver(cardInfo);
+        const std::string fallbackId = "hw:CARD=" + cardId + ",DEV=0";
+
+        AudioDeviceInfo* existing = findDevice(devices, fallbackId);
+        if (!existing) {
+            AudioDeviceInfo created;
+            created.id = fallbackId;
+            created.name = cardName;
+            created.driver = driver;
+            created.isHat = looksLikeHat(driver, cardName);
+            devices.push_back(std::move(created));
+            existing = &devices.back();
+        } else {
+            existing->name = cardName;
+            existing->driver = driver;
+            existing->isHat = looksLikeHat(driver, cardName);
+        }
 
         int device = -1;
         while (snd_ctl_pcm_next_device(control, &device) >= 0 && device >= 0) {
-            AudioDeviceInfo info;
-            // CARD= stays stable when USB enumeration shuffles hw:N numbers.
-            info.id = "hw:CARD=" + cardId + ",DEV=" + std::to_string(device);
-            info.name = cardName;
-            info.driver = driver;
-            info.isHat = looksLikeHat(driver, cardName);
-
-            // Ask the control device first. That does not need an exclusive
-            // PCM open, so a card already held by PipeWire or our own stream
-            // still appears in the picker.
             for (int direction = 0; direction < 2; ++direction) {
-                const bool capture = direction == 0;
                 snd_pcm_info_t* pcmInfo = nullptr;
                 snd_pcm_info_alloca(&pcmInfo);
                 snd_pcm_info_set_device(pcmInfo, static_cast<unsigned>(device));
                 snd_pcm_info_set_subdevice(pcmInfo, 0);
                 snd_pcm_info_set_stream(pcmInfo,
-                    capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK);
+                    direction == 0 ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK);
                 if (snd_ctl_pcm_info(control, pcmInfo) < 0) {
                     continue;
                 }
-                const unsigned channels = std::max(1u, snd_pcm_info_get_subdevices_count(pcmInfo));
-                if (capture) {
-                    info.maxInputChannels = std::max(info.maxInputChannels, channels);
+                if (direction == 0) {
+                    existing->maxInputChannels = std::max(existing->maxInputChannels, 1u);
                 } else {
-                    info.maxOutputChannels = std::max(info.maxOutputChannels, channels);
+                    existing->maxOutputChannels = std::max(existing->maxOutputChannels, 1u);
                 }
-            }
-
-            for (int direction = 0; direction < 2; ++direction) {
-                const bool capture = direction == 0;
-                snd_pcm_t* pcm = nullptr;
-                if (snd_pcm_open(&pcm, info.id.c_str(),
-                                 capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK,
-                                 SND_PCM_NONBLOCK) < 0) {
-                    continue;
-                }
-
-                snd_pcm_hw_params_t* hw = nullptr;
-                snd_pcm_hw_params_alloca(&hw);
-                if (snd_pcm_hw_params_any(pcm, hw) < 0) {
-                    snd_pcm_close(pcm);
-                    continue;
-                }
-
-                unsigned maxChannels = 0;
-                snd_pcm_hw_params_get_channels_max(hw, &maxChannels);
-                if (capture) {
-                    info.maxInputChannels = std::max(info.maxInputChannels, maxChannels);
-                } else {
-                    info.maxOutputChannels = std::max(info.maxOutputChannels, maxChannels);
-                }
-
-                if (!capture) {
-                    info.supportsMmap =
-                        snd_pcm_hw_params_test_access(pcm, hw, SND_PCM_ACCESS_MMAP_INTERLEAVED) == 0;
-
-                    for (unsigned rate : kCandidateRates) {
-                        if (snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0) {
-                            info.sampleRates.push_back(rate);
-                        }
-                    }
-                    for (unsigned period : kCandidatePeriods) {
-                        if (snd_pcm_hw_params_test_period_size(pcm, hw, period, 0) == 0) {
-                            info.periodSizes.push_back(period);
-                        }
-                    }
-                    snd_pcm_hw_params_get_periods_min(hw, &info.minPeriods, nullptr);
-                    snd_pcm_hw_params_get_periods_max(hw, &info.maxPeriods, nullptr);
-                }
-
-                snd_pcm_close(pcm);
-            }
-
-            info.duplex = info.maxInputChannels > 0 && info.maxOutputChannels > 0;
-            if (info.maxInputChannels > 0 || info.maxOutputChannels > 0) {
-                devices.push_back(std::move(info));
-            } else {
-                logWarn("audio: " + info.id + " (" + cardName + ") has no usable PCM streams");
             }
         }
 
         snd_ctl_close(control);
+    }
+
+    for (AudioDeviceInfo& info : devices) {
+        probeStream(info, true);
+        probeStream(info, false);
+        info.duplex = info.maxInputChannels > 0 && info.maxOutputChannels > 0;
+        logInfo("audio: " + info.id + " \"" + info.name + "\" in="
+                + std::to_string(info.maxInputChannels) + " out="
+                + std::to_string(info.maxOutputChannels)
+                + (info.duplex ? " duplex" : ""));
+    }
+
+    if (devices.empty()) {
+        logWarn("audio: ALSA reported no hw: devices (arecord -l sees them as the login user?)");
     }
 
     // Duplex hardware first: it is the only kind that can actually run a
