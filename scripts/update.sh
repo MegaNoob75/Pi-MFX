@@ -63,6 +63,19 @@ if [[ -d "$REPO_DIR/ui/dist" ]]; then
 fi
 
 if [[ -f /etc/systemd/system/pimfx.service ]]; then
+    PIMFX_USER="${PIMFX_USER:-$(awk -F= '/^User=/{print $2; exit}' /etc/systemd/system/pimfx.service)}"
+    PIMFX_USER="${PIMFX_USER:-pimfx}"
+    DATA_ROOT="${DATA_ROOT:-/var/lib/pimfx}"
+    EXISTING_PORT="$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/pimfx.service | head -1)"
+    PIMFX_PORT="${PIMFX_PORT:-${EXISTING_PORT:-8080}}"
+    log "Refreshing the pimfx service unit"
+    sed -e "s|@USER@|$PIMFX_USER|g" \
+        -e "s|@PREFIX@|$PREFIX|g" \
+        -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
+        -e "s|@WEB_ROOT@|$WEB_ROOT|g" \
+        -e "s|@PORT@|$PIMFX_PORT|g" \
+        "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
+    systemctl daemon-reload
     log "Restarting pimfx"
     systemctl restart pimfx.service
     sleep 1

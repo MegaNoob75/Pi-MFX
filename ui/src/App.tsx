@@ -5,6 +5,7 @@ import { AboutView } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
 import { EditorView } from "./views/EditorView";
 import { PerformanceView } from "./views/PerformanceView";
+import { KeyboardProvider } from "./keyboard/KeyboardProvider";
 import { SettingsHub, SettingsPage as SettingsDetail } from "./views/SettingsView";
 
 export type View =
@@ -136,6 +137,7 @@ export function App() {
             {(toast || engine.lastError) && (
                 <div className="toast">{toast || engine.lastError}</div>
             )}
+            <KeyboardProvider />
         </div>
     );
 }

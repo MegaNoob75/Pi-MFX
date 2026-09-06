@@ -582,7 +582,9 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
         std::snprintf(controlName, sizeof(controlName), "hw:%d", card);
 
         snd_ctl_t* control = nullptr;
-        if (snd_ctl_open(&control, controlName, 0) < 0) {
+        const int openError = snd_ctl_open(&control, controlName, 0);
+        if (openError < 0) {
+            logWarn(std::string("audio: cannot open ") + controlName + ": " + snd_strerror(openError));
             continue;
         }
 
@@ -594,20 +596,40 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
         }
 
         const std::string cardName = snd_ctl_card_info_get_name(cardInfo);
+        const std::string cardId = snd_ctl_card_info_get_id(cardInfo);
         const std::string driver = snd_ctl_card_info_get_driver(cardInfo);
 
         int device = -1;
         while (snd_ctl_pcm_next_device(control, &device) >= 0 && device >= 0) {
             AudioDeviceInfo info;
-            char id[48];
-            std::snprintf(id, sizeof(id), "hw:%d,%d", card, device);
-            info.id = id;
+            // CARD= stays stable when USB enumeration shuffles hw:N numbers.
+            info.id = "hw:CARD=" + cardId + ",DEV=" + std::to_string(device);
             info.name = cardName;
             info.driver = driver;
             info.isHat = looksLikeHat(driver, cardName);
 
-            // Probing both directions is the only reliable way to know whether
-            // a card can do duplex; the name never tells you.
+            // Ask the control device first. That does not need an exclusive
+            // PCM open, so a card already held by PipeWire or our own stream
+            // still appears in the picker.
+            for (int direction = 0; direction < 2; ++direction) {
+                const bool capture = direction == 0;
+                snd_pcm_info_t* pcmInfo = nullptr;
+                snd_pcm_info_alloca(&pcmInfo);
+                snd_pcm_info_set_device(pcmInfo, static_cast<unsigned>(device));
+                snd_pcm_info_set_subdevice(pcmInfo, 0);
+                snd_pcm_info_set_stream(pcmInfo,
+                    capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK);
+                if (snd_ctl_pcm_info(control, pcmInfo) < 0) {
+                    continue;
+                }
+                const unsigned channels = std::max(1u, snd_pcm_info_get_subdevices_count(pcmInfo));
+                if (capture) {
+                    info.maxInputChannels = std::max(info.maxInputChannels, channels);
+                } else {
+                    info.maxOutputChannels = std::max(info.maxOutputChannels, channels);
+                }
+            }
+
             for (int direction = 0; direction < 2; ++direction) {
                 const bool capture = direction == 0;
                 snd_pcm_t* pcm = nullptr;
@@ -627,9 +649,9 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
                 unsigned maxChannels = 0;
                 snd_pcm_hw_params_get_channels_max(hw, &maxChannels);
                 if (capture) {
-                    info.maxInputChannels = maxChannels;
+                    info.maxInputChannels = std::max(info.maxInputChannels, maxChannels);
                 } else {
-                    info.maxOutputChannels = maxChannels;
+                    info.maxOutputChannels = std::max(info.maxOutputChannels, maxChannels);
                 }
 
                 if (!capture) {
@@ -656,6 +678,8 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
             info.duplex = info.maxInputChannels > 0 && info.maxOutputChannels > 0;
             if (info.maxInputChannels > 0 || info.maxOutputChannels > 0) {
                 devices.push_back(std::move(info));
+            } else {
+                logWarn("audio: " + info.id + " (" + cardName + ") has no usable PCM streams");
             }
         }
 

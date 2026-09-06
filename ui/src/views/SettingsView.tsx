@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { formatMs, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
+import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "../keyboard/mode";
 
 export type SettingsPage = "audio" | "controller" | "ui" | "library" | "system";
 
@@ -10,7 +11,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
             <div className="grid-cards">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen("audio")} />
                 <HubCard title="CONTROLLER" subtitle="MIDI floorboard layout and virtual switches" onClick={() => onOpen("controller")} />
-                <HubCard title="UI" subtitle="Tuner, meters and on-screen switch count" onClick={() => onOpen("ui")} />
+                <HubCard title="UI" subtitle="Tuner, meters, on-screen keyboard and switch count" onClick={() => onOpen("ui")} />
                 <HubCard title="LIBRARY" subtitle="NAM models and impulse responses" onClick={() => onOpen("library")} />
                 <HubCard title="SYSTEM" subtitle="Realtime threads, diagnostics and rescan" onClick={() => onOpen("system")} />
             </div>
@@ -58,20 +59,30 @@ function AudioSettings({
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-    const { client, state, meters } = engine;
+    const { client, state, meters, connected } = engine;
     const audio = obj(state.audio);
     const [devices, setDevices] = useState<JsonObject[]>([]);
     const [draft, setDraft] = useState(audio);
+    const [deviceError, setDeviceError] = useState("");
 
     useEffect(() => {
         setDraft(obj(state.audio));
     }, [state.audio]);
 
-    useEffect(() => {
+    const refreshDevices = () => {
         void client.request("audio/devices").then((result) => {
             setDevices(objects(result.devices));
-        }).catch(() => undefined);
-    }, [client]);
+            setDeviceError(objects(result.devices).length === 0
+                ? "No cards reported. On the Pi run arecord -l, then check journalctl -u pimfx."
+                : "");
+        }).catch((error: unknown) => {
+            setDeviceError(error instanceof Error ? error.message : String(error));
+        });
+    };
+
+    useEffect(() => {
+        refreshDevices();
+    }, [client, connected]);
 
     const selected = devices.find((device) => str(device.id) === str(draft.device)) ?? devices[0];
     const rates = arr(obj(selected).sampleRates).filter((value): value is number => typeof value === "number");
@@ -86,13 +97,16 @@ function AudioSettings({
             <div className="panel stack">
                 <h2>AUDIO DEVICE</h2>
                 {str(state.audioError) && <div className="danger">{str(state.audioError)}</div>}
+                {deviceError && <div className="danger">{deviceError}</div>}
                 <label className="field">
                     <span>Playback / duplex card</span>
                     <select value={str(draft.device)} onChange={(event) => set("device", event.target.value)}>
                         {devices.length === 0 && <option value={str(draft.device)}>{str(draft.device) || "No devices yet"}</option>}
                         {devices.map((device) => (
                             <option key={str(device.id)} value={str(device.id)}>
-                                {str(device.name)} {bool(device.isHat) ? "(HAT)" : ""} {bool(device.duplex) ? "" : "(out)"}
+                                {str(device.name)}
+                                {bool(device.isHat) ? " (HAT)" : ""}
+                                {bool(device.duplex) ? " · duplex" : bool(device.maxInputChannels) ? " (in)" : " (out)"}
                             </option>
                         ))}
                     </select>
@@ -139,6 +153,9 @@ function AudioSettings({
                 <div className="row">
                     <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("audio/settings", draft))}>
                         APPLY
+                    </button>
+                    <button type="button" className="btn" onClick={() => refreshDevices()}>
+                        RESCAN CARDS
                     </button>
                     <button type="button" className="btn" onClick={() => void run(() => client.request("meters/reset"))}>
                         RESET XRUNS
@@ -289,11 +306,16 @@ function UiSettings({
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
     const ui = obj(engine.state.ui);
+    const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(loadKeyboardMode);
     const save = (next: JsonObject) => {
         void run(() => engine.client.request("ui/settings", next));
     };
+    const setMode = (mode: KeyboardMode) => {
+        saveKeyboardMode(mode);
+        setKeyboardMode(mode);
+    };
     return (
-        <div className="page-scroll">
+        <div className="page-scroll stack">
             <div className="panel stack">
                 <h2>ON-SCREEN SURFACE</h2>
                 <label className="field">
@@ -306,6 +328,22 @@ function UiSettings({
                         onClick={() => save({ ...ui, showTuner: !bool(ui.showTuner, true) })}>TUNER</button>
                     <button type="button" className={`btn ${bool(ui.showLatencyMeter, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...ui, showLatencyMeter: !bool(ui.showLatencyMeter, true) })}>LATENCY</button>
+                </div>
+            </div>
+            <div className="panel stack">
+                <h2>ON-SCREEN KEYBOARD</h2>
+                <div className="muted">Auto shows it on the Pi touchscreen and stays out of the way on phones.</div>
+                <div className="row">
+                    {(["auto", "on", "off"] as KeyboardMode[]).map((mode) => (
+                        <button
+                            key={mode}
+                            type="button"
+                            className={`btn ${keyboardMode === mode ? "btn-active" : ""}`}
+                            onClick={() => setMode(mode)}
+                        >
+                            {mode.toUpperCase()}
+                        </button>
+                    ))}
                 </div>
             </div>
         </div>

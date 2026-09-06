@@ -43,7 +43,11 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=@DATA_ROOT@
+# char-alsa covers USB cards that appear after boot. A path of /dev/snd
+# alone does not always match those later nodes when DevicePolicy is closed.
+DeviceAllow=char-alsa rw
 DeviceAllow=/dev/snd rw
+DeviceAllow=/dev/snd/* rw
 DeviceAllow=/dev/cpu_dma_latency rw
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

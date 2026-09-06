@@ -1,0 +1,107 @@
+.pimfx-keyboard-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+    background: rgba(3, 4, 8, 0.88);
+    color: var(--mfx-text);
+    user-select: none;
+    touch-action: manipulation;
+}
+
+.pimfx-keyboard-panel {
+    width: min(1100px, 100%);
+    height: min(720px, 100%);
+    padding: 14px;
+    border: 2px solid var(--mfx-border);
+    border-radius: 16px;
+    background: var(--mfx-panel);
+    box-shadow: 0 18px 60px var(--mfx-shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.pimfx-keyboard-value {
+    min-height: 72px;
+    padding: 8px 14px;
+    border: 2px solid var(--mfx-cyan);
+    border-radius: 10px;
+    background: var(--mfx-bg);
+}
+
+.pimfx-keyboard-label {
+    color: var(--mfx-cyan);
+    font-weight: 900;
+    letter-spacing: 0.04em;
+}
+
+.pimfx-keyboard-text {
+    margin-top: 6px;
+    font-size: clamp(20px, 4vh, 34px);
+    font-weight: 800;
+    white-space: pre;
+}
+
+.pimfx-keyboard-selection {
+    background: var(--mfx-cyan);
+    color: var(--mfx-bg);
+}
+
+.pimfx-keyboard-caret {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    vertical-align: -0.12em;
+    background: var(--mfx-cyan);
+}
+
+.pimfx-keyboard-rows {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.pimfx-keyboard-row {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+}
+
+.pimfx-keyboard-key {
+    min-width: 0;
+    min-height: 42px;
+    height: 100%;
+    flex: 1 1 0;
+    border: 1px solid var(--mfx-border);
+    border-radius: 10px;
+    background: var(--mfx-panel-alt);
+    color: var(--mfx-text);
+    font: inherit;
+    font-size: clamp(17px, 3.5vh, 28px);
+    font-weight: 800;
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.48);
+}
+
+.pimfx-keyboard-key:active,
+.pimfx-keyboard-key.is-active {
+    transform: translateY(2px);
+    border-color: var(--mfx-cyan);
+    background: var(--mfx-cyan-surface);
+    color: var(--mfx-cyan-text);
+}
+
+.pimfx-keyboard-key.is-wide { flex-grow: 1.8; }
+.pimfx-keyboard-key.is-space { flex-grow: 4; }
+.pimfx-keyboard-key.is-cancel { color: var(--mfx-danger); }
+.pimfx-keyboard-key.is-done {
+    border-color: var(--mfx-cyan);
+    color: var(--mfx-cyan);
+}
