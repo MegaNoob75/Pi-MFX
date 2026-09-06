@@ -42,19 +42,24 @@ list your card.
 ```bash
 git clone https://github.com/MegaNoob75/Pi-MFX.git
 cd Pi-MFX
-sudo ./scripts/install.sh
+sudo bash ./scripts/pimfx.sh
 ```
+
+Pick **1) Complete setup** for a first Pi with plugins and an attached
+touchscreen, or **2) Install** for the engine and web UI only.
 
 This builds the engine and the UI, creates a `pimfx` service account, installs
 a systemd service, and tunes the OS for audio. Everything it changes is listed
-in [LOW_LATENCY.md](LOW_LATENCY.md) and undone by `scripts/uninstall.sh`.
+in [LOW_LATENCY.md](LOW_LATENCY.md) and undone from the same menu (**Remove**).
 
-Useful options:
+Scripted options (no menu):
 
 ```bash
-sudo ./scripts/install.sh --with-plugins   # also install a starter LV2 set
-sudo ./scripts/install.sh --no-tuning      # service only, no system changes
-sudo ./scripts/install.sh --port 8000      # different web port
+sudo bash ./scripts/pimfx.sh install --with-plugins
+sudo bash ./scripts/pimfx.sh install --no-tuning
+sudo bash ./scripts/pimfx.sh install --port 8000
+sudo bash ./scripts/pimfx.sh update
+sudo bash ./scripts/pimfx.sh display --display-user ross
 ```
 
 Pi-MFX ships no effects. `--with-plugins` installs packages from the Raspberry
@@ -102,24 +107,21 @@ downloaded from TONE3000.
 one. You do not need one — the browser is a complete control surface, and the
 Performance screen gives you on-screen switches.
 
-## Optional: kiosk mode on a local touchscreen
+## Optional: touchscreen on the Pi
 
-On a Pi with the desktop installed:
+From the setup menu pick **4) Set up touchscreen display**, or:
 
 ```bash
-sudo apt install -y chromium-browser unclutter
-mkdir -p ~/.config/autostart
-cat > ~/.config/autostart/pimfx-kiosk.desktop <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=Pi-MFX
-Exec=chromium-browser --kiosk --incognito --noerrdialogs --disable-infobars http://localhost:8080
-X-GNOME-Autostart-enabled=true
-EOF
+sudo bash ./scripts/pimfx.sh display
 ```
 
-A desktop session costs CPU. If latency matters more than a local screen, use
-Lite and control Pi-MFX from a tablet.
+That installs Labwc and Chromium, enables console auto-login for the account
+you used with sudo, and opens `http://127.0.0.1:8080` fullscreen after reboot.
+It does not use Chromium's strict kiosk mode. A tablet or phone on the LAN is
+still a complete control surface if you skip this.
+
+To undo just the screen session: menu item **5**, or
+`sudo bash ./scripts/pimfx.sh display-remove`.
 
 ## Updating
 
@@ -128,20 +130,23 @@ It does not redo apt or OS tuning.
 
 ```bash
 cd ~/Pi-MFX
-sudo bash ./scripts/update.sh
+sudo bash ./scripts/pimfx.sh update
 ```
 
-Day-to-day PC + Pi steps are in [DEV_FLOW.md](DEV_FLOW.md).
+Or open the menu and pick **Update**. Day-to-day PC + Pi steps are in
+[DEV_FLOW.md](DEV_FLOW.md).
 
 Your banks, settings, models, and IRs live in `/var/lib/pimfx` and are not
-touched by an update or a reinstall. Run `sudo ./scripts/install.sh` again only
-if you need new system packages or want to re-apply tuning.
+touched by an update or a reinstall. Run install again only if you need new
+system packages or want to re-apply tuning.
 
 ## Removing
 
+From the menu pick **Remove Pi-MFX**, or:
+
 ```bash
-sudo ./scripts/uninstall.sh          # keeps your data
-sudo ./scripts/uninstall.sh --purge  # deletes /var/lib/pimfx too
+sudo bash ./scripts/pimfx.sh remove          # keeps your data
+sudo bash ./scripts/pimfx.sh remove --purge  # deletes /var/lib/pimfx too
 ```
 
 ## Troubleshooting

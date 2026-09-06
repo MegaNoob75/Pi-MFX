@@ -29,7 +29,9 @@ die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF'
-Usage: sudo ./scripts/install.sh [options]
+Usage: sudo bash ./scripts/install.sh [options]
+
+Or run the menu instead:  sudo bash ./scripts/pimfx.sh
 
   --with-plugins      Install a starter set of LV2 plugins from the distro
   --no-plugins        Do not install any plugins (default when non-interactive)

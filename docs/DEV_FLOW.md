@@ -22,9 +22,12 @@ sudo apt update
 sudo apt install -y git
 git clone -b dev https://github.com/MegaNoob75/Pi-MFX.git
 cd Pi-MFX
-sudo bash ./scripts/install.sh --with-plugins
+sudo bash ./scripts/pimfx.sh
 sudo reboot
 ```
+
+The menu can install, update, set up a local touchscreen, or remove Pi-MFX.
+On a first Pi pick **1) Complete setup** or **2) Install**.
 
 4. After reboot, from any browser on the same network:
 
@@ -52,10 +55,10 @@ SSH in, then:
 
 ```bash
 cd ~/Pi-MFX
-sudo bash ./scripts/update.sh
+sudo bash ./scripts/pimfx.sh
 ```
 
-That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone.
+Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update`. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone.
 
 ### Test
 
@@ -107,7 +110,7 @@ npm run dev
 | Symptom | What to do |
 | --- | --- |
 | Page will not load | `systemctl status pimfx` and `journalctl -u pimfx -n 50` |
-| `update.sh` says not installed | First time: `sudo bash ./scripts/install.sh` |
+| `update.sh` says not installed | First time: `sudo bash ./scripts/pimfx.sh` and pick Install |
 | `git pull` refused | On the Pi you have local edits. `git status`. Do not fight it — stash or reset only if you meant those files to come from the PC. |
 | No sound card in the UI | `arecord -l` on the Pi. If empty, the OS cannot see the hardware. |
 | Empty plugin list | `lv2ls`. If empty, `sudo bash ./scripts/install.sh --with-plugins` |
@@ -119,8 +122,9 @@ npm run dev
 
 | Script | Where | What |
 | --- | --- | --- |
-| `scripts/install.sh` | Pi, once | Dependencies, first build, OS audio tuning, systemd |
-| `scripts/update.sh` | Pi, every change | Pull, rebuild, restart |
+| `scripts/pimfx.sh` | Pi, usual entry | Menu: install, update, touchscreen, status, remove |
+| `scripts/install.sh` | Pi | Same as menu item Install |
+| `scripts/update.sh` | Pi | Same as menu item Update |
 | `scripts/status.sh` | Pi, any time | Branch, service, cards |
-| `scripts/uninstall.sh` | Pi | Remove the service (keeps `/var/lib/pimfx` unless `--purge`) |
+| `scripts/uninstall.sh` | Pi | Same as menu item Remove |
 | `scripts/dev-pc.ps1` | Windows, optional | Reminds you of the PC steps and checks you are on `dev` |

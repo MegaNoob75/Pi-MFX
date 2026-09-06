@@ -43,9 +43,9 @@ Latency is treated as a product requirement, not a tuning afterthought.
   allows it.
 - The UI shows the measured round trip and the xrun count, so the number on
   screen is real rather than theoretical.
-- `scripts/install.sh` hardens the OS for audio (governor, RT limits, PipeWire
-  masked). It deliberately does **not** isolate CPU cores by default, because
-  NAM and similar plugins use worker threads.
+- `scripts/pimfx.sh` (and `install.sh`) harden the OS for audio (governor, RT
+  limits, PipeWire masked). They deliberately do **not** isolate CPU cores by
+  default, because NAM and similar plugins use worker threads.
 
 Details and every OS change are documented in [docs/LOW_LATENCY.md](docs/LOW_LATENCY.md).
 
@@ -56,7 +56,7 @@ On the Pi:
 ```bash
 git clone https://github.com/<your-account>/Pi-MFX.git
 cd Pi-MFX
-sudo ./scripts/install.sh
+sudo bash ./scripts/pimfx.sh
 ```
 
 Then open `http://<pi-address>:8080` from any browser on the network. Full
@@ -70,7 +70,7 @@ instructions, including audio HAT overlays and kiosk mode, are in
 | `engine/` | C++17 audio engine: ALSA backend, LV2 host, control server |
 | `ui/` | Vite + React browser UI |
 | `firmware/` | ESP32-S3 USB-MIDI controller firmware (PlatformIO) |
-| `scripts/` | `install.sh`, `uninstall.sh`, OS hardening |
+| `scripts/` | `pimfx.sh` menu, install / update / uninstall, OS hardening |
 | `systemd/` | `pimfx.service` |
 | `docs/` | Install, low latency, DIY controller, protocol, licenses |
 | `licenses/` | Verbatim third-party license texts |
@@ -83,7 +83,7 @@ Daily loop (full detail in [docs/DEV_FLOW.md](docs/DEV_FLOW.md)):
 
 ```text
 PC:   edit → GitHub Desktop commit/push on dev
-Pi:   cd ~/Pi-MFX && sudo bash ./scripts/update.sh
+Pi:   cd ~/Pi-MFX && sudo bash ./scripts/pimfx.sh update
 Web:  http://<pi-address>:8080
 ```
 

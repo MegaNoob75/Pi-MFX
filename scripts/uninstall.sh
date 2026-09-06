@@ -28,6 +28,33 @@ done
 
 [[ $EUID -eq 0 ]] || { echo "run this with sudo" >&2; exit 1; }
 
+DISPLAY_STATE_DIR="/var/lib/pimfx-touchscreen"
+
+restore_display_file() {
+    local target="$1" name="$2"
+    rm -f "$target"
+    if [[ -f "$DISPLAY_STATE_DIR/${name}.was-present" && -e "$DISPLAY_STATE_DIR/${name}.backup" ]]; then
+        cp -a "$DISPLAY_STATE_DIR/${name}.backup" "$target"
+    fi
+}
+
+if [[ -d "$DISPLAY_STATE_DIR" ]]; then
+    log "Restoring the console login (undoing the touchscreen session)"
+    configured_user="$(cat "$DISPLAY_STATE_DIR/configured-user" 2>/dev/null || true)"
+    restore_display_file /etc/xdg/labwc/rc.xml labwc-rc.xml
+    restore_display_file /etc/xdg/labwc/autostart labwc-autostart
+    if [[ -n "${configured_user:-}" ]] && id "$configured_user" >/dev/null 2>&1; then
+        display_home="$(getent passwd "$configured_user" | cut -d: -f6)"
+        display_group="$(id -gn "$configured_user")"
+        restore_display_file "$display_home/.bash_profile" bash-profile
+        [[ ! -e "$display_home/.bash_profile" ]] || chown "$configured_user:$display_group" "$display_home/.bash_profile"
+    fi
+    if command -v raspi-config >/dev/null 2>&1; then
+        raspi-config nonint do_boot_behaviour B1 || true
+    fi
+    rm -rf "$DISPLAY_STATE_DIR"
+fi
+
 log "Stopping services"
 systemctl disable --now pimfx.service          >/dev/null 2>&1 || true
 systemctl disable --now pimfx-governor.service >/dev/null 2>&1 || true
