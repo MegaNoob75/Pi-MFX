@@ -1,0 +1,40 @@
+# Build output
+build/
+out/
+dist/
+*.o
+*.so
+*.a
+compile_commands.json
+
+# Node / Vite
+node_modules/
+.vite/
+ui/dist/
+*.tsbuildinfo
+
+# PlatformIO / ESP32
+.pio/
+.pioenvs/
+.piolibdeps/
+firmware/**/build/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Runtime data that must never be committed
+*.nam
+*.aidax
+audio_uploads/
+var/
+secrets.json
+.env
+.env.*
+!.env.example
+
+# TONE3000 credentials (secret key must stay on the Pi)
+tone3000-secret*

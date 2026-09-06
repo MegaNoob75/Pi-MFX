@@ -1,0 +1,30 @@
+libsndfile
+Used by Pi-MFX: reading impulse-response audio files (WAV, FLAC, AIFF).
+Upstream: https://libsndfile.github.io/libsndfile/
+
+Copyright (C) 1999-2024 Erik de Castro Lopo <erikd@mega-nerd.com> and
+libsndfile contributors.
+
+libsndfile is licensed under the GNU Lesser General Public License, version 2.1
+or (at your option) any later version.
+
+    This library is free software; you can redistribute it and/or modify it
+    under the terms of the GNU Lesser General Public License as published by
+    the Free Software Foundation; either version 2.1 of the License, or (at
+    your option) any later version.
+
+    This library is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser
+    General Public License for more details.
+
+HOW Pi-MFX USES IT
+
+Pi-MFX links dynamically against the unmodified libsndfile provided by the
+operating system. No libsndfile source is copied, modified, or redistributed.
+
+FULL LICENSE TEXT
+
+    https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+or, on Debian-based systems, /usr/share/common-licenses/LGPL-2.1

@@ -1,0 +1,56 @@
+[Unit]
+Description=Pi-MFX guitar multi-effects engine
+Documentation=https://github.com/MegaNoob75/Pi-MFX
+# Sound cards, including USB interfaces, must exist before the engine opens
+# them. Without this the service races the driver on a cold boot.
+After=sound.target network.target
+Wants=sound.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+SupplementaryGroups=audio plugdev
+
+Environment=PIMFX_DATA_ROOT=@DATA_ROOT@
+Environment=PIMFX_WEB_ROOT=@WEB_ROOT@
+ExecStart=@PREFIX@/bin/pimfx --port @PORT@
+
+# Realtime scheduling for the audio thread, and no memory limit on locked
+# pages. These are what make a 64-frame period survivable.
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+LimitNICE=-19
+
+# Give the engine a head start over everything else the system is doing while
+# it boots. The audio thread raises itself to SCHED_FIFO once it starts.
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=2
+CPUSchedulingPolicy=other
+
+# The Pi is dedicated to this, so restart rather than leaving a dead pedalboard
+# on a stage. The rate limit stops a crash loop from thrashing the card.
+Restart=always
+RestartSec=2
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# The service needs the sound devices, its own data directory, and the network.
+# It needs nothing else, so it gets nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=@DATA_ROOT@
+DeviceAllow=/dev/snd rw
+DeviceAllow=/dev/cpu_dma_latency rw
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=no
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

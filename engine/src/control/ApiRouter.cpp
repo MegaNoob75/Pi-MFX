@@ -1,0 +1,413 @@
+#include "control/ApiRouter.h"
+
+#include "core/Crypto.h"
+#include "core/Log.h"
+
+namespace pimfx {
+namespace {
+
+Json queryToJson(const HttpRequest& request) {
+    Json json = Json::object();
+    for (const auto& entry : request.query) {
+        json.set(entry.first, Json(entry.second));
+    }
+    return json;
+}
+
+Json envelope(bool ok, const std::string& error, const Json& payload) {
+    Json json = payload.isObject() ? payload : Json::object();
+    json.set("ok", ok);
+    if (!ok && !error.empty()) {
+        json.set("error", error);
+    }
+    return json;
+}
+
+} // namespace
+
+ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, HttpServer& server)
+    : engine_(engine), tone3000_(tone3000), server_(server) {}
+
+void ApiRouter::attach() {
+    server_.setRequestHandler([this](const HttpRequest& request, HttpResponse& response) {
+        return handleRequest(request, response);
+    });
+    server_.setSocketOpenHandler([this](uint64_t clientId) { handleSocketOpen(clientId); });
+    server_.setSocketMessageHandler([this](uint64_t clientId, const std::string& message) {
+        handleSocketMessage(clientId, message);
+    });
+
+    engine_.setStateListener([this](const Json& state) {
+        server_.broadcast(state.dump());
+    });
+}
+
+bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response) {
+    if (request.path.rfind("/api/", 0) != 0) {
+        return false; // static files
+    }
+
+    const std::string command = request.path.substr(5);
+
+    Json payload;
+    if (request.method == "GET" || request.method == "DELETE") {
+        payload = queryToJson(request);
+    } else if (!request.body.empty()) {
+        std::string parseError;
+        payload = Json::parse(request.body, &parseError);
+        if (!parseError.empty()) {
+            response.error(400, "the request body is not valid JSON: " + parseError);
+            return true;
+        }
+    } else {
+        payload = Json::object();
+    }
+
+    bool ok = true;
+    std::string error;
+    const Json result = dispatch(command, payload, ok, error);
+
+    if (!ok && error == "unknown command") {
+        response.error(404, "no such API endpoint: " + command);
+        return true;
+    }
+    response.json(envelope(ok, error, result).dump(), ok ? 200 : 400);
+    return true;
+}
+
+void ApiRouter::handleSocketOpen(uint64_t clientId) {
+    // A new client gets everything it needs to render, in one burst, rather
+    // than making five requests before it can draw anything.
+    server_.sendTo(clientId, engine_.fullState().dump());
+    server_.sendTo(clientId, engine_.catalogState(false).dump());
+    server_.sendTo(clientId, engine_.libraryState().dump());
+    server_.sendTo(clientId, engine_.meterState().dump());
+}
+
+void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& message) {
+    std::string parseError;
+    const Json json = Json::parse(message, &parseError);
+    if (!parseError.empty()) {
+        return;
+    }
+
+    const std::string command = json["command"].asString();
+    if (command.empty()) {
+        return;
+    }
+
+    bool ok = true;
+    std::string error;
+    const Json result = dispatch(command, json["payload"], ok, error);
+
+    Json reply = envelope(ok, error, result);
+    reply.set("type", "result");
+    reply.set("id", json["id"]);
+    reply.set("command", command);
+    server_.sendTo(clientId, reply.dump());
+}
+
+Json ApiRouter::dispatch(const std::string& command, const Json& payload,
+                         bool& ok, std::string& error) {
+    ok = true;
+    error.clear();
+
+    // --- reads ------------------------------------------------------------
+    if (command == "state") {
+        return engine_.fullState();
+    }
+    if (command == "catalog") {
+        return engine_.catalogState(payload["ports"].asBool(false));
+    }
+    if (command == "audio/devices") {
+        return engine_.audioDevicesState();
+    }
+    if (command == "midi/ports") {
+        return engine_.midiPortsState();
+    }
+    if (command == "library") {
+        return engine_.libraryState();
+    }
+    if (command == "diagnostics") {
+        return engine_.diagnosticsState();
+    }
+    if (command == "meters") {
+        return engine_.meterState();
+    }
+
+    // --- settings ---------------------------------------------------------
+    if (command == "audio/settings") {
+        ok = engine_.applyAudioSettings(payload, error);
+        return engine_.fullState();
+    }
+    if (command == "system/settings") {
+        ok = engine_.applySystemSettings(payload, error);
+        return engine_.diagnosticsState();
+    }
+    if (command == "ui/settings") {
+        ok = engine_.applyUiSettings(payload, error);
+        return Json::object();
+    }
+    if (command == "meters/reset") {
+        engine_.resetMeters();
+        return Json::object();
+    }
+
+    // --- presets and banks -------------------------------------------------
+    if (command == "preset/select") {
+        ok = engine_.selectPreset(payload["bankId"].asString(), payload["presetId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "preset/step") {
+        ok = engine_.stepPreset(payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "bank/step") {
+        ok = engine_.stepBank(payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "preset/save") {
+        ok = engine_.savePreset(error);
+        return Json::object();
+    }
+    if (command == "preset/saveAs") {
+        ok = engine_.savePresetAs(payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "preset/rename") {
+        ok = engine_.renamePreset(payload["presetId"].asString(), payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "preset/delete") {
+        ok = engine_.deletePreset(payload["presetId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "preset/reorder") {
+        ok = engine_.reorderPreset(payload["presetId"].asString(), payload["index"].asInt(0), error);
+        return Json::object();
+    }
+    if (command == "bank/create") {
+        ok = engine_.createBank(payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "bank/rename") {
+        ok = engine_.renameBank(payload["bankId"].asString(), payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "bank/delete") {
+        ok = engine_.deleteBank(payload["bankId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "bank/export") {
+        const Json bank = engine_.exportBank(payload["bankId"].asString());
+        if (bank.isNull()) {
+            ok = false;
+            error = "no such bank";
+            return Json::object();
+        }
+        Json result = Json::object();
+        result.set("bank", bank);
+        return result;
+    }
+    if (command == "bank/import") {
+        ok = engine_.importBank(payload["bank"], error);
+        return Json::object();
+    }
+
+    // --- chain ------------------------------------------------------------
+    if (command == "chain/add") {
+        std::string slotId;
+        ok = engine_.addEffect(payload["uri"].asString(), payload["index"].asInt(-1), slotId, error);
+        Json result = Json::object();
+        result.set("slotId", slotId);
+        return result;
+    }
+    if (command == "chain/remove") {
+        ok = engine_.removeEffect(payload["slotId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "chain/move") {
+        ok = engine_.moveEffect(payload["slotId"].asString(), payload["index"].asInt(0), error);
+        return Json::object();
+    }
+    if (command == "chain/enable") {
+        ok = engine_.setEffectEnabled(payload["slotId"].asString(),
+                                      payload["enabled"].asBool(true), error);
+        return Json::object();
+    }
+    if (command == "chain/name") {
+        ok = engine_.setEffectName(payload["slotId"].asString(), payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "chain/control") {
+        ok = engine_.setControlValue(payload["slotId"].asString(),
+                                     payload["port"].asString(),
+                                     payload["value"].asFloat(0.0f), error);
+        return Json::object();
+    }
+    if (command == "chain/property") {
+        ok = engine_.setEffectProperty(payload["slotId"].asString(),
+                                       payload["property"].asString(),
+                                       payload["path"].asString(), error);
+        return Json::object();
+    }
+    if (command == "chain/bypass") {
+        engine_.setBypassAll(payload["bypassed"].asBool(!engine_.bypassAll()));
+        return Json::object();
+    }
+
+    // --- snapshots ---------------------------------------------------------
+    if (command == "snapshot/capture") {
+        std::string snapshotId;
+        ok = engine_.captureSnapshot(payload["name"].asString(), snapshotId, error);
+        Json result = Json::object();
+        result.set("snapshotId", snapshotId);
+        return result;
+    }
+    if (command == "snapshot/select") {
+        ok = engine_.selectSnapshot(payload["snapshotId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "snapshot/update") {
+        ok = engine_.updateSnapshot(payload["snapshotId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "snapshot/delete") {
+        ok = engine_.deleteSnapshot(payload["snapshotId"].asString(), error);
+        return Json::object();
+    }
+
+    // --- controller --------------------------------------------------------
+    if (command == "controller/config") {
+        ok = engine_.applyControllerConfig(payload, error);
+        return Json::object();
+    }
+    if (command == "controller/connect") {
+        ok = engine_.connectController(payload["port"].asString(), error);
+        return engine_.midiPortsState();
+    }
+    if (command == "controller/disconnect") {
+        engine_.disconnectController();
+        return Json::object();
+    }
+    if (command == "controller/learn") {
+        engine_.beginControlLearn(payload["controlId"].asString());
+        return Json::object();
+    }
+    if (command == "controller/cancelLearn") {
+        engine_.cancelControlLearn();
+        return Json::object();
+    }
+    if (command == "controller/press") {
+        ok = engine_.pressVirtualControl(payload["controlId"].asString(),
+                                         payload["pressed"].asBool(true), error);
+        return Json::object();
+    }
+
+    // --- library -----------------------------------------------------------
+    if (command == "library/upload") {
+        // Files arrive base64-encoded inside JSON. A NAM capture is small
+        // enough that this is simpler and safer than multipart parsing.
+        const std::string contents = base64Decode(payload["data"].asString());
+        std::string storedPath;
+        ok = engine_.storeLibraryFile(payload["kind"].asString("model"),
+                                      payload["name"].asString(),
+                                      contents, storedPath, error);
+        Json result = Json::object();
+        result.set("path", storedPath);
+        return result;
+    }
+    if (command == "library/delete") {
+        ok = engine_.deleteLibraryFile(payload["path"].asString(), error);
+        return Json::object();
+    }
+
+    // --- performance -------------------------------------------------------
+    if (command == "tap") {
+        engine_.tapTempo();
+        return Json::object();
+    }
+    if (command == "tuner") {
+        engine_.setTunerEnabled(payload["enabled"].asBool(true));
+        return Json::object();
+    }
+    if (command == "plugins/rescan") {
+        std::string rescanError;
+        ok = engine_.catalog().rescan(rescanError);
+        error = rescanError;
+        return engine_.catalogState(false);
+    }
+
+    if (command.rfind("tone3000/", 0) == 0) {
+        return tone3000Command(command.substr(9), payload, ok, error);
+    }
+
+    ok = false;
+    error = "unknown command";
+    return Json::object();
+}
+
+Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
+                                bool& ok, std::string& error) {
+    if (command == "status") {
+        return tone3000_.status();
+    }
+    if (command == "configure") {
+        tone3000_.configure(payload["publishableKey"].asString(), payload["redirectUri"].asString());
+        return tone3000_.status();
+    }
+    if (command == "auth/start") {
+        const std::string url = tone3000_.beginAuthorization(payload["prompt"].asString(),
+                                                             payload, error);
+        ok = !url.empty();
+        Json result = Json::object();
+        result.set("authorizeUrl", url);
+        return result;
+    }
+    if (command == "auth/complete") {
+        ok = tone3000_.completeAuthorization(payload["code"].asString(),
+                                             payload["state"].asString(), error);
+        return tone3000_.status();
+    }
+    if (command == "auth/logout") {
+        tone3000_.logout();
+        return tone3000_.status();
+    }
+    if (command == "tones") {
+        const Json result = tone3000_.listTones(payload["source"].asString("search"), payload, error);
+        ok = error.empty();
+        Json wrapper = Json::object();
+        wrapper.set("result", result);
+        return wrapper;
+    }
+    if (command == "tone") {
+        const Json result = tone3000_.tone(payload["toneId"].asString(), error);
+        ok = error.empty();
+        Json wrapper = Json::object();
+        wrapper.set("result", result);
+        return wrapper;
+    }
+    if (command == "models") {
+        const Json result = tone3000_.models(payload["toneId"].asString(), payload, error);
+        ok = error.empty();
+        Json wrapper = Json::object();
+        wrapper.set("result", result);
+        return wrapper;
+    }
+    if (command == "download") {
+        std::string storedPath;
+        ok = tone3000_.downloadModel(payload["url"].asString(),
+                                     payload["name"].asString(),
+                                     payload["kind"].asString("model"),
+                                     storedPath, error);
+        Json result = Json::object();
+        result.set("path", storedPath);
+        return result;
+    }
+
+    ok = false;
+    error = "unknown command";
+    return Json::object();
+}
+
+} // namespace pimfx
