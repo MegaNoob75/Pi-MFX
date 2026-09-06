@@ -76,6 +76,12 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         -e "s|@PORT@|$PIMFX_PORT|g" \
         "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
     systemctl daemon-reload
+    if [[ -f "$REPO_DIR/systemd/95-pimfx-audio.rules" ]]; then
+        log "Refreshing audio udev rules"
+        install -Dm644 "$REPO_DIR/systemd/95-pimfx-audio.rules" /etc/udev/rules.d/95-pimfx-audio.rules
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=sound >/dev/null 2>&1 || true
+    fi
     log "Restarting pimfx"
     systemctl restart pimfx.service
     sleep 1

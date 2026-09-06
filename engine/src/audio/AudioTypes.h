@@ -78,6 +78,7 @@ struct AudioDeviceInfo {
     std::string name;        ///< human-readable card + device name
     std::string driver;      ///< "USB-Audio", "HiFiBerry", ...
     bool isHat = false;      ///< I2S board rather than USB
+    bool isHdmi = false;     ///< Pi onboard HDMI; not a guitar path
     bool duplex = false;     ///< can capture and play back at once
     unsigned maxInputChannels = 0;
     unsigned maxOutputChannels = 0;

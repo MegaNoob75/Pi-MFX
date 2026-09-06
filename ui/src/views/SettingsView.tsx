@@ -108,6 +108,7 @@ function AudioSettings({
                             <option key={str(device.id)} value={str(device.id)}>
                                 {str(device.name)}
                                 {bool(device.isHat) ? " (HAT)" : ""}
+                                {bool(device.isHdmi) ? " (HDMI)" : ""}
                                 {bool(device.duplex) ? " · duplex" : bool(device.maxInputChannels) ? " (in)" : " (out)"}
                             </option>
                         ))}
@@ -349,8 +350,8 @@ function UiSettings({
             <div className="panel stack">
                 <h2>ON-SCREEN KEYBOARD</h2>
                 <div className="muted">
-                    Auto uses this keyboard on the attached Pi screen and leaves phones alone.
-                    On forces it everywhere. Off uses the system popup.
+                    On (the default) uses the Pi-MFX keyboard and blocks the system edit box.
+                    Auto does the same on the attached screen. Off uses the system popup.
                 </div>
                 <div className="row">
                     {(["auto", "on", "off"] as KeyboardMode[]).map((mode) => (

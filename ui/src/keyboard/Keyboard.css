@@ -1,11 +1,17 @@
+input[data-pimfx-osk="1"],
+textarea[data-pimfx-osk="1"] {
+    caret-color: transparent;
+}
+
 .pimfx-keyboard-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 80;
+    z-index: 2147483000;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 10px;
+    padding: clamp(8px, 1.5vh, 14px);
+    box-sizing: border-box;
     background: rgba(3, 4, 8, 0.88);
     color: var(--mfx-text);
     user-select: none;
@@ -13,9 +19,13 @@
 }
 
 .pimfx-keyboard-panel {
-    width: min(1100px, 100%);
-    height: min(720px, 100%);
-    padding: 14px;
+    width: 100%;
+    height: 100%;
+    max-width: 1100px;
+    min-height: 0;
+    margin: 0;
+    padding: clamp(10px, 2vh, 18px);
+    box-sizing: border-box;
     border: 2px solid var(--mfx-border);
     border-radius: 16px;
     background: var(--mfx-panel);

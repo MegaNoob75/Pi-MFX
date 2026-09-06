@@ -42,12 +42,13 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=no
 ReadWritePaths=@DATA_ROOT@
-# DeviceAllow implies DevicePolicy=closed, which hid USB PCM nodes on the
-# Scarlett (arecord as the login user could see the card; this service could
-# not). auto still keeps the other sandboxing below.
+# Do not set DeviceAllow=. Any DeviceAllow= line turns DevicePolicy=auto into
+# closed, which hides /dev/snd and makes USB cards look like "No such device"
+# (arecord as the login user still sees them). cpu_dma_latency is already
+# group-audio via udev.
 DevicePolicy=auto
-DeviceAllow=/dev/cpu_dma_latency rw
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes

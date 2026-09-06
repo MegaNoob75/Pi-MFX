@@ -81,18 +81,65 @@ void floatToSample(float value, uint8_t* data, snd_pcm_format_t format) {
     }
 }
 
+std::string toLowerCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+bool iequals(const std::string& a, const std::string& b) {
+    return toLowerCopy(a) == toLowerCopy(b);
+}
+
 bool looksLikeHat(const std::string& driver, const std::string& name) {
     static const char* markers[] = {"i2s", "hifiberry", "audioinjector", "iqaudio",
                                     "wm8960", "pcm512", "pcm5102", "sndrpi", "googlevoicehat"};
-    std::string haystack = driver + " " + name;
-    std::transform(haystack.begin(), haystack.end(), haystack.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const std::string haystack = toLowerCopy(driver + " " + name);
     for (const char* marker : markers) {
         if (haystack.find(marker) != std::string::npos) {
             return true;
         }
     }
     return false;
+}
+
+bool looksLikeHdmi(const std::string& driver, const std::string& name) {
+    const std::string haystack = toLowerCopy(driver + " " + name);
+    return haystack.find("hdmi") != std::string::npos
+        || haystack.find("vc4") != std::string::npos
+        || haystack.find("bcm2835") != std::string::npos
+        || haystack.find("bcm271") != std::string::npos;
+}
+
+bool isGuitarCard(const AudioDeviceInfo& info) {
+    return info.duplex && !info.isHdmi;
+}
+
+std::string pickLiveDevice(const std::vector<AudioDeviceInfo>& devices,
+                           const std::string& requested,
+                           std::string& error) {
+    const AudioDeviceInfo* chosen = nullptr;
+    if (!requested.empty()) {
+        for (const AudioDeviceInfo& device : devices) {
+            if (iequals(device.id, requested)) {
+                chosen = &device;
+                break;
+            }
+        }
+    }
+    if (!chosen) {
+        for (const AudioDeviceInfo& device : devices) {
+            if (isGuitarCard(device)) {
+                chosen = &device;
+                break;
+            }
+        }
+    }
+    if (!chosen) {
+        error = "no guitar-capable audio device; connect a USB interface or enable an audio HAT";
+        return {};
+    }
+    return chosen->id;
 }
 
 } // namespace
@@ -278,35 +325,17 @@ bool AlsaBackend::start(const AudioSettings& settings,
     metrics_ = metrics;
 
     AudioSettings resolved = settings;
-    if (resolved.device.empty()) {
-        const std::vector<AudioDeviceInfo> devices = enumerateDevices();
-        const AudioDeviceInfo* chosen = nullptr;
-        for (const AudioDeviceInfo& device : devices) {
-            if (device.duplex) {
-                chosen = &device;
-                break;
-            }
-        }
-        if (!chosen) {
-            for (const AudioDeviceInfo& device : devices) {
-                if (device.maxInputChannels > 0) {
-                    chosen = &device;
-                    break;
-                }
-            }
-        }
-        if (!chosen && !devices.empty()) {
-            chosen = &devices.front();
-        }
-        if (!chosen) {
-            error = "no audio device found; connect a USB interface or enable an audio HAT";
-            return false;
-        }
-        resolved.device = chosen->id;
-        logInfo("audio: no device configured, using " + resolved.device
-                + " (" + chosen->name + ", in=" + std::to_string(chosen->maxInputChannels)
-                + " out=" + std::to_string(chosen->maxOutputChannels) + ")");
+    const std::vector<AudioDeviceInfo> devices = enumerateDevices();
+    const std::string liveDevice = pickLiveDevice(devices, resolved.device, error);
+    if (liveDevice.empty()) {
+        return false;
     }
+    if (!resolved.device.empty() && !iequals(resolved.device, liveDevice)) {
+        logWarn("audio: '" + resolved.device + "' is not available; using " + liveDevice);
+    } else if (resolved.device.empty()) {
+        logInfo("audio: no device configured, using " + liveDevice);
+    }
+    resolved.device = liveDevice;
 
     const std::string captureDevice =
         resolved.captureDevice.empty() ? resolved.device : resolved.captureDevice;
@@ -671,6 +700,7 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
                     }
                     created.driver = "alsa";
                     created.isHat = looksLikeHat(created.driver, created.name);
+                    created.isHdmi = looksLikeHdmi(created.driver, created.name);
                     devices.push_back(std::move(created));
                     existing = &devices.back();
                 }
@@ -721,12 +751,14 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
             created.name = cardName;
             created.driver = driver;
             created.isHat = looksLikeHat(driver, cardName);
+            created.isHdmi = looksLikeHdmi(driver, cardName);
             devices.push_back(std::move(created));
             existing = &devices.back();
         } else {
             existing->name = cardName;
             existing->driver = driver;
             existing->isHat = looksLikeHat(driver, cardName);
+            existing->isHdmi = looksLikeHdmi(driver, cardName);
         }
 
         int device = -1;
@@ -770,7 +802,9 @@ std::vector<AudioDeviceInfo> AlsaBackend::enumerateDevices() {
     // guitar rig, so it belongs at the top of the picker.
     std::stable_sort(devices.begin(), devices.end(),
                      [](const AudioDeviceInfo& a, const AudioDeviceInfo& b) {
-                         return a.duplex && !b.duplex;
+                         const int rankA = a.isHdmi ? 2 : (a.duplex ? 0 : 1);
+                         const int rankB = b.isHdmi ? 2 : (b.duplex ? 0 : 1);
+                         return rankA < rankB;
                      });
     return devices;
 }

@@ -1,0 +1,9 @@
+# Installed by Pi-MFX.
+#
+# The latency guard writes this node. USB PCM nodes must stay in the audio
+# group so the pimfx service can open a Scarlett (or any class-compliant
+# interface) after boot or a replug.
+KERNEL=="cpu_dma_latency", GROUP="audio", MODE="0660"
+SUBSYSTEM=="sound", GROUP="audio", MODE="0660"
+KERNEL=="controlC[0-9]*", GROUP="audio", MODE="0660"
+KERNEL=="pcmC*D*[cp]", GROUP="audio", MODE="0660"

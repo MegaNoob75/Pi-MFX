@@ -3,19 +3,57 @@ import type { KeyboardLayout } from "./layouts";
 export type EditableElement = HTMLInputElement | HTMLTextAreaElement;
 
 const SUPPORTED_TYPES = new Set(["", "text", "search", "email", "url", "tel", "password", "number"]);
+const OSK_ATTR = "data-pimfx-osk";
+
+export function isSupportedEditable(element: Element): element is EditableElement {
+    if (element instanceof HTMLTextAreaElement) {
+        return !element.disabled;
+    }
+    if (!(element instanceof HTMLInputElement) || element.disabled) {
+        return false;
+    }
+    return SUPPORTED_TYPES.has(element.type.toLowerCase());
+}
 
 export function editableFromTarget(target: EventTarget | null): EditableElement | null {
     const element = target instanceof Element ? target.closest("input, textarea") : null;
-    if (element instanceof HTMLTextAreaElement) {
-        return element.disabled || element.readOnly ? null : element;
+    if (!element || !isSupportedEditable(element)) {
+        return null;
     }
-    if (!(element instanceof HTMLInputElement)
-        || element.disabled
-        || element.readOnly
-        || !SUPPORTED_TYPES.has(element.type.toLowerCase())) {
+    const armed = element.getAttribute(OSK_ATTR) === "1";
+    if (element.readOnly && !armed) {
         return null;
     }
     return element;
+}
+
+export function armForOnScreenKeyboard(element: EditableElement): void {
+    element.setAttribute(OSK_ATTR, "1");
+    element.setAttribute("inputmode", "none");
+    element.setAttribute("virtualkeyboardpolicy", "manual");
+    element.setAttribute("autocomplete", "off");
+    element.setAttribute("autocorrect", "off");
+    element.setAttribute("spellcheck", "false");
+    element.readOnly = true;
+}
+
+export function disarmForOnScreenKeyboard(element: EditableElement): void {
+    if (element.getAttribute(OSK_ATTR) !== "1") {
+        return;
+    }
+    element.removeAttribute(OSK_ATTR);
+    element.removeAttribute("inputmode");
+    element.removeAttribute("virtualkeyboardpolicy");
+    element.removeAttribute("autocorrect");
+    element.readOnly = false;
+}
+
+export function forEachSupportedEditable(root: ParentNode, visit: (element: EditableElement) => void): void {
+    root.querySelectorAll("input, textarea").forEach((node) => {
+        if (isSupportedEditable(node)) {
+            visit(node);
+        }
+    });
 }
 
 export function inferLabel(element: EditableElement): string {
@@ -38,6 +76,12 @@ export function inferLayout(element: EditableElement): KeyboardLayout {
         return "numeric";
     }
     const mode = element.inputMode.toLowerCase();
+    if (mode === "none") {
+        const armed = element.getAttribute("data-pimfx-keyboard-layout");
+        if (armed === "numeric" || armed === "decimal") {
+            return "numeric";
+        }
+    }
     return mode === "numeric" || mode === "decimal" ? "numeric" : "text";
 }
 
@@ -67,11 +111,19 @@ export function eraseSelection(
 }
 
 export function commitValue(element: EditableElement, value: string): void {
+    const wasReadOnly = element.readOnly;
+    element.readOnly = false;
     const prototype = element instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
     setter?.call(element, value);
-    element.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: value }));
+    element.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        composed: true,
+        inputType: "insertReplacementText",
+        data: value
+    }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.readOnly = wasReadOnly;
 }

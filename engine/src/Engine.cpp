@@ -1532,6 +1532,7 @@ void Engine::tunerThread() {
 
 void Engine::housekeepingThread() {
     int ticks = 0;
+    int audioRetryLog = 0;
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
 
@@ -1546,6 +1547,28 @@ void Engine::housekeepingThread() {
             std::lock_guard<std::mutex> lock(listenerMutex_);
             if (listener_) {
                 listener_(meterState());
+            }
+        }
+
+        // USB interfaces often appear after the service has already started.
+        // Retry every two seconds until a guitar card is there.
+        if (ticks % 80 == 0 && backend_ && !backend_->isRunning()
+            && !shuttingDown_.load()) {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            if (backend_ && !backend_->isRunning() && !shuttingDown_.load()) {
+                std::string err;
+                if (restartAudio(err)) {
+                    audioError_.clear();
+                    persistSettings();
+                    notify();
+                    logInfo("audio: interface appeared, stream started");
+                    audioRetryLog = 0;
+                } else {
+                    audioError_ = err;
+                    if (audioRetryLog++ % 15 == 0) {
+                        logWarn("audio: waiting for interface (" + err + ")");
+                    }
+                }
             }
         }
     }

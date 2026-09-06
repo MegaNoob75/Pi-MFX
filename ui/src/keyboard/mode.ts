@@ -12,7 +12,7 @@ export function loadKeyboardMode(): KeyboardMode {
     } catch {
         // private mode
     }
-    return "auto";
+    return "on";
 }
 
 export function saveKeyboardMode(mode: KeyboardMode): void {
@@ -35,48 +35,13 @@ function isPhoneOrTablet(): boolean {
         || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 }
 
-function isLocalHost(): boolean {
-    const host = window.location.hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1";
-}
-
-function isStandaloneApp(): boolean {
-    return window.matchMedia?.("(display-mode: standalone)").matches === true
-        || window.matchMedia?.("(display-mode: minimal-ui)").matches === true;
-}
-
-function isTouchCapable(): boolean {
-    return navigator.maxTouchPoints > 0
-        || window.matchMedia?.("(pointer: coarse)").matches === true
-        || window.matchMedia?.("(hover: none)").matches === true;
-}
-
-function isKioskQuery(): boolean {
-    try {
-        return new URLSearchParams(window.location.search).get("kiosk") === "1";
-    } catch {
-        return false;
-    }
-}
-
-function isPiKioskSession(): boolean {
-    if (!isLocalHost() || isPhoneOrTablet()) {
-        return false;
-    }
-    // The touchscreen Chromium --app= URL includes ?kiosk=1. Standalone and
-    // coarse-pointer checks catch the same session if the query is stripped.
-    return isKioskQuery() || isStandaloneApp() || isTouchCapable();
-}
-
 export function shouldUseOnScreenKeyboard(mode = loadKeyboardMode()): boolean {
-    if (mode === "on") {
-        return true;
-    }
     if (mode === "off") {
         return false;
     }
-    if (isPhoneOrTablet()) {
-        return false;
+    if (mode === "on") {
+        return true;
     }
-    return isPiKioskSession();
+    // Auto: Pi screen, PC browser, and --app= kiosk. Phones keep their own keyboard.
+    return !isPhoneOrTablet();
 }

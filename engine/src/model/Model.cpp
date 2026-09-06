@@ -380,6 +380,7 @@ Json audioDeviceToJson(const AudioDeviceInfo& device) {
     json.set("name", device.name);
     json.set("driver", device.driver);
     json.set("isHat", device.isHat);
+    json.set("isHdmi", device.isHdmi);
     json.set("duplex", device.duplex);
     json.set("maxInputChannels", static_cast<int>(device.maxInputChannels));
     json.set("maxOutputChannels", static_cast<int>(device.maxOutputChannels));
