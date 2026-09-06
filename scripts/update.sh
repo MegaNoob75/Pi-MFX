@@ -68,7 +68,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     sleep 1
     systemctl --no-pager --full status pimfx.service || true
 else
-    die "pimfx is not installed yet. First time on this Pi: sudo ./scripts/install.sh"
+    die "pimfx is not installed yet. First time on this Pi: sudo bash ./scripts/install.sh --with-plugins"
 fi
 
 ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"
