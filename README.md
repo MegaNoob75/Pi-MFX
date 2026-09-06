@@ -83,7 +83,7 @@ Daily loop (full detail in [docs/DEV_FLOW.md](docs/DEV_FLOW.md)):
 
 ```text
 PC:   edit → GitHub Desktop commit/push on dev
-Pi:   cd ~/Pi-MFX && sudo ./scripts/update.sh
+Pi:   cd ~/Pi-MFX && sudo bash ./scripts/update.sh
 Web:  http://<pi-address>:8080
 ```
 

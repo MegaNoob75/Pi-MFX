@@ -29,6 +29,10 @@ else
     die "this folder is not a git clone; clone the repo first (see docs/DEV_FLOW.md)"
 fi
 
+if ! command -v cmake >/dev/null 2>&1; then
+    die "cmake is not installed. This Pi has not been set up yet. Run:  sudo bash ./scripts/install.sh --with-plugins"
+fi
+
 log "Building the engine"
 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"

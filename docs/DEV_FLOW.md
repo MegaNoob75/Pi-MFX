@@ -22,7 +22,7 @@ sudo apt update
 sudo apt install -y git
 git clone -b dev https://github.com/MegaNoob75/Pi-MFX.git
 cd Pi-MFX
-sudo ./scripts/install.sh --with-plugins
+sudo bash ./scripts/install.sh --with-plugins
 sudo reboot
 ```
 
@@ -52,7 +52,7 @@ SSH in, then:
 
 ```bash
 cd ~/Pi-MFX
-sudo ./scripts/update.sh
+sudo bash ./scripts/update.sh
 ```
 
 That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone.
@@ -82,7 +82,7 @@ journalctl -u pimfx -n 40 --no-pager
 cd ~/Pi-MFX
 git checkout main
 git pull
-sudo ./scripts/update.sh
+sudo bash ./scripts/update.sh
 ```
 
 For day-to-day work, stay on **`dev`** on both the PC and the Pi.
@@ -107,10 +107,10 @@ npm run dev
 | Symptom | What to do |
 | --- | --- |
 | Page will not load | `systemctl status pimfx` and `journalctl -u pimfx -n 50` |
-| `update.sh` says not installed | First time: `sudo ./scripts/install.sh` |
+| `update.sh` says not installed | First time: `sudo bash ./scripts/install.sh` |
 | `git pull` refused | On the Pi you have local edits. `git status`. Do not fight it — stash or reset only if you meant those files to come from the PC. |
 | No sound card in the UI | `arecord -l` on the Pi. If empty, the OS cannot see the hardware. |
-| Empty plugin list | `lv2ls`. If empty, `sudo ./scripts/install.sh --with-plugins` |
+| Empty plugin list | `lv2ls`. If empty, `sudo bash ./scripts/install.sh --with-plugins` |
 | Clicks / xruns | [LOW_LATENCY.md](LOW_LATENCY.md). Raise frames or periods. |
 
 ---

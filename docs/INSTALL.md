@@ -128,7 +128,7 @@ It does not redo apt or OS tuning.
 
 ```bash
 cd ~/Pi-MFX
-sudo ./scripts/update.sh
+sudo bash ./scripts/update.sh
 ```
 
 Day-to-day PC + Pi steps are in [DEV_FLOW.md](DEV_FLOW.md).
