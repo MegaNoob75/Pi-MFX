@@ -15,12 +15,14 @@ You do **not** need to build the C++ engine on Windows. Guitar I/O only exists o
 
 1. Flash **Raspberry Pi OS Lite (64-bit)** with Raspberry Pi Imager. Enable SSH and set Wi-Fi or Ethernet.
 2. Plug a USB audio interface **directly** into the Pi (no hub), or add your I2S HAT overlay and reboot. See [INSTALL.md](INSTALL.md).
-3. SSH in (`ssh pi@<pi-address>`), then:
+3. SSH in (`ssh pi@<pi-address>`). The repo is private, so clone with SSH
+   (not `https://`). Generate a key on the Pi, add `~/.ssh/id_ed25519.pub` to
+   GitHub → SSH keys, then `ssh -T git@github.com` until it greets you.
 
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone -b dev https://github.com/MegaNoob75/Pi-MFX.git
+git clone -b dev git@github.com:MegaNoob75/Pi-MFX.git
 cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 sudo reboot

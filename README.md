@@ -54,7 +54,7 @@ Details and every OS change are documented in [docs/LOW_LATENCY.md](docs/LOW_LAT
 On the Pi:
 
 ```bash
-git clone https://github.com/<your-account>/Pi-MFX.git
+git clone git@github.com:<your-account>/Pi-MFX.git
 cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
