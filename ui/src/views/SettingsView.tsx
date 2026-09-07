@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { formatMs, isAnalogKind, type EngineSnapshot } from "../api";
+import { formatMs, isAnalogKind, isLatchingKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { snapshotLayoutSlots } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
@@ -89,15 +89,27 @@ function HubCard({ title, subtitle, onClick }: { title: string; subtitle: string
     );
 }
 
-const CONTROL_KIND_ORDER = ["switch", "momentary", "pot", "slider", "encoder", "expression"] as const;
+const CONTROL_KIND_ORDER = ["momentary", "latching", "pot", "slider", "encoder", "expression"] as const;
 const CONTROL_LABEL_PREFIX: Record<string, string> = {
-    switch: "SW",
     momentary: "MOM",
+    latching: "LAT",
     pot: "POT",
     slider: "SL",
     encoder: "ENC",
     expression: "EXP"
 };
+const HARDWARE_ACTIONS = [
+    "none",
+    "selectPreset",
+    "presetUp",
+    "presetDown",
+    "bankUp",
+    "bankDown",
+    "snapshotMode",
+    "bypassAll",
+    "tapTempo",
+    "tuner"
+] as const;
 
 function controlPrefix(kind: string): string {
     return CONTROL_LABEL_PREFIX[kind] ?? kind.toUpperCase();
@@ -111,7 +123,7 @@ function nextControlLabel(kind: string, controls: JsonObject[]): string {
     const prefix = controlPrefix(kind);
     let highest = 0;
     for (const control of controls) {
-        if (str(control.kind, "switch") !== kind) {
+        if (normalizeControlKind(str(control.kind, "momentary")) !== kind) {
             continue;
         }
         const match = str(control.label).trim().match(new RegExp(`^${prefix} (\\d+)$`));
@@ -136,10 +148,10 @@ function nextLedLabel(leds: JsonObject[]): string {
 function groupedControls(controls: JsonObject[]): JsonObject[] {
     const grouped: JsonObject[] = [];
     for (const kind of CONTROL_KIND_ORDER) {
-        grouped.push(...controls.filter((control) => str(control.kind, "switch") === kind));
+        grouped.push(...controls.filter((control) => normalizeControlKind(str(control.kind, "momentary")) === kind));
     }
     grouped.push(...controls.filter((control) => {
-        const kind = str(control.kind, "switch");
+        const kind = normalizeControlKind(str(control.kind, "momentary"));
         return !CONTROL_KIND_ORDER.includes(kind as (typeof CONTROL_KIND_ORDER)[number]);
     }));
     return grouped;
@@ -467,7 +479,6 @@ function ControllerSettings({
     const selectedPort = str(controller.activePort) || str(controller.midiPort);
     const listedIds = new Set(ports.map((port) => str(port.id)));
     const snapshotSlots = snapshotLayoutSlots(obj(controller.performanceLayout));
-    const chain = objects(state.chain);
 
     const addControl = (kind: string, binding: JsonObject) => {
         const current = controlsRef.current;
@@ -510,7 +521,9 @@ function ControllerSettings({
                     <select value={selectedPort} onChange={(event) => selectPort(event.target.value)}>
                         {ports.length === 0 && <option value={selectedPort}>{selectedPort || "No devices"}</option>}
                         {ports.map((port) => (
-                            <option key={str(port.id)} value={str(port.id)}>{str(port.name, str(port.id))}</option>
+                            <option key={str(port.id)} value={str(port.id)}>
+                                {str(port.name, str(port.id))} · {str(port.id)}
+                            </option>
                         ))}
                         {selectedPort && !listedIds.has(selectedPort) && (
                             <option value={selectedPort}>{selectedPort}</option>
@@ -536,10 +549,11 @@ function ControllerSettings({
                 <section className="split-pane">
                     <div className="split-pane-title">CONTROLS</div>
                     <div className="split-toolbar">
-                        <button type="button" className="btn btn-accent" onClick={() => addControl("switch", { action: "selectPreset", min: 0, max: 1, inverted: false })}>ADD SWITCH</button>
-                        <button type="button" className="btn" onClick={() => addControl("pot", { action: "setParameter", min: 0, max: 1, inverted: false })}>ADD POT</button>
-                        <button type="button" className="btn" onClick={() => addControl("slider", { action: "setParameter", min: 0, max: 1, inverted: false })}>ADD SLIDER</button>
-                        <button type="button" className="btn" onClick={() => addControl("expression", { action: "setParameter", min: 0, max: 1, inverted: false })}>ADD EXP</button>
+                        <button type="button" className="btn btn-accent" onClick={() => addControl("momentary", { action: "selectPreset", min: 0, max: 1, inverted: false })}>ADD MOMENTARY</button>
+                        <button type="button" className="btn" onClick={() => addControl("latching", { action: "none", min: 0, max: 1, inverted: false })}>ADD LATCHING</button>
+                        <button type="button" className="btn" onClick={() => addControl("pot", { action: "none", min: 0, max: 1, inverted: false })}>ADD POT</button>
+                        <button type="button" className="btn" onClick={() => addControl("slider", { action: "none", min: 0, max: 1, inverted: false })}>ADD SLIDER</button>
+                        <button type="button" className="btn" onClick={() => addControl("expression", { action: "none", min: 0, max: 1, inverted: false })}>ADD EXP</button>
                         <button type="button" className="btn" onClick={() => {
                             const current = ledsRef.current;
                             const next = [
@@ -565,7 +579,7 @@ function ControllerSettings({
                                 onClick={() => setSelectedId(str(control.id))}
                             >
                                 <MarqueeText
-                                    text={`${str(control.label, str(control.id))} · ${str(control.kind, "switch").toUpperCase()}`}
+                                    text={`${str(control.label, str(control.id))} · ${normalizeControlKind(str(control.kind, "momentary")).toUpperCase()}`}
                                     align="left"
                                     fontWeight={800}
                                 />
@@ -581,7 +595,6 @@ function ControllerSettings({
                             <HardwareControlDetail
                                 control={selected}
                                 controller={controller}
-                                chain={chain}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => {
@@ -605,7 +618,6 @@ function ControllerSettings({
 function HardwareControlDetail({
     control,
     controller,
-    chain,
     snapshotSlots,
     onPatch,
     onRemove,
@@ -613,19 +625,18 @@ function HardwareControlDetail({
 }: {
     control: JsonObject;
     controller: JsonObject;
-    chain: JsonObject[];
     snapshotSlots: number[];
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
     onLearn: () => void;
 }) {
     const binding = obj(control.binding);
-    const analog = isAnalogKind(str(control.kind, "switch"));
+    const kind = normalizeControlKind(str(control.kind, "momentary"));
+    const analog = isAnalogKind(kind);
+    const latching = isLatchingKind(kind);
     const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
-    const selectedSlot = chain.find((slot) => str(slot.id) === str(binding.slotId));
-    const ports = objects(obj(obj(selectedSlot).plugin).ports)
-        .filter((port) => str(port.kind) === "control");
-    const action = str(binding.action, "none");
+    const rawAction = str(binding.action, "none");
+    const action = (HARDWARE_ACTIONS as readonly string[]).includes(rawAction) ? rawAction : "none";
     const assignedSnapshot = num(binding.snapshotSlot, -1);
     const snapshotOptions = assignedSnapshot >= 0 && !snapshotSlots.includes(assignedSnapshot)
         ? [...snapshotSlots, assignedSnapshot]
@@ -644,30 +655,42 @@ function HardwareControlDetail({
                 </label>
                 <label className="field">
                     <span>Type</span>
-                    <select value={str(control.kind, "switch")} onChange={(event) => {
+                    <select value={kind} onChange={(event) => {
                         const nextKind = event.target.value;
                         const others = objects(controller.controls).filter((item) => str(item.id) !== str(control.id));
-                        const label = isDefaultControlLabel(str(control.kind, "switch"), str(control.label))
+                        const label = isDefaultControlLabel(kind, str(control.label))
                             ? nextControlLabel(nextKind, others)
                             : str(control.label);
-                        onPatch({ ...control, kind: nextKind, label });
+                        const nextBinding = { ...binding };
+                        if (isAnalogKind(nextKind) || nextBinding.action === "setParameter"
+                            || nextBinding.action === "toggleEffect") {
+                            nextBinding.action = "none";
+                            nextBinding.slotId = "";
+                            nextBinding.portSymbol = "";
+                        }
+                        if (isLatchingKind(nextKind)) {
+                            nextBinding.holdAction = "";
+                        }
+                        onPatch({ ...control, kind: nextKind, label, binding: nextBinding });
                     }}>
-                        {["switch", "momentary", "pot", "slider", "encoder", "expression"].map((kind) => (
-                            <option key={kind} value={kind}>{kind}</option>
-                        ))}
-                    </select>
-                </label>
-                <label className="field">
-                    <span>Function</span>
-                    <select
-                        value={action}
-                        onChange={(event) => patchBinding({ ...binding, action: event.target.value })}
-                    >
-                        {["none", "selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "toggleEffect", "setParameter", "bypassAll", "tapTempo", "tuner"].map((item) => (
+                        {CONTROL_KIND_ORDER.map((item) => (
                             <option key={item} value={item}>{item}</option>
                         ))}
                     </select>
                 </label>
+                {!analog && (
+                    <label className="field">
+                        <span>Function</span>
+                        <select
+                            value={action}
+                            onChange={(event) => patchBinding({ ...binding, action: event.target.value })}
+                        >
+                            {HARDWARE_ACTIONS.map((item) => (
+                                <option key={item} value={item}>{item}</option>
+                            ))}
+                        </select>
+                    </label>
+                )}
                 {!analog && (
                     <label className="field">
                         <span>Snapshot</span>
@@ -682,58 +705,20 @@ function HardwareControlDetail({
                         </select>
                     </label>
                 )}
-                <label className="field">
-                    <span>Hold</span>
-                    <select
-                        value={str(binding.holdAction)}
-                        onChange={(event) => patchBinding({ ...binding, holdAction: event.target.value })}
-                    >
-                        <option value="">none</option>
-                        {["selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll"].map((item) => (
-                            <option key={item} value={item}>{item}</option>
-                        ))}
-                    </select>
-                </label>
-                {(action === "toggleEffect" || action === "setParameter") && (
+                {!analog && !latching && (
                     <label className="field">
-                        <span>Effect</span>
+                        <span>Hold</span>
                         <select
-                            value={str(binding.slotId)}
-                            onChange={(event) => patchBinding({ ...binding, slotId: event.target.value })}
+                            value={str(binding.holdAction)}
+                            onChange={(event) => patchBinding({ ...binding, holdAction: event.target.value })}
                         >
-                            <option value="">Effect</option>
-                            {chain.map((slot) => (
-                                <option key={str(slot.id)} value={str(slot.id)}>
-                                    {str(slot.name) || str(obj(slot.plugin).name, str(slot.id))}
-                                </option>
+                            <option value="">none</option>
+                            {["selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll"].map((item) => (
+                                <option key={item} value={item}>{item}</option>
                             ))}
                         </select>
                     </label>
                 )}
-                {action === "setParameter" && (
-                    <label className="field">
-                        <span>Parameter</span>
-                        <select
-                            value={str(binding.portSymbol)}
-                            onChange={(event) => patchBinding({ ...binding, portSymbol: event.target.value })}
-                        >
-                            <option value="">Parameter</option>
-                            {ports.map((port) => (
-                                <option key={str(port.symbol)} value={str(port.symbol)}>{str(port.name, str(port.symbol))}</option>
-                            ))}
-                        </select>
-                    </label>
-                )}
-                <label className="field">
-                    <span>Min</span>
-                    <input type="number" step="0.01" value={num(binding.min, 0)}
-                        onChange={(event) => patchBinding({ ...binding, min: Number(event.target.value) })} />
-                </label>
-                <label className="field">
-                    <span>Max</span>
-                    <input type="number" step="0.01" value={num(binding.max, 1)}
-                        onChange={(event) => patchBinding({ ...binding, max: Number(event.target.value) })} />
-                </label>
                 <label className="field">
                     <span>LED</span>
                     <select
@@ -757,11 +742,10 @@ function HardwareControlDetail({
                     />
                 </label>
             </div>
+            <div className="muted">
+                Bind pots and effect toggles from the editor: hold a parameter name, or hold an effect LED.
+            </div>
             <div className="row">
-                <button type="button" className={`btn ${bool(binding.inverted) ? "btn-active" : ""}`}
-                    onClick={() => patchBinding({ ...binding, inverted: !bool(binding.inverted) })}>
-                    {bool(binding.inverted) ? "REVERSE ON" : "REVERSE"}
-                </button>
                 <button type="button" className="btn" onClick={onLearn}>
                     {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
                 </button>

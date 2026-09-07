@@ -225,6 +225,14 @@ export function isAnalogKind(kind: string): boolean {
     return kind === "pot" || kind === "slider" || kind === "expression";
 }
 
+export function normalizeControlKind(kind: string): string {
+    return !kind || kind === "switch" ? "momentary" : kind;
+}
+
+export function isLatchingKind(kind: string): boolean {
+    return normalizeControlKind(kind) === "latching";
+}
+
 export function clampUnit(value: number): number {
     return Math.min(1, Math.max(0, value));
 }

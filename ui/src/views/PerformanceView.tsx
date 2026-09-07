@@ -1,7 +1,7 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { findBank, findPreset, isAnalogKind, type EngineSnapshot } from "../api";
+import { findBank, findPreset, isAnalogKind, isLatchingKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
@@ -117,6 +117,7 @@ export function PerformanceView({
 
     const positions = obj(state.controlPositions);
     const chain = objects(state.chain);
+    const parameterBindings = objects(obj(preset).parameterBindings);
     const [bankMenuOpen, setBankMenuOpen] = useState(false);
     const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menu, setMenu] = useState<TileMenu | null>(null);
@@ -493,19 +494,23 @@ export function PerformanceView({
                 const controlId = str(control.id);
                 const assignedPreset = assigned(controlId);
                 const action = str(binding.action, "selectPreset");
-                const kind = str(control.kind, "switch");
+                const kind = normalizeControlKind(str(control.kind, "momentary"));
                 const analog = isAnalogKind(kind);
                 const canAssign = !analog && (action === "selectPreset" || action === "none" || action === "");
                 const presetId = assignedPreset || str(binding.presetId);
                 const presetItem = presets.find((entry) => str(entry.id) === presetId);
                 const minSize = analogMinSize(kind);
                 const empty = canAssign && !presetId;
-                const analogInfo = analog ? analogFeedback(control, chain) : null;
+                const presetBind = parameterBindings.find((item) => str(item.controlId) === controlId);
+                const analogInfo = analog ? analogFeedback(control, chain, presetBind) : null;
+                const toggleSlot = str(obj(presetBind).action) === "toggleEffect"
+                    ? str(presetBind?.slotId)
+                    : (action === "toggleEffect" ? str(binding.slotId) : "");
                 const active = presetId === str(state.activePresetId)
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
-                    || (action === "toggleEffect" && bool(
-                        obj(chain.find((slot) => str(slot.id) === str(binding.slotId))).enabled,
+                    || (toggleSlot !== "" && bool(
+                        obj(chain.find((slot) => str(slot.id) === toggleSlot)).enabled,
                         true
                     ));
                 const slotIndex = index;
@@ -515,7 +520,7 @@ export function PerformanceView({
                     valueText: analog
                         ? analogInfo?.value || ""
                         : valueForAction(action, str(obj(presetItem).name), empty),
-                    holdLabel: analog ? undefined : (empty ? undefined : holdLabelFor(str(binding.holdAction))),
+                    holdLabel: analog || isLatchingKind(kind) ? undefined : (empty ? undefined : holdLabelFor(str(binding.holdAction))),
                     empty,
                     role: analog ? "utility" : roleForAction(action),
                     lightState: action === "selectPreset" ? lightForPreset(active) : (active ? "active" : "inactive"),

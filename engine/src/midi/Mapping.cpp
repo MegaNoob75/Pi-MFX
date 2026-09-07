@@ -123,19 +123,15 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
     } else {
         position->second = visual;
     }
-    float normalised = visual;
-    if (control->binding.inverted) {
-        normalised = 1.0f - normalised;
-    }
 
     ActionRequest request;
     request.controlId = control->id;
     request.binding = control->binding;
     request.action = control->binding.action;
+    request.kind = control->kind;
 
     if (continuous) {
-        request.value = control->binding.minimum
-                      + normalised * (control->binding.maximum - control->binding.minimum);
+        request.value = visual;
         request.pressed = true;
         actions.push_back(std::move(request));
         return actions;
@@ -143,6 +139,12 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
 
     const bool pressed = message.isNoteOn() || (message.isControlChange() && message.data2 >= 64);
     request.pressed = pressed;
+    request.value = pressed ? 1.0f : 0.0f;
+
+    if (control->kind == ControlKind::Latching) {
+        actions.push_back(std::move(request));
+        return actions;
+    }
 
     if (pressed) {
         if (!control->binding.holdAction.empty()) {
@@ -155,7 +157,7 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
         return actions;
     }
 
-    // Release: a switch with a hold action fires its tap action here, unless
+    // Release: a momentary with a hold action fires its tap action here, unless
     // the hold already fired.
     for (size_t i = 0; i < held_.size(); ++i) {
         if (held_[i].controlId != control->id) {
@@ -189,7 +191,7 @@ std::vector<ActionRequest> ControllerRuntime::pollHolds() {
                 break;
             }
         }
-        if (!control || control->binding.holdAction.empty()) {
+        if (!control || control->kind == ControlKind::Latching || control->binding.holdAction.empty()) {
             continue;
         }
 
@@ -205,6 +207,7 @@ std::vector<ActionRequest> ControllerRuntime::pollHolds() {
         request.action = control->binding.holdAction;
         request.pressed = true;
         request.fromHold = true;
+        request.kind = control->kind;
         actions.push_back(std::move(request));
     }
     return actions;

@@ -154,6 +154,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- presets and banks -------------------------------------------------
+    if (command == "preset/bind") {
+        ok = engine_.bindPresetControl(payload, error);
+        return Json::object();
+    }
     if (command == "preset/select") {
         ok = engine_.selectPreset(payload["bankId"].asString(), payload["presetId"].asString(), error);
         return Json::object();

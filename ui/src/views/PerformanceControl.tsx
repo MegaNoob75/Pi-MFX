@@ -497,9 +497,9 @@ function ControlGraphic({ kind, range, active }: { kind: string; range: number; 
     );
 }
 
-export function analogFeedback(control: JsonObject, chain: JsonObject[]): AnalogFeedback {
-    const binding = obj(control.binding);
+export function analogFeedback(control: JsonObject, chain: JsonObject[], presetBind?: JsonObject): AnalogFeedback {
     const source = str(control.label, str(control.id));
+    const binding = presetBind && str(presetBind.action) ? presetBind : obj(control.binding);
     if (str(binding.action) !== "setParameter") {
         return { source, effect: "", parameter: "UNASSIGNED", value: "", range: 0 };
     }
@@ -514,11 +514,14 @@ export function analogFeedback(control: JsonObject, chain: JsonObject[]): Analog
     const value = num(controls[str(binding.portSymbol)]);
     const parameter = str(obj(port).name, str(binding.portSymbol));
     const effect = str(obj(slot).name) || str(plugin.name, "Effect");
+    const min = num(obj(port).min, 0);
+    const max = num(obj(port).max, 1);
+    const span = max - min;
     return {
         source,
         effect,
         parameter,
         value: Number.isFinite(value) ? value.toFixed(2) : "—",
-        range: Number.isFinite(value) ? clampUnit(value) : 0
+        range: Number.isFinite(value) && span !== 0 ? clampUnit((value - min) / span) : 0
     };
 }

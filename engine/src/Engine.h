@@ -123,6 +123,8 @@ public:
     /// Sets a pot, slider or expression pedal from the screen. `value` is 0-1
     /// as the on-screen control is pointing.
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
+    /// Binds a hardware control to a parameter or bypass of the active preset.
+    bool bindPresetControl(const Json& json, std::string& error);
 
     // --- UI preferences --------------------------------------------------
     bool applyUiSettings(const Json& json, std::string& error);
@@ -209,6 +211,8 @@ private:
 
     void handleMidiMessage(const MidiMessage& message);
     void handleSysEx(const std::vector<uint8_t>& sysex);
+    void overlayPresetBind(ActionRequest& request);
+    void migrateHardwareParameterBinds();
     void runAction(const ActionRequest& request);
     void refreshLeds();
     Json describeControllerRuntime() const;

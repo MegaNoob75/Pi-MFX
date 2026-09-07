@@ -98,6 +98,35 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
     return reading;
 }
 
+bool isContinuousKind(ControlKind kind) {
+    return kind == ControlKind::Pot
+        || kind == ControlKind::Slider
+        || kind == ControlKind::Expression;
+}
+
+bool followLatchPosition(const std::string& action) {
+    return action == "bypassAll"
+        || action == "tuner"
+        || action == "snapshotMode"
+        || action == "toggleEffect"
+        || action == "setParameter";
+}
+
+float mappedBindingValue(const ActionRequest& request) {
+    float visual = isContinuousKind(request.kind) ? request.value
+                 : (request.pressed ? 1.0f : 0.0f);
+    visual = std::max(0.0f, std::min(1.0f, visual));
+    if (request.binding.inverted) {
+        visual = 1.0f - visual;
+    }
+    return request.binding.minimum
+         + visual * (request.binding.maximum - request.binding.minimum);
+}
+
+bool latchOn(const ActionRequest& request) {
+    return request.binding.inverted ? !request.pressed : request.pressed;
+}
+
 } // namespace
 
 Engine::Engine(Paths paths)
@@ -161,6 +190,7 @@ bool Engine::start(std::string& error) {
     outputGain_.store(targetOutputGain_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
+    migrateHardwareParameterBinds();
     std::string audioError;
     if (!restartAudio(audioError)) {
         // Not fatal. The UI needs to come up so the user can choose a device
@@ -1107,6 +1137,10 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
         return false;
     }
     preset->chain.erase(found);
+    preset->parameterBindings.erase(
+        std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
+                       [&](const ParameterBinding& binding) { return binding.slotId == slotId; }),
+        preset->parameterBindings.end());
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
@@ -1603,6 +1637,7 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
     const std::string previousPort = settings_.controller.midiPort;
     const bool wasEnabled = settings_.controller.enabled;
     settings_.controller = ControllerConfig::fromJson(json);
+    migrateHardwareParameterBinds();
     controller_.setConfig(settings_.controller);
 
     const bool portChanged = settings_.controller.midiPort != previousPort;
@@ -1667,6 +1702,136 @@ void Engine::cancelControlLearn() {
     notify();
 }
 
+void Engine::overlayPresetBind(ActionRequest& request) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    const Preset* preset = activePreset();
+    if (!preset) {
+        return;
+    }
+    const ParameterBinding* bind = preset->findParameterBinding(request.controlId);
+    if (!bind) {
+        return;
+    }
+    request.fromPresetBind = true;
+    request.action = bind->action;
+    request.binding.action = bind->action;
+    request.binding.slotId = bind->slotId;
+    request.binding.portSymbol = bind->portSymbol;
+    request.binding.minimum = bind->minimum;
+    request.binding.maximum = bind->maximum;
+    request.binding.inverted = bind->inverted;
+}
+
+void Engine::migrateHardwareParameterBinds() {
+    Preset* preset = activePreset();
+    bool changedSettings = false;
+    bool changedPreset = false;
+    for (ControllerControl& control : settings_.controller.controls) {
+        const std::string action = control.binding.action;
+        if (action != "setParameter" && action != "toggleEffect") {
+            continue;
+        }
+        if (preset && !control.id.empty()) {
+            ParameterBinding bind;
+            bind.controlId = control.id;
+            bind.action = action;
+            bind.slotId = control.binding.slotId;
+            bind.portSymbol = control.binding.portSymbol;
+            bind.minimum = control.binding.minimum;
+            bind.maximum = control.binding.maximum;
+            bind.inverted = control.binding.inverted;
+            if (ParameterBinding* existing = preset->findParameterBinding(control.id)) {
+                *existing = std::move(bind);
+            } else {
+                preset->parameterBindings.push_back(std::move(bind));
+            }
+            changedPreset = true;
+            control.binding.action = "none";
+            control.binding.slotId.clear();
+            control.binding.portSymbol.clear();
+            changedSettings = true;
+        }
+    }
+    for (ControllerControl& control : settings_.controller.controls) {
+        if (!isContinuousKind(control.kind)) {
+            continue;
+        }
+        const std::string action = control.binding.action;
+        if (action.empty() || action == "none" || action == "setParameter" || action == "toggleEffect") {
+            continue;
+        }
+        control.binding.action = "none";
+        changedSettings = true;
+    }
+    if (changedSettings) {
+        controller_.setConfig(settings_.controller);
+        persistSettings();
+    }
+    if (changedPreset) {
+        if (Bank* bank = activeBank()) {
+            storage_.saveBank(*bank);
+        }
+    }
+}
+
+bool Engine::bindPresetControl(const Json& json, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+
+    const std::string controlId = json["controlId"].asString();
+    const std::string action = json["action"].asString("none");
+    if (controlId.empty()) {
+        error = "controlId required";
+        return false;
+    }
+
+    ParameterBinding bind;
+    bind.controlId = controlId;
+    bind.action = action;
+    bind.slotId = json["slotId"].asString();
+    bind.portSymbol = json["portSymbol"].asString();
+    bind.minimum = json["min"].asFloat(0.0f);
+    bind.maximum = json["max"].asFloat(1.0f);
+    bind.inverted = json["inverted"].asBool(false);
+
+    if (action == "setParameter" || action == "toggleEffect") {
+        if (bind.slotId.empty()) {
+            error = "slotId required";
+            return false;
+        }
+        if (action == "setParameter" && bind.portSymbol.empty()) {
+            error = "portSymbol required";
+            return false;
+        }
+        if (!preset->findSlot(bind.slotId)) {
+            error = "no such effect";
+            return false;
+        }
+    } else if (action != "none" && !action.empty()) {
+        error = "action must be setParameter, toggleEffect, or none";
+        return false;
+    }
+
+    preset->parameterBindings.erase(
+        std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
+                       [&](const ParameterBinding& item) { return item.controlId == controlId; }),
+        preset->parameterBindings.end());
+    if (action == "setParameter" || action == "toggleEffect") {
+        preset->parameterBindings.push_back(std::move(bind));
+    }
+
+    if (Bank* bank = activeBank()) {
+        storage_.saveBank(*bank);
+    }
+    refreshLeds();
+    notify();
+    return true;
+}
+
 bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std::string& error) {
     const ControllerConfig config = controller_.config();
     for (const ControllerControl& control : config.controls) {
@@ -1684,8 +1849,9 @@ bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std
         request.binding = control.binding;
         request.action = control.binding.action;
         request.pressed = pressed;
-        request.value = control.binding.minimum;
-        if (pressed) {
+        request.value = pressed ? 1.0f : 0.0f;
+        request.kind = control.kind;
+        if (pressed || control.kind == ControlKind::Latching) {
             runAction(request);
         }
         return true;
@@ -1702,17 +1868,13 @@ bool Engine::setVirtualControlValue(const std::string& controlId, float value, s
         }
         const float visual = std::max(0.0f, std::min(1.0f, value));
         controller_.setPosition(control.id, visual);
-        float normalised = visual;
-        if (control.binding.inverted) {
-            normalised = 1.0f - normalised;
-        }
         ActionRequest request;
         request.controlId = control.id;
         request.binding = control.binding;
         request.action = control.binding.action;
         request.pressed = true;
-        request.value = control.binding.minimum
-            + normalised * (control.binding.maximum - control.binding.minimum);
+        request.value = visual;
+        request.kind = control.kind;
         runAction(request);
         return true;
     }
@@ -1746,9 +1908,25 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
     notify();
 }
 
-void Engine::runAction(const ActionRequest& request) {
+void Engine::runAction(const ActionRequest& incoming) {
+    ActionRequest request = incoming;
+    overlayPresetBind(request);
+
+    if (!request.pressed && request.kind != ControlKind::Latching) {
+        return;
+    }
+    if (!request.pressed && request.kind == ControlKind::Latching
+        && !followLatchPosition(request.action)) {
+        return;
+    }
+    if (isContinuousKind(request.kind) && !request.fromPresetBind
+        && request.action != "setParameter") {
+        return;
+    }
+
     std::string error;
     const ControlBinding& binding = request.binding;
+    const bool latching = request.kind == ControlKind::Latching;
     const bool snapshotView = snapshotMode_.load(std::memory_order_relaxed);
     const bool presetNav = request.action == "selectPreset"
         || request.action == "presetUp"
@@ -1757,7 +1935,8 @@ void Engine::runAction(const ActionRequest& request) {
         || request.action == "bankDown"
         || request.action == "selectSnapshot";
 
-    if (snapshotView && request.action != "setParameter" && request.action != "snapshotMode"
+    if (!request.fromPresetBind && snapshotView && request.action != "setParameter"
+        && request.action != "snapshotMode"
         && request.action != "bypassAll" && request.action != "tapTempo"
         && request.action != "tuner" && request.action != "toggleEffect") {
         if (binding.snapshotSlot >= 0) {
@@ -1810,28 +1989,44 @@ void Engine::runAction(const ActionRequest& request) {
     } else if (request.action == "selectSnapshot") {
         selectSnapshot(binding.snapshotId, error);
     } else if (request.action == "toggleEffect") {
-        Chain* chain = activeChain_.load(std::memory_order_acquire);
-        bool enabled = true;
-        if (chain) {
-            for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                if (slot->id == binding.slotId) {
-                    enabled = !slot->enabled.load(std::memory_order_relaxed);
-                    break;
+        if (latching) {
+            setEffectEnabled(binding.slotId, latchOn(request), error);
+        } else {
+            Chain* chain = activeChain_.load(std::memory_order_acquire);
+            bool enabled = true;
+            if (chain) {
+                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                    if (slot->id == binding.slotId) {
+                        enabled = !slot->enabled.load(std::memory_order_relaxed);
+                        break;
+                    }
                 }
             }
+            setEffectEnabled(binding.slotId, enabled, error);
         }
-        setEffectEnabled(binding.slotId, enabled, error);
     } else if (request.action == "setParameter") {
-        setControlValue(binding.slotId, binding.portSymbol, request.value, error);
+        setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error);
         notifyPerformance();
     } else if (request.action == "bypassAll") {
-        setBypassAll(!bypassAll_.load(std::memory_order_relaxed));
+        if (latching) {
+            setBypassAll(latchOn(request));
+        } else {
+            setBypassAll(!bypassAll_.load(std::memory_order_relaxed));
+        }
     } else if (request.action == "snapshotMode") {
-        setSnapshotMode(!snapshotMode_.load(std::memory_order_relaxed));
+        if (latching) {
+            setSnapshotMode(latchOn(request));
+        } else {
+            setSnapshotMode(!snapshotMode_.load(std::memory_order_relaxed));
+        }
     } else if (request.action == "tapTempo") {
         tapTempo();
     } else if (request.action == "tuner") {
-        setTunerEnabled(!tunerEnabled_.load(std::memory_order_relaxed));
+        if (latching) {
+            setTunerEnabled(latchOn(request));
+        } else {
+            setTunerEnabled(!tunerEnabled_.load(std::memory_order_relaxed));
+        }
         notify();
     } else if (request.action == "none") {
         return;
@@ -1891,20 +2086,25 @@ void Engine::refreshLeds() {
 
         // An LED tied to a control follows what that control currently does,
         // so a switch bound to an effect lights only while that effect is on.
+        const Preset* preset = activePreset();
         for (const ControllerControl& control : config.controls) {
             if (control.ledId != led.id) {
                 continue;
             }
-            if (control.binding.action == "toggleEffect" && chain) {
+            const ParameterBinding* presetBind = preset
+                ? preset->findParameterBinding(control.id) : nullptr;
+            const std::string effectSlot = (presetBind && presetBind->action == "toggleEffect")
+                ? presetBind->slotId
+                : (control.binding.action == "toggleEffect" ? control.binding.slotId : std::string());
+            if (!effectSlot.empty() && chain) {
                 state.on = false;
                 for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                    if (slot->id == control.binding.slotId) {
+                    if (slot->id == effectSlot) {
                         state.on = slot->enabled.load(std::memory_order_relaxed);
                         break;
                     }
                 }
             } else if (snapshotMode_.load(std::memory_order_relaxed) && control.binding.snapshotSlot >= 0) {
-                const Preset* preset = activePreset();
                 state.on = preset
                     && preset->rememberedSnapshotEnabled
                     && preset->activeSnapshot == control.binding.snapshotSlot;

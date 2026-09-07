@@ -75,7 +75,128 @@ bool skipAutoPick(const MidiPortInfo& port) {
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return lower.find("midi through") != std::string::npos
         || lower.find("through port") != std::string::npos
-        || lower.find("announce") != std::string::npos;
+        || lower.find("announce") != std::string::npos
+        || lower.find("direct rawmidi") != std::string::npos
+        || lower == "virtual"
+        || lower.find("virtual midi") != std::string::npos;
+}
+
+std::string foldMidiName(std::string text) {
+    std::string folded;
+    folded.reserve(text.size());
+    bool space = false;
+    for (unsigned char ch : text) {
+        if (std::isalnum(ch) != 0) {
+            folded.push_back(static_cast<char>(std::tolower(ch)));
+            space = false;
+        } else if (!folded.empty() && !space) {
+            folded.push_back(' ');
+            space = true;
+        }
+    }
+    while (!folded.empty() && folded.back() == ' ') {
+        folded.pop_back();
+    }
+    const char* junk[] = {
+        "direct rawmidi driver device",
+        "direct rawmidi",
+        "rawmidi"
+    };
+    for (const char* phrase : junk) {
+        const std::string needle = phrase;
+        const auto pos = folded.find(needle);
+        if (pos != std::string::npos) {
+            folded.erase(pos, needle.size());
+        }
+    }
+    std::string collapsed;
+    collapsed.reserve(folded.size());
+    space = false;
+    for (char ch : folded) {
+        if (ch == ' ') {
+            if (!collapsed.empty() && !space) {
+                collapsed.push_back(' ');
+                space = true;
+            }
+        } else {
+            collapsed.push_back(ch);
+            space = false;
+        }
+    }
+    while (!collapsed.empty() && collapsed.back() == ' ') {
+        collapsed.pop_back();
+    }
+    return collapsed;
+}
+
+bool isNoiseMidiPort(const MidiPortInfo& port) {
+    const std::string blob = foldMidiName(port.name + " " + port.id);
+    return blob.find("midi through") != std::string::npos
+        || blob.find("through port") != std::string::npos
+        || blob.find("announce") != std::string::npos
+        || blob.find("direct rawmidi") != std::string::npos
+        || blob == "virtual"
+        || blob.find("virtual midi") != std::string::npos;
+}
+
+int midiPortRank(const MidiPortInfo& port) {
+    if (port.id.rfind("seq:", 0) == 0) {
+        return 0;
+    }
+    if (port.id.rfind("hw:", 0) == 0) {
+        return 1;
+    }
+    return 2;
+}
+
+std::string midiCardKey(const MidiPortInfo& port) {
+    const auto pos = port.name.find(" · ");
+    const std::string card = pos == std::string::npos ? port.name : port.name.substr(0, pos);
+    return foldMidiName(card);
+}
+
+bool sameMidiDevice(const MidiPortInfo& a, const MidiPortInfo& b) {
+    const std::string nameA = foldMidiName(a.name);
+    const std::string nameB = foldMidiName(b.name);
+    if (nameA == nameB && !nameA.empty()) {
+        return true;
+    }
+    if (!a.looksLikeController || !b.looksLikeController) {
+        return false;
+    }
+    const std::string card = midiCardKey(a);
+    if (card.empty() || card != midiCardKey(b)) {
+        return false;
+    }
+    return midiPortRank(a) != midiPortRank(b);
+}
+
+void pruneMidiPorts(std::vector<MidiPortInfo>& ports) {
+    std::vector<MidiPortInfo> inputs;
+    inputs.reserve(ports.size());
+    for (MidiPortInfo& port : ports) {
+        if (!port.input || isNoiseMidiPort(port)) {
+            continue;
+        }
+        inputs.push_back(std::move(port));
+    }
+
+    std::vector<MidiPortInfo> unique;
+    unique.reserve(inputs.size());
+    for (MidiPortInfo& port : inputs) {
+        auto existing = std::find_if(unique.begin(), unique.end(),
+                                     [&](const MidiPortInfo& candidate) {
+                                         return sameMidiDevice(candidate, port);
+                                     });
+        if (existing == unique.end()) {
+            unique.push_back(std::move(port));
+            continue;
+        }
+        if (midiPortRank(port) < midiPortRank(*existing)) {
+            *existing = std::move(port);
+        }
+    }
+    ports = std::move(unique);
 }
 
 bool parseSeqId(const std::string& id, int& client, int& port) {
@@ -279,6 +400,7 @@ std::vector<MidiPortInfo> MidiInput::enumeratePorts() {
 
     addDevSndPorts(ports);
     addSeqPorts(ports);
+    pruneMidiPorts(ports);
 
     std::stable_sort(ports.begin(), ports.end(), [](const MidiPortInfo& a, const MidiPortInfo& b) {
         if (a.looksLikeController != b.looksLikeController) {

@@ -15,11 +15,12 @@ struct ActionRequest {
     std::string action;
     std::string controlId;
     ControlBinding binding;
-    /// Normalised position for continuous controls, already scaled into the
-    /// binding's range.
+    /// 0-1 visual position for analog controls. Discrete presses use 1 or 0.
     float value = 0.0f;
     bool pressed = false;
     bool fromHold = false;
+    ControlKind kind = ControlKind::Momentary;
+    bool fromPresetBind = false;
 };
 
 /// The colour an LED should show, in the same 0-255 space as the theme.

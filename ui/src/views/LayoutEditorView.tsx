@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { isAnalogKind, type EngineSnapshot } from "../api";
+import { isAnalogKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import {
     STATUS_WIDGET_IDS,
@@ -87,7 +87,7 @@ export function LayoutEditorView({
         if (draftRects[id]) {
             return draftRects[id];
         }
-        const min = analogMinSize(str(control.kind, "switch"));
+        const min = analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
         return mode === "freeform"
             ? clampRect({
                 x: num(control.x, gridCellRect(index, columns, rows).x),
@@ -502,7 +502,7 @@ export function LayoutEditorView({
                     {placedControls.map((control, index) => {
                         const id = str(control.id);
                         const rect = controlRect(control, index);
-                        const kind = str(control.kind, "switch");
+                        const kind = normalizeControlKind(str(control.kind, "momentary"));
                         const analog = isAnalogKind(kind);
                         const action = str(obj(control.binding).action, "selectPreset");
                         return (

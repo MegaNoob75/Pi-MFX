@@ -42,6 +42,20 @@ struct Snapshot {
     static Snapshot fromJson(const Json& json);
 };
 
+/// Maps a physical control onto one parameter or bypass of this preset.
+struct ParameterBinding {
+    std::string controlId;
+    std::string action;     ///< setParameter or toggleEffect
+    std::string slotId;
+    std::string portSymbol; ///< for setParameter
+    float minimum = 0.0f;
+    float maximum = 1.0f;
+    bool inverted = false;
+
+    Json toJson() const;
+    static ParameterBinding fromJson(const Json& json);
+};
+
 struct Preset {
     std::string id;
     std::string name = "Untitled";
@@ -52,6 +66,7 @@ struct Preset {
 
     std::vector<EffectSlot> chain;
     std::vector<Snapshot> snapshots;
+    std::vector<ParameterBinding> parameterBindings;
     /// Layout slot of the snapshot currently applied to the live chain, or -1.
     int activeSnapshot = -1;
     /// Last Snapshot-view choice for this preset. Performance re-press toggles it.
@@ -60,6 +75,8 @@ struct Preset {
 
     const EffectSlot* findSlot(const std::string& slotId) const;
     EffectSlot* findSlot(const std::string& slotId);
+    const ParameterBinding* findParameterBinding(const std::string& controlId) const;
+    ParameterBinding* findParameterBinding(const std::string& controlId);
 
     Json toJson() const;
     static Preset fromJson(const Json& json);
@@ -82,8 +99,8 @@ struct Bank {
 // ---------------------------------------------------------------------------
 
 enum class ControlKind {
-    Switch,      ///< latching footswitch
-    Momentary,   ///< momentary button
+    Momentary,   ///< tap while pressed (typical footswitch)
+    Latching,    ///< stays ON/OFF with the physical toggle
     Pot,         ///< rotary potentiometer
     Slider,      ///< linear fader
     Encoder,     ///< rotary encoder, relative
@@ -105,8 +122,9 @@ struct ControlBinding {
     std::string snapshotId;
     /// Snapshot-view slot for this switch (0 = Snapshot 1). -1 = none.
     int snapshotSlot = -1;
-    std::string slotId;     ///< for toggleEffect and setParameter
-    std::string portSymbol; ///< for setParameter
+    /// Legacy hardware bind fields. Migrated onto Preset::parameterBindings on load.
+    std::string slotId;
+    std::string portSymbol;
 
     float minimum = 0.0f;   ///< range a pot or pedal sweeps across
     float maximum = 1.0f;
@@ -127,7 +145,7 @@ struct ControlBinding {
 struct ControllerControl {
     std::string id;
     std::string label;
-    ControlKind kind = ControlKind::Switch;
+    ControlKind kind = ControlKind::Momentary;
 
     /// Where the firmware reads it. `module` names an expander board when the
     /// user has more controls than the ESP32 has pins.

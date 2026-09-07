@@ -75,6 +75,50 @@ EffectSlot* Preset::findSlot(const std::string& slotId) {
     return nullptr;
 }
 
+Json ParameterBinding::toJson() const {
+    Json json = Json::object();
+    json.set("controlId", controlId);
+    json.set("action", action);
+    json.set("slotId", slotId);
+    if (!portSymbol.empty()) {
+        json.set("portSymbol", portSymbol);
+    }
+    json.set("min", minimum);
+    json.set("max", maximum);
+    json.set("inverted", inverted);
+    return json;
+}
+
+ParameterBinding ParameterBinding::fromJson(const Json& json) {
+    ParameterBinding binding;
+    binding.controlId = json["controlId"].asString();
+    binding.action = json["action"].asString("none");
+    binding.slotId = json["slotId"].asString();
+    binding.portSymbol = json["portSymbol"].asString();
+    binding.minimum = json["min"].asFloat(0.0f);
+    binding.maximum = json["max"].asFloat(1.0f);
+    binding.inverted = json["inverted"].asBool(false);
+    return binding;
+}
+
+const ParameterBinding* Preset::findParameterBinding(const std::string& controlId) const {
+    for (const ParameterBinding& binding : parameterBindings) {
+        if (binding.controlId == controlId) {
+            return &binding;
+        }
+    }
+    return nullptr;
+}
+
+ParameterBinding* Preset::findParameterBinding(const std::string& controlId) {
+    for (ParameterBinding& binding : parameterBindings) {
+        if (binding.controlId == controlId) {
+            return &binding;
+        }
+    }
+    return nullptr;
+}
+
 Json Preset::toJson() const {
     Json json = Json::object();
     json.set("id", id);
@@ -95,6 +139,12 @@ Json Preset::toJson() const {
         snapshotJson.push(snapshot.toJson());
     }
     json.set("snapshots", snapshotJson);
+
+    Json bindingJson = Json::array();
+    for (const ParameterBinding& binding : parameterBindings) {
+        bindingJson.push(binding.toJson());
+    }
+    json.set("parameterBindings", bindingJson);
     json.set("activeSnapshot", activeSnapshot);
     json.set("rememberedSnapshotSlot", rememberedSnapshotSlot);
     json.set("rememberedSnapshotEnabled", rememberedSnapshotEnabled);
@@ -122,6 +172,15 @@ Preset Preset::fromJson(const Json& json) {
             snapshot.slot = static_cast<int>(i);
         }
         preset.snapshots.push_back(std::move(snapshot));
+    }
+
+    const Json& bindingJson = json["parameterBindings"];
+    for (size_t i = 0; i < bindingJson.size(); ++i) {
+        ParameterBinding binding = ParameterBinding::fromJson(bindingJson.at(i));
+        if (!binding.controlId.empty()
+            && (binding.action == "setParameter" || binding.action == "toggleEffect")) {
+            preset.parameterBindings.push_back(std::move(binding));
+        }
     }
     preset.activeSnapshot = json["activeSnapshot"].asInt(-1);
     preset.rememberedSnapshotSlot = json["rememberedSnapshotSlot"].asInt(-1);
@@ -160,23 +219,23 @@ Bank Bank::fromJson(const Json& json) {
 
 std::string controlKindToString(ControlKind kind) {
     switch (kind) {
-        case ControlKind::Switch: return "switch";
         case ControlKind::Momentary: return "momentary";
+        case ControlKind::Latching: return "latching";
         case ControlKind::Pot: return "pot";
         case ControlKind::Slider: return "slider";
         case ControlKind::Encoder: return "encoder";
         case ControlKind::Expression: return "expression";
     }
-    return "switch";
+    return "momentary";
 }
 
 ControlKind controlKindFromString(const std::string& text) {
-    if (text == "momentary") return ControlKind::Momentary;
+    if (text == "latching") return ControlKind::Latching;
     if (text == "pot") return ControlKind::Pot;
     if (text == "slider") return ControlKind::Slider;
     if (text == "encoder") return ControlKind::Encoder;
     if (text == "expression") return ControlKind::Expression;
-    return ControlKind::Switch;
+    return ControlKind::Momentary;
 }
 
 Json ControlBinding::toJson() const {
@@ -242,7 +301,7 @@ ControllerControl ControllerControl::fromJson(const Json& json) {
     ControllerControl control;
     control.id = json["id"].asString(newId("ctl"));
     control.label = json["label"].asString();
-    control.kind = controlKindFromString(json["kind"].asString("switch"));
+    control.kind = controlKindFromString(json["kind"].asString("momentary"));
     control.module = json["module"].asString();
     control.channel = json["channel"].asInt(-1);
     control.midiChannel = json["midiChannel"].asInt(0);

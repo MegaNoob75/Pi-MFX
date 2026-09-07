@@ -6,7 +6,11 @@ import { askText } from "../keyboard/ask";
 import { PluginBrowser } from "./PluginBrowser";
 import { MarqueeText } from "./MarqueeText";
 
-type EditPage = "chain" | "controls" | "bindings" | "io";
+type EditPage = "chain" | "controls" | "io";
+
+type BindTarget =
+    | { mode: "parameter"; slotId: string; portSymbol: string; name: string; min: number; max: number }
+    | { mode: "bypass"; slotId: string; name: string };
 
 export function EditorView({
     engine,
@@ -37,6 +41,7 @@ export function EditorView({
     const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
+    const [bindTarget, setBindTarget] = useState<BindTarget | null>(null);
     const [dropBankId, setDropBankId] = useState("");
     const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
     const pickerHoldRef = useRef<number | null>(null);
@@ -53,6 +58,23 @@ export function EditorView({
     const irs = objects(library.impulseResponses);
     const controller = obj(state.controller);
     const controls = objects(controller.controls);
+    const parameterBindings = objects(obj(preset).parameterBindings);
+    const bindForParameter = (slotId: string, symbol: string) =>
+        parameterBindings.find((binding) =>
+            str(binding.action) === "setParameter"
+            && str(binding.slotId) === slotId
+            && str(binding.portSymbol) === symbol);
+    const bindForBypass = (slotId: string) =>
+        parameterBindings.find((binding) =>
+            str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
+
+    const applyBind = (payload: JsonObject) => {
+        if (!str(payload.controlId)) {
+            setBindTarget(null);
+            return;
+        }
+        void run(() => client.request("preset/bind", payload)).then(() => setBindTarget(null));
+    };
     const selectedIndex = chain.findIndex((slot) => str(slot.id) === str(obj(selected).id));
     const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
 
@@ -67,7 +89,7 @@ export function EditorView({
             return;
         }
         previousBackRequestRef.current = backRequest;
-        setPage((current) => (current === "bindings" ? "controls" : "chain"));
+        setPage("chain");
     }, [backRequest]);
 
     useEffect(() => {
@@ -318,6 +340,12 @@ export function EditorView({
                                                                     slotId: str(node.slot!.id),
                                                                     enabled: !bool(node.slot!.enabled, true)
                                                                 }))}
+                                                                bypassBound={Boolean(bindForBypass(str(node.slot.id)))}
+                                                                onBypassLongPress={() => setBindTarget({
+                                                                    mode: "bypass",
+                                                                    slotId: str(node.slot!.id),
+                                                                    name: str(node.slot!.name) || str(obj(obj(node.slot).plugin).name, "Effect")
+                                                                })}
                                                             />
                                                         )
                                                         : (
@@ -452,13 +480,6 @@ export function EditorView({
                                 }}>REMOVE</button>
                             </>
                         )}
-                        <button
-                            type="button"
-                            className={`btn ${page === "bindings" ? "btn-active" : ""}`}
-                            onClick={() => setPage(page === "bindings" ? "controls" : "bindings")}
-                        >
-                            BINDINGS
-                        </button>
                     </div>
                     <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
                         {page === "controls" && (
@@ -471,16 +492,16 @@ export function EditorView({
                                 irs={irs}
                                 run={run}
                                 client={client}
-                            />
-                        )}
-                        {page === "bindings" && (
-                            <BindingsPanel
-                                selected={selected}
-                                ports={ports}
                                 controls={controls}
-                                controller={controller}
-                                run={run}
-                                client={client}
+                                bindings={parameterBindings}
+                                onBindParameter={(port) => setBindTarget({
+                                    mode: "parameter",
+                                    slotId: str(selected.id),
+                                    portSymbol: str(port.symbol),
+                                    name: str(port.name, str(port.symbol)),
+                                    min: num(port.min, 0),
+                                    max: num(port.max, 1)
+                                })}
                             />
                         )}
                     </div>
@@ -618,6 +639,47 @@ export function EditorView({
                 </div>,
                 document.body
             )}
+            {bindTarget && createPortal(
+                <ParameterBindPopup
+                    target={bindTarget}
+                    controls={controls}
+                    current={bindTarget.mode === "bypass"
+                        ? bindForBypass(bindTarget.slotId)
+                        : bindForParameter(bindTarget.slotId, bindTarget.portSymbol)}
+                    onClose={() => setBindTarget(null)}
+                    onNone={() => applyBind({
+                        controlId: str(obj(
+                            bindTarget.mode === "bypass"
+                                ? bindForBypass(bindTarget.slotId)
+                                : bindForParameter(bindTarget.slotId, bindTarget.portSymbol)
+                        ).controlId),
+                        action: "none"
+                    })}
+                    onChoose={(controlId) => applyBind(bindTarget.mode === "bypass"
+                        ? { controlId, action: "toggleEffect", slotId: bindTarget.slotId }
+                        : {
+                            controlId,
+                            action: "setParameter",
+                            slotId: bindTarget.slotId,
+                            portSymbol: bindTarget.portSymbol,
+                            min: bindTarget.min,
+                            max: bindTarget.max
+                        })}
+                    onReverse={() => {
+                        const current = bindTarget.mode === "bypass"
+                            ? bindForBypass(bindTarget.slotId)
+                            : bindForParameter(bindTarget.slotId, bindTarget.portSymbol);
+                        if (!current) {
+                            return;
+                        }
+                        applyBind({
+                            ...current,
+                            inverted: !bool(current.inverted)
+                        });
+                    }}
+                />,
+                document.body
+            )}
         </div>
     );
 }
@@ -633,7 +695,9 @@ function ChainPluginCard({
     onPointerMove,
     onPointerUp,
     onPointerCancel,
-    onToggle
+    onToggle,
+    bypassBound = false,
+    onBypassLongPress
 }: {
     slot: JsonObject;
     chainIndex: number;
@@ -646,9 +710,19 @@ function ChainPluginCard({
     onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
     onPointerCancel: () => void;
     onToggle: () => void;
+    bypassBound?: boolean;
+    onBypassLongPress?: () => void;
 }) {
     const info = obj(slot.plugin);
     const on = bool(slot.enabled, true);
+    const holdRef = useRef<number | null>(null);
+    const holdFiredRef = useRef(false);
+    const clearHold = () => {
+        if (holdRef.current !== null) {
+            window.clearTimeout(holdRef.current);
+            holdRef.current = null;
+        }
+    };
     return (
         <button
             type="button"
@@ -668,18 +742,41 @@ function ChainPluginCard({
                     fontWeight={900}
                 />
                 <span
-                    className={`chain-led${on ? " on" : ""}`}
+                    className={`chain-led${on ? " on" : ""}${bypassBound ? " bound" : ""}`}
                     role="switch"
                     aria-checked={on}
-                    onPointerDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => {
+                        event.stopPropagation();
+                        holdFiredRef.current = false;
+                        clearHold();
+                        if (!onBypassLongPress) {
+                            return;
+                        }
+                        holdRef.current = window.setTimeout(() => {
+                            holdRef.current = null;
+                            holdFiredRef.current = true;
+                            onBypassLongPress();
+                        }, 550);
+                    }}
+                    onPointerUp={(event) => {
+                        event.stopPropagation();
+                        clearHold();
+                    }}
+                    onPointerCancel={() => clearHold()}
                     onClick={(event) => {
                         event.stopPropagation();
+                        if (holdFiredRef.current) {
+                            holdFiredRef.current = false;
+                            return;
+                        }
                         onToggle();
                     }}
                 />
             </div>
             <div className="muted">{on ? "ACTIVE" : "BYPASSED"}</div>
-            <div className="muted" style={{ fontSize: "0.62rem" }}>TAP TO EDIT • LED = BYPASS</div>
+            <div className="muted" style={{ fontSize: "0.62rem" }}>
+                TAP TO EDIT • LED = BYPASS{bypassBound ? " • BOUND" : ""}
+            </div>
         </button>
     );
 }
@@ -692,7 +789,10 @@ export function EffectControls({
     models,
     irs,
     run,
-    client
+    client,
+    controls = [],
+    bindings = [],
+    onBindParameter
 }: {
     selected: JsonObject;
     ports: JsonObject[];
@@ -702,11 +802,30 @@ export function EffectControls({
     irs: JsonObject[];
     run: (work: () => Promise<unknown>) => Promise<void>;
     client: import("../api").EngineClient;
+    controls?: JsonObject[];
+    bindings?: JsonObject[];
+    onBindParameter?: (port: JsonObject) => void;
 }) {
+    const slotId = str(selected.id);
+    const boundFor = (symbol: string) => bindings.find((binding) =>
+        str(binding.action) === "setParameter"
+        && str(binding.slotId) === slotId
+        && str(binding.portSymbol) === symbol);
+    const boundLabel = (symbol: string) => {
+        const binding = boundFor(symbol);
+        if (!binding) {
+            return "";
+        }
+        const control = controls.find((item) => str(item.id) === str(binding.controlId));
+        return str(obj(control).label, str(binding.controlId));
+    };
     return (
         <div className="stack">
             {ports.length === 0 && (
                 <div className="muted">This plugin has no control ports, or LV2 is not available on this build.</div>
+            )}
+            {onBindParameter && (
+                <div className="muted">Hold a parameter name to bind a floorboard control. Hold an effect LED to bind bypass.</div>
             )}
             <div className="control-grid">
                 {ports.map((port) => {
@@ -742,9 +861,38 @@ export function EffectControls({
                         })();
                     };
                     return (
-                        <div key={symbol} className="control-card field">
+                        <div key={symbol} className={`control-card field${boundFor(symbol) ? " bound" : ""}`}>
                             <div className="control-card-head">
-                                <span>{name}</span>
+                                <span
+                                    onPointerDown={(event) => {
+                                        if (!onBindParameter) {
+                                            return;
+                                        }
+                                        const originX = event.clientX;
+                                        const originY = event.clientY;
+                                        const target = event.currentTarget;
+                                        const hold = window.setTimeout(() => {
+                                            target.removeEventListener("pointerup", cancel);
+                                            target.removeEventListener("pointercancel", cancel);
+                                            target.removeEventListener("pointermove", move);
+                                            onBindParameter(port);
+                                        }, 550);
+                                        const cancel = () => {
+                                            window.clearTimeout(hold);
+                                            target.removeEventListener("pointerup", cancel);
+                                            target.removeEventListener("pointercancel", cancel);
+                                            target.removeEventListener("pointermove", move);
+                                        };
+                                        const move = (moveEvent: PointerEvent) => {
+                                            if (Math.hypot(moveEvent.clientX - originX, moveEvent.clientY - originY) > 8) {
+                                                cancel();
+                                            }
+                                        };
+                                        target.addEventListener("pointerup", cancel);
+                                        target.addEventListener("pointercancel", cancel);
+                                        target.addEventListener("pointermove", move);
+                                    }}
+                                >{name}</span>
                                 {!bool(port.toggled) && arr(port.scalePoints).filter(isObj).length === 0 && (
                                     <button type="button" className="control-value" onClick={editNumber}>
                                         {formatControl(value, port)}
@@ -754,6 +902,12 @@ export function EffectControls({
                                     <span className="muted">{formatControl(value, port)}</span>
                                 )}
                             </div>
+                            {boundFor(symbol) && (
+                                <div className="control-bind-hint">
+                                    {boundLabel(symbol)}
+                                    {bool(obj(boundFor(symbol)).inverted) ? " · REV" : ""}
+                                </div>
+                            )}
                             {bool(port.toggled) ? (
                                 <button
                                     type="button"
@@ -823,137 +977,75 @@ export function EffectControls({
     );
 }
 
-function BindingsPanel({
-    selected,
-    ports,
+function ParameterBindPopup({
+    target,
     controls,
-    controller,
-    run,
-    client
+    current,
+    onClose,
+    onNone,
+    onChoose,
+    onReverse
 }: {
-    selected: JsonObject;
-    ports: JsonObject[];
+    target: BindTarget;
     controls: JsonObject[];
-    controller: JsonObject;
-    run: (work: () => Promise<unknown>) => Promise<void>;
-    client: import("../api").EngineClient;
+    current?: JsonObject;
+    onClose: () => void;
+    onNone: () => void;
+    onChoose: (controlId: string) => void;
+    onReverse: () => void;
 }) {
-    const slotId = str(selected.id);
-    const learningId = str(controller.learningControlId);
-
-    const boundControl = (symbol: string, action: string) =>
-        controls.find((control) => {
-            const binding = obj(control.binding);
-            return str(binding.action) === action
-                && str(binding.slotId) === slotId
-                && (action !== "setParameter" || str(binding.portSymbol) === symbol);
-        });
-
-    const assign = (controlId: string, action: string, portSymbol = "", min = 0, max = 1) => {
-        const next = controls.map((control) => {
-            if (str(control.id) !== controlId) {
-                const binding = obj(control.binding);
-                if (str(binding.slotId) === slotId
-                    && str(binding.action) === action
-                    && (action !== "setParameter" || str(binding.portSymbol) === portSymbol)) {
-                    return { ...control, binding: { ...binding, action: "none", slotId: "", portSymbol: "" } };
-                }
-                return control;
-            }
-            return {
-                ...control,
-                binding: {
-                    ...obj(control.binding),
-                    action,
-                    slotId,
-                    portSymbol,
-                    min,
-                    max
-                }
-            };
-        });
-        void run(() => client.request("controller/config", { ...controller, controls: next }));
-    };
-
+    const boundId = str(obj(current).controlId);
     return (
-        <div className="stack">
-            <div className="muted">
-                Bind a floorboard or on-screen control to this effect. Learn listens for
-                the next MIDI CC or note on that control.
-            </div>
-            <div className="list-item" style={{ flexWrap: "wrap" }}>
-                <strong>Toggle this effect</strong>
-                <select
-                    value={str(obj(boundControl("", "toggleEffect")).id)}
-                    onChange={(event) => assign(event.target.value, "toggleEffect")}
+        <div className="mfx-overlay" onClick={onClose}>
+            <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
+                <div className="mfx-overlay-title">
+                    {target.mode === "bypass" ? `BIND BYPASS — ${target.name}` : `BIND — ${target.name}`}
+                </div>
+                <div className="muted" style={{ marginBottom: 10 }}>
+                    This assignment stays with the preset. Hardware Setup still handles bank, preset, bypass-all, tap and tuner.
+                </div>
+                <button
+                    type="button"
+                    className={`mfx-overlay-option${!boundId ? " selected" : ""}`}
+                    onClick={() => {
+                        if (boundId) {
+                            onNone();
+                        } else {
+                            onClose();
+                        }
+                    }}
                 >
-                    <option value="">None</option>
-                    {controls.map((control) => (
-                        <option key={str(control.id)} value={str(control.id)}>{str(control.label, str(control.id))}</option>
-                    ))}
-                </select>
-            </div>
-            {ports.map((port) => {
-                const symbol = str(port.symbol);
-                const bound = boundControl(symbol, "setParameter");
-                return (
-                    <div key={symbol} className="list-item" style={{ flexWrap: "wrap" }}>
-                        <div style={{ flex: 1 }}>
-                            <strong>{str(port.name, symbol)}</strong>
-                            <div className="muted">{str(obj(bound).label) || "No control"}</div>
-                        </div>
-                        <select
-                            value={str(obj(bound).id)}
-                            onChange={(event) => assign(
-                                event.target.value,
-                                "setParameter",
-                                symbol,
-                                num(port.min, 0),
-                                num(port.max, 1)
-                            )}
+                    None
+                </button>
+                {controls.map((control) => {
+                    const id = str(control.id);
+                    return (
+                        <button
+                            key={id}
+                            type="button"
+                            className={`mfx-overlay-option${boundId === id ? " selected" : ""}`}
+                            onClick={() => onChoose(id)}
                         >
-                            <option value="">None</option>
-                            {controls.map((control) => (
-                                <option key={str(control.id)} value={str(control.id)}>
-                                    {str(control.label, str(control.id))} · {str(control.kind)}
-                                </option>
-                            ))}
-                        </select>
-                        {bound && (
-                            <>
-                                <button
-                                    type="button"
-                                    className={`btn ${bool(obj(bound.binding).inverted) ? "btn-active" : ""}`}
-                                    onClick={() => {
-                                        const next = controls.map((control) => str(control.id) === str(bound.id)
-                                            ? {
-                                                ...control,
-                                                binding: {
-                                                    ...obj(control.binding),
-                                                    inverted: !bool(obj(control.binding).inverted)
-                                                }
-                                            }
-                                            : control);
-                                        void run(() => client.request("controller/config", { ...controller, controls: next }));
-                                    }}
-                                >
-                                    {bool(obj(bound.binding).inverted) ? "REVERSE ON" : "REVERSE"}
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn"
-                                    onClick={() => void run(() => client.request("controller/learn", { controlId: str(bound.id) }))}
-                                >
-                                    {learningId === str(bound.id) ? "LISTENING…" : "LEARN"}
-                                </button>
-                            </>
-                        )}
-                    </div>
-                );
-            })}
-            {controls.length === 0 && (
-                <div className="muted">Add switches and pots in Settings → Controller first.</div>
-            )}
+                            {str(control.label, id)} · {str(control.kind, "momentary")}
+                        </button>
+                    );
+                })}
+                {controls.length === 0 && (
+                    <div className="muted">Add controls in Settings → Hardware Setup first.</div>
+                )}
+                {current && (
+                    <button
+                        type="button"
+                        className={`mfx-overlay-option${bool(current.inverted) ? " selected" : ""}`}
+                        onClick={onReverse}
+                    >
+                        {bool(current.inverted) ? "Reverse on" : "Reverse"}
+                    </button>
+                )}
+                <div className="row" style={{ marginTop: 12 }}>
+                    <button type="button" className="btn" onClick={onClose}>CLOSE</button>
+                </div>
+            </div>
         </div>
     );
 }

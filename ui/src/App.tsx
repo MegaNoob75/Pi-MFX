@@ -26,7 +26,7 @@ export type View =
     | SettingsPage
     | "about";
 
-type EditSubpage = "chain" | "controls" | "bindings" | "io";
+type EditSubpage = "chain" | "controls" | "io";
 
 const titles: Record<string, string> = {
     performance: "PERFORMANCE",
@@ -198,9 +198,6 @@ export function App() {
             return "SNAPSHOTS";
         }
         if (view === "edit") {
-            if (editSubpage === "bindings") {
-                return `BIND — ${editEffectTitle ?? "EFFECT"}`;
-            }
             if (editSubpage === "controls") {
                 return `EFFECT — ${editEffectTitle ?? "SETTINGS"}`;
             }
