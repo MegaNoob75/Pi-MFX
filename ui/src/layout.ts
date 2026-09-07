@@ -149,10 +149,10 @@ export function snapRectToPixels(
 
 export function analogMinSize(kind: string): { width: number; height: number } {
     if (kind === "slider" || kind === "expression") {
-        return { width: 0.1, height: 0.22 };
+        return { width: 0.14, height: 0.34 };
     }
     if (kind === "pot" || kind === "encoder") {
-        return { width: 0.12, height: 0.16 };
+        return { width: 0.16, height: 0.26 };
     }
     return { width: 0.12, height: 0.18 };
 }

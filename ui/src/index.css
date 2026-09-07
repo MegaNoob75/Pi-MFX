@@ -1591,9 +1591,21 @@ button.list-item {
 }
 
 .layout-item-preview {
+    position: relative;
     width: 100%;
     height: 100%;
     pointer-events: none !important;
+}
+
+.layout-item-preview .mfx-performance-control__source {
+    color: var(--mfx-surface-panel-text);
+    text-transform: uppercase;
+    font-size: var(--mfx-font-switch-label-size, clamp(10px, min(14px, 23cqh), 14px));
+}
+
+.layout-item-preview .mfx-performance-control__value {
+    color: var(--mfx-surface-panel-text);
+    font-size: var(--mfx-font-switch-value-size, clamp(18px, min(28px, 50cqh), 28px));
 }
 
 .layout-item-preview * {

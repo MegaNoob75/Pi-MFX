@@ -241,7 +241,16 @@ export function PerformanceControl({
             data-control-kind={tile.kind ?? "pot"}
             data-assigned={assigned ? "true" : "false"}
             data-adjustable="true"
-            style={{ touchAction: "none", WebkitTouchCallout: "none", userSelect: "none", ...style }}
+            style={{
+                position: "relative",
+                inset: "auto",
+                width: "100%",
+                height: "100%",
+                touchAction: "none",
+                WebkitTouchCallout: "none",
+                userSelect: "none",
+                ...style
+            }}
             onPointerDown={(event) => begin(event, className.includes("popout"))}
             onPointerMove={move}
             onPointerUp={end}
@@ -258,9 +267,15 @@ export function PerformanceControl({
             }}
         >
             <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />
-            <ControlGraphic kind={tile.kind ?? "pot"} range={range} active={tile.active} />
-            <MarqueeText className="mfx-performance-control__function" text={tile.analogFunction || "UNASSIGNED"} />
-            <MarqueeText className="mfx-performance-control__value" text={tile.analogValue || range.toFixed(2)} />
+            <div className="mfx-performance-control__graphic">
+                <ControlGraphic kind={tile.kind ?? "pot"} range={range} active={tile.active} />
+            </div>
+            {tile.analogFunction ? (
+                <MarqueeText className="mfx-performance-control__function" text={tile.analogFunction} />
+            ) : null}
+            {tile.analogValue ? (
+                <MarqueeText className="mfx-performance-control__value" text={tile.analogValue} />
+            ) : null}
         </div>
     );
 

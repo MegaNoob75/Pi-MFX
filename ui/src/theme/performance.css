@@ -8,22 +8,21 @@
 }
 
 .mfx-performance-control {
-    position: absolute;
+    /* Same overlay geometry as footswitch tiles: graphic centered in the
+       card, labels parked above and below. Grid leftover-space sizing was
+       collapsing knobs into clipped tick-ring squares. */
+    --mfx-analog-size: min(58cqw, 50cqh, 132px);
+    --mfx-analog-radius: calc(var(--mfx-analog-size) / 2);
+    position: relative;
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     box-sizing: border-box;
     container-type: size;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
-    align-items: center;
-    justify-items: center;
-    gap: clamp(2px, .25vw, 5px);
+    display: block;
     overflow: hidden;
-    /* Container-query units cannot size the container's own padding; without
-       an ancestor query container they resolve against the viewport and can
-       crush narrow pot/encoder cards down to a few pixels. Bounded viewport
-       spacing stays predictable without consuming the card. */
-    padding: clamp(4px, .65vw, 9px) clamp(5px, .8vw, 11px);
+    padding: 0;
     border: var(--mfx-control-border-width) solid transparent;
     border-radius: var(--mfx-control-radius);
     background: var(--mfx-surface-panel-bg) padding-box,
@@ -72,9 +71,38 @@
     }
 }
 
+.mfx-performance-control__graphic {
+    position: absolute;
+    left: 50%;
+    top: 49%;
+    width: var(--mfx-analog-size);
+    height: var(--mfx-analog-size);
+    transform: translate(-50%, -50%);
+    z-index: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+}
+
+.mfx-performance-control[data-control-kind="slider"],
+.mfx-performance-control[data-control-kind="expression"] {
+    --mfx-analog-size: min(24cqw, 22px);
+}
+
+.mfx-performance-control[data-control-kind="slider"] .mfx-performance-control__graphic,
+.mfx-performance-control[data-control-kind="expression"] .mfx-performance-control__graphic {
+    width: min(24cqw, 22px);
+    height: min(68cqh, calc(100% - 2.8em));
+    top: 50%;
+}
+
 .mfx-performance-control__source,
 .mfx-performance-control__function,
 .mfx-performance-control__value {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 1;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -85,6 +113,7 @@
     text-align: center;
     line-height: 1;
     font-weight: 900;
+    pointer-events: none;
 }
 
 .mfx-performance-control__marquee-text {
@@ -96,6 +125,7 @@
 }
 
 .mfx-performance-control__source {
+    top: max(4px, calc(49% - var(--mfx-analog-radius) - 1.2em));
     color: var(--mfx-surface-panel-label);
     font-family: var(--mfx-font-control-label-family, Roboto, sans-serif);
     font-size: var(--mfx-font-control-label-size, clamp(7px, 8cqh, 13px));
@@ -103,15 +133,38 @@
 }
 
 .mfx-performance-control__function {
+    top: calc(49% + var(--mfx-analog-radius) + .12em);
     color: var(--mfx-surface-panel-text);
     font-family: var(--mfx-font-control-function-family, Roboto, sans-serif);
     font-size: var(--mfx-font-control-function-size, clamp(7px, 7cqh, 12px));
 }
 
 .mfx-performance-control__value {
+    top: calc(49% + var(--mfx-analog-radius) + 1.22em);
     color: var(--mfx-surface-panel-accent);
     font-family: var(--mfx-font-control-value-family, Roboto, sans-serif);
     font-size: var(--mfx-font-control-value-size, clamp(8px, 10cqh, 16px));
+}
+
+.mfx-performance-control:not(:has(.mfx-performance-control__function)) .mfx-performance-control__value {
+    top: calc(49% + var(--mfx-analog-radius) + .22em);
+}
+
+.mfx-performance-control[data-control-kind="slider"] .mfx-performance-control__source,
+.mfx-performance-control[data-control-kind="expression"] .mfx-performance-control__source {
+    top: 5px;
+}
+
+.mfx-performance-control[data-control-kind="slider"] .mfx-performance-control__function,
+.mfx-performance-control[data-control-kind="expression"] .mfx-performance-control__function {
+    top: auto;
+    bottom: 1.55em;
+}
+
+.mfx-performance-control[data-control-kind="slider"] .mfx-performance-control__value,
+.mfx-performance-control[data-control-kind="expression"] .mfx-performance-control__value {
+    top: auto;
+    bottom: 5px;
 }
 
 /* The enlarged control has its own multiplier. It deliberately does not use
@@ -134,7 +187,7 @@
 
 .mfx-hardware-knob {
     position: relative;
-    width: min(58cqw, 52cqh, 88px);
+    width: min(62cqw, 48cqh, 96px);
     aspect-ratio: 1;
     border-radius: 50%;
     z-index: 1;
@@ -146,6 +199,13 @@
         inset 0 0 0 max(1px, .9cqw) #050505,
         inset 0 -8px 12px #000a,
         0 5px 10px #000b;
+}
+
+.mfx-performance-control__graphic .mfx-hardware-knob {
+    width: 70%;
+    height: auto;
+    max-width: 70%;
+    max-height: 70%;
 }
 
 .mfx-hardware-knob::before {
@@ -201,14 +261,21 @@
 
 .mfx-hardware-slider {
     position: relative;
-    width: min(18cqw, 14px);
+    width: min(22cqw, 18px);
     height: 80%;
-    min-height: 18px;
+    min-height: 44px;
     overflow: visible;
     border-radius: 99px;
     background: #050505;
     border: 1px solid var(--mfx-border);
     box-shadow: inset 0 2px 6px #000;
+}
+
+.mfx-performance-control__graphic .mfx-hardware-slider {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
 }
 
 .mfx-hardware-slider__fill {
@@ -225,8 +292,8 @@
 .mfx-hardware-slider__thumb {
     position: absolute;
     left: 50%;
-    width: max(20px, 34cqw);
-    height: 10px;
+    width: max(18px, 160%);
+    height: max(8px, 8cqh);
     transform: translateX(-50%);
     border-radius: 4px;
     background: linear-gradient(#ddd, #555);
