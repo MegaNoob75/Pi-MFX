@@ -26,6 +26,7 @@ struct Paths {
     std::string themesDir() const;
     std::string credentialsFile() const;
     std::string pluginsFile() const;
+    std::string hotspotFile() const;
 };
 
 bool fileExists(const std::string& path);

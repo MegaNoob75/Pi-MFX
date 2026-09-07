@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=PI-MFX
+Description=Text-free PI-MFX boot and shutdown screen
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/pimfx
+ScriptFile=/usr/share/plymouth/themes/pimfx/pimfx.script

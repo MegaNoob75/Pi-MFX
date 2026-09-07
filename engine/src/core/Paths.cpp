@@ -69,6 +69,7 @@ std::string Paths::controllerFile() const { return joinPath(dataRoot, "controlle
 std::string Paths::themesDir() const { return joinPath(dataRoot, "themes"); }
 std::string Paths::credentialsFile() const { return joinPath(dataRoot, "credentials.json"); }
 std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json"); }
+std::string Paths::hotspotFile() const { return joinPath(dataRoot, "hotspot.json"); }
 
 bool fileExists(const std::string& path) {
     std::error_code ec;

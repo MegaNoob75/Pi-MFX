@@ -127,6 +127,46 @@ still a complete control surface if you skip this.
 To undo just the screen session: menu item **6**, or
 `sudo bash ./scripts/pimfx.sh display-remove`.
 
+## Optional: boot logo and quiet boot
+
+The attached screen can show only the **PI-MFX** logo while the Pi boots and
+shuts down, with kernel and systemd text kept in the journal. This is original
+Pi-MFX artwork (no PiPedal mark). From the setup menu pick **7) Boot screen**,
+or:
+
+```bash
+sudo bash ./scripts/pimfx.sh splash
+```
+
+That installs Plymouth, hides the rainbow firmware splash, and adds quiet
+kernel options without removing `threadirqs` or USB autosuspend. Encrypted-root
+cards are skipped so an unlock prompt cannot be hidden. Reboot after it
+finishes. Undo from the same menu, or `sudo bash ./scripts/pimfx.sh splash-remove`.
+
+**8) Faster boot** is separate:
+
+- skip waiting for a network connection at boot (often several seconds)
+- optionally disable unused printer, modem, VNC, and file-share services
+
+Bluetooth is left enabled. These do not change audio tuning.
+
+## Optional: Wi-Fi hotspot
+
+When you take the Pi to a gig with no home network, it can open a Wi-Fi access
+point so a tablet can control Pi-MFX. The installer already sets up the helper;
+turn it on in **Settings → System → Hotspot**.
+
+- **OFF** — use ethernet or home Wi-Fi
+- **AUTO** — start `PI-MFX` when this Pi has no ethernet and no other Wi-Fi
+- **ALWAYS** — keep the hotspot up (the radio cannot stay on home Wi-Fi too)
+
+Join the network from the tablet, then open `http://10.42.0.1:8080` (or the
+URL shown on the Hotspot page). Menu item **9** reinstalls the helper if needed:
+
+```bash
+sudo bash ./scripts/pimfx.sh hotspot
+```
+
 ## Updating
 
 After the first install, use the short update script (pull, rebuild, restart).

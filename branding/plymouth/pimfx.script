@@ -1,0 +1,19 @@
+Window.SetBackgroundTopColor(0.0, 0.0, 0.0);
+Window.SetBackgroundBottomColor(0.0, 0.0, 0.0);
+
+splash = Image("pimfx-splash.png");
+width_scale = Window.GetWidth() / splash.GetWidth();
+height_scale = Window.GetHeight() / splash.GetHeight();
+scale = width_scale;
+if (height_scale < width_scale) {
+    scale = height_scale;
+}
+splash = splash.Scale(splash.GetWidth() * scale, splash.GetHeight() * scale);
+
+sprite = Sprite(splash);
+sprite.SetX(Window.GetWidth() / 2 - splash.GetWidth() / 2);
+sprite.SetY(Window.GetHeight() / 2 - splash.GetHeight() / 2);
+sprite.SetZ(10000);
+
+# Status, password and question callbacks are left unset on purpose so
+# boot and shutdown stay on this logo. Details remain in the journal.

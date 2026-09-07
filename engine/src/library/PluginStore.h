@@ -38,6 +38,10 @@ public:
     Json installedBundles() const;
     bool bundleRemove(const std::string& directory, std::string& error);
 
+    Json hotspotStatus(std::string& error);
+    Json hotspotConfig(std::string& error);
+    Json applyHotspot(const Json& payload, std::string& error);
+
 private:
     Json helperCall(const std::string& op, const Json& args, std::string& error, int timeoutSeconds);
     bool helperPing();

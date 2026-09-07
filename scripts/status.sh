@@ -19,3 +19,24 @@ if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
 else
     echo 'screen   not configured'
 fi
+if [[ -f /var/lib/pimfx-boot/quiet-splash-applied ]]; then
+    echo 'splash   PI-MFX logo (quiet boot)'
+else
+    echo 'splash   not installed'
+fi
+if [[ -f /var/lib/pimfx-boot/skip-wait-applied ]]; then
+    echo 'boot     network-wait disabled'
+fi
+if [[ -f /var/lib/pimfx-boot/unused-services-applied ]]; then
+    echo 'boot     unused services disabled'
+fi
+if [[ -f /var/lib/pimfx/hotspot.json ]]; then
+    python3 - <<'PY' 2>/dev/null || echo 'hotspot  configured'
+import json
+from pathlib import Path
+data = json.loads(Path("/var/lib/pimfx/hotspot.json").read_text())
+print(f"hotspot  mode={data.get('mode', 'off')} ssid={data.get('ssid', 'PI-MFX')}")
+PY
+else
+    echo 'hotspot  off'
+fi

@@ -1,6 +1,8 @@
 #include "library/PluginStore.h"
 
+#include "core/Crypto.h"
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -8,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <unordered_set>
 #include <vector>
 
@@ -115,6 +118,67 @@ bool validRepoId(const std::string& id) {
         }
     }
     return true;
+}
+
+bool printableHotspotText(const std::string& text, size_t minLength, size_t maxLength) {
+    if (text.size() < minLength || text.size() > maxLength) {
+        return false;
+    }
+    for (unsigned char c : text) {
+        if (c < 32 || c > 126) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Json defaultHotspotConfig() {
+    Json json = Json::object();
+    json.set("mode", "off");
+    json.set("ssid", "PI-MFX");
+    json.set("password", "");
+    return json;
+}
+
+Json readHotspotFile(const Paths& paths) {
+    std::string contents;
+    if (!readFile(paths.hotspotFile(), contents) || contents.empty()) {
+        return defaultHotspotConfig();
+    }
+    std::string parseError;
+    Json json = Json::parse(contents, &parseError);
+    if (!parseError.empty() || !json.isObject()) {
+        return defaultHotspotConfig();
+    }
+    if (json["mode"].asString().empty()) {
+        json.set("mode", "off");
+    }
+    if (json["ssid"].asString().empty()) {
+        json.set("ssid", "PI-MFX");
+    }
+    return json;
+}
+
+bool writeHotspotFile(const Paths& paths, const Json& json, std::string& error) {
+    if (!writeFileAtomic(paths.hotspotFile(), json.dump(2))) {
+        error = "could not save hotspot settings";
+        return false;
+    }
+#if !defined(_WIN32)
+    std::error_code ec;
+    fs::permissions(paths.hotspotFile(),
+                    fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace, ec);
+#endif
+    return true;
+}
+
+Json publicHotspot(const Json& stored) {
+    Json json = Json::object();
+    json.set("mode", stored["mode"].asString("off"));
+    json.set("ssid", stored["ssid"].asString("PI-MFX"));
+    json.set("passwordSet", !stored["password"].asString().empty());
+    return json;
 }
 
 bool endsWith(const std::string& text, const char* suffix) {
@@ -371,7 +435,7 @@ Json PluginStore::helperCall(const std::string& op, const Json& args, std::strin
     (void)op;
     (void)args;
     (void)timeoutSeconds;
-    error = "apt and extra repos are only available on the Pi";
+    error = "the Pi-MFX helper is only available on the Pi";
     return Json();
 #else
     Json request = args.isObject() ? args : Json::object();
@@ -1051,6 +1115,97 @@ bool PluginStore::patchstorageInstall(int64_t patchId, std::string& error) {
     registry.set("bundles", remaining);
     saveRegistry(registry);
     return true;
+}
+
+Json PluginStore::hotspotStatus(std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Json stored = readHotspotFile(paths_);
+    Json json = publicHotspot(stored);
+    std::string helperError;
+    Json live = helperCall("hotspot-status", Json::object(), helperError, 20);
+    if (!helperError.empty()) {
+        json.set("helperAvailable", false);
+        json.set("active", false);
+        json.set("otherConnection", false);
+        json.set("error", helperError);
+        return json;
+    }
+    json.set("helperAvailable", true);
+    json.set("active", live["active"].asBool(false));
+    json.set("device", live["device"].asString());
+    json.set("ip", live["ip"].asString());
+    json.set("url", live["url"].asString());
+    json.set("otherConnection", live["otherConnection"].asBool(false));
+    json.set("error", live["error"].asString());
+    (void)error;
+    return json;
+}
+
+Json PluginStore::hotspotConfig(std::string& error) {
+    Json json = hotspotStatus(error);
+    std::lock_guard<std::mutex> lock(mutex_);
+    json.set("password", readHotspotFile(paths_)["password"].asString());
+    return json;
+}
+
+Json PluginStore::applyHotspot(const Json& payload, std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Json stored = readHotspotFile(paths_);
+    std::string mode = payload["mode"].asString(stored["mode"].asString("off"));
+    if (mode != "off" && mode != "auto" && mode != "always") {
+        error = "hotspot mode must be off, auto, or always";
+        return Json::object();
+    }
+    std::string ssid = payload["ssid"].asString(stored["ssid"].asString("PI-MFX"));
+    if (ssid.empty()) {
+        ssid = "PI-MFX";
+    }
+    if (!printableHotspotText(ssid, 1, 32)) {
+        error = "the hotspot name must be 1 to 32 printable characters";
+        return Json::object();
+    }
+    std::string password = payload["password"].asString();
+    if (password.empty()) {
+        password = stored["password"].asString();
+    }
+    bool generated = false;
+    if (mode != "off" && password.empty()) {
+        password = toHex(randomBytes(8));
+        generated = true;
+    }
+    if (mode != "off" && !printableHotspotText(password, 8, 63)) {
+        error = "the hotspot password must be 8 to 63 printable characters";
+        return Json::object();
+    }
+
+    Json next = Json::object();
+    next.set("mode", mode);
+    next.set("ssid", ssid);
+    next.set("password", password);
+    if (!writeHotspotFile(paths_, next, error)) {
+        return Json::object();
+    }
+
+    Json json = publicHotspot(next);
+    json.set("password", password);
+    json.set("generatedPassword", generated);
+    Json live = helperCall("hotspot-apply", Json::object(), error, 60);
+    if (!error.empty()) {
+        json.set("helperAvailable", false);
+        json.set("error", error);
+        return json;
+    }
+    json.set("helperAvailable", true);
+    json.set("active", live["active"].asBool(false));
+    json.set("device", live["device"].asString());
+    json.set("ip", live["ip"].asString());
+    json.set("url", live["url"].asString());
+    json.set("otherConnection", live["otherConnection"].asBool(false));
+    json.set("error", live["error"].asString());
+    if (!live["error"].asString().empty()) {
+        error = live["error"].asString();
+    }
+    return json;
 }
 
 } // namespace pimfx

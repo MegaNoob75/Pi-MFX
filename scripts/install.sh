@@ -90,7 +90,8 @@ apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config git \
     libasound2-dev liblilv-dev lv2-dev \
     libcurl4-openssl-dev libsndfile1-dev libsamplerate0-dev \
-    nodejs npm python3 xz-utils unzip gnupg ca-certificates
+    nodejs npm python3 xz-utils unzip gnupg ca-certificates \
+    network-manager dnsmasq-base iw
 
 # ---------------------------------------------------------------------------
 # 3. Build
@@ -269,6 +270,10 @@ systemctl daemon-reload
 systemctl enable pimfx-plugin-helper.service >/dev/null
 systemctl restart pimfx-plugin-helper.service \
     || warn "plugin helper did not start; apt installs from the UI will be unavailable"
+
+PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" \
+    bash "$REPO_DIR/scripts/install-hotspot.sh"
+
 systemctl enable pimfx.service >/dev/null
 systemctl restart pimfx.service
 
@@ -299,6 +304,9 @@ First steps:
      complete control surface on its own.
   3. Settings -> Plugins: install LV2 effects from apt or PatchStorage, then
      add them to a chain. Pi-MFX ships none.
+  4. Settings -> System -> Hotspot: AUTO starts a Wi-Fi access point when this
+     Pi has no other network, so a tablet can open the UI at a gig.
+  5. Optional: sudo bash ./scripts/pimfx.sh splash  for a PI-MFX boot logo.
 
 EOF
 

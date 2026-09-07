@@ -133,9 +133,12 @@ npm run dev
 
 | Script | Where | What |
 | --- | --- | --- |
-| `scripts/pimfx.sh` | Pi, usual entry | Menu: install, update, touchscreen, status, remove |
+| `scripts/pimfx.sh` | Pi, usual entry | Menu: install, update, touchscreen, boot logo, hotspot, status, remove |
 | `scripts/install.sh` | Pi | Same as menu item Install |
 | `scripts/update.sh` | Pi | Same as menu item Update |
+| `scripts/boot-splash.sh` | Pi | PI-MFX boot / shutdown logo and quiet kernel text |
+| `scripts/boot-speed.sh` | Pi | Skip network-wait and unused services |
+| `scripts/install-hotspot.sh` | Pi | Wi-Fi hotspot helper used by Settings |
 | `scripts/status.sh` | Pi, any time | Branch, service, cards |
 | `scripts/uninstall.sh` | Pi | Same as menu item Remove |
 | `scripts/dev-pc.ps1` | Windows, optional | Reminds you of the PC steps and checks you are on `dev` |

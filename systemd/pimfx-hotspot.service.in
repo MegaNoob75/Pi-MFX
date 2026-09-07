@@ -1,0 +1,15 @@
+[Unit]
+Description=Pi-MFX Wi-Fi hotspot
+Documentation=https://github.com/MegaNoob75/Pi-MFX
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+Environment=PIMFX_DATA_ROOT=@DATA_ROOT@
+Environment=PIMFX_PREFIX=@PREFIX@
+ExecStart=/usr/bin/python3 @PREFIX@/libexec/pimfx/hotspot.py apply
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -44,6 +44,7 @@ const titles: Record<string, string> = {
     plugins: "PLUGINS",
     backup: "BACKUP",
     system: "SYSTEM",
+    hotspot: "HOTSPOT",
     about: "ABOUT"
 };
 
@@ -64,7 +65,7 @@ export function App() {
     useEffect(() => installResponsiveSizing(), []);
 
     const settingsPages: SettingsPage[] = [
-        "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "plugins", "backup", "system"
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "plugins", "backup", "system", "hotspot"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
     const snapshotMode = bool(engine.state.snapshotMode);
@@ -299,7 +300,8 @@ export function App() {
                 )}
                 {view === "layout" && <LayoutEditorView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
-                    || view === "library" || view === "plugins" || view === "system" || view === "backup") && (
+                    || view === "library" || view === "plugins" || view === "system" || view === "backup"
+                    || view === "hotspot") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}

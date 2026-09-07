@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Pi-MFX setup menu. One entry point for install, update, touchscreen, status
-# and remove. The older scripts (install.sh, update.sh, uninstall.sh, status.sh)
-# still work; this file is what you run day to day.
+# Pi-MFX setup menu. One entry point for install, update, touchscreen, boot
+# logo, hotspot, status and remove. The older scripts (install.sh, update.sh,
+# uninstall.sh, status.sh) still work; this file is what you run day to day.
 #
 #   sudo bash ./scripts/pimfx.sh
 #   sudo bash ./scripts/pimfx.sh update
@@ -42,6 +42,12 @@ Actions:
   display          Fullscreen touchscreen (Labwc + Chromium)
   display-refresh  Re-apply Chromium flags and hide the system keyboard
   display-remove   Undo the touchscreen session
+  splash           PI-MFX boot / shutdown logo, hide boot text
+  splash-remove    Restore console boot messages
+  boot-speed       Skip waiting for network at boot
+  boot-speed-unused Disable unused printer/VNC/file-share services
+  boot-speed-restore Undo boot-speed service changes
+  hotspot          Install Wi-Fi hotspot support
   status           Branch, service, audio cards
   reboot           Reboot the Pi
   remove           Stop the service and undo OS changes
@@ -104,7 +110,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|install|update|rebuild|display|display-refresh|display-remove|status|reboot|remove) ;;
+        menu|install|update|rebuild|display|display-refresh|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -361,13 +367,6 @@ do_rebuild() {
 
 do_status() {
     run_script status.sh
-    if [[ -f "$DISPLAY_STATE_DIR/configured-user" ]]; then
-        echo
-        echo "touchscreen  configured for $(cat "$DISPLAY_STATE_DIR/configured-user")"
-    else
-        echo
-        echo "touchscreen  not configured"
-    fi
 }
 
 do_remove() {
@@ -390,7 +389,80 @@ do_complete() {
     configure_touchscreen
 }
 
-do_reboot() {
+do_splash() {
+    run_script boot-splash.sh install "$@"
+    if [[ -f /var/lib/pimfx-boot/quiet-splash-applied ]]; then
+        mark_reboot "the PI-MFX boot logo was installed"
+    fi
+}
+
+do_splash_remove() {
+    local was=0
+    [[ -f /var/lib/pimfx-boot/quiet-splash-applied ]] && was=1
+    run_script boot-splash.sh remove "$@"
+    [[ "$was" -eq 1 ]] && mark_reboot "the PI-MFX boot logo was removed"
+}
+
+do_boot_speed() {
+    run_script boot-speed.sh skip-wait "$@"
+}
+
+do_boot_speed_unused() {
+    run_script boot-speed.sh unused "$@"
+}
+
+do_boot_speed_restore() {
+    run_script boot-speed.sh restore "$@"
+}
+
+do_hotspot() {
+    run_script install-hotspot.sh
+}
+
+boot_screen_menu() {
+    local choice
+    draw_banner
+    cat <<'MENU'
+  Boot screen
+
+  1) Install PI-MFX logo and hide boot / shutdown text
+  2) Remove logo and restore console messages
+  3) Back
+MENU
+    echo
+    read -r -p "Choose [1-3]: " choice
+    case "$choice" in
+        1) do_splash ;;
+        2) do_splash_remove ;;
+        3) return 0 ;;
+        *) warn "pick 1, 2 or 3" ;;
+    esac
+}
+
+faster_boot_menu() {
+    local choice
+    draw_banner
+    cat <<'MENU'
+  Faster boot
+
+  These options hide work the Pi does not need as a pedalboard. Bluetooth
+  is left enabled. Audio tuning is not changed.
+
+  1) Skip waiting for a network connection at boot
+  2) Disable unused printer, modem, VNC and file-share services
+  3) Restore those boot-speed changes
+  4) Back
+MENU
+    echo
+    read -r -p "Choose [1-4]: " choice
+    case "$choice" in
+        1) do_boot_speed ;;
+        2) do_boot_speed_unused ;;
+        3) do_boot_speed_restore ;;
+        4) return 0 ;;
+        *) warn "pick a number from 1 to 4" ;;
+    esac
+}
     if confirm "Reboot this Pi now?"; then
         log "Rebooting"
         systemctl reboot
@@ -408,13 +480,16 @@ show_menu() {
   4) Rebuild local files  (after MobaXterm copy, no git pull)
   5) Set up touchscreen display
   6) Remove touchscreen display
-  7) Status
-  8) Remove Pi-MFX
-  9) Reboot now
-  10) Exit
+  7) Boot screen  (PI-MFX logo, hide boot text)
+  8) Faster boot  (skip network wait, unused services)
+  9) Wi-Fi hotspot support
+  10) Status
+  11) Remove Pi-MFX
+  12) Reboot now
+  13) Exit
 MENU
         echo
-        read -r -p "Choose [1-10]: " choice
+        read -r -p "Choose [1-13]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
@@ -422,17 +497,20 @@ MENU
             4) do_rebuild || warn "rebuild did not finish" ;;
             5) configure_touchscreen || warn "touchscreen setup did not finish" ;;
             6) remove_touchscreen || warn "touchscreen remove did not finish" ;;
-            7) do_status || warn "status failed" ;;
-            8)
+            7) boot_screen_menu || warn "boot screen change did not finish" ;;
+            8) faster_boot_menu || warn "boot-speed change did not finish" ;;
+            9) do_hotspot || warn "hotspot install did not finish" ;;
+            10) do_status || warn "status failed" ;;
+            11)
                 PURGE="no"
                 if confirm "Also delete /var/lib/pimfx (banks, models, IRs)?"; then
                     PURGE="yes"
                 fi
                 do_remove confirmed || warn "remove did not finish"
                 ;;
-            9) do_reboot ;;
-            10|q|Q) return 0 ;;
-            *) warn "pick a number from 1 to 10"; pause_for_menu; continue ;;
+            12) do_reboot ;;
+            13|q|Q) return 0 ;;
+            *) warn "pick a number from 1 to 13"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -455,6 +533,12 @@ main() {
         display) configure_touchscreen ;;
         display-refresh) refresh_touchscreen_session ;;
         display-remove) remove_touchscreen ;;
+        splash) do_splash ${ASSUME_YES:+--yes} ;;
+        splash-remove) do_splash_remove ${ASSUME_YES:+--yes} ;;
+        boot-speed) do_boot_speed ${ASSUME_YES:+--yes} ;;
+        boot-speed-unused) do_boot_speed_unused ${ASSUME_YES:+--yes} ;;
+        boot-speed-restore) do_boot_speed_restore ${ASSUME_YES:+--yes} ;;
+        hotspot) do_hotspot ;;
         remove) do_remove ;;
         reboot) do_reboot ;;
     esac

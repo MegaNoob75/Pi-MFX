@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <rect width="1920" height="1080" fill="#000"/>
+  <g transform="translate(960 430)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M-420 40 C-280 -10, -140 -90, 0 -110 C140 -90, 280 -10, 420 40" stroke="#7c3aed" stroke-width="10" opacity="0.9"/>
+    <path d="M-360 20 C-220 -50, -90 -120, 0 -128 C90 -120, 220 -50, 360 20" stroke="#22d3ee" stroke-width="12"/>
+  </g>
+  <text x="960" y="640" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-size="168" font-weight="800" letter-spacing="8">
+    <tspan fill="#ffffff">PI-</tspan><tspan fill="#22d3ee">MFX</tspan>
+  </text>
+</svg>

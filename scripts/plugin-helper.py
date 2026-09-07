@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Root helper for Pi-MFX plugin apt and extra-repo operations.
+"""Root helper for Pi-MFX plugin apt, extra-repo, and Wi-Fi hotspot operations.
 
 The audio engine runs as an unprivileged user with NoNewPrivileges, so it
-cannot call apt. This process listens on a UNIX socket owned by that user,
-accepts one JSON command per connection, and replies with one JSON object.
+cannot call apt or nmcli. This process listens on a UNIX socket owned by that
+user, accepts one JSON command per connection, and replies with one JSON object.
 
 It only installs packages whose names look like Debian packages and that look
 like LV2 plugins (name, description, or the suggested set). Repo lines must be
-HTTPS. It never runs a shell with user text.
+HTTPS. Hotspot commands only run the installed hotspot.py helper. It never runs
+a shell with user text.
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ import urllib.request
 SOCK_PATH = sys.argv[1] if len(sys.argv) > 1 else "/run/pimfx/plugin-helper.sock"
 PIMFX_USER = os.environ.get("PIMFX_USER", "pimfx")
 DATA_ROOT = os.environ.get("PIMFX_DATA_ROOT", "/var/lib/pimfx")
+PREFIX = os.environ.get("PIMFX_PREFIX", "/usr/local")
+HOTSPOT_SCRIPT = os.path.join(PREFIX, "libexec/pimfx/hotspot.py")
 SOURCES_DIR = "/etc/apt/sources.list.d"
 KEYRING_DIR = "/usr/share/keyrings"
 
@@ -382,6 +385,31 @@ def handle(request: dict) -> dict:
             os.remove(key)
         apt_get(["update"], timeout=timeout)
         return {"ok": True, "repos": list_repos()}
+
+    if op in {"hotspot-status", "hotspot-apply"}:
+        if not os.path.isfile(HOTSPOT_SCRIPT):
+            return {"ok": False, "error": "hotspot support is not installed"}
+        action = "status" if op == "hotspot-status" else "apply"
+        cmd = ["/usr/bin/python3", HOTSPOT_SCRIPT, action]
+        if op == "hotspot-apply":
+            cmd.append("--nowait")
+        result = run(cmd, timeout=timeout)
+        raw = (result.stdout or "").strip()
+        if not raw:
+            return {
+                "ok": False,
+                "error": (result.stderr or "").strip() or "the hotspot helper returned no status",
+            }
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "the hotspot helper returned invalid JSON"}
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "the hotspot helper returned invalid JSON"}
+        payload.setdefault("ok", True)
+        if op == "hotspot-apply" and payload.get("error"):
+            payload["ok"] = False
+        return payload
 
     return {"ok": False, "error": f"unknown helper op: {op}"}
 

@@ -11,6 +11,7 @@ WEB_ROOT="/usr/share/pimfx/web"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m warn\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run this with sudo:  sudo ./scripts/update.sh"
@@ -90,6 +91,8 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
             -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
             "$REPO_DIR/systemd/pimfx-plugin-helper.service.in" > /etc/systemd/system/pimfx-plugin-helper.service
     fi
+    PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" \
+        bash "$REPO_DIR/scripts/install-hotspot.sh"
     systemctl daemon-reload
     if [[ -f /etc/systemd/system/pimfx-plugin-helper.service ]]; then
         systemctl enable pimfx-plugin-helper.service >/dev/null 2>&1 || true

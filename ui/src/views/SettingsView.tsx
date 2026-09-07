@@ -6,6 +6,7 @@ import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
 import { PluginsView } from "./PluginsView";
+import { HotspotView } from "./HotspotView";
 
 export type SettingsPage =
     | "audio"
@@ -17,7 +18,8 @@ export type SettingsPage =
     | "layout"
     | "keyboard"
     | "backup"
-    | "plugins";
+    | "plugins"
+    | "hotspot";
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
     return (
@@ -32,7 +34,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
                 <HubCard title="PLUGINS" subtitle="Apt repos, install, remove and PatchStorage" onClick={() => onOpen("plugins")} />
-                <HubCard title="SYSTEM" subtitle="Audio, library, realtime threads and diagnostics" onClick={() => onOpen("system")} />
+                <HubCard title="SYSTEM" subtitle="Audio, library, hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
         </div>
     );
@@ -64,11 +66,12 @@ function SystemHub({
         <div className="mfx-screen">
             <div className="mfx-screen-intro">
                 <div className="mfx-screen-intro-title">SYSTEM</div>
-                <div className="mfx-screen-intro-sub">Audio device, NAM/IR library and Pi realtime</div>
+                <div className="mfx-screen-intro-sub">Audio device, NAM/IR library, hotspot and Pi realtime</div>
             </div>
             <div className="mfx-hub-grid">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen?.("audio")} />
                 <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen?.("library")} />
+                <HubCard title="HOTSPOT" subtitle="Wi-Fi access point for a tablet when there is no internet" onClick={() => onOpen?.("hotspot")} />
                 <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => setRealtime(true)} />
             </div>
         </div>
@@ -112,6 +115,9 @@ export function SettingsPage({
     }
     if (page === "plugins") {
         return <PluginsView engine={engine} run={run} />;
+    }
+    if (page === "hotspot") {
+        return <HotspotView engine={engine} run={run} />;
     }
     if (page === "system") {
         return <SystemHub engine={engine} run={run} onOpen={onOpen} />;

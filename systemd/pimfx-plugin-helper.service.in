@@ -10,6 +10,7 @@ User=root
 Group=root
 Environment=PIMFX_USER=@USER@
 Environment=PIMFX_DATA_ROOT=@DATA_ROOT@
+Environment=PIMFX_PREFIX=@PREFIX@
 ExecStart=/usr/bin/python3 @PREFIX@/libexec/pimfx/plugin-helper.py /run/pimfx/plugin-helper.sock
 RuntimeDirectory=pimfx
 RuntimeDirectoryMode=0755

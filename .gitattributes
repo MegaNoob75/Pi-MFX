@@ -1,4 +1,8 @@
 # Shell scripts must stay Unix text so the Pi can run them.
 *.sh text eol=lf
+*.py text eol=lf
+*.plymouth text eol=lf
+*.script text eol=lf
 *.service.in text eol=lf
+systemd/*.in text eol=lf
 *.ps1 text eol=crlf

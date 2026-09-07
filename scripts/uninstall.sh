@@ -7,6 +7,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PIMFX_USER="${PIMFX_USER:-pimfx}"
 PREFIX="${PREFIX:-/usr/local}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/pimfx}"
@@ -58,22 +60,43 @@ fi
 log "Stopping services"
 systemctl disable --now pimfx.service          >/dev/null 2>&1 || true
 systemctl disable --now pimfx-plugin-helper.service >/dev/null 2>&1 || true
+systemctl disable --now pimfx-hotspot.service  >/dev/null 2>&1 || true
 systemctl disable --now pimfx-governor.service >/dev/null 2>&1 || true
 systemctl disable --now pimfx-wifi-powersave.service >/dev/null 2>&1 || true
+
+if [[ -f "$PREFIX/libexec/pimfx/hotspot.py" ]]; then
+    log "Removing the Wi-Fi hotspot connection"
+    /usr/bin/python3 "$PREFIX/libexec/pimfx/hotspot.py" uninstall >/dev/null 2>&1 || true
+elif [[ -f "$REPO_DIR/scripts/hotspot.py" ]]; then
+    /usr/bin/python3 "$REPO_DIR/scripts/hotspot.py" uninstall >/dev/null 2>&1 || true
+fi
+
+if [[ -f "$REPO_DIR/scripts/boot-splash.sh" ]]; then
+    log "Removing the PI-MFX boot logo"
+    bash "$REPO_DIR/scripts/boot-splash.sh" remove --yes >/dev/null 2>&1 || true
+fi
+if [[ -f "$REPO_DIR/scripts/boot-speed.sh" ]]; then
+    log "Restoring boot-speed service changes"
+    bash "$REPO_DIR/scripts/boot-speed.sh" restore --yes >/dev/null 2>&1 || true
+fi
 
 log "Removing files"
 rm -f /etc/systemd/system/pimfx.service
 rm -f /etc/systemd/system/pimfx-plugin-helper.service
+rm -f /etc/systemd/system/pimfx-hotspot.service
 rm -f /etc/systemd/system/pimfx-governor.service
 rm -f /etc/systemd/system/pimfx-wifi-powersave.service
+rm -f /etc/NetworkManager/dispatcher.d/90-pimfx-hotspot
 rm -f /etc/security/limits.d/95-pimfx-audio.conf
 rm -f /etc/udev/rules.d/95-pimfx-audio.rules
 rm -f /etc/sysctl.d/95-pimfx-audio.conf
 rm -f /etc/modprobe.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
 rm -f "$PREFIX/libexec/pimfx/plugin-helper.py"
+rm -f "$PREFIX/libexec/pimfx/hotspot.py"
 rmdir "$PREFIX/libexec/pimfx" >/dev/null 2>&1 || true
 rm -rf /usr/share/pimfx
+rm -rf /var/lib/pimfx-boot
 rm -f /etc/apt/sources.list.d/pimfx-*.list /etc/apt/sources.list.d/pimfx-*.sources
 rm -f /usr/share/keyrings/pimfx-*.gpg
 systemctl daemon-reload

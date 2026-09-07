@@ -379,6 +379,19 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return pluginsCommand(command.substr(8), payload, ok, error);
     }
 
+    if (command == "hotspot/status" || command == "hotspot/config") {
+        const Json result = command == "hotspot/config"
+            ? plugins_.hotspotConfig(error)
+            : plugins_.hotspotStatus(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "hotspot/apply") {
+        const Json result = plugins_.applyHotspot(payload, error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+
     if (command.rfind("tone3000/", 0) == 0) {
         return tone3000Command(command.substr(9), payload, ok, error);
     }
