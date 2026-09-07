@@ -349,7 +349,7 @@ export default function ThemeManagerView({
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = url;
-        anchor.download = `${safeName(theme.name)}.multifx-theme.json`;
+        anchor.download = `${safeName(theme.name)}.pimfx-theme.json`;
         anchor.click();
         URL.revokeObjectURL(url);
         setMessage("Theme exported.");
@@ -2324,7 +2324,7 @@ function safeName(value: string): string {
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/^-+|-+$/g, "")
-        || "multifx-theme"
+        || "pimfx-theme"
     );
 }
 

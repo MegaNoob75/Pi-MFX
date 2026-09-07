@@ -8,8 +8,11 @@ import {
     analogMinSize,
     clampRect,
     gridCellRect,
+    readSnapshotWidgets,
     readStatusWidgets,
     snapRectToPixels,
+    snapshotWidgetId,
+    snapshotWidgetsToJson,
     statusWidgetsToJson,
     unplacedIds,
     type LayoutRect
@@ -45,6 +48,8 @@ export function LayoutEditorView({
     const [rows, setRows] = useState(() => Math.max(1, num(controller.gridRows, 2)));
     const [columns, setColumns] = useState(() => Math.max(1, num(controller.gridColumns, 4)));
     const [widgets, setWidgets] = useState(() => readStatusWidgets(layout));
+    const [snapshotWidgets, setSnapshotWidgets] = useState(() => readSnapshotWidgets(layout));
+    const [stage, setStage] = useState<"performance" | "snapshots">("performance");
     const [hiddenIds, setHiddenIds] = useState(() => unplacedIds(layout));
     const [draftRects, setDraftRects] = useState<Record<string, LayoutRect>>({});
     const [selectedId, setSelectedId] = useState("");
@@ -94,7 +99,7 @@ export function LayoutEditorView({
     };
 
     const onPointerDown = (id: string, rect: LayoutRect, event: ReactPointerEvent, gesture: "move" | "resize" = "move") => {
-        if (mode !== "freeform") {
+        if (stage !== "snapshots" && mode !== "freeform") {
             return;
         }
         event.preventDefault();
@@ -127,6 +132,10 @@ export function LayoutEditorView({
         });
         if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
             setWidgets((current) => ({ ...current, [id]: { ...current[id], rect: next } }));
+        } else if (id.startsWith("snap-slot-")) {
+            setSnapshotWidgets((current) => current.map((item) => (
+                item.id === id ? { ...item, rect: next } : item
+            )));
         } else {
             setDraftRects((current) => ({ ...current, [id]: next }));
         }
@@ -146,6 +155,12 @@ export function LayoutEditorView({
                 ...current,
                 [id]: { ...current[id], rect: last }
             }));
+            return;
+        }
+        if (id.startsWith("snap-slot-")) {
+            setSnapshotWidgets((current) => current.map((item) => (
+                item.id === id ? { ...item, rect: last } : item
+            )));
             return;
         }
         setDraftRects((current) => ({ ...current, [id]: last }));
@@ -187,6 +202,7 @@ export function LayoutEditorView({
             performanceLayout: {
                 ...layout,
                 elements: statusWidgetsToJson(widgets),
+                snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
                 unplacedControlIds: hiddenIds
             },
             controls: nextControls
@@ -227,6 +243,7 @@ export function LayoutEditorView({
             setRows(Math.max(1, num(parsed.gridRows, rows)));
             setColumns(Math.max(1, num(parsed.gridColumns, columns)));
             setWidgets(readStatusWidgets(importedLayout));
+            setSnapshotWidgets(readSnapshotWidgets(importedLayout));
             setHiddenIds(unplacedIds(importedLayout));
             const nextRects: Record<string, LayoutRect> = {};
             for (const item of imported) {
@@ -247,13 +264,50 @@ export function LayoutEditorView({
         });
     };
 
+    const addSnapshotWidget = () => {
+        setSnapshotWidgets((current) => {
+            const slot = current.reduce((max, item) => Math.max(max, item.slot), -1) + 1;
+            return [...current, {
+                id: snapshotWidgetId(slot),
+                slot,
+                rect: gridCellRect(slot, 3, Math.max(2, Math.ceil((slot + 1) / 3)))
+            }];
+        });
+        setMessage("");
+    };
+
+    const removeSnapshotWidget = (slot: number) => {
+        setSnapshotWidgets((current) => current.length <= 1 ? current : current.filter((item) => item.slot !== slot));
+        setMessage("");
+    };
+
     return (
         <div className="layout-editor">
             <div className="layout-editor-toolbar">
                 <div>
-                    <div className="layout-editor-title">PERFORMANCE LAYOUT</div>
+                    <div className="layout-stage-toggle">
+                        {(["performance", "snapshots"] as const).map((item) => (
+                            <button
+                                key={item}
+                                type="button"
+                                className={`btn ${stage === item ? "btn-active" : ""}`}
+                                onClick={() => {
+                                    setStage(item);
+                                    setSelectedId("");
+                                    setMessage("");
+                                }}
+                            >
+                                {item.toUpperCase()}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="layout-editor-title">
+                        {stage === "snapshots" ? "SNAPSHOT LAYOUT" : "PERFORMANCE LAYOUT"}
+                    </div>
                     <div className="muted">
-                        Arrange switches, pots and status panels. Layout does not change what a switch does.
+                        {stage === "snapshots"
+                            ? "Add, remove and arrange snapshot tiles. Hardware Setup assigns which switch recalls each slot."
+                            : "Arrange switches, pots and status panels. Layout does not change what a switch does."}
                     </div>
                 </div>
                 <div className="row">
@@ -311,7 +365,7 @@ export function LayoutEditorView({
                     <button type="button" className="btn" onClick={exportLayout}>EXPORT</button>
                     <button type="button" className="btn btn-accent" onClick={saveLayout}>SAVE LAYOUT</button>
                 </div>
-                {mode === "grid" && (
+                {mode === "grid" && stage === "performance" && (
                     <div className="row">
                         <label className="field">
                             <span>Rows</span>
@@ -329,6 +383,33 @@ export function LayoutEditorView({
             </div>
             <div className="layout-editor-body">
                 <aside className="layout-editor-inspector">
+                    {stage === "snapshots" ? (
+                        <>
+                            <div className="field-label">SNAPSHOTS</div>
+                            <button type="button" className="btn btn-accent" onClick={addSnapshotWidget}>ADD SNAPSHOT</button>
+                            {snapshotWidgets.map((widget) => (
+                                <div key={widget.id} className="row" style={{ gap: 6 }}>
+                                    <button
+                                        type="button"
+                                        className={`btn ${selectedId === widget.id ? "btn-active" : ""}`}
+                                        style={{ flex: 1 }}
+                                        onClick={() => setSelectedId(widget.id)}
+                                    >
+                                        SNAPSHOT {widget.slot + 1}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-danger"
+                                        disabled={snapshotWidgets.length <= 1}
+                                        onClick={() => removeSnapshotWidget(widget.slot)}
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+                            ))}
+                        </>
+                    ) : (
+                        <>
                     <div className="field-label">ELEMENTS</div>
                     {STATUS_WIDGET_IDS.map((id) => (
                         <button
@@ -352,6 +433,8 @@ export function LayoutEditorView({
                         </button>
                     ))}
                     {controls.length === 0 && <div className="muted">Add controls in Hardware Setup.</div>}
+                        </>
+                    )}
                 </aside>
                 <div
                     ref={stageRef}
@@ -360,6 +443,38 @@ export function LayoutEditorView({
                     onPointerUp={onPointerUp}
                     onPointerCancel={onPointerUp}
                 >
+                    {stage === "snapshots"
+                        ? snapshotWidgets.map((widget) => (
+                            <div
+                                key={widget.id}
+                                className={`layout-item switch${selectedId === widget.id ? " selected" : ""}`}
+                                style={rectStyle(widget.rect)}
+                                onPointerDown={(event) => onPointerDown(widget.id, widget.rect, event)}
+                            >
+                                <div className="layout-item-preview">
+                                    <PerformanceControl
+                                        tile={{
+                                            id: widget.id,
+                                            switchLabel: `SNAPSHOT ${widget.slot + 1}`,
+                                            valueText: `Snapshot ${widget.slot + 1}`,
+                                            role: "snapshot",
+                                            lightState: "inactive",
+                                            active: false,
+                                            freeform: true,
+                                            onPress: () => undefined
+                                        }}
+                                        switchStyle={switchStyle}
+                                        bypassed={false}
+                                    />
+                                </div>
+                                <span
+                                    className="layout-resize"
+                                    onPointerDown={(event) => onPointerDown(widget.id, widget.rect, event, "resize")}
+                                />
+                            </div>
+                        ))
+                        : (
+                            <>
                     {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                         const widget = widgets[id];
                         return (
@@ -429,6 +544,8 @@ export function LayoutEditorView({
                             </div>
                         );
                     })}
+                            </>
+                        )}
                     {measurement && stageRef.current && (
                         <LayoutMeasurementPopup
                             measurement={measurement}

@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
-import { findPreset, formatMs, type EngineSnapshot } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { formatMs, isAnalogKind, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
+import { snapshotLayoutSlots } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
 import { PluginsView } from "./PluginsView";
 import { HotspotView } from "./HotspotView";
+import { MarqueeText } from "./MarqueeText";
 
 export type SettingsPage =
     | "audio"
@@ -107,21 +109,28 @@ function isDefaultControlLabel(kind: string, label: string): boolean {
 
 function nextControlLabel(kind: string, controls: JsonObject[]): string {
     const prefix = controlPrefix(kind);
-    const used = new Set<number>();
+    let highest = 0;
     for (const control of controls) {
-        if (str(control.kind) !== kind) {
+        if (str(control.kind, "switch") !== kind) {
             continue;
         }
         const match = str(control.label).trim().match(new RegExp(`^${prefix} (\\d+)$`));
         if (match) {
-            used.add(Number(match[1]));
+            highest = Math.max(highest, Number(match[1]));
         }
     }
-    let n = 1;
-    while (used.has(n)) {
-        n += 1;
+    return `${prefix} ${highest + 1}`;
+}
+
+function nextLedLabel(leds: JsonObject[]): string {
+    let highest = 0;
+    for (const led of leds) {
+        const match = str(led.label).trim().match(/^LED (\d+)$/);
+        if (match) {
+            highest = Math.max(highest, Number(match[1]));
+        }
     }
-    return `${prefix} ${n}`;
+    return `LED ${highest + 1}`;
 }
 
 function groupedControls(controls: JsonObject[]): JsonObject[] {
@@ -320,8 +329,8 @@ function ControllerHub({
     const connected = bool(controller.connected);
     if (page === "hardware") {
         return (
-            <div className="page-scroll stack">
-                <div className="row">
+            <div className="hardware-setup">
+                <div className="split-toolbar">
                     <button type="button" className="btn" onClick={() => setPage("hub")}>← CONTROLLER</button>
                 </div>
                 <ControllerSettings engine={engine} run={run} />
@@ -378,7 +387,6 @@ function ControllerHub({
             </div>
             <div className="muted" style={{ padding: 16 }}>
                 Hardware defines what is connected. Layout only changes where it appears.
-                Assign presets by holding a Performance switch, the same way as MultiFX.
             </div>
             <div>
                 <button
@@ -414,10 +422,18 @@ function ControllerSettings({
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-    const { client, state, connected } = engine;
+    const { client, state } = engine;
     const controller = obj(state.controller);
     const controls = objects(controller.controls);
+    const grouped = groupedControls(controls);
+    const controlsRef = useRef(controls);
+    controlsRef.current = controls;
+    const leds = objects(controller.leds);
+    const ledsRef = useRef(leds);
+    ledsRef.current = leds;
     const [ports, setPorts] = useState<JsonObject[]>([]);
+    const [selectedId, setSelectedId] = useState("");
+    const selected = grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
 
     const refreshPorts = () => {
         void client.request("midi/ports").then((result) => {
@@ -450,310 +466,306 @@ function ControllerSettings({
 
     const selectedPort = str(controller.activePort) || str(controller.midiPort);
     const listedIds = new Set(ports.map((port) => str(port.id)));
+    const snapshotSlots = snapshotLayoutSlots(obj(controller.performanceLayout));
+    const chain = objects(state.chain);
+
+    const addControl = (kind: string, binding: JsonObject) => {
+        const current = controlsRef.current;
+        const nextId = `ctl-${Date.now().toString(36)}-${current.length}`;
+        const next = groupedControls([
+            ...current,
+            {
+                id: nextId,
+                label: nextControlLabel(kind, current),
+                kind,
+                binding
+            }
+        ]);
+        controlsRef.current = next;
+        setSelectedId(nextId);
+        save({ ...controller, controls: next });
+    };
+
+    const patch = (nextControl: JsonObject) => {
+        const next = groupedControls(controls.map((item) => (
+            str(item.id) === str(nextControl.id) ? nextControl : item
+        )));
+        controlsRef.current = next;
+        save({ ...controller, controls: next });
+    };
 
     return (
-        <div className="stack">
-            <div className="panel stack">
-                <h2>FLOORBOARD</h2>
-                <div className="muted">
-                    Flash the Pi-MFX sketch in firmware/esp32s3/PiMFX_Controller — not the MultiFX .ino.
-                    Stock wiring uses switches CC 20–27 and pots CC 10–13. Learn still captures any CC.
-                </div>
-                {str(state.controllerError) && <div className="danger">{str(state.controllerError)}</div>}
-                <label className="field">
+        <>
+            <div className="split-toolbar" style={{ flexWrap: "wrap" }}>
+                <label className="field" style={{ minWidth: 140 }}>
                     <span>Name</span>
                     <input
                         key={str(controller.name)}
                         defaultValue={str(controller.name)}
-                        onChange={(event) => save({ ...controller, name: event.target.value })}
                         onBlur={(event) => save({ ...controller, name: event.target.value })}
                     />
                 </label>
-                <div className="stack">
-                    <div className="field-label">MIDI devices</div>
-                    <div className="muted">
-                        {bool(controller.connected)
-                            ? `Listening on ${selectedPort || "the selected port"}`
-                            : "Pick the floorboard or MIDI interface from the list. Hardware buttons stay dead until a device is selected."}
-                    </div>
-                    {ports.map((port) => {
-                        const id = str(port.id);
-                        const selected = id === selectedPort;
-                        return (
-                            <button
-                                key={id}
-                                type="button"
-                                className={`list-item ${selected ? "selected" : ""}`}
-                                onClick={() => selectPort(id)}
-                            >
-                                <div>
-                                    <strong>{str(port.name, id)}</strong>
-                                    <div className="muted">
-                                        {id}
-                                        {bool(port.input) ? " · in" : ""}
-                                        {bool(port.output) ? " · out" : ""}
-                                        {bool(port.looksLikeController) ? " · looks like an ESP32 board" : ""}
-                                    </div>
-                                </div>
-                                <span className="muted">{selected ? "SELECTED" : "SELECT"}</span>
-                            </button>
-                        );
-                    })}
-                    {selectedPort && !listedIds.has(selectedPort) && (
-                        <div className="list-item selected">
-                            <div>
-                                <strong>{selectedPort}</strong>
-                                <div className="muted">Saved port is not plugged in right now</div>
-                            </div>
-                        </div>
-                    )}
-                    {ports.length === 0 && (
-                        <div className="muted">
-                            {connected
-                                ? "No MIDI devices found. Plug the controller in and press Rescan."
-                                : "The engine is offline. MIDI devices are listed by the Pi, not this browser."}
-                        </div>
-                    )}
-                    <div className="row">
-                        <button type="button" className="btn" onClick={refreshPorts}>RESCAN MIDI</button>
-                    </div>
-                </div>
-                <div className="row">
-                    <button type="button" className={`btn ${bool(controller.enabled) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...controller, enabled: !bool(controller.enabled) })}>
-                        {bool(controller.enabled) ? "ENABLED" : "DISABLED"}
-                    </button>
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("controller/disconnect"))}>
-                        DISCONNECT
-                    </button>
-                    <button type="button" className={`btn ${bool(controller.mirrorLayoutOnScreen, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...controller, mirrorLayoutOnScreen: !bool(controller.mirrorLayoutOnScreen, true) })}>
-                        MIRROR LAYOUT
-                    </button>
-                    <button type="button" className={`btn ${bool(controller.syncLedColours, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...controller, syncLedColours: !bool(controller.syncLedColours, true) })}>
-                        RGB FOLLOWS THEME
-                    </button>
-                </div>
+                <label className="field" style={{ minWidth: 180 }}>
+                    <span>MIDI</span>
+                    <select value={selectedPort} onChange={(event) => selectPort(event.target.value)}>
+                        {ports.length === 0 && <option value={selectedPort}>{selectedPort || "No devices"}</option>}
+                        {ports.map((port) => (
+                            <option key={str(port.id)} value={str(port.id)}>{str(port.name, str(port.id))}</option>
+                        ))}
+                        {selectedPort && !listedIds.has(selectedPort) && (
+                            <option value={selectedPort}>{selectedPort}</option>
+                        )}
+                    </select>
+                </label>
+                <button type="button" className="btn" onClick={refreshPorts}>RESCAN</button>
+                <button type="button" className={`btn ${bool(controller.enabled) ? "btn-active" : ""}`}
+                    onClick={() => save({ ...controller, enabled: !bool(controller.enabled) })}>
+                    {bool(controller.enabled) ? "ENABLED" : "DISABLED"}
+                </button>
+                <button type="button" className={`btn ${bool(controller.mirrorLayoutOnScreen, true) ? "btn-active" : ""}`}
+                    onClick={() => save({ ...controller, mirrorLayoutOnScreen: !bool(controller.mirrorLayoutOnScreen, true) })}>
+                    MIRROR
+                </button>
+                <button type="button" className={`btn ${bool(controller.syncLedColours, true) ? "btn-active" : ""}`}
+                    onClick={() => save({ ...controller, syncLedColours: !bool(controller.syncLedColours, true) })}>
+                    RGB THEME
+                </button>
             </div>
-
-            <div className="panel stack">
-                <h2>CONTROLS</h2>
-                <div className="row">
-                    <button type="button" className="btn btn-accent" onClick={() => {
-                    const nextId = `ctl-${Date.now().toString(36)}`;
-                    save({
-                        ...controller,
-                        controls: groupedControls([
-                            ...controls,
-                            {
-                                id: nextId,
-                                label: nextControlLabel("switch", controls),
-                                kind: "switch",
-                                row: Math.floor(controls.filter((item) => str(item.kind, "switch") === "switch").length
-                                    / num(controller.gridColumns, 4)),
-                                column: controls.filter((item) => str(item.kind, "switch") === "switch").length
-                                    % num(controller.gridColumns, 4),
-                                binding: { action: "selectPreset", min: 0, max: 1, inverted: false }
-                            }
-                        ])
-                    });
-                }}>ADD SWITCH</button>
-                    <button type="button" className="btn" onClick={() => {
-                        const nextId = `ctl-${Date.now().toString(36)}`;
-                        save({
-                            ...controller,
-                            controls: groupedControls([
-                                ...controls,
+            {str(state.controllerError) && <div className="danger" style={{ padding: "0 10px" }}>{str(state.controllerError)}</div>}
+            <div className="split-panes">
+                <section className="split-pane">
+                    <div className="split-pane-title">CONTROLS</div>
+                    <div className="split-toolbar">
+                        <button type="button" className="btn btn-accent" onClick={() => addControl("switch", { action: "selectPreset", min: 0, max: 1, inverted: false })}>ADD SWITCH</button>
+                        <button type="button" className="btn" onClick={() => addControl("pot", { action: "setParameter", min: 0, max: 1, inverted: false })}>ADD POT</button>
+                        <button type="button" className="btn" onClick={() => addControl("slider", { action: "setParameter", min: 0, max: 1, inverted: false })}>ADD SLIDER</button>
+                        <button type="button" className="btn" onClick={() => addControl("expression", { action: "setParameter", min: 0, max: 1, inverted: false })}>ADD EXP</button>
+                        <button type="button" className="btn" onClick={() => {
+                            const current = ledsRef.current;
+                            const next = [
+                                ...current,
                                 {
-                                    id: nextId,
-                                    label: nextControlLabel("pot", controls),
-                                    kind: "pot",
-                                    binding: { action: "setParameter", min: 0, max: 1, inverted: false }
+                                    id: `led-${Date.now().toString(36)}-${current.length}`,
+                                    label: nextLedLabel(current),
+                                    rgb: true,
+                                    role: "preset",
+                                    brightness: 1
                                 }
-                            ])
-                        });
-                    }}>ADD POT</button>
-                    <button type="button" className="btn" onClick={() => {
-                        const nextId = `ctl-${Date.now().toString(36)}`;
-                        save({
-                            ...controller,
-                            controls: groupedControls([
-                                ...controls,
-                                {
-                                    id: nextId,
-                                    label: nextControlLabel("slider", controls),
-                                    kind: "slider",
-                                    binding: { action: "setParameter", min: 0, max: 1, inverted: false }
-                                }
-                            ])
-                        });
-                    }}>ADD SLIDER</button>
-                    <button type="button" className="btn" onClick={() => {
-                        const nextId = `ctl-${Date.now().toString(36)}`;
-                        save({
-                            ...controller,
-                            controls: groupedControls([
-                                ...controls,
-                                {
-                                    id: nextId,
-                                    label: nextControlLabel("expression", controls),
-                                    kind: "expression",
-                                    binding: { action: "setParameter", min: 0, max: 1, inverted: false }
-                                }
-                            ])
-                        });
-                    }}>ADD EXP</button>
-                    <button type="button" className="btn" onClick={() => {
-                        const nextId = `led-${Date.now().toString(36)}`;
-                        save({
-                            ...controller,
-                            leds: [
-                                ...objects(controller.leds),
-                                { id: nextId, label: `LED ${objects(controller.leds).length + 1}`, rgb: true, role: "preset", brightness: 1 }
-                            ]
-                        });
-                    }}>ADD LED</button>
-                </div>
-                {groupedControls(controls).map((control) => {
-                    const chain = objects(state.chain);
-                    const binding = obj(control.binding);
-                    const patch = (nextControl: JsonObject) => {
-                        const next = controls.map((item) => (
-                            str(item.id) === str(control.id) ? nextControl : item
-                        ));
-                        save({ ...controller, controls: groupedControls(next) });
-                    };
-                    const patchBinding = (next: JsonObject) => patch({ ...control, binding: next });
-                    const selectedSlot = chain.find((slot) => str(slot.id) === str(binding.slotId));
-                    const ports = objects(obj(obj(selectedSlot).plugin).ports)
-                        .filter((port) => str(port.kind) === "control");
-                    return (
-                    <div key={str(control.id)} className="list-item" style={{ flexWrap: "wrap", alignItems: "flex-end" }}>
-                        <input
-                            className="input"
-                            style={{ maxWidth: 140 }}
-                            key={`${str(control.id)}-${str(control.label)}`}
-                            defaultValue={str(control.label)}
-                            onBlur={(event) => patch({ ...control, label: event.target.value })}
-                        />
-                        <select value={str(control.kind, "switch")} onChange={(event) => {
-                            const nextKind = event.target.value;
-                            const others = controls.filter((item) => str(item.id) !== str(control.id));
-                            const label = isDefaultControlLabel(str(control.kind, "switch"), str(control.label))
-                                ? nextControlLabel(nextKind, others)
-                                : str(control.label);
-                            patch({ ...control, kind: nextKind, label });
-                        }}>
-                            {["switch", "momentary", "pot", "slider", "encoder", "expression"].map((kind) => (
-                                <option key={kind} value={kind}>{kind}</option>
-                            ))}
-                        </select>
-                        <select
-                            value={str(binding.action, "none")}
-                            onChange={(event) => patchBinding({ ...binding, action: event.target.value })}
-                        >
-                            {["none", "selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "selectSnapshot", "snapshotMode", "toggleEffect", "setParameter", "bypassAll", "tapTempo", "tuner"].map((action) => (
-                                <option key={action} value={action}>{action}</option>
-                            ))}
-                        </select>
-                        <select
-                            value={str(binding.holdAction)}
-                            onChange={(event) => patchBinding({ ...binding, holdAction: event.target.value })}
-                        >
-                            <option value="">hold: none</option>
-                            {["selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll"].map((action) => (
-                                <option key={action} value={action}>hold: {action}</option>
-                            ))}
-                        </select>
-                        {str(binding.action) === "selectPreset" && (
-                            <div className="muted">Hold this switch on Performance to assign a preset.</div>
-                        )}
-                        {str(binding.action) === "selectSnapshot" && (
-                            <select
-                                value={str(binding.snapshotId)}
-                                onChange={(event) => patchBinding({ ...binding, snapshotId: event.target.value })}
-                            >
-                                <option value="">Assign snapshot</option>
-                                {objects(obj(findPreset(state)).snapshots).map((snapshot) => (
-                                    <option key={str(snapshot.id)} value={str(snapshot.id)}>{str(snapshot.name)}</option>
-                                ))}
-                            </select>
-                        )}
-                        {(str(binding.action) === "toggleEffect" || str(binding.action) === "setParameter") && (
-                            <select
-                                value={str(binding.slotId)}
-                                onChange={(event) => patchBinding({ ...binding, slotId: event.target.value })}
-                            >
-                                <option value="">Effect</option>
-                                {chain.map((slot) => (
-                                    <option key={str(slot.id)} value={str(slot.id)}>
-                                        {str(slot.name) || str(obj(slot.plugin).name, str(slot.id))}
-                                    </option>
-                                ))}
-                            </select>
-                        )}
-                        {str(binding.action) === "setParameter" && (
-                            <select
-                                value={str(binding.portSymbol)}
-                                onChange={(event) => patchBinding({ ...binding, portSymbol: event.target.value })}
-                            >
-                                <option value="">Parameter</option>
-                                {ports.map((port) => (
-                                    <option key={str(port.symbol)} value={str(port.symbol)}>{str(port.name, str(port.symbol))}</option>
-                                ))}
-                            </select>
-                        )}
-                        <label className="field" style={{ minWidth: 72 }}>
-                            <span>Min</span>
-                            <input type="number" step="0.01" value={num(binding.min, 0)}
-                                onChange={(event) => patchBinding({ ...binding, min: Number(event.target.value) })} />
-                        </label>
-                        <label className="field" style={{ minWidth: 72 }}>
-                            <span>Max</span>
-                            <input type="number" step="0.01" value={num(binding.max, 1)}
-                                onChange={(event) => patchBinding({ ...binding, max: Number(event.target.value) })} />
-                        </label>
-                        <button type="button" className={`btn ${bool(binding.inverted) ? "btn-active" : ""}`}
-                            onClick={() => patchBinding({ ...binding, inverted: !bool(binding.inverted) })}>
-                            {bool(binding.inverted) ? "REVERSE ON" : "REVERSE"}
-                        </button>
-                        <select
-                            value={str(control.ledId)}
-                            onChange={(event) => patch({ ...control, ledId: event.target.value })}
-                        >
-                            <option value="">LED</option>
-                            {objects(controller.leds).map((led) => (
-                                <option key={str(led.id)} value={str(led.id)}>{str(led.label, str(led.id))}</option>
-                            ))}
-                        </select>
-                        <label className="field" style={{ minWidth: 72 }}>
-                            <span>{bool(control.useNoteMessages) ? "Note" : "CC"}</span>
-                            <input
-                                type="number"
-                                min={-1}
-                                max={127}
-                                value={num(control.channel, -1)}
-                                onChange={(event) => patch({ ...control, channel: Number(event.target.value) })}
-                            />
-                        </label>
-                        <span className="muted">
-                            {num(control.channel, -1) >= 0
-                                ? `ch ${num(control.midiChannel) || "any"} ${bool(control.useNoteMessages) ? "note" : "CC"} ${num(control.channel)}`
-                                : "not learned — stock Pi-MFX firmware is CC 20–27"}
-                        </span>
-                        <button type="button" className="btn" onClick={() => void run(() => client.request("controller/learn", { controlId: str(control.id) }))}>
-                            {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
-                        </button>
-                        <button type="button" className="btn btn-danger" onClick={() => {
-                            save({
-                                ...controller,
-                                controls: groupedControls(controls.filter((item) => str(item.id) !== str(control.id)))
-                            });
-                        }}>REMOVE</button>
+                            ];
+                            ledsRef.current = next;
+                            save({ ...controller, leds: next });
+                        }}>ADD LED</button>
                     </div>
-                    );
-                })}
+                    <div className="split-list">
+                        {grouped.map((control) => (
+                            <button
+                                key={str(control.id)}
+                                type="button"
+                                className={`split-row${str(control.id) === str(obj(selected).id) ? " selected" : ""}`}
+                                onClick={() => setSelectedId(str(control.id))}
+                            >
+                                <MarqueeText
+                                    text={`${str(control.label, str(control.id))} · ${str(control.kind, "switch").toUpperCase()}`}
+                                    align="left"
+                                    fontWeight={800}
+                                />
+                            </button>
+                        ))}
+                        {grouped.length === 0 && <div className="muted">Add a switch or pot to edit it here.</div>}
+                    </div>
+                </section>
+                <section className="split-pane">
+                    <div className="split-pane-title">{selected ? str(selected.label, "CONTROL") : "DETAIL"}</div>
+                    <div className="hardware-setup-detail">
+                        {selected ? (
+                            <HardwareControlDetail
+                                control={selected}
+                                controller={controller}
+                                chain={chain}
+                                snapshotSlots={snapshotSlots}
+                                onPatch={patch}
+                                onRemove={() => {
+                                    const next = groupedControls(controls.filter((item) => str(item.id) !== str(selected.id)));
+                                    controlsRef.current = next;
+                                    setSelectedId(str(next[0]?.id));
+                                    save({ ...controller, controls: next });
+                                }}
+                                onLearn={() => void run(() => client.request("controller/learn", { controlId: str(selected.id) }))}
+                            />
+                        ) : (
+                            <div className="muted">Select a control from the list.</div>
+                        )}
+                    </div>
+                </section>
+            </div>
+        </>
+    );
+}
+
+function HardwareControlDetail({
+    control,
+    controller,
+    chain,
+    snapshotSlots,
+    onPatch,
+    onRemove,
+    onLearn
+}: {
+    control: JsonObject;
+    controller: JsonObject;
+    chain: JsonObject[];
+    snapshotSlots: number[];
+    onPatch: (control: JsonObject) => void;
+    onRemove: () => void;
+    onLearn: () => void;
+}) {
+    const binding = obj(control.binding);
+    const analog = isAnalogKind(str(control.kind, "switch"));
+    const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
+    const selectedSlot = chain.find((slot) => str(slot.id) === str(binding.slotId));
+    const ports = objects(obj(obj(selectedSlot).plugin).ports)
+        .filter((port) => str(port.kind) === "control");
+    const action = str(binding.action, "none");
+    const assignedSnapshot = num(binding.snapshotSlot, -1);
+    const snapshotOptions = assignedSnapshot >= 0 && !snapshotSlots.includes(assignedSnapshot)
+        ? [...snapshotSlots, assignedSnapshot]
+        : snapshotSlots;
+    return (
+        <div className="stack">
+            <div className="hardware-field-grid">
+                <label className="field">
+                    <span>Name</span>
+                    <input
+                        className="input"
+                        key={`${str(control.id)}-${str(control.label)}`}
+                        defaultValue={str(control.label)}
+                        onBlur={(event) => onPatch({ ...control, label: event.target.value })}
+                    />
+                </label>
+                <label className="field">
+                    <span>Type</span>
+                    <select value={str(control.kind, "switch")} onChange={(event) => {
+                        const nextKind = event.target.value;
+                        const others = objects(controller.controls).filter((item) => str(item.id) !== str(control.id));
+                        const label = isDefaultControlLabel(str(control.kind, "switch"), str(control.label))
+                            ? nextControlLabel(nextKind, others)
+                            : str(control.label);
+                        onPatch({ ...control, kind: nextKind, label });
+                    }}>
+                        {["switch", "momentary", "pot", "slider", "encoder", "expression"].map((kind) => (
+                            <option key={kind} value={kind}>{kind}</option>
+                        ))}
+                    </select>
+                </label>
+                <label className="field">
+                    <span>Function</span>
+                    <select
+                        value={action}
+                        onChange={(event) => patchBinding({ ...binding, action: event.target.value })}
+                    >
+                        {["none", "selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "toggleEffect", "setParameter", "bypassAll", "tapTempo", "tuner"].map((item) => (
+                            <option key={item} value={item}>{item}</option>
+                        ))}
+                    </select>
+                </label>
+                {!analog && (
+                    <label className="field">
+                        <span>Snapshot</span>
+                        <select
+                            value={assignedSnapshot}
+                            onChange={(event) => patchBinding({ ...binding, snapshotSlot: Number(event.target.value) })}
+                        >
+                            <option value={-1}>None</option>
+                            {snapshotOptions.map((slot) => (
+                                <option key={slot} value={slot}>Snapshot {slot + 1}</option>
+                            ))}
+                        </select>
+                    </label>
+                )}
+                <label className="field">
+                    <span>Hold</span>
+                    <select
+                        value={str(binding.holdAction)}
+                        onChange={(event) => patchBinding({ ...binding, holdAction: event.target.value })}
+                    >
+                        <option value="">none</option>
+                        {["selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll"].map((item) => (
+                            <option key={item} value={item}>{item}</option>
+                        ))}
+                    </select>
+                </label>
+                {(action === "toggleEffect" || action === "setParameter") && (
+                    <label className="field">
+                        <span>Effect</span>
+                        <select
+                            value={str(binding.slotId)}
+                            onChange={(event) => patchBinding({ ...binding, slotId: event.target.value })}
+                        >
+                            <option value="">Effect</option>
+                            {chain.map((slot) => (
+                                <option key={str(slot.id)} value={str(slot.id)}>
+                                    {str(slot.name) || str(obj(slot.plugin).name, str(slot.id))}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                )}
+                {action === "setParameter" && (
+                    <label className="field">
+                        <span>Parameter</span>
+                        <select
+                            value={str(binding.portSymbol)}
+                            onChange={(event) => patchBinding({ ...binding, portSymbol: event.target.value })}
+                        >
+                            <option value="">Parameter</option>
+                            {ports.map((port) => (
+                                <option key={str(port.symbol)} value={str(port.symbol)}>{str(port.name, str(port.symbol))}</option>
+                            ))}
+                        </select>
+                    </label>
+                )}
+                <label className="field">
+                    <span>Min</span>
+                    <input type="number" step="0.01" value={num(binding.min, 0)}
+                        onChange={(event) => patchBinding({ ...binding, min: Number(event.target.value) })} />
+                </label>
+                <label className="field">
+                    <span>Max</span>
+                    <input type="number" step="0.01" value={num(binding.max, 1)}
+                        onChange={(event) => patchBinding({ ...binding, max: Number(event.target.value) })} />
+                </label>
+                <label className="field">
+                    <span>LED</span>
+                    <select
+                        value={str(control.ledId)}
+                        onChange={(event) => onPatch({ ...control, ledId: event.target.value })}
+                    >
+                        <option value="">None</option>
+                        {objects(controller.leds).map((led) => (
+                            <option key={str(led.id)} value={str(led.id)}>{str(led.label, str(led.id))}</option>
+                        ))}
+                    </select>
+                </label>
+                <label className="field">
+                    <span>{bool(control.useNoteMessages) ? "Note" : "CC"}</span>
+                    <input
+                        type="number"
+                        min={-1}
+                        max={127}
+                        value={num(control.channel, -1)}
+                        onChange={(event) => onPatch({ ...control, channel: Number(event.target.value) })}
+                    />
+                </label>
+            </div>
+            <div className="row">
+                <button type="button" className={`btn ${bool(binding.inverted) ? "btn-active" : ""}`}
+                    onClick={() => patchBinding({ ...binding, inverted: !bool(binding.inverted) })}>
+                    {bool(binding.inverted) ? "REVERSE ON" : "REVERSE"}
+                </button>
+                <button type="button" className="btn" onClick={onLearn}>
+                    {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
+                </button>
+                <button type="button" className="btn btn-danger" onClick={onRemove}>REMOVE</button>
             </div>
         </div>
     );

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { str, objects, arr } from "../json";
 import type { JsonObject } from "../json";
+import { MarqueeText } from "./MarqueeText";
 
 export function PluginBrowser({
     open,
@@ -100,8 +101,16 @@ export function PluginBrowser({
                             onClick={() => setSelected(str(item.uri))}
                             onDoubleClick={() => setSelected(str(item.uri))}
                         >
-                            <strong>{str(item.name)}</strong>
-                            <small>{[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}</small>
+                            <strong>
+                                <MarqueeText text={str(item.name)} align="left" fontWeight={800} />
+                            </strong>
+                            <small>
+                                <MarqueeText
+                                    text={[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}
+                                    align="left"
+                                    fontWeight={700}
+                                />
+                            </small>
                         </button>
                     ))}
                 </div>
@@ -109,7 +118,9 @@ export function PluginBrowser({
             </div>
             <div className="plugin-browser-footer">
                 <div className={chosen ? "plugin-browser-choice" : "muted"}>
-                    {chosen ? str(chosen.name) : "Select a plugin"}
+                    {chosen
+                        ? <MarqueeText text={str(chosen.name)} align="left" fontWeight={800} />
+                        : "Select a plugin"}
                 </div>
                 <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
                 <button

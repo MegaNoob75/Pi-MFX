@@ -40,6 +40,7 @@ Json Snapshot::toJson() const {
     json.set("id", id);
     json.set("name", name);
     json.set("slots", slots);
+    json.set("slot", slot);
     if (!color.empty()) {
         json.set("color", color);
     }
@@ -52,6 +53,7 @@ Snapshot Snapshot::fromJson(const Json& json) {
     snapshot.name = json["name"].asString("Snapshot");
     snapshot.slots = json["slots"].isObject() ? json["slots"] : Json::object();
     snapshot.color = json["color"].asString();
+    snapshot.slot = json["slot"].asInt(-1);
     return snapshot;
 }
 
@@ -94,6 +96,8 @@ Json Preset::toJson() const {
     }
     json.set("snapshots", snapshotJson);
     json.set("activeSnapshot", activeSnapshot);
+    json.set("rememberedSnapshotSlot", rememberedSnapshotSlot);
+    json.set("rememberedSnapshotEnabled", rememberedSnapshotEnabled);
     return json;
 }
 
@@ -113,9 +117,15 @@ Preset Preset::fromJson(const Json& json) {
 
     const Json& snapshotJson = json["snapshots"];
     for (size_t i = 0; i < snapshotJson.size(); ++i) {
-        preset.snapshots.push_back(Snapshot::fromJson(snapshotJson.at(i)));
+        Snapshot snapshot = Snapshot::fromJson(snapshotJson.at(i));
+        if (snapshot.slot < 0) {
+            snapshot.slot = static_cast<int>(i);
+        }
+        preset.snapshots.push_back(std::move(snapshot));
     }
     preset.activeSnapshot = json["activeSnapshot"].asInt(-1);
+    preset.rememberedSnapshotSlot = json["rememberedSnapshotSlot"].asInt(-1);
+    preset.rememberedSnapshotEnabled = json["rememberedSnapshotEnabled"].asBool(false);
     return preset;
 }
 
@@ -175,6 +185,7 @@ Json ControlBinding::toJson() const {
     if (!bankId.empty()) json.set("bankId", bankId);
     if (!presetId.empty()) json.set("presetId", presetId);
     if (!snapshotId.empty()) json.set("snapshotId", snapshotId);
+    if (snapshotSlot >= 0) json.set("snapshotSlot", snapshotSlot);
     if (!slotId.empty()) json.set("slotId", slotId);
     if (!portSymbol.empty()) json.set("portSymbol", portSymbol);
     json.set("min", minimum);
@@ -193,6 +204,7 @@ ControlBinding ControlBinding::fromJson(const Json& json) {
     binding.bankId = json["bankId"].asString();
     binding.presetId = json["presetId"].asString();
     binding.snapshotId = json["snapshotId"].asString();
+    binding.snapshotSlot = json["snapshotSlot"].asInt(-1);
     binding.slotId = json["slotId"].asString();
     binding.portSymbol = json["portSymbol"].asString();
     binding.minimum = json["min"].asFloat(0.0f);
@@ -200,6 +212,9 @@ ControlBinding ControlBinding::fromJson(const Json& json) {
     binding.inverted = json["inverted"].asBool(false);
     binding.holdAction = json["holdAction"].asString();
     binding.holdMilliseconds = json["holdMs"].asInt(600);
+    if (binding.action == "selectSnapshot") {
+        binding.action = "selectPreset";
+    }
     return binding;
 }
 
@@ -436,7 +451,10 @@ Json UiSettings::toJson() const {
 
 UiSettings UiSettings::fromJson(const Json& json) {
     UiSettings settings;
-    settings.themeId = json["themeId"].asString("MultiFX Purple");
+    settings.themeId = json["themeId"].asString("Pi-MFX Purple");
+    if (settings.themeId == "MultiFX Purple") {
+        settings.themeId = "Pi-MFX Purple";
+    }
     settings.customThemes = json["customThemes"].isArray() ? json["customThemes"] : Json::array();
     settings.ledColors = json["ledColors"].isObject() ? json["ledColors"] : Json::object();
     settings.scale = std::max(0.6, std::min(2.0, json["scale"].asDouble(1.0)));

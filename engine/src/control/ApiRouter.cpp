@@ -294,7 +294,12 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     // --- snapshots ---------------------------------------------------------
     if (command == "snapshot/capture") {
         std::string snapshotId;
-        ok = engine_.captureSnapshot(payload["name"].asString(), snapshotId, error);
+        ok = engine_.captureSnapshot(
+            payload["name"].asString(),
+            payload["slot"].asInt(-1),
+            snapshotId,
+            error
+        );
         Json result = Json::object();
         result.set("snapshotId", snapshotId);
         return result;

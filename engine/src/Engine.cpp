@@ -647,8 +647,11 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
         return false;
     }
 
-    syncPresetFromChain();
-    persistActiveBankUnlocked();
+    const Preset* outgoing = activePreset();
+    if (!outgoing || outgoing->activeSnapshot < 0) {
+        syncPresetFromChain();
+        persistActiveBankUnlocked();
+    }
 
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
@@ -659,6 +662,7 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
         logWarn("preset '" + target->name + "': " + chainError);
     }
     publishChain(std::move(chain));
+    applyRememberedSnapshotUnlocked(*target);
 
     targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb + target->outputGainDb),
                             std::memory_order_relaxed);
@@ -897,18 +901,26 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
     source->presets.erase(found);
     newIndex = std::max(0, std::min(newIndex, static_cast<int>(target->presets.size())));
     target->presets.insert(target->presets.begin() + newIndex, std::move(moved));
-    if (settings_.controller.presetAssignments.has(source->id)) {
-        const Json& current = settings_.controller.presetAssignments[source->id];
+    ControllerConfig config = controller_.config();
+    if (config.presetAssignments.has(source->id)) {
+        const Json& current = config.presetAssignments[source->id];
         Json cleaned = Json::object();
         for (const Json::Member& member : current.members()) {
             if (member.second.asString() != presetId) {
                 cleaned.set(member.first, member.second);
             }
         }
-        settings_.controller.presetAssignments.set(source->id, cleaned);
+        config.presetAssignments.set(source->id, cleaned);
+    }
+    controller_.setConfig(config);
+    settings_.controller = config;
+    if (activePresetId_ == presetId) {
+        activeBankId_ = target->id;
+        settings_.activeBankId = activeBankId_;
     }
     storage_.saveBank(*source);
     storage_.saveBank(*target);
+    persistSettings();
     notify();
     return true;
 }
@@ -1288,6 +1300,113 @@ Snapshot Engine::captureCurrentChain(const std::string& name) const {
     return snapshot;
 }
 
+Snapshot* Engine::findSnapshotBySlot(Preset& preset, int slot) {
+    if (slot < 0) {
+        return nullptr;
+    }
+    for (Snapshot& snapshot : preset.snapshots) {
+        if (snapshot.slot == slot) {
+            return &snapshot;
+        }
+    }
+    return nullptr;
+}
+
+const Snapshot* Engine::findSnapshotBySlot(const Preset& preset, int slot) const {
+    if (slot < 0) {
+        return nullptr;
+    }
+    for (const Snapshot& snapshot : preset.snapshots) {
+        if (snapshot.slot == slot) {
+            return &snapshot;
+        }
+    }
+    return nullptr;
+}
+
+void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain) {
+        return;
+    }
+    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+        if (!slot->plugin) {
+            continue;
+        }
+        const EffectSlot* stored = preset.findSlot(slot->id);
+        if (!stored) {
+            continue;
+        }
+        slot->plugin->loadState(stored->state);
+        slot->enabled.store(stored->enabled, std::memory_order_relaxed);
+    }
+    preset.activeSnapshot = -1;
+}
+
+void Engine::forgetRememberedSnapshot(Preset& preset) {
+    preset.rememberedSnapshotSlot = -1;
+    preset.rememberedSnapshotEnabled = false;
+}
+
+void Engine::rememberSnapshot(Preset& preset, int slot, bool enabled) {
+    preset.rememberedSnapshotSlot = slot;
+    preset.rememberedSnapshotEnabled = enabled;
+}
+
+bool Engine::toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error) {
+    if (preset.rememberedSnapshotSlot < 0) {
+        return true;
+    }
+    if (preset.rememberedSnapshotEnabled) {
+        restoreStoredPresetToChainUnlocked(preset);
+        preset.rememberedSnapshotEnabled = false;
+        return true;
+    }
+    Snapshot* snapshot = findSnapshotBySlot(preset, preset.rememberedSnapshotSlot);
+    if (!snapshot) {
+        forgetRememberedSnapshot(preset);
+        error = "snapshot is empty";
+        return false;
+    }
+    applySnapshotToChain(*snapshot);
+    preset.activeSnapshot = snapshot->slot;
+    preset.rememberedSnapshotEnabled = true;
+    return true;
+}
+
+bool Engine::applyRememberedSnapshotUnlocked(Preset& preset) {
+    if (!preset.rememberedSnapshotEnabled || preset.rememberedSnapshotSlot < 0) {
+        preset.activeSnapshot = -1;
+        return true;
+    }
+    Snapshot* snapshot = findSnapshotBySlot(preset, preset.rememberedSnapshotSlot);
+    if (!snapshot) {
+        forgetRememberedSnapshot(preset);
+        preset.activeSnapshot = -1;
+        return true;
+    }
+    applySnapshotToChain(*snapshot);
+    preset.activeSnapshot = snapshot->slot;
+    return true;
+}
+
+bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& error) {
+    Snapshot* snapshot = findSnapshotBySlot(preset, slot);
+    if (!snapshot) {
+        error = "snapshot is empty";
+        return false;
+    }
+    if (preset.activeSnapshot == slot && preset.rememberedSnapshotEnabled) {
+        restoreStoredPresetToChainUnlocked(preset);
+        forgetRememberedSnapshot(preset);
+        return true;
+    }
+    applySnapshotToChain(*snapshot);
+    preset.activeSnapshot = slot;
+    rememberSnapshot(preset, slot, true);
+    return true;
+}
+
 void Engine::applySnapshotToChain(const Snapshot& snapshot) {
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) {
@@ -1303,17 +1422,34 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
     }
 }
 
-bool Engine::captureSnapshot(const std::string& name, std::string& snapshotId, std::string& error) {
+bool Engine::captureSnapshot(const std::string& name, int slot, std::string& snapshotId, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
         return false;
     }
-    Snapshot snapshot = captureCurrentChain(name);
-    snapshotId = snapshot.id;
-    preset->snapshots.push_back(std::move(snapshot));
-    preset->activeSnapshot = static_cast<int>(preset->snapshots.size()) - 1;
+    int targetSlot = slot;
+    if (targetSlot < 0) {
+        targetSlot = 0;
+        while (findSnapshotBySlot(*preset, targetSlot)) {
+            targetSlot += 1;
+        }
+    }
+    Snapshot captured = captureCurrentChain(name.empty() ? ("Snapshot " + std::to_string(targetSlot + 1)) : name);
+    captured.slot = targetSlot;
+    if (Snapshot* existing = findSnapshotBySlot(*preset, targetSlot)) {
+        existing->slots = captured.slots;
+        if (!name.empty()) {
+            existing->name = name;
+        }
+        snapshotId = existing->id;
+    } else {
+        snapshotId = captured.id;
+        preset->snapshots.push_back(std::move(captured));
+    }
+    preset->activeSnapshot = targetSlot;
+    rememberSnapshot(*preset, targetSlot, true);
 
     if (Bank* bank = activeBank()) {
         storage_.saveBank(*bank);
@@ -1329,14 +1465,15 @@ bool Engine::selectSnapshot(const std::string& snapshotId, std::string& error) {
         error = "no active preset";
         return false;
     }
-    for (size_t i = 0; i < preset->snapshots.size(); ++i) {
-        if (preset->snapshots[i].id != snapshotId) {
+    for (Snapshot& snapshot : preset->snapshots) {
+        if (snapshot.id != snapshotId) {
             continue;
         }
-        // Nothing is re-instantiated: a snapshot only moves parameters, which
-        // is why switching one is instant and gap-free.
-        applySnapshotToChain(preset->snapshots[i]);
-        preset->activeSnapshot = static_cast<int>(i);
+        const int slot = snapshot.slot >= 0 ? snapshot.slot : 0;
+        if (!pressSnapshotSlotUnlocked(*preset, slot, error)) {
+            return false;
+        }
+        persistActiveBankUnlocked();
         refreshLeds();
         notify();
         return true;
@@ -1423,18 +1560,8 @@ bool Engine::restoreLiveFromStoredPreset(std::string& error) {
         error = "no active preset";
         return false;
     }
-    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-        if (!slot->plugin) {
-            continue;
-        }
-        const EffectSlot* stored = preset->findSlot(slot->id);
-        if (!stored) {
-            continue;
-        }
-        slot->plugin->loadState(stored->state);
-        slot->enabled.store(stored->enabled, std::memory_order_relaxed);
-    }
-    preset->activeSnapshot = -1;
+    restoreStoredPresetToChainUnlocked(*preset);
+    preset->rememberedSnapshotEnabled = false;
     refreshLeds();
     notify();
     return true;
@@ -1453,8 +1580,13 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
         error = "no such snapshot";
         return false;
     }
+    if (preset->rememberedSnapshotSlot == found->slot) {
+        forgetRememberedSnapshot(*preset);
+    }
+    if (preset->activeSnapshot == found->slot) {
+        preset->activeSnapshot = -1;
+    }
     preset->snapshots.erase(found);
-    preset->activeSnapshot = -1;
     if (Bank* bank = activeBank()) {
         storage_.saveBank(*bank);
     }
@@ -1617,6 +1749,35 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
 void Engine::runAction(const ActionRequest& request) {
     std::string error;
     const ControlBinding& binding = request.binding;
+    const bool snapshotView = snapshotMode_.load(std::memory_order_relaxed);
+    const bool presetNav = request.action == "selectPreset"
+        || request.action == "presetUp"
+        || request.action == "presetDown"
+        || request.action == "bankUp"
+        || request.action == "bankDown"
+        || request.action == "selectSnapshot";
+
+    if (snapshotView && request.action != "setParameter" && request.action != "snapshotMode"
+        && request.action != "bypassAll" && request.action != "tapTempo"
+        && request.action != "tuner" && request.action != "toggleEffect") {
+        if (binding.snapshotSlot >= 0) {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            Preset* preset = activePreset();
+            if (preset) {
+                pressSnapshotSlotUnlocked(*preset, binding.snapshotSlot, error);
+                persistActiveBankUnlocked();
+                refreshLeds();
+                notify();
+            }
+            if (!error.empty()) {
+                logDebug("controller snapshot slot: " + error);
+            }
+            return;
+        }
+        if (presetNav || request.action == "none") {
+            return;
+        }
+    }
 
     if (request.action == "presetUp") {
         stepPreset(1, error);
@@ -1633,7 +1794,19 @@ void Engine::runAction(const ActionRequest& request) {
         if (presetId.empty()) {
             presetId = assignedPresetForControl(config, bankId, request.controlId);
         }
-        selectPreset(bankId, presetId, error);
+        if (!presetId.empty() && presetId == activePresetId_
+            && (bankId.empty() || bankId == activeBankId_)) {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            Preset* preset = activePreset();
+            if (preset) {
+                toggleRememberedSnapshotUnlocked(*preset, error);
+                persistActiveBankUnlocked();
+                refreshLeds();
+                notify();
+            }
+        } else {
+            selectPreset(bankId, presetId, error);
+        }
     } else if (request.action == "selectSnapshot") {
         selectSnapshot(binding.snapshotId, error);
     } else if (request.action == "toggleEffect") {
@@ -1730,6 +1903,11 @@ void Engine::refreshLeds() {
                         break;
                     }
                 }
+            } else if (snapshotMode_.load(std::memory_order_relaxed) && control.binding.snapshotSlot >= 0) {
+                const Preset* preset = activePreset();
+                state.on = preset
+                    && preset->rememberedSnapshotEnabled
+                    && preset->activeSnapshot == control.binding.snapshotSlot;
             } else if (control.binding.action == "selectPreset") {
                 std::string presetId = control.binding.presetId;
                 if (presetId.empty()) {

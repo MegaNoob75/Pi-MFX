@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { controlValue, findPreset, type EngineSnapshot } from "../api";
+import { controlValue, findBank, findPreset, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { PluginBrowser } from "./PluginBrowser";
+import { MarqueeText } from "./MarqueeText";
 
 type EditPage = "chain" | "controls" | "bindings" | "io";
 
@@ -11,14 +12,12 @@ export function EditorView({
     engine,
     run,
     lockChain = false,
-    editorSource = "preset",
     backRequest = 0,
     onPageChange
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     lockChain?: boolean;
-    editorSource?: "preset" | "library";
     backRequest?: number;
     onPageChange?: (page: EditPage, title?: string) => void;
 }) {
@@ -26,6 +25,7 @@ export function EditorView({
     const chain = objects(state.chain);
     const plugins = objects(catalog.plugins);
     const preset = findPreset(state);
+    const bank = findBank(state);
     const banks = objects(state.banks);
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
@@ -36,7 +36,11 @@ export function EditorView({
     const [dropGap, setDropGap] = useState<number | null>(null);
     const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [pickerOpen, setPickerOpen] = useState(false);
+    const [dropBankId, setDropBankId] = useState("");
     const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
+    const pickerHoldRef = useRef<number | null>(null);
+    const pickerHoldFiredRef = useRef(false);
     const chainPageRef = useRef<HTMLDivElement | null>(null);
     const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
     const [chainCardWidth, setChainCardWidth] = useState(142);
@@ -207,29 +211,7 @@ export function EditorView({
     };
 
     return (
-        <div className={`mfx-screen editor-screen${editorSource === "library" ? " editor-with-library" : ""}`}>
-            {editorSource === "library" && (
-                <aside className="editor-library">
-                    {banks.map((bank) => (
-                        <div key={str(bank.id)}>
-                            <div className="editor-library-bank">{str(bank.name, "Bank")}</div>
-                            {objects(obj(bank).presets).map((item) => (
-                                <button
-                                    key={str(item.id)}
-                                    type="button"
-                                    className={`editor-library-row${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
-                                    onClick={() => void run(() => client.request("preset/select", {
-                                        bankId: str(bank.id),
-                                        presetId: str(item.id)
-                                    }))}
-                                >
-                                    {str(item.name, "Preset")}
-                                </button>
-                            ))}
-                        </div>
-                    ))}
-                </aside>
-            )}
+        <div className="mfx-screen editor-screen">
             <div className="editor-main">
             {page === "chain" && (
                 <>
@@ -246,21 +228,49 @@ export function EditorView({
                         <button
                             type="button"
                             className="editor-preset-name"
-                            onClick={() => {
+                            onPointerDown={() => {
                                 if (lockChain) {
                                     return;
                                 }
-                                void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
-                                    if (name?.trim() && str(obj(preset).id)) {
-                                        void run(() => client.request("preset/rename", {
-                                            presetId: str(obj(preset).id),
-                                            name: name.trim()
-                                        }));
-                                    }
-                                });
+                                pickerHoldFiredRef.current = false;
+                                if (pickerHoldRef.current) {
+                                    window.clearTimeout(pickerHoldRef.current);
+                                }
+                                pickerHoldRef.current = window.setTimeout(() => {
+                                    pickerHoldRef.current = null;
+                                    pickerHoldFiredRef.current = true;
+                                    void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
+                                        if (name?.trim() && str(obj(preset).id)) {
+                                            void run(() => client.request("preset/rename", {
+                                                presetId: str(obj(preset).id),
+                                                name: name.trim()
+                                            }));
+                                        }
+                                    });
+                                }, 550);
+                            }}
+                            onPointerUp={() => {
+                                if (pickerHoldRef.current) {
+                                    window.clearTimeout(pickerHoldRef.current);
+                                    pickerHoldRef.current = null;
+                                }
+                                if (!lockChain && !pickerHoldFiredRef.current) {
+                                    setPickerOpen(true);
+                                }
+                            }}
+                            onPointerCancel={() => {
+                                if (pickerHoldRef.current) {
+                                    window.clearTimeout(pickerHoldRef.current);
+                                    pickerHoldRef.current = null;
+                                }
                             }}
                         >
-                            {str(obj(preset).name, "Preset")}
+                            <MarqueeText
+                                text={`${str(obj(bank).name, "Bank")} / ${str(obj(preset).name, "Preset")}`}
+                                align="center"
+                                fontWeight={900}
+                            />
+                            <span className="editor-preset-chevron">▾</span>
                         </button>
                         {!lockChain ? (
                             <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
@@ -503,6 +513,90 @@ export function EditorView({
                 <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Settings → Plugins.</div>
             )}
             </div>
+            {pickerOpen && !lockChain && createPortal(
+                <div className="mfx-overlay" onClick={() => setPickerOpen(false)}>
+                    <div className="mfx-overlay-card editor-picker-card" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">PRESETS</div>
+                        <div className="muted" style={{ marginBottom: 10 }}>Tap to load. Drag a preset onto another bank to move it.</div>
+                        <div className="editor-picker-list">
+                            {banks.map((item) => (
+                                <div
+                                    key={str(item.id)}
+                                    className={`editor-picker-bank${dropBankId === str(item.id) ? " drop" : ""}`}
+                                    data-bank-id={str(item.id)}
+                                >
+                                    <div className="editor-picker-bank-name">
+                                        <MarqueeText text={str(item.name, "Bank")} align="left" fontWeight={900} letterSpacing="0.1em" />
+                                    </div>
+                                    {objects(obj(item).presets).map((row) => (
+                                        <div
+                                            key={str(row.id)}
+                                            className={`editor-picker-row${str(row.id) === str(state.activePresetId) ? " selected" : ""}`}
+                                        >
+                                            <span
+                                                className="split-row-handle"
+                                                onPointerDown={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    const pointerId = event.pointerId;
+                                                    const handle = event.currentTarget as HTMLElement;
+                                                    handle.setPointerCapture(pointerId);
+                                                    handle.dataset.dropBank = "";
+                                                    const move = (moveEvent: PointerEvent) => {
+                                                        if (moveEvent.pointerId !== pointerId) {
+                                                            return;
+                                                        }
+                                                        const over = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
+                                                        const bankEl = over?.closest("[data-bank-id]") as HTMLElement | null;
+                                                        handle.dataset.dropBank = bankEl?.dataset.bankId ?? "";
+                                                        setDropBankId(handle.dataset.dropBank);
+                                                    };
+                                                    const up = (upEvent: PointerEvent) => {
+                                                        if (upEvent.pointerId !== pointerId) {
+                                                            return;
+                                                        }
+                                                        window.removeEventListener("pointermove", move);
+                                                        window.removeEventListener("pointerup", up);
+                                                        const targetBank = handle.dataset.dropBank ?? "";
+                                                        setDropBankId("");
+                                                        if (targetBank && targetBank !== str(item.id)) {
+                                                            void run(() => client.request("preset/move", {
+                                                                presetId: str(row.id),
+                                                                bankId: targetBank,
+                                                                index: 0
+                                                            }));
+                                                        }
+                                                    };
+                                                    window.addEventListener("pointermove", move);
+                                                    window.addEventListener("pointerup", up);
+                                                }}
+                                            >
+                                                ☰
+                                            </span>
+                                            <button
+                                                type="button"
+                                                className="editor-picker-select"
+                                                onClick={() => {
+                                                    void run(() => client.request("preset/select", {
+                                                        bankId: str(item.id),
+                                                        presetId: str(row.id)
+                                                    })).then(() => setPickerOpen(false));
+                                                }}
+                                            >
+                                                <MarqueeText text={str(row.name, "Preset")} align="left" fontWeight={800} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                        <div className="row" style={{ justifyContent: "flex-end", marginTop: 12 }}>
+                            <button type="button" className="btn" onClick={() => setPickerOpen(false)}>CLOSE</button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
             {confirmDelete && createPortal(
                 <div className="mfx-overlay">
                     <div className="mfx-overlay-card">
@@ -568,7 +662,11 @@ function ChainPluginCard({
         >
             <div className="chain-slot-top">
                 <span className="chain-handle">⋮⋮</span>
-                <strong>{str(slot.name) || str(info.name, str(slot.uri))}</strong>
+                <MarqueeText
+                    text={str(slot.name) || str(info.name, str(slot.uri))}
+                    align="left"
+                    fontWeight={900}
+                />
                 <span
                     className={`chain-led${on ? " on" : ""}`}
                     role="switch"
@@ -876,7 +974,7 @@ function ChainIoPanel({
     if (kind === "input") {
         return (
             <div className="panel stack">
-                <div className="muted">These are the same input controls as Settings → Audio. MultiFX opens them from the INPUT card.</div>
+                <div className="muted">These are the same input controls as Settings → Audio.</div>
                 <label className="field">
                     <span>Input gain (dB)</span>
                     <input
@@ -899,7 +997,7 @@ function ChainIoPanel({
     }
     return (
         <div className="panel stack">
-            <div className="muted">These are the same output controls as Settings → Audio. MultiFX opens them from the OUTPUT card.</div>
+            <div className="muted">These are the same output controls as Settings → Audio.</div>
             <label className="field">
                 <span>Output gain (dB)</span>
                 <input

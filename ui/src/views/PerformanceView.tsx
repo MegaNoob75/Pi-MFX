@@ -11,7 +11,9 @@ import {
     analogMinSize,
     clampRect,
     gridCellRect,
+    readSnapshotWidgets,
     readStatusWidgets,
+    snapshotAtSlot,
     unplacedIds
 } from "../layout";
 import {
@@ -23,9 +25,6 @@ import {
     type SwitchRole
 } from "./PerformanceControl";
 
-const SNAPSHOT_GRID_COLUMNS = 3;
-const SNAPSHOT_GRID_ROWS = 2;
-const SNAPSHOT_SLOT_COUNT = SNAPSHOT_GRID_COLUMNS * SNAPSHOT_GRID_ROWS;
 const PRESET_DRAG_THRESHOLD = 24;
 const PRESET_BASELINE_KEY = "pimfx-preset-baseline";
 
@@ -101,6 +100,7 @@ export function PerformanceView({
     const hidden = new Set(unplacedIds(layout));
     const presets = objects(obj(bank).presets);
     const snapshots = objects(obj(preset).snapshots);
+    const snapshotWidgets = readSnapshotWidgets(layout);
     const rows = Math.max(1, num(controller.gridRows, 2));
     const columns = Math.max(1, num(controller.gridColumns, 4));
     const switchCount = Math.max(1, num(ui.virtualSwitchCount, 8));
@@ -131,6 +131,7 @@ export function PerformanceView({
     const dragRef = useRef<PresetDrag | null>(null);
     const toastTimer = useRef<number | null>(null);
     const feedbackTimer = useRef<number | null>(null);
+    const rememberedToastRef = useRef({ ready: false, presetId: "", enabled: false });
     const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
@@ -172,6 +173,26 @@ export function PerformanceView({
             window.clearTimeout(feedbackTimer.current);
         }
     }, []);
+
+    const rememberedEnabled = bool(obj(preset).rememberedSnapshotEnabled);
+    const rememberedSlot = num(obj(preset).rememberedSnapshotSlot, -1);
+    useEffect(() => {
+        const presetId = str(state.activePresetId);
+        const previous = rememberedToastRef.current;
+        if (!previous.ready) {
+            rememberedToastRef.current = { ready: true, presetId, enabled: rememberedEnabled };
+            return;
+        }
+        if (!snapshotMode && presetId === previous.presetId && rememberedEnabled !== previous.enabled) {
+            if (!rememberedEnabled) {
+                showToast("CLEARED • BASE PRESET");
+            } else {
+                const snap = snapshotAtSlot(snapshots, rememberedSlot);
+                showToast(`${str(obj(snap).name, `SNAPSHOT ${Math.max(0, rememberedSlot) + 1}`)} ACTIVE`);
+            }
+        }
+        rememberedToastRef.current = { ready: true, presetId, enabled: rememberedEnabled };
+    }, [rememberedEnabled, rememberedSlot, snapshotMode, snapshots, state.activePresetId]);
 
     useEffect(() => {
         rememberPresetBaseline(str(state.activePresetId), chainSignature);
@@ -424,34 +445,37 @@ export function PerformanceView({
     const useConfigured = visibleControls.length > 0 && (mirror || controls.length > 0);
 
     const tiles: PerformanceTile[] = snapshotMode
-        ? Array.from({ length: SNAPSHOT_SLOT_COUNT }, (_, index) => {
-            const snapshot = snapshots[index];
+        ? snapshotWidgets.map((widget) => {
+            const snapshot = snapshotAtSlot(snapshots, widget.slot);
             const empty = !snapshot;
             return {
-                id: snapshot ? str(snapshot.id) : `empty-snap-${index}`,
-                switchLabel: `SNAPSHOT ${index + 1}`,
-                valueText: empty ? "EMPTY" : str(snapshot.name, `Snapshot ${index + 1}`),
+                id: snapshot ? str(snapshot.id) : `empty-snap-${widget.slot}`,
+                switchLabel: `SNAPSHOT ${widget.slot + 1}`,
+                valueText: empty ? "EMPTY" : str(snapshot.name, `Snapshot ${widget.slot + 1}`),
                 empty: false,
                 role: "snapshot" as const,
-                lightState: (!empty && activeSnapshot === index ? "snapshot" : "inactive") as LightState,
-                active: !empty && activeSnapshot === index,
-                rect: gridCellRect(index, SNAPSHOT_GRID_COLUMNS, SNAPSHOT_GRID_ROWS),
+                lightState: (!empty && activeSnapshot === widget.slot ? "snapshot" : "inactive") as LightState,
+                active: !empty && activeSnapshot === widget.slot,
+                rect: widget.rect,
+                freeform: true,
                 onPress: () => {
                     if (empty) {
-                        showToast(`SNAPSHOT ${index + 1} IS EMPTY — HOLD TO CREATE`);
+                        showToast(`SNAPSHOT ${widget.slot + 1} IS EMPTY — HOLD TO CREATE`);
                         return;
                     }
-                    if (activeSnapshot === index) {
-                        void run(() => client.request("preset/restoreLive")).then(() => showToast("CLEARED • BASE PRESET"));
-                        return;
-                    }
+                    const clearing = activeSnapshot === widget.slot;
                     void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
-                        .then(() => showToast(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} ACTIVE`));
+                        .then(() => showToast(clearing
+                            ? "CLEARED • BASE PRESET"
+                            : `${str(snapshot.name, `SNAPSHOT ${widget.slot + 1}`)} ACTIVE`));
                 },
                 onLongPress: () => {
                     if (empty) {
                         void run(async () => {
-                            const result = await client.request("snapshot/capture", { name: `Snapshot ${index + 1}` });
+                            const result = await client.request("snapshot/capture", {
+                                name: `Snapshot ${widget.slot + 1}`,
+                                slot: widget.slot
+                            });
                             const snapshotId = str(result.snapshotId);
                             if (snapshotId) {
                                 onEditSnapshot?.(snapshotId);
@@ -459,7 +483,7 @@ export function PerformanceView({
                         });
                         return;
                     }
-                    setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index });
+                    setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index: widget.slot });
                 }
             };
         })
@@ -525,10 +549,8 @@ export function PerformanceView({
                             return;
                         }
                         if (canAssign && presetId) {
-                            void run(() => client.request("preset/select", {
-                                bankId: str(obj(bank).id),
-                                presetId
-                            }));
+                            pressControl(controlId, true);
+                            window.setTimeout(() => pressControl(controlId, false), 80);
                             return;
                         }
                         pressControl(controlId, true);
@@ -553,10 +575,8 @@ export function PerformanceView({
                     onPresetPointerUp: canAssign && presetId
                         ? (event) => {
                             endPresetDrag(event, () => {
-                                void run(() => client.request("preset/select", {
-                                    bankId: str(obj(bank).id),
-                                    presetId
-                                }));
+                                pressControl(controlId, true);
+                                window.setTimeout(() => pressControl(controlId, false), 80);
                             });
                         }
                         : undefined
@@ -807,7 +827,7 @@ export function PerformanceView({
     );
 
     const presetSlotCount = snapshotMode
-        ? SNAPSHOT_SLOT_COUNT
+        ? snapshotWidgets.length
         : tiles.filter((tile) => tile.presetSlotIndex != null).length || tiles.length;
 
     useEffect(() => {
@@ -884,7 +904,7 @@ export function PerformanceView({
                 </div>
             )}
 
-            <div className={`performance-stage ${useFreeform ? "freeform" : "grid"}`}>
+            <div className={`performance-stage ${useFreeform || snapshotMode ? "freeform" : "grid"}`}>
                 {useFreeform && STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                     const widget = widgets[id];
                     return (
@@ -903,7 +923,7 @@ export function PerformanceView({
                     );
                 })}
 
-                {useFreeform
+                {useFreeform || snapshotMode
                     ? stageTiles.map((tile) => (
                         <div key={tile.id} className="freeform-slot" style={tile.rect ? rectStyle(tile.rect) : undefined}>
                             <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
@@ -913,8 +933,8 @@ export function PerformanceView({
                         <div
                             className="switch-grid"
                             style={{
-                                gridTemplateColumns: `repeat(${snapshotMode ? SNAPSHOT_GRID_COLUMNS : columns}, minmax(0, 1fr))`,
-                                gridTemplateRows: `repeat(${snapshotMode ? SNAPSHOT_GRID_ROWS : rows}, minmax(0, 1fr))`
+                                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                                gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`
                             }}
                         >
                             {stageTiles.map((tile) => (

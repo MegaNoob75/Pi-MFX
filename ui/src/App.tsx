@@ -13,6 +13,7 @@ import { SnapshotManagerView } from "./views/SnapshotManagerView";
 import { SnapshotEditView } from "./views/SnapshotEditView";
 import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
 import { loadCustomMultiFXThemes, themeLedColors } from "./theme/theme";
+import { MarqueeText } from "./views/MarqueeText";
 import { installResponsiveSizing } from "./responsive";
 
 export type View =
@@ -58,7 +59,6 @@ export function App() {
     const [editSubpage, setEditSubpage] = useState<EditSubpage>("chain");
     const [editEffectTitle, setEditEffectTitle] = useState<string>();
     const [editBackRequest, setEditBackRequest] = useState(0);
-    const [editorSource, setEditorSource] = useState<"preset" | "library">("library");
     const [dismissedError, setDismissedError] = useState("");
     const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
@@ -231,7 +231,7 @@ export function App() {
                     ) : (
                         <div />
                     )}
-                    <div className="shell-title">{title}</div>
+                    <div className="shell-title"><MarqueeText text={title} align="center" fontWeight={900} /></div>
                     <div />
                 </div>
                 <div className="shell-actions">
@@ -269,7 +269,6 @@ export function App() {
                         run={run}
                         onSnapshots={() => goTo("snapshots")}
                         onEdit={() => {
-                            setEditorSource("preset");
                             goTo("edit");
                         }}
                         onEditSnapshot={(snapshotId) => {
@@ -283,7 +282,6 @@ export function App() {
                     <EditorView
                         engine={engine}
                         run={run}
-                        editorSource={editorSource}
                         backRequest={editBackRequest}
                         onPageChange={(page, effectTitle) => {
                             setEditSubpage(page);
@@ -356,7 +354,6 @@ export function App() {
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
                             active={view === "edit"} onClick={() => {
-                                setEditorSource("library");
                                 setEditSubpage("chain");
                                 setEditEffectTitle(undefined);
                                 goTo("edit");

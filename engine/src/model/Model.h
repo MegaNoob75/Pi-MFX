@@ -35,6 +35,8 @@ struct Snapshot {
     std::string name;
     Json slots = Json::object();
     std::string color;
+    /// Layout slot (Snapshot 1 = 0). Empty holes stay empty instead of shifting.
+    int slot = -1;
 
     Json toJson() const;
     static Snapshot fromJson(const Json& json);
@@ -50,7 +52,11 @@ struct Preset {
 
     std::vector<EffectSlot> chain;
     std::vector<Snapshot> snapshots;
+    /// Layout slot of the snapshot currently applied to the live chain, or -1.
     int activeSnapshot = -1;
+    /// Last Snapshot-view choice for this preset. Performance re-press toggles it.
+    int rememberedSnapshotSlot = -1;
+    bool rememberedSnapshotEnabled = false;
 
     const EffectSlot* findSlot(const std::string& slotId) const;
     EffectSlot* findSlot(const std::string& slotId);
@@ -97,6 +103,8 @@ struct ControlBinding {
     std::string bankId;
     std::string presetId;
     std::string snapshotId;
+    /// Snapshot-view slot for this switch (0 = Snapshot 1). -1 = none.
+    int snapshotSlot = -1;
     std::string slotId;     ///< for toggleEffect and setParameter
     std::string portSymbol; ///< for setParameter
 
@@ -211,7 +219,7 @@ struct ControllerConfig {
 /// UI preferences that live on the Pi rather than in the browser, so every
 /// device that connects sees the same rig.
 struct UiSettings {
-    std::string themeId = "MultiFX Purple";
+    std::string themeId = "Pi-MFX Purple";
     Json customThemes = Json::array();
     Json ledColors = Json::object();
     double scale = 1.0;

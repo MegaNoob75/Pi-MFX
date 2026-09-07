@@ -100,7 +100,7 @@ public:
     bool bypassAll() const;
 
     // --- snapshots -------------------------------------------------------
-    bool captureSnapshot(const std::string& name, std::string& snapshotId, std::string& error);
+    bool captureSnapshot(const std::string& name, int slot, std::string& snapshotId, std::string& error);
     bool selectSnapshot(const std::string& snapshotId, std::string& error);
     bool updateSnapshot(const std::string& snapshotId, std::string& error);
     bool renameSnapshot(const std::string& snapshotId, const std::string& name, std::string& error);
@@ -185,6 +185,14 @@ private:
     std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error);
     void applySnapshotToChain(const Snapshot& snapshot);
     Snapshot captureCurrentChain(const std::string& name) const;
+    Snapshot* findSnapshotBySlot(Preset& preset, int slot);
+    const Snapshot* findSnapshotBySlot(const Preset& preset, int slot) const;
+    void restoreStoredPresetToChainUnlocked(Preset& preset);
+    void forgetRememberedSnapshot(Preset& preset);
+    void rememberSnapshot(Preset& preset, int slot, bool enabled);
+    bool toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error);
+    bool applyRememberedSnapshotUnlocked(Preset& preset);
+    bool pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& error);
 
     Preset* activePreset();
     const Preset* activePreset() const;

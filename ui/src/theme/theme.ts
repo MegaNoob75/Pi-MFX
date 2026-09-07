@@ -246,7 +246,7 @@ interface MultiFXThemePaletteDefinition {
 
 const BUILT_IN_THEME_PALETTES: MultiFXThemePaletteDefinition[] = [
     {
-        name: "MultiFX Purple",
+        name: "Pi-MFX Purple",
         author: "Pi-MFX",
         version: 1,
         colors: {
@@ -4032,12 +4032,13 @@ export function clearAppliedMultiFXTheme(): void {
 }
 
 export function resolveTheme(themeId: string, custom: unknown[] = []): MultiFXThemeDefinition {
+    const resolvedId = themeId === "MultiFX Purple" ? "Pi-MFX Purple" : themeId;
     const customs = custom
         .map((value) => validateMultiFXTheme(value))
         .filter((theme): theme is MultiFXThemeDefinition => !!theme);
-    return customs.find((theme) => theme.name === themeId)
-        || BUILT_IN_THEMES.find((theme) => theme.name === themeId)
-        || BUILT_IN_THEMES.find((theme) => theme.name === "MultiFX Purple")
+    return customs.find((theme) => theme.name === resolvedId)
+        || BUILT_IN_THEMES.find((theme) => theme.name === resolvedId)
+        || BUILT_IN_THEMES.find((theme) => theme.name === "Pi-MFX Purple")
         || loadMultiFXTheme()
         || BUILT_IN_THEMES[0];
 }

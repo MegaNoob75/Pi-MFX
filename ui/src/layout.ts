@@ -157,6 +157,75 @@ export function analogMinSize(kind: string): { width: number; height: number } {
     return { width: 0.12, height: 0.18 };
 }
 
+export const DEFAULT_SNAPSHOT_SLOT_COUNT = 6;
+
+export interface SnapshotWidget {
+    id: string;
+    slot: number;
+    rect: LayoutRect;
+}
+
+export function snapshotWidgetId(slot: number): string {
+    return `snap-slot-${slot}`;
+}
+
+export function defaultSnapshotWidgets(count = DEFAULT_SNAPSHOT_SLOT_COUNT): SnapshotWidget[] {
+    const columns = 3;
+    const rows = Math.max(1, Math.ceil(count / columns));
+    return Array.from({ length: count }, (_, slot) => ({
+        id: snapshotWidgetId(slot),
+        slot,
+        rect: gridCellRect(slot, columns, rows)
+    }));
+}
+
+export function readSnapshotWidgets(layout: JsonObject): SnapshotWidget[] {
+    const stored = arr(layout.snapshotElements);
+    if (stored.length === 0) {
+        return defaultSnapshotWidgets();
+    }
+    return stored.map((value, index) => {
+        const item = obj(value);
+        const slot = Math.max(0, num(item.slot, index));
+        return {
+            id: str(item.id, snapshotWidgetId(slot)),
+            slot,
+            rect: clampRect({
+                x: num(obj(item.rect).x, gridCellRect(slot, 3, 2).x),
+                y: num(obj(item.rect).y, gridCellRect(slot, 3, 2).y),
+                width: num(obj(item.rect).width, gridCellRect(slot, 3, 2).width),
+                height: num(obj(item.rect).height, gridCellRect(slot, 3, 2).height)
+            })
+        };
+    }).sort((a, b) => a.slot - b.slot);
+}
+
+export function snapshotWidgetsToJson(widgets: SnapshotWidget[]): JsonObject[] {
+    return widgets.map((widget) => ({
+        id: widget.id,
+        slot: widget.slot,
+        rect: {
+            x: widget.rect.x,
+            y: widget.rect.y,
+            width: widget.rect.width,
+            height: widget.rect.height
+        }
+    }));
+}
+
+export function snapshotLayoutSlots(layout: JsonObject): number[] {
+    return readSnapshotWidgets(layout).map((widget) => widget.slot);
+}
+
+export function snapshotSlotCount(layout: JsonObject): number {
+    return Math.max(1, readSnapshotWidgets(layout).length);
+}
+
+export function snapshotAtSlot(snapshots: JsonObject[], slot: number): JsonObject | undefined {
+    return snapshots.find((item) => num(item.slot, -1) === slot)
+        ?? snapshots.find((item, index) => num(item.slot, index) === slot);
+}
+
 export function gridCellRect(index: number, columns: number, rows: number): LayoutRect {
     const column = index % Math.max(1, columns);
     const row = Math.floor(index / Math.max(1, columns));

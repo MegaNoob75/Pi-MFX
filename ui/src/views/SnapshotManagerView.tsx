@@ -3,8 +3,9 @@ import { createPortal } from "react-dom";
 import type { EngineSnapshot } from "../api";
 import { findPreset } from "../api";
 import { num, obj, str, objects } from "../json";
+import { snapshotAtSlot, snapshotLayoutSlots } from "../layout";
+import { MarqueeText } from "./MarqueeText";
 
-const SNAPSHOT_SLOTS = 6;
 const DEFAULT_SNAPSHOT_COLORS = [
     "#22C55E",
     "#06B6D4",
@@ -26,7 +27,8 @@ export function SnapshotManagerView({
     const preset = findPreset(state);
     const snapshots = objects(obj(preset).snapshots);
     const active = num(obj(preset).activeSnapshot, -1);
-    const [renameIndex, setRenameIndex] = useState<number | null>(null);
+    const slots = snapshotLayoutSlots(obj(obj(state.controller).performanceLayout));
+    const [renameSlot, setRenameSlot] = useState<number | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [message, setMessage] = useState("");
 
@@ -54,9 +56,11 @@ export function SnapshotManagerView({
                 document.body
             )}
             <div className="snapshot-manager-header">
-                <div>
+                <div className="snapshot-manager-preset">
                     <div className="field-label">SNAPSHOT MANAGER</div>
-                    <div className="snapshot-preset-name">{str(obj(preset).name, "Current Preset")}</div>
+                    <div className="snapshot-preset-name">
+                        <MarqueeText text={str(obj(preset).name, "Current Preset")} align="left" fontWeight={900} />
+                    </div>
                 </div>
                 <div className="muted snapshot-help">
                     Capture stores the live sound without overwriting the saved preset.
@@ -64,23 +68,23 @@ export function SnapshotManagerView({
                 </div>
             </div>
             <div className="snapshot-notice">
-                Create/update captures the current live sound. Recall, rename, colour
-                and delete follow the same lifecycle as MultiFX.
+                Create or update captures the current live sound. Recall a captured slot to apply it,
+                or recall the active slot again to return to the saved preset and clear snapshot memory.
             </div>
-            <div className="snapshot-grid" style={{ gridTemplateRows: "repeat(2, minmax(0, 1fr))" }}>
-                {Array.from({ length: SNAPSHOT_SLOTS }, (_, index) => {
-                    const snapshot = snapshots[index];
-                    const selected = snapshot && index === active;
-                    const color = str(obj(snapshot).color, DEFAULT_SNAPSHOT_COLORS[index] ?? "#22d3ee");
+            <div className="snapshot-grid">
+                {slots.map((slot) => {
+                    const snapshot = snapshotAtSlot(snapshots, slot);
+                    const selected = Boolean(snapshot) && active === slot;
+                    const color = str(obj(snapshot).color, DEFAULT_SNAPSHOT_COLORS[slot % DEFAULT_SNAPSHOT_COLORS.length] ?? "#22d3ee");
                     return (
-                        <div key={snapshot ? str(snapshot.id) : `empty-${index}`} className={`snapshot-card${selected ? " selected" : ""}`}>
+                        <div key={snapshot ? str(snapshot.id) : `empty-${slot}`} className={`snapshot-card${selected ? " selected" : ""}`}>
                             <div className="snapshot-card-top">
-                                <span>SNAPSHOT {index + 1}</span>
+                                <span>SNAPSHOT {slot + 1}</span>
                                 <span className={`snapshot-led${selected ? " on" : ""}`} />
                             </div>
                             {snapshot ? (
                                 <>
-                                    {renameIndex === index ? (
+                                    {renameSlot === slot ? (
                                         <div className="row" style={{ marginTop: 10 }}>
                                             <input
                                                 className="input"
@@ -93,12 +97,12 @@ export function SnapshotManagerView({
                                                             snapshotId: str(snapshot.id),
                                                             name: renameValue.trim()
                                                         })).then(() => {
-                                                            setRenameIndex(null);
+                                                            setRenameSlot(null);
                                                             show("SNAPSHOT RENAMED");
                                                         });
                                                     }
                                                     if (event.key === "Escape") {
-                                                        setRenameIndex(null);
+                                                        setRenameSlot(null);
                                                     }
                                                 }}
                                             />
@@ -110,13 +114,15 @@ export function SnapshotManagerView({
                                                     snapshotId: str(snapshot.id),
                                                     name: renameValue.trim()
                                                 })).then(() => {
-                                                    setRenameIndex(null);
+                                                    setRenameSlot(null);
                                                     show("SNAPSHOT RENAMED");
                                                 });
                                             }}>SAVE</button>
                                         </div>
                                     ) : (
-                                        <div className="snapshot-card-name">{str(snapshot.name, `Snapshot ${index + 1}`)}</div>
+                                        <div className="snapshot-card-name">
+                                            <MarqueeText text={str(snapshot.name, `Snapshot ${slot + 1}`)} align="left" fontWeight={900} />
+                                        </div>
                                     )}
                                     <div className="snapshot-card-state">
                                         <label className="snapshot-color">
@@ -136,25 +142,22 @@ export function SnapshotManagerView({
                                     </div>
                                     <div className="snapshot-card-actions">
                                         <button type="button" className="btn btn-accent" onClick={() => {
-                                            if (selected) {
-                                                void run(() => client.request("preset/restoreLive"))
-                                                    .then(() => show("CLEARED • BASE PRESET"));
-                                                return;
-                                            }
                                             void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
-                                                .then(() => show(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} ACTIVE`));
+                                                .then(() => show(selected
+                                                    ? "CLEARED • BASE PRESET"
+                                                    : `${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} ACTIVE`));
                                         }}>RECALL</button>
                                         <button type="button" className="btn" onClick={() => {
                                             void run(() => client.request("snapshot/update", { snapshotId: str(snapshot.id) }))
-                                                .then(() => show(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} UPDATED`));
+                                                .then(() => show(`${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} UPDATED`));
                                         }}>UPDATE</button>
                                         <button type="button" className="btn" onClick={() => {
-                                            setRenameIndex(index);
-                                            setRenameValue(str(snapshot.name, `Snapshot ${index + 1}`));
+                                            setRenameSlot(slot);
+                                            setRenameValue(str(snapshot.name, `Snapshot ${slot + 1}`));
                                         }}>RENAME</button>
                                         <button type="button" className="btn btn-danger" onClick={() => {
                                             void run(() => client.request("snapshot/delete", { snapshotId: str(snapshot.id) }))
-                                                .then(() => show(`SNAPSHOT ${index + 1} DELETED`));
+                                                .then(() => show(`SNAPSHOT ${slot + 1} DELETED`));
                                         }}>DELETE</button>
                                     </div>
                                 </>
@@ -166,16 +169,18 @@ export function SnapshotManagerView({
                                         <button type="button" className="btn btn-accent" style={{ width: "100%" }} onClick={() => {
                                             void run(async () => {
                                                 const result = await client.request("snapshot/capture", {
-                                                    name: `Snapshot ${index + 1}`
+                                                    name: `Snapshot ${slot + 1}`,
+                                                    slot
                                                 });
                                                 const snapshotId = str(result.snapshotId);
-                                                if (snapshotId && DEFAULT_SNAPSHOT_COLORS[index]) {
+                                                const fallback = DEFAULT_SNAPSHOT_COLORS[slot % DEFAULT_SNAPSHOT_COLORS.length];
+                                                if (snapshotId && fallback) {
                                                     await client.request("snapshot/color", {
                                                         snapshotId,
-                                                        color: DEFAULT_SNAPSHOT_COLORS[index]
+                                                        color: fallback
                                                     });
                                                 }
-                                            }).then(() => show(`SNAPSHOT ${index + 1} CREATED`));
+                                            }).then(() => show(`SNAPSHOT ${slot + 1} CREATED`));
                                         }}>CREATE SNAPSHOT</button>
                                     </div>
                                 </>

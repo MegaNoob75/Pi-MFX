@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { obj, str, objects, type JsonObject } from "../json";
+import { MarqueeText } from "./MarqueeText";
 
 type EditState = {
     mode: "newBank" | "renameBank" | "renamePreset" | "cloneBank";
@@ -196,7 +197,7 @@ export function BanksView({
                             className={`split-row${str(bank.id) === bankId || (focused === "banks" && str(bank.id) === bankId) ? " selected" : ""}`}
                             onClick={() => selectBank(str(bank.id))}
                         >
-                            {str(bank.name)}
+                            <MarqueeText text={str(bank.name)} align="left" fontWeight={800} />
                         </button>
                     ))}
                 </div>
@@ -278,7 +279,9 @@ export function BanksView({
                             >
                                 ☰
                             </span>
-                            <span style={{ flex: 1, minWidth: 0 }}>{str(preset.name)}</span>
+                            <span style={{ flex: 1, minWidth: 0 }}>
+                                <MarqueeText text={str(preset.name)} align="left" fontWeight={800} />
+                            </span>
                         </div>
                     ))}
                 </div>

@@ -6,7 +6,7 @@ import "./performance.css";
 
 export function ThemeRoot({ ui }: { ui: JsonObject }) {
     useEffect(() => {
-        const theme = resolveTheme(str(ui.themeId, "MultiFX Purple"), arr(ui.customThemes));
+        const theme = resolveTheme(str(ui.themeId, "Pi-MFX Purple"), arr(ui.customThemes));
         applyMultiFXTheme(theme);
         applyUserScale(Number(ui.scale) || 1);
     }, [ui.themeId, ui.customThemes, ui.scale]);
