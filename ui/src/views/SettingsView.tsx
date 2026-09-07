@@ -33,8 +33,9 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
                 <HubCard title="PLUGINS" subtitle="Apt repos, install, remove and PatchStorage" onClick={() => onOpen("plugins")} />
-                <HubCard title="SYSTEM" subtitle="Audio, library, hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
+                <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
         </div>
     );
@@ -66,12 +67,11 @@ function SystemHub({
         <div className="mfx-screen">
             <div className="mfx-screen-intro">
                 <div className="mfx-screen-intro-title">SYSTEM</div>
-                <div className="mfx-screen-intro-sub">Audio device, NAM/IR library, hotspot and Pi realtime</div>
+                <div className="mfx-screen-intro-sub">Audio device, Wi-Fi / hotspot and Pi realtime</div>
             </div>
             <div className="mfx-hub-grid">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen?.("audio")} />
-                <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen?.("library")} />
-                <HubCard title="HOTSPOT" subtitle="Wi-Fi access point for a tablet when there is no internet" onClick={() => onOpen?.("hotspot")} />
+                <HubCard title="WIFI / HOTSPOT" subtitle="Join a home network or host a tablet access point" onClick={() => onOpen?.("hotspot")} />
                 <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => setRealtime(true)} />
             </div>
         </div>
@@ -85,6 +85,55 @@ function HubCard({ title, subtitle, onClick }: { title: string; subtitle: string
             <span>{subtitle}</span>
         </button>
     );
+}
+
+const CONTROL_KIND_ORDER = ["switch", "momentary", "pot", "slider", "encoder", "expression"] as const;
+const CONTROL_LABEL_PREFIX: Record<string, string> = {
+    switch: "SW",
+    momentary: "MOM",
+    pot: "POT",
+    slider: "SL",
+    encoder: "ENC",
+    expression: "EXP"
+};
+
+function controlPrefix(kind: string): string {
+    return CONTROL_LABEL_PREFIX[kind] ?? kind.toUpperCase();
+}
+
+function isDefaultControlLabel(kind: string, label: string): boolean {
+    return new RegExp(`^${controlPrefix(kind)} \\d+$`).test(label.trim());
+}
+
+function nextControlLabel(kind: string, controls: JsonObject[]): string {
+    const prefix = controlPrefix(kind);
+    const used = new Set<number>();
+    for (const control of controls) {
+        if (str(control.kind) !== kind) {
+            continue;
+        }
+        const match = str(control.label).trim().match(new RegExp(`^${prefix} (\\d+)$`));
+        if (match) {
+            used.add(Number(match[1]));
+        }
+    }
+    let n = 1;
+    while (used.has(n)) {
+        n += 1;
+    }
+    return `${prefix} ${n}`;
+}
+
+function groupedControls(controls: JsonObject[]): JsonObject[] {
+    const grouped: JsonObject[] = [];
+    for (const kind of CONTROL_KIND_ORDER) {
+        grouped.push(...controls.filter((control) => str(control.kind, "switch") === kind));
+    }
+    grouped.push(...controls.filter((control) => {
+        const kind = str(control.kind, "switch");
+        return !CONTROL_KIND_ORDER.includes(kind as (typeof CONTROL_KIND_ORDER)[number]);
+    }));
+    return grouped;
 }
 
 export function SettingsPage({
@@ -495,62 +544,64 @@ function ControllerSettings({
                     const nextId = `ctl-${Date.now().toString(36)}`;
                     save({
                         ...controller,
-                        controls: [
+                        controls: groupedControls([
                             ...controls,
                             {
                                 id: nextId,
-                                label: `SW ${controls.length + 1}`,
+                                label: nextControlLabel("switch", controls),
                                 kind: "switch",
-                                row: Math.floor(controls.length / num(controller.gridColumns, 4)),
-                                column: controls.length % num(controller.gridColumns, 4),
+                                row: Math.floor(controls.filter((item) => str(item.kind, "switch") === "switch").length
+                                    / num(controller.gridColumns, 4)),
+                                column: controls.filter((item) => str(item.kind, "switch") === "switch").length
+                                    % num(controller.gridColumns, 4),
                                 binding: { action: "selectPreset", min: 0, max: 1, inverted: false }
                             }
-                        ]
+                        ])
                     });
                 }}>ADD SWITCH</button>
                     <button type="button" className="btn" onClick={() => {
                         const nextId = `ctl-${Date.now().toString(36)}`;
                         save({
                             ...controller,
-                            controls: [
+                            controls: groupedControls([
                                 ...controls,
                                 {
                                     id: nextId,
-                                    label: `POT ${controls.length + 1}`,
+                                    label: nextControlLabel("pot", controls),
                                     kind: "pot",
                                     binding: { action: "setParameter", min: 0, max: 1, inverted: false }
                                 }
-                            ]
+                            ])
                         });
                     }}>ADD POT</button>
                     <button type="button" className="btn" onClick={() => {
                         const nextId = `ctl-${Date.now().toString(36)}`;
                         save({
                             ...controller,
-                            controls: [
+                            controls: groupedControls([
                                 ...controls,
                                 {
                                     id: nextId,
-                                    label: `SL ${controls.length + 1}`,
+                                    label: nextControlLabel("slider", controls),
                                     kind: "slider",
                                     binding: { action: "setParameter", min: 0, max: 1, inverted: false }
                                 }
-                            ]
+                            ])
                         });
                     }}>ADD SLIDER</button>
                     <button type="button" className="btn" onClick={() => {
                         const nextId = `ctl-${Date.now().toString(36)}`;
                         save({
                             ...controller,
-                            controls: [
+                            controls: groupedControls([
                                 ...controls,
                                 {
                                     id: nextId,
-                                    label: `EXP ${controls.length + 1}`,
+                                    label: nextControlLabel("expression", controls),
                                     kind: "expression",
                                     binding: { action: "setParameter", min: 0, max: 1, inverted: false }
                                 }
-                            ]
+                            ])
                         });
                     }}>ADD EXP</button>
                     <button type="button" className="btn" onClick={() => {
@@ -564,13 +615,14 @@ function ControllerSettings({
                         });
                     }}>ADD LED</button>
                 </div>
-                {controls.map((control, index) => {
+                {groupedControls(controls).map((control) => {
                     const chain = objects(state.chain);
                     const binding = obj(control.binding);
                     const patch = (nextControl: JsonObject) => {
-                        const next = controls.slice();
-                        next[index] = nextControl;
-                        save({ ...controller, controls: next });
+                        const next = controls.map((item) => (
+                            str(item.id) === str(control.id) ? nextControl : item
+                        ));
+                        save({ ...controller, controls: groupedControls(next) });
                     };
                     const patchBinding = (next: JsonObject) => patch({ ...control, binding: next });
                     const selectedSlot = chain.find((slot) => str(slot.id) === str(binding.slotId));
@@ -581,10 +633,18 @@ function ControllerSettings({
                         <input
                             className="input"
                             style={{ maxWidth: 140 }}
+                            key={`${str(control.id)}-${str(control.label)}`}
                             defaultValue={str(control.label)}
                             onBlur={(event) => patch({ ...control, label: event.target.value })}
                         />
-                        <select value={str(control.kind, "switch")} onChange={(event) => patch({ ...control, kind: event.target.value })}>
+                        <select value={str(control.kind, "switch")} onChange={(event) => {
+                            const nextKind = event.target.value;
+                            const others = controls.filter((item) => str(item.id) !== str(control.id));
+                            const label = isDefaultControlLabel(str(control.kind, "switch"), str(control.label))
+                                ? nextControlLabel(nextKind, others)
+                                : str(control.label);
+                            patch({ ...control, kind: nextKind, label });
+                        }}>
                             {["switch", "momentary", "pot", "slider", "encoder", "expression"].map((kind) => (
                                 <option key={kind} value={kind}>{kind}</option>
                             ))}
@@ -686,7 +746,10 @@ function ControllerSettings({
                             {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
                         </button>
                         <button type="button" className="btn btn-danger" onClick={() => {
-                            save({ ...controller, controls: controls.filter((item) => str(item.id) !== str(control.id)) });
+                            save({
+                                ...controller,
+                                controls: groupedControls(controls.filter((item) => str(item.id) !== str(control.id)))
+                            });
                         }}>REMOVE</button>
                     </div>
                     );

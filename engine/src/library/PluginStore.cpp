@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -32,6 +34,7 @@ namespace {
 
 constexpr const char* kHelperSocket = "/run/pimfx/plugin-helper.sock";
 constexpr const char* kPatchstorageBase = "https://patchstorage.com/api/beta";
+constexpr int64_t kPatchstorageCacheTtlSeconds = 12 * 60 * 60;
 const char* kSuggested[] = {
     "calf-plugins",
     "x42-plugins",
@@ -781,6 +784,13 @@ bool PluginStore::resolvePatchstorageIds(std::string& error) {
         return true;
     }
 
+    const Json cache = loadPatchstorageCache();
+    platformId_ = cache["platformId"].asInt(0);
+    targetId_ = cache["targetId"].asInt(0);
+    if (platformId_ > 0 && targetId_ > 0) {
+        return true;
+    }
+
     const Json platforms = httpsGet(std::string(kPatchstorageBase) + "/platforms?search=lv2&per_page=100", error);
     if (!error.empty()) {
         return false;
@@ -820,6 +830,29 @@ bool PluginStore::resolvePatchstorageIds(std::string& error) {
     return true;
 }
 
+Json PluginStore::loadPatchstorageCache() const {
+    std::string text;
+    if (!readFile(paths_.patchstorageCacheFile(), text) || text.empty()) {
+        return Json::object();
+    }
+    std::string parseError;
+    Json json = Json::parse(text, &parseError);
+    if (!parseError.empty() || !json.isObject()) {
+        return Json::object();
+    }
+    return json;
+}
+
+void PluginStore::savePatchstorageCache(const Json& items, bool complete) {
+    Json json = Json::object();
+    json.set("fetchedAt", static_cast<int64_t>(std::time(nullptr)));
+    json.set("platformId", platformId_);
+    json.set("targetId", targetId_);
+    json.set("complete", complete);
+    json.set("items", items);
+    writeFileAtomic(paths_.patchstorageCacheFile(), json.dump(2));
+}
+
 Json PluginStore::patchstorageSearch(const Json& query, std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!resolvePatchstorageIds(error)) {
@@ -828,8 +861,38 @@ Json PluginStore::patchstorageSearch(const Json& query, std::string& error) {
 
     const int startPage = std::max(1, query["page"].asInt(1));
     const int perPage = std::min(100, std::max(1, query["perPage"].asInt(100)));
-    const bool fetchAll = query["all"].asBool(true);
+    const bool fetchAll = query["all"].asBool(false);
+    const bool refresh = query["refresh"].asBool(false);
     const std::string search = query["query"].asString();
+
+    Json cache = loadPatchstorageCache();
+    const int64_t fetchedAt = cache["fetchedAt"].asInt64();
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    const bool cacheFresh = fetchedAt > 0 && (now - fetchedAt) < kPatchstorageCacheTtlSeconds;
+    const bool canUseCache = !refresh && search.empty() && cache["items"].isArray()
+        && cache["items"].size() > 0;
+
+    auto wrap = [&](const Json& items, bool cached, bool stale, bool complete, bool hasMore, int nextPage) {
+        Json wrapper = Json::object();
+        wrapper.set("items", items);
+        wrapper.set("page", startPage);
+        wrapper.set("count", static_cast<int>(items.size()));
+        wrapper.set("cached", cached);
+        wrapper.set("stale", stale);
+        wrapper.set("complete", complete);
+        wrapper.set("hasMore", hasMore);
+        wrapper.set("nextPage", nextPage);
+        wrapper.set("platformId", platformId_);
+        wrapper.set("targetId", targetId_);
+        wrapper.set("target", "rpi-aarch64");
+        return wrapper;
+    };
+
+    if (canUseCache) {
+        const bool complete = cache["complete"].asBool(false);
+        const int next = complete ? 0 : (static_cast<int>(cache["items"].size()) / perPage) + 1;
+        return wrap(cache["items"], true, !cacheFresh, complete, !complete, next);
+    }
 
     std::unordered_set<int64_t> installed;
     for (const Json& bundle : loadRegistry()["bundles"].items()) {
@@ -842,6 +905,7 @@ Json PluginStore::patchstorageSearch(const Json& query, std::string& error) {
     Json items = Json::array();
     int page = startPage;
     const int lastPage = fetchAll ? startPage + 19 : startPage;
+    int lastCount = 0;
     while (page <= lastPage) {
         std::string url = std::string(kPatchstorageBase) + "/patches/?platforms="
             + std::to_string(platformId_)
@@ -865,20 +929,44 @@ Json PluginStore::patchstorageSearch(const Json& query, std::string& error) {
             items.push(summarizePatch(item, have));
             ++count;
         }
+        lastCount = count;
         if (!fetchAll || count < perPage) {
             break;
         }
         ++page;
     }
 
-    Json wrapper = Json::object();
-    wrapper.set("items", items);
-    wrapper.set("page", startPage);
-    wrapper.set("count", static_cast<int>(items.size()));
-    wrapper.set("platformId", platformId_);
-    wrapper.set("targetId", targetId_);
-    wrapper.set("target", "rpi-aarch64");
-    return wrapper;
+    const bool hasMore = lastCount >= perPage;
+    const bool complete = !hasMore;
+    const int nextPage = hasMore ? (fetchAll ? page + 1 : startPage + 1) : 0;
+
+    if (search.empty()) {
+        if (startPage <= 1 || fetchAll) {
+            savePatchstorageCache(items, complete || fetchAll);
+        } else if (cache["items"].isArray()) {
+            std::unordered_set<int64_t> seen;
+            Json merged = Json::array();
+            for (const Json& item : cache["items"].items()) {
+                const int64_t id = item["id"].asInt64();
+                if (id > 0) {
+                    seen.insert(id);
+                }
+                merged.push(item);
+            }
+            for (const Json& item : items.items()) {
+                const int64_t id = item["id"].asInt64();
+                if (id > 0 && seen.count(id) > 0) {
+                    continue;
+                }
+                merged.push(item);
+            }
+            savePatchstorageCache(merged, complete);
+        } else {
+            savePatchstorageCache(items, complete);
+        }
+    }
+
+    return wrap(items, false, false, complete && !fetchAll ? complete : complete, hasMore, nextPage);
 }
 
 bool PluginStore::extractArchive(const std::string& archive, const std::string& dest, std::string& error) {
@@ -1117,6 +1205,20 @@ bool PluginStore::patchstorageInstall(int64_t patchId, std::string& error) {
     return true;
 }
 
+void copyLiveNetwork(Json& json, const Json& live) {
+    json.set("active", live["active"].asBool(false));
+    json.set("device", live["device"].asString());
+    json.set("ip", live["ip"].asString());
+    json.set("url", live["url"].asString());
+    json.set("otherConnection", live["otherConnection"].asBool(false));
+    json.set("error", live["error"].asString());
+    json.set("stationSsid", live["stationSsid"].asString());
+    json.set("stationConnected", live["stationConnected"].asBool(false));
+    if (live["networks"].isArray()) {
+        json.set("networks", live["networks"]);
+    }
+}
+
 Json PluginStore::hotspotStatus(std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     Json stored = readHotspotFile(paths_);
@@ -1127,16 +1229,12 @@ Json PluginStore::hotspotStatus(std::string& error) {
         json.set("helperAvailable", false);
         json.set("active", false);
         json.set("otherConnection", false);
+        json.set("stationConnected", false);
         json.set("error", helperError);
         return json;
     }
     json.set("helperAvailable", true);
-    json.set("active", live["active"].asBool(false));
-    json.set("device", live["device"].asString());
-    json.set("ip", live["ip"].asString());
-    json.set("url", live["url"].asString());
-    json.set("otherConnection", live["otherConnection"].asBool(false));
-    json.set("error", live["error"].asString());
+    copyLiveNetwork(json, live);
     (void)error;
     return json;
 }
@@ -1196,14 +1294,82 @@ Json PluginStore::applyHotspot(const Json& payload, std::string& error) {
         return json;
     }
     json.set("helperAvailable", true);
-    json.set("active", live["active"].asBool(false));
-    json.set("device", live["device"].asString());
-    json.set("ip", live["ip"].asString());
-    json.set("url", live["url"].asString());
-    json.set("otherConnection", live["otherConnection"].asBool(false));
-    json.set("error", live["error"].asString());
+    copyLiveNetwork(json, live);
     if (!live["error"].asString().empty()) {
         error = live["error"].asString();
+    }
+    return json;
+}
+
+Json PluginStore::wifiScan(std::string& error) {
+    Json json = hotspotStatus(error);
+    Json live = helperCall("wifi-scan", Json::object(), error, 40);
+    if (!error.empty()) {
+        json.set("helperAvailable", false);
+        json.set("error", error);
+        return json;
+    }
+    json.set("helperAvailable", true);
+    copyLiveNetwork(json, live);
+    if (!live["error"].asString().empty()) {
+        error = live["error"].asString();
+    }
+    return json;
+}
+
+Json PluginStore::wifiConnect(const Json& payload, std::string& error) {
+    const std::string ssid = payload["ssid"].asString();
+    const std::string password = payload["password"].asString();
+    if (!printableHotspotText(ssid, 1, 32)) {
+        error = "the network name must be 1 to 32 printable characters";
+        return Json::object();
+    }
+    if (!password.empty() && !printableHotspotText(password, 8, 63)) {
+        error = "the Wi-Fi password must be 8 to 63 printable characters";
+        return Json::object();
+    }
+
+    Json stored = readHotspotFile(paths_);
+    if (stored["mode"].asString("off") != "off") {
+        Json off = Json::object();
+        off.set("mode", "off");
+        off.set("ssid", stored["ssid"].asString("PI-MFX"));
+        off.set("password", stored["password"].asString());
+        applyHotspot(off, error);
+        error.clear();
+    }
+
+    Json args = Json::object();
+    args.set("ssid", ssid);
+    args.set("password", password);
+    Json live = helperCall("wifi-connect", args, error, 60);
+    Json json = hotspotStatus(error);
+    if (!error.empty() && !live.isObject()) {
+        json.set("error", error);
+        return json;
+    }
+    json.set("helperAvailable", true);
+    copyLiveNetwork(json, live.isObject() ? live : json);
+    json.set("password", readHotspotFile(paths_)["password"].asString());
+    if (!live["error"].asString().empty()) {
+        error = live["error"].asString();
+        json.set("error", error);
+    }
+    return json;
+}
+
+Json PluginStore::wifiDisconnect(std::string& error) {
+    Json live = helperCall("wifi-disconnect", Json::object(), error, 40);
+    Json json = hotspotStatus(error);
+    if (!error.empty() && !live.isObject()) {
+        json.set("error", error);
+        return json;
+    }
+    json.set("helperAvailable", true);
+    copyLiveNetwork(json, live.isObject() ? live : json);
+    if (!live["error"].asString().empty()) {
+        error = live["error"].asString();
+        json.set("error", error);
     }
     return json;
 }

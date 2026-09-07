@@ -70,6 +70,7 @@ std::string Paths::themesDir() const { return joinPath(dataRoot, "themes"); }
 std::string Paths::credentialsFile() const { return joinPath(dataRoot, "credentials.json"); }
 std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json"); }
 std::string Paths::hotspotFile() const { return joinPath(dataRoot, "hotspot.json"); }
+std::string Paths::patchstorageCacheFile() const { return joinPath(dataRoot, "patchstorage-cache.json"); }
 
 bool fileExists(const std::string& path) {
     std::error_code ec;

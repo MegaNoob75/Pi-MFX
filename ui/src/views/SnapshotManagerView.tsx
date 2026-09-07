@@ -43,7 +43,14 @@ export function SnapshotManagerView({
     return (
         <div className="mfx-screen snapshot-manager">
             {message && createPortal(
-                <div className="toast toast-ok" role="status" aria-live="polite">{message}</div>,
+                <div
+                    className="toast toast-ok"
+                    role="status"
+                    aria-live="polite"
+                    onClick={() => setMessage("")}
+                >
+                    {message}
+                </div>,
                 document.body
             )}
             <div className="snapshot-manager-header">

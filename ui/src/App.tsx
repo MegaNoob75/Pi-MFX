@@ -44,7 +44,7 @@ const titles: Record<string, string> = {
     plugins: "PLUGINS",
     backup: "BACKUP",
     system: "SYSTEM",
-    hotspot: "HOTSPOT",
+    hotspot: "WIFI / HOTSPOT",
     about: "ABOUT"
 };
 
@@ -58,6 +58,8 @@ export function App() {
     const [editSubpage, setEditSubpage] = useState<EditSubpage>("chain");
     const [editEffectTitle, setEditEffectTitle] = useState<string>();
     const [editBackRequest, setEditBackRequest] = useState(0);
+    const [editorSource, setEditorSource] = useState<"preset" | "library">("library");
+    const [dismissedError, setDismissedError] = useState("");
     const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
     const menuRef = useRef<HTMLElement | null>(null);
@@ -123,9 +125,25 @@ export function App() {
             await work();
             setToast("");
         } catch (error) {
-            setToast(error instanceof Error ? error.message : String(error));
+            const message = error instanceof Error ? error.message : String(error);
+            setDismissedError("");
+            setToast(message);
         }
     };
+
+    const errorText = toast || engine.lastError;
+    const visibleToast = errorText && errorText !== dismissedError ? errorText : "";
+
+    useEffect(() => {
+        if (!visibleToast) {
+            return;
+        }
+        const timer = window.setTimeout(() => {
+            setDismissedError(errorText);
+            setToast("");
+        }, 4500);
+        return () => window.clearTimeout(timer);
+    }, [visibleToast, errorText]);
 
     useEffect(() => {
         if (!menuOpen) {
@@ -207,7 +225,15 @@ export function App() {
                 }}>
                     PI-MFX
                 </button>
-                <div className="shell-title">{title}</div>
+                <div className="shell-mid">
+                    {view === "edit" && editSubpage === "chain" ? (
+                        <div className="shell-hint">Tap to edit • drag to reorder • + inserts an effect</div>
+                    ) : (
+                        <div />
+                    )}
+                    <div className="shell-title">{title}</div>
+                    <div />
+                </div>
                 <div className="shell-actions">
                     <span className={`status-dot${engine.connected && audioRunning ? " on" : ""}`} title={
                         engine.connected
@@ -242,7 +268,10 @@ export function App() {
                         engine={engine}
                         run={run}
                         onSnapshots={() => goTo("snapshots")}
-                        onEdit={() => goTo("edit")}
+                        onEdit={() => {
+                            setEditorSource("preset");
+                            goTo("edit");
+                        }}
                         onEditSnapshot={(snapshotId) => {
                             setSnapshotEditId(snapshotId);
                             goTo("snapshotEdit");
@@ -254,6 +283,7 @@ export function App() {
                     <EditorView
                         engine={engine}
                         run={run}
+                        editorSource={editorSource}
                         backRequest={editBackRequest}
                         onPageChange={(page, effectTitle) => {
                             setEditSubpage(page);
@@ -325,7 +355,12 @@ export function App() {
                         <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
-                            active={view === "edit"} onClick={() => goTo("edit")} />
+                            active={view === "edit"} onClick={() => {
+                                setEditorSource("library");
+                                setEditSubpage("chain");
+                                setEditEffectTitle(undefined);
+                                goTo("edit");
+                            }} />
                         <div className="menu-divider" />
                         <MenuButton label="SETTINGS" subtitle="Controller, theme, PI-MFX UI and system"
                             active={settingsActive} onClick={() => goTo("settings")} />
@@ -335,8 +370,17 @@ export function App() {
                 </>
             )}
 
-            {(toast || engine.lastError) && (
-                <div className="toast">{toast || engine.lastError}</div>
+            {visibleToast && (
+                <div
+                    className="toast"
+                    role="status"
+                    onClick={() => {
+                        setDismissedError(errorText);
+                        setToast("");
+                    }}
+                >
+                    {visibleToast}
+                </div>
             )}
             <KeyboardProvider />
         </div>

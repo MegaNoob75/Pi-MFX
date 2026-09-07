@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { controlValue, type EngineSnapshot } from "../api";
+import { controlValue, findPreset, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { PluginBrowser } from "./PluginBrowser";
@@ -11,18 +11,22 @@ export function EditorView({
     engine,
     run,
     lockChain = false,
+    editorSource = "preset",
     backRequest = 0,
     onPageChange
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     lockChain?: boolean;
+    editorSource?: "preset" | "library";
     backRequest?: number;
     onPageChange?: (page: EditPage, title?: string) => void;
 }) {
     const { client, state, catalog, library } = engine;
     const chain = objects(state.chain);
     const plugins = objects(catalog.plugins);
+    const preset = findPreset(state);
+    const banks = objects(state.banks);
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
@@ -31,6 +35,7 @@ export function EditorView({
     const [dragOverTrash, setDragOverTrash] = useState(false);
     const [dropGap, setDropGap] = useState<number | null>(null);
     const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
+    const [confirmDelete, setConfirmDelete] = useState(false);
     const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
     const chainPageRef = useRef<HTMLDivElement | null>(null);
     const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
@@ -202,28 +207,71 @@ export function EditorView({
     };
 
     return (
-        <div className="mfx-screen editor-screen">
+        <div className={`mfx-screen editor-screen${editorSource === "library" ? " editor-with-library" : ""}`}>
+            {editorSource === "library" && (
+                <aside className="editor-library">
+                    {banks.map((bank) => (
+                        <div key={str(bank.id)}>
+                            <div className="editor-library-bank">{str(bank.name, "Bank")}</div>
+                            {objects(obj(bank).presets).map((item) => (
+                                <button
+                                    key={str(item.id)}
+                                    type="button"
+                                    className={`editor-library-row${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
+                                    onClick={() => void run(() => client.request("preset/select", {
+                                        bankId: str(bank.id),
+                                        presetId: str(item.id)
+                                    }))}
+                                >
+                                    {str(item.name, "Preset")}
+                                </button>
+                            ))}
+                        </div>
+                    ))}
+                </aside>
+            )}
+            <div className="editor-main">
             {page === "chain" && (
                 <>
-                    <div className="editor-toolbar">
-                        {!lockChain && (
-                            <>
-                                <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("preset/save"))}>
-                                    SAVE PRESET
-                                </button>
-                                <button type="button" className="btn" onClick={() => {
-                                    void askText("Save preset as", "").then((name) => {
-                                        if (name?.trim()) {
-                                            void run(() => client.request("preset/saveAs", { name: name.trim() }));
-                                        }
-                                    });
-                                }}>SAVE AS</button>
-                            </>
+                    <div className="editor-toolbar editor-chain-bar">
+                        {!lockChain ? (
+                            <button type="button" className="btn btn-accent" onClick={() => {
+                                void askText("New preset name", "Untitled").then((name) => {
+                                    if (name?.trim()) {
+                                        void run(() => client.request("preset/create", { name: name.trim() }));
+                                    }
+                                });
+                            }}>NEW</button>
+                        ) : <div />}
+                        <button
+                            type="button"
+                            className="editor-preset-name"
+                            onClick={() => {
+                                if (lockChain) {
+                                    return;
+                                }
+                                void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
+                                    if (name?.trim() && str(obj(preset).id)) {
+                                        void run(() => client.request("preset/rename", {
+                                            presetId: str(obj(preset).id),
+                                            name: name.trim()
+                                        }));
+                                    }
+                                });
+                            }}
+                        >
+                            {str(obj(preset).name, "Preset")}
+                        </button>
+                        {!lockChain ? (
+                            <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
+                                DELETE
+                            </button>
+                        ) : <div />}
+                        {lockChain && (
+                            <div className="editor-toolbar-copy">
+                                <span>Snapshot editing cannot add, remove or reorder effects.</span>
+                            </div>
                         )}
-                        <div className="editor-toolbar-copy">
-                            <strong>PRESET EDITOR</strong>
-                            <span>{lockChain ? "Snapshot editing cannot add, remove or reorder effects." : "Tap to edit • drag to reorder • + inserts an effect"}</span>
-                        </div>
                     </div>
                     <div className="chain-page" ref={chainPageRef}>
                         {chainRows.map((logicalRow, rowIndex) => {
@@ -453,6 +501,28 @@ export function EditorView({
             />
             {plugins.length === 0 && page === "chain" && (
                 <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Settings → Plugins.</div>
+            )}
+            </div>
+            {confirmDelete && createPortal(
+                <div className="mfx-overlay">
+                    <div className="mfx-overlay-card">
+                        <div className="mfx-overlay-title danger">DELETE PRESET?</div>
+                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{str(obj(preset).name, "this preset")}</div>
+                        <div className="row">
+                            <button type="button" className="btn" onClick={() => setConfirmDelete(false)}>CANCEL</button>
+                            <button type="button" className="btn btn-danger" onClick={() => {
+                                const presetId = str(obj(preset).id);
+                                setConfirmDelete(false);
+                                if (presetId) {
+                                    void run(() => client.request("preset/delete", { presetId }));
+                                }
+                            }}>
+                                DELETE PRESET
+                            </button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
             )}
         </div>
     );

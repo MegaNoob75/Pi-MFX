@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
-import { bool, str, type JsonObject } from "../json";
+import { bool, num, str, objects, type JsonObject } from "../json";
+import { askText } from "../keyboard/ask";
 
 type HotspotMode = "off" | "auto" | "always";
 
@@ -23,14 +24,24 @@ export function HotspotView({
     const [password, setPassword] = useState("");
     const [mode, setMode] = useState<HotspotMode>("off");
     const [busy, setBusy] = useState(false);
+    const [networks, setNetworks] = useState<JsonObject[]>([]);
+
+    const applyStatus = (next: JsonObject) => {
+        setStatus(next);
+        setSsid(str(next.ssid, "PI-MFX"));
+        if (Object.prototype.hasOwnProperty.call(next, "password")) {
+            setPassword(str(next.password));
+        }
+        setMode(asMode(str(next.mode, "off")));
+        if (objects(next.networks).length) {
+            setNetworks(objects(next.networks));
+        }
+        return next;
+    };
 
     const refresh = async () => {
         const next = await engine.client.request("hotspot/config");
-        setStatus(next);
-        setSsid(str(next.ssid, "PI-MFX"));
-        setPassword(str(next.password));
-        setMode(asMode(str(next.mode, "off")));
-        return next;
+        return applyStatus(next);
     };
 
     useEffect(() => {
@@ -46,12 +57,54 @@ export function HotspotView({
                     ssid,
                     password
                 });
-                setStatus(next);
-                setSsid(str(next.ssid, ssid));
-                setPassword(str(next.password, password));
-                setMode(asMode(str(next.mode, nextMode)));
+                applyStatus(next);
             } finally {
                 setBusy(false);
+            }
+        });
+    };
+
+    const scan = () => {
+        void run(async () => {
+            setBusy(true);
+            try {
+                const next = await engine.client.request("hotspot/wifi-scan");
+                applyStatus(next);
+                setNetworks(objects(next.networks));
+            } finally {
+                setBusy(false);
+            }
+        });
+    };
+
+    const joinNetwork = (network: JsonObject) => {
+        const name = str(network.ssid);
+        if (!name) {
+            return;
+        }
+        const open = bool(network.open);
+        const connect = (psk: string) => {
+            void run(async () => {
+                setBusy(true);
+                try {
+                    const next = await engine.client.request("hotspot/wifi-connect", {
+                        ssid: name,
+                        password: psk
+                    });
+                    applyStatus(next);
+                    setMode("off");
+                } finally {
+                    setBusy(false);
+                }
+            });
+        };
+        if (open) {
+            connect("");
+            return;
+        }
+        void askText(`Password for ${name}`, "").then((psk) => {
+            if (psk) {
+                connect(psk);
             }
         });
     };
@@ -62,23 +115,82 @@ export function HotspotView({
     const ip = str(status.ip);
     const device = str(status.device);
     const liveError = str(status.error);
+    const stationSsid = str(status.stationSsid);
+    const stationConnected = bool(status.stationConnected);
+    const joinBlocked = mode === "always" || active;
 
     return (
         <div className="mfx-screen">
             <div className="mfx-screen-intro">
-                <div className="mfx-screen-intro-title">HOTSPOT</div>
+                <div className="mfx-screen-intro-title">WIFI / HOTSPOT</div>
                 <div className="mfx-screen-intro-sub">
-                    Tablet control when this Pi has no other network
+                    Join a home network or host a tablet access point
                 </div>
             </div>
             <div className="page-scroll stack">
                 <div className="panel stack">
-                    <h2>WI-FI ACCESS POINT</h2>
+                    <h2>JOIN A NETWORK</h2>
                     <div className="muted">
                         Raspberry Pi boards cannot stay on home Wi-Fi and host a hotspot on the
-                        same radio at once. AUTO starts the PI-MFX network when this Pi has no
-                        ethernet and no other Wi-Fi, so a tablet can join it at a gig. ALWAYS
-                        keeps the hotspot up. OFF leaves Wi-Fi for the home network.
+                        same radio at once. Connecting to a network turns the hotspot OFF. A tablet
+                        using the PI-MFX access point will drop unless it is also on that home
+                        network.
+                    </div>
+                    <div className="muted">
+                        {stationConnected
+                            ? `Connected to ${stationSsid}`
+                            : "Not connected to a Wi-Fi network"}
+                    </div>
+                    {joinBlocked && (
+                        <div className="muted">
+                            Turn the hotspot OFF (or AUTO) before scanning or joining a home network.
+                        </div>
+                    )}
+                    <div className="row">
+                        <button type="button" className="btn" disabled={busy || joinBlocked || !helper} onClick={scan}>
+                            SCAN
+                        </button>
+                        {stationConnected && (
+                            <button type="button" className="btn" disabled={busy || !helper} onClick={() => {
+                                void run(async () => {
+                                    setBusy(true);
+                                    try {
+                                        applyStatus(await engine.client.request("hotspot/wifi-disconnect"));
+                                    } finally {
+                                        setBusy(false);
+                                    }
+                                });
+                            }}>
+                                DISCONNECT
+                            </button>
+                        )}
+                    </div>
+                    {networks.map((network) => (
+                        <button
+                            key={str(network.ssid)}
+                            type="button"
+                            className={`list-item ${bool(network.inUse) ? "selected" : ""}`}
+                            disabled={busy || joinBlocked}
+                            onClick={() => joinNetwork(network)}
+                        >
+                            <div>
+                                <strong>{str(network.ssid)}</strong>
+                                <div className="muted">
+                                    {num(network.signal)}%
+                                    {str(network.security) ? ` · ${str(network.security)}` : " · open"}
+                                    {bool(network.inUse) ? " · connected" : ""}
+                                </div>
+                            </div>
+                            <span className="muted">{bool(network.open) ? "JOIN" : "PASSWORD"}</span>
+                        </button>
+                    ))}
+                </div>
+                <div className="panel stack">
+                    <h2>WI-FI ACCESS POINT</h2>
+                    <div className="muted">
+                        AUTO starts the PI-MFX network when this Pi has no ethernet and no other
+                        Wi-Fi, so a tablet can join it at a gig. ALWAYS keeps the hotspot up. OFF
+                        leaves Wi-Fi for the home network.
                     </div>
                     <div className="row">
                         <button type="button" className={`btn ${mode === "off" ? "btn-active" : ""}`}
@@ -138,6 +250,7 @@ export function HotspotView({
                     <div className="muted">
                         {active ? "Hotspot is on" : "Hotspot is off"}
                         {device ? ` · ${device}` : ""}
+                        {stationConnected ? ` · station ${stationSsid}` : ""}
                         {bool(status.otherConnection) ? " · another network is connected" : ""}
                     </div>
                     {active && (

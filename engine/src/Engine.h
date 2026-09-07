@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -73,6 +74,7 @@ public:
     bool stepBank(int delta, std::string& error);
     bool savePreset(std::string& error);
     bool savePresetAs(const std::string& name, std::string& error);
+    bool createPreset(const std::string& name, std::string& error);
     bool renamePreset(const std::string& presetId, const std::string& name, std::string& error);
     bool deletePreset(const std::string& presetId, std::string& error);
     bool reorderPreset(const std::string& presetId, int newIndex, std::string& error);
@@ -190,6 +192,9 @@ private:
     const Bank* activeBank() const;
     Bank* findBank(const std::string& bankId);
     void syncPresetFromChain();
+    void persistActiveBankUnlocked();
+    void requestBankPersist(bool immediate);
+    void flushBankPersistIfDue();
     bool persistSettings();
     void notify();
     void notifyPerformance();
@@ -245,6 +250,8 @@ private:
     std::thread tunerThread_;
     std::thread housekeepingThread_;
     std::atomic<bool> shuttingDown_{false};
+    std::atomic<bool> bankPersistPending_{false};
+    std::atomic<int64_t> bankPersistDueMs_{0};
 
     std::atomic<unsigned> sampleRate_{48000};
     std::atomic<unsigned> maxFrames_{64};

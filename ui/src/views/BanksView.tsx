@@ -143,6 +143,7 @@ export function BanksView({
     return (
         <div className="split-panes">
             <section className="split-pane" onPointerDown={() => setFocused("banks")}>
+                <div className="split-pane-title">BANKS</div>
                 <div className="split-tools">
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={() => {
                         setEdit({ mode: "cloneBank", title: "Clone Bank", value: defaultCloneName() });
@@ -202,6 +203,7 @@ export function BanksView({
             </section>
 
             <section className="split-pane" onPointerDown={() => setFocused("presets")}>
+                <div className="split-pane-title">PRESETS</div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={!activePreset || busy} onClick={() => {
                         setEdit({ mode: "renamePreset", title: "Rename Preset", value: str(obj(presets.find((item) => str(item.id) === selectedPresetId) ?? activePreset).name) });

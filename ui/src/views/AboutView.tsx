@@ -25,14 +25,6 @@ export function AboutView({ state }: { state: JsonObject }) {
                         </p>
                     </section>
                     <section className="panel stack">
-                        <h2>What Pi-MFX is not</h2>
-                        <p className="muted">
-                            Pi-MFX is not a fork of PiPedal, MODEP, or Guitarix. It contains no
-                            source copied from those projects. The user interface reproduces the
-                            look of the author’s earlier MultiFX front-end using this engine.
-                        </p>
-                    </section>
-                    <section className="panel stack">
                         <h2>Third-party components</h2>
                         <p className="muted">
                             Linked, not pasted: LV2 / lilv (ISC), ALSA and libsndfile (LGPL),

@@ -7,8 +7,8 @@ user, accepts one JSON command per connection, and replies with one JSON object.
 
 It only installs packages whose names look like Debian packages and that look
 like LV2 plugins (name, description, or the suggested set). Repo lines must be
-HTTPS. Hotspot commands only run the installed hotspot.py helper. It never runs
-a shell with user text.
+HTTPS. Hotspot and Wi-Fi commands only run the installed hotspot.py helper. It
+never runs a shell with user text.
 """
 from __future__ import annotations
 
@@ -386,13 +386,29 @@ def handle(request: dict) -> dict:
         apt_get(["update"], timeout=timeout)
         return {"ok": True, "repos": list_repos()}
 
-    if op in {"hotspot-status", "hotspot-apply"}:
+    if op in {"hotspot-status", "hotspot-apply", "wifi-scan", "wifi-connect", "wifi-disconnect"}:
         if not os.path.isfile(HOTSPOT_SCRIPT):
             return {"ok": False, "error": "hotspot support is not installed"}
-        action = "status" if op == "hotspot-status" else "apply"
+        action = {
+            "hotspot-status": "status",
+            "hotspot-apply": "apply",
+            "wifi-scan": "wifi-scan",
+            "wifi-connect": "wifi-connect",
+            "wifi-disconnect": "wifi-disconnect",
+        }[op]
         cmd = ["/usr/bin/python3", HOTSPOT_SCRIPT, action]
         if op == "hotspot-apply":
             cmd.append("--nowait")
+        if op == "wifi-connect":
+            ssid = str(request.get("ssid") or "")
+            password = str(request.get("password") or "")
+            if not re.match(r"^[\x20-\x7e]{1,32}$", ssid):
+                return {"ok": False, "error": "the network name must be 1 to 32 printable characters"}
+            if password and not re.match(r"^[\x20-\x7e]{8,63}$", password):
+                return {"ok": False, "error": "the Wi-Fi password must be 8 to 63 printable characters"}
+            cmd.append(ssid)
+            if password:
+                cmd.append(password)
         result = run(cmd, timeout=timeout)
         raw = (result.stdout or "").strip()
         if not raw:
@@ -407,7 +423,7 @@ def handle(request: dict) -> dict:
         if not isinstance(payload, dict):
             return {"ok": False, "error": "the hotspot helper returned invalid JSON"}
         payload.setdefault("ok", True)
-        if op == "hotspot-apply" and payload.get("error"):
+        if op in {"hotspot-apply", "wifi-connect", "wifi-disconnect"} and payload.get("error"):
             payload["ok"] = False
         return payload
 

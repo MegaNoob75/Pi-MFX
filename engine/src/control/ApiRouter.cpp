@@ -178,6 +178,14 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         }
         return result;
     }
+    if (command == "preset/create") {
+        ok = engine_.createPreset(payload["name"].asString(), error);
+        Json result = Json::object();
+        if (ok) {
+            result.set("presetId", engine_.fullState()["activePresetId"].asString());
+        }
+        return result;
+    }
     if (command == "preset/restoreLive") {
         ok = engine_.restoreLiveFromStoredPreset(error);
         return Json::object();
@@ -388,6 +396,21 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
     if (command == "hotspot/apply") {
         const Json result = plugins_.applyHotspot(payload, error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "hotspot/wifi-scan") {
+        const Json result = plugins_.wifiScan(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "hotspot/wifi-connect") {
+        const Json result = plugins_.wifiConnect(payload, error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "hotspot/wifi-disconnect") {
+        const Json result = plugins_.wifiDisconnect(error);
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }

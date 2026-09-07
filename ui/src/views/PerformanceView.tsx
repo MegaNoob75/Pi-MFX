@@ -677,7 +677,7 @@ export function PerformanceView({
                     }
                     closeMenu();
                     void run(async () => {
-                        const result = await client.request("preset/saveAs", { name: name.trim() });
+                        const result = await client.request("preset/create", { name: name.trim() });
                         const newId = str(result.presetId, str(client.snapshot.state.activePresetId));
                         if (current.canAssign && newId) {
                             await saveAssignments({ ...bankMap(), [current.controlId]: newId });
@@ -925,7 +925,13 @@ export function PerformanceView({
             </div>
 
             {toast && createPortal(
-                <div className="toast toast-ok" role="status">{toast}</div>,
+                <div
+                    className="toast toast-ok"
+                    role="status"
+                    onClick={() => setToast("")}
+                >
+                    {toast}
+                </div>,
                 document.body
             )}
 

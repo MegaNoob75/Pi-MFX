@@ -154,14 +154,19 @@ Bluetooth is left enabled. These do not change audio tuning.
 
 When you take the Pi to a gig with no home network, it can open a Wi-Fi access
 point so a tablet can control Pi-MFX. The installer already sets up the helper;
-turn it on in **Settings → System → Hotspot**.
+turn it on in **Settings → System → WIFI / HOTSPOT**.
 
 - **OFF** — use ethernet or home Wi-Fi
 - **AUTO** — start `PI-MFX` when this Pi has no ethernet and no other Wi-Fi
 - **ALWAYS** — keep the hotspot up (the radio cannot stay on home Wi-Fi too)
 
-Join the network from the tablet, then open `http://10.42.0.1:8080` (or the
-URL shown on the Hotspot page). Menu item **9** reinstalls the helper if needed:
+The same page can scan and join a home Wi-Fi network. Joining a network turns
+the hotspot off, because the Pi radio cannot be an access point and a station
+at once. A tablet using the PI-MFX hotspot will drop unless it is also on that
+home network.
+
+Join the hotspot from the tablet, then open `http://10.42.0.1:8080` (or the
+URL shown on the page). Menu item **9** reinstalls the helper if needed:
 
 ```bash
 sudo bash ./scripts/pimfx.sh hotspot

@@ -200,6 +200,11 @@ void Engine::stop() {
         housekeepingThread_.join();
     }
 
+    {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        persistActiveBankUnlocked();
+    }
+
     midi_.stop();
     if (backend_) {
         backend_->stop();
@@ -576,6 +581,51 @@ void Engine::syncPresetFromChain() {
     }
 }
 
+void Engine::persistActiveBankUnlocked() {
+    Preset* preset = activePreset();
+    if (!preset || preset->activeSnapshot >= 0) {
+        bankPersistPending_.store(false, std::memory_order_relaxed);
+        return;
+    }
+    syncPresetFromChain();
+    Bank* bank = activeBank();
+    if (bank) {
+        storage_.saveBank(*bank);
+    }
+    bankPersistPending_.store(false, std::memory_order_relaxed);
+}
+
+void Engine::requestBankPersist(bool immediate) {
+    Preset* preset = activePreset();
+    if (!preset || preset->activeSnapshot >= 0) {
+        return;
+    }
+    if (immediate) {
+        persistActiveBankUnlocked();
+        return;
+    }
+    const auto due = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() + 400;
+    bankPersistDueMs_.store(due, std::memory_order_relaxed);
+    bankPersistPending_.store(true, std::memory_order_relaxed);
+}
+
+void Engine::flushBankPersistIfDue() {
+    if (!bankPersistPending_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now < bankPersistDueMs_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (!bankPersistPending_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    persistActiveBankUnlocked();
+}
+
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
 
@@ -598,6 +648,7 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
 
     syncPresetFromChain();
+    persistActiveBankUnlocked();
 
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
@@ -697,6 +748,35 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         error = "could not write the bank file";
         return false;
     }
+    settings_.activePresetId = activePresetId_;
+    persistSettings();
+    notify();
+    return true;
+}
+
+bool Engine::createPreset(const std::string& name, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    persistActiveBankUnlocked();
+
+    Bank* bank = activeBank();
+    if (!bank) {
+        error = "no active bank";
+        return false;
+    }
+
+    Preset preset;
+    preset.id = newId("preset");
+    preset.name = name.empty() ? "Untitled" : name;
+    bank->presets.push_back(preset);
+    activePresetId_ = preset.id;
+
+    if (!storage_.saveBank(*bank)) {
+        error = "could not write the bank file";
+        return false;
+    }
+
+    std::string chainError;
+    publishChain(buildChain(bank->presets.back(), chainError));
     settings_.activePresetId = activePresetId_;
     persistSettings();
     notify();
@@ -994,6 +1074,7 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
         error = chainError;
     }
     publishChain(std::move(chain));
+    persistActiveBankUnlocked();
     notify();
     return true;
 }
@@ -1017,6 +1098,7 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
+    persistActiveBankUnlocked();
     notify();
     return true;
 }
@@ -1043,6 +1125,7 @@ bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& er
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
+    persistActiveBankUnlocked();
     notify();
     return true;
 }
@@ -1060,6 +1143,10 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
                 if (EffectSlot* stored = preset->findSlot(slotId)) {
                     stored->enabled = enabled;
                 }
+            }
+            {
+                std::lock_guard<std::mutex> lock(stateMutex_);
+                requestBankPersist(true);
             }
             refreshLeds();
             notifyPerformance();
@@ -1083,6 +1170,7 @@ bool Engine::setEffectName(const std::string& slotId, const std::string& name, s
         return false;
     }
     slot->name = name;
+    persistActiveBankUnlocked();
     notify();
     return true;
 }
@@ -1110,6 +1198,7 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
                 slot.plugin->setControl(port.index, clamped);
             }
+            requestBankPersist(false);
             notifyPerformance();
             return true;
         }
@@ -1150,6 +1239,10 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
                 state.set("properties", properties);
                 stored->state = state;
             }
+        }
+        {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            requestBankPersist(true);
         }
         notify();
         return true;
@@ -1791,6 +1884,7 @@ void Engine::housekeepingThread() {
             runAction(request);
         }
         collectRetiredChains();
+        flushBankPersistIfDue();
 
         // Meters update several times a second; the full state only changes
         // when something actually changes, so it is not sent on a timer.

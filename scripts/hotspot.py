@@ -269,6 +269,113 @@ def engine_port() -> int:
     return int(match.group(1)) if match else 8080
 
 
+def split_nmcli(line: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for ch in line:
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == ":":
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
+def station_ssid() -> str:
+    if hotspot_active():
+        return ""
+    result = nmcli("-t", "-f", "IN-USE,SSID", "device", "wifi")
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        parts = split_nmcli(line)
+        if len(parts) >= 2 and parts[0] == "*" and parts[1]:
+            return parts[1]
+    return ""
+
+
+def wifi_scan() -> dict:
+    nmcli("device", "wifi", "rescan", timeout=20)
+    result = nmcli("-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", timeout=40)
+    networks: list[dict] = []
+    seen: set[str] = set()
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            parts = split_nmcli(line)
+            if len(parts) < 4:
+                continue
+            ssid = parts[1].strip()
+            if not ssid or ssid in seen:
+                continue
+            seen.add(ssid)
+            security = parts[3].strip()
+            signal = 0
+            try:
+                signal = int(parts[2] or "0")
+            except ValueError:
+                signal = 0
+            networks.append({
+                "ssid": ssid,
+                "signal": signal,
+                "security": security,
+                "open": security in {"", "--", "-- "},
+                "inUse": parts[0] == "*",
+            })
+    networks.sort(key=lambda item: item["signal"], reverse=True)
+    status = live_status()
+    status["networks"] = networks
+    if result.returncode != 0:
+        status["error"] = (result.stderr or result.stdout).strip() or "could not scan Wi-Fi"
+    return status
+
+
+def wifi_connect(ssid: str, password: str) -> dict:
+    if not SSID_RE.match(ssid):
+        status = live_status()
+        status["error"] = "the network name must be 1 to 32 printable characters"
+        return status
+    if password and not PSK_RE.match(password):
+        status = live_status()
+        status["error"] = "the Wi-Fi password must be 8 to 63 printable characters"
+        return status
+    down()
+    device = wifi_device()
+    if not device:
+        status = live_status()
+        status["error"] = "no Wi-Fi device was found"
+        return status
+    args = ["device", "wifi", "connect", ssid, "ifname", device]
+    if password:
+        args.extend(["password", password])
+    result = nmcli(*args, timeout=60)
+    status = live_status()
+    if result.returncode != 0:
+        status["error"] = (result.stderr or result.stdout).strip() or "could not join that network"
+    return status
+
+
+def wifi_disconnect() -> dict:
+    device = wifi_device()
+    if device:
+        result = nmcli("device", "disconnect", device, timeout=30)
+        status = live_status()
+        if result.returncode != 0:
+            text = (result.stderr or result.stdout).strip()
+            if "not active" not in text.lower():
+                status["error"] = text or "could not disconnect Wi-Fi"
+        return status
+    status = live_status()
+    status["error"] = "no Wi-Fi device was found"
+    return status
+
+
 def live_status(config: dict | None = None) -> dict:
     config = config or load_config()
     active = hotspot_active()
@@ -277,6 +384,7 @@ def live_status(config: dict | None = None) -> dict:
         address = "10.42.0.1"
     port = engine_port()
     url = f"http://{address}:{port}" if address else ""
+    station = station_ssid()
     return {
         "ok": True,
         "mode": config["mode"],
@@ -287,6 +395,8 @@ def live_status(config: dict | None = None) -> dict:
         "ip": address,
         "url": url,
         "otherConnection": other_connection(),
+        "stationSsid": station,
+        "stationConnected": bool(station),
         "helper": os.path.abspath(__file__),
         "error": "",
     }
@@ -322,7 +432,7 @@ def main() -> int:
     args = [item for item in sys.argv[1:] if item != "--nowait"]
     wait = "--nowait" not in sys.argv[1:]
     action = args[0] if args else "status"
-    if action in {"apply", "up", "down", "uninstall"}:
+    if action in {"apply", "up", "down", "uninstall", "wifi-scan", "wifi-connect", "wifi-disconnect"}:
         with_lock()
     if action == "status":
         return dump(live_status())
@@ -339,7 +449,15 @@ def main() -> int:
     if action == "uninstall":
         uninstall()
         return dump({"ok": True, "error": ""})
-    print("Usage: hotspot.py [status|apply|down|uninstall]", file=sys.stderr)
+    if action == "wifi-scan":
+        return dump(wifi_scan())
+    if action == "wifi-connect":
+        ssid = args[1] if len(args) > 1 else ""
+        password = args[2] if len(args) > 2 else ""
+        return dump(wifi_connect(ssid, password))
+    if action == "wifi-disconnect":
+        return dump(wifi_disconnect())
+    print("Usage: hotspot.py [status|apply|down|uninstall|wifi-scan|wifi-connect|wifi-disconnect]", file=sys.stderr)
     return 2
 
 

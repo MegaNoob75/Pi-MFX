@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, str, objects, type JsonObject } from "../json";
 
@@ -45,8 +45,65 @@ export function PluginsView({
     const [patches, setPatches] = useState<JsonObject[]>([]);
     const [patchSort, setPatchSort] = useState<PatchSort>("downloads");
     const [patchLoaded, setPatchLoaded] = useState(false);
+    const [patchHasMore, setPatchHasMore] = useState(false);
     const [busy, setBusy] = useState("");
     const [recommended, setRecommended] = useState<JsonObject[]>([]);
+    const prefetching = useRef(false);
+    const listEndRef = useRef<HTMLDivElement | null>(null);
+
+    const mergePatches = (current: JsonObject[], incoming: JsonObject[]) => {
+        const seen = new Set(current.map((patch) => num(patch.id)));
+        const next = [...current];
+        for (const item of incoming) {
+            const id = num(item.id);
+            if (!id) {
+                continue;
+            }
+            const index = next.findIndex((patch) => num(patch.id) === id);
+            if (index >= 0) {
+                next[index] = item;
+            } else if (!seen.has(id)) {
+                seen.add(id);
+                next.push(item);
+            }
+        }
+        return next;
+    };
+
+    const applyPatchPage = (result: JsonObject, replace: boolean) => {
+        const items = objects(result.items);
+        setPatches((list) => (replace || bool(result.cached) ? items : mergePatches(list, items)));
+        setPatchHasMore(bool(result.hasMore));
+        return result;
+    };
+
+    const searchPatchPage = (page: number, refresh: boolean) => engine.client.request("plugins/patchstorage/search", {
+        query: "",
+        page,
+        perPage: 100,
+        all: false,
+        refresh
+    });
+
+    const prefetchRemaining = async (startPage: number, hasMore: boolean) => {
+        if (prefetching.current || !hasMore || startPage < 2) {
+            return;
+        }
+        prefetching.current = true;
+        try {
+            let page = startPage;
+            let more: boolean = hasMore;
+            while (more && page > 0) {
+                const next = await searchPatchPage(page, true);
+                applyPatchPage(next, false);
+                more = bool(next.hasMore);
+                page = num(next.nextPage, 0);
+            }
+        } finally {
+            prefetching.current = false;
+            setPatchHasMore(false);
+        }
+    };
 
     const refreshStatus = async () => {
         const next = await engine.client.request("plugins/status");
@@ -104,18 +161,25 @@ export function PluginsView({
     const helper = bool(status.helperAvailable);
     const https = bool(status.httpsAvailable, true);
 
-    const loadPatchStorage = () => {
+    const loadPatchStorage = (forceReload = false) => {
         if (!https) {
             return;
         }
-        work("Loading PatchStorage…", async () => {
+        work(forceReload ? "Reloading PatchStorage…" : "Loading PatchStorage…", async () => {
             try {
-                const next = await engine.client.request("plugins/patchstorage/search", {
-                    query: "",
-                    perPage: 100,
-                    all: true
-                });
-                setPatches(objects(next.items));
+                const first = await searchPatchPage(1, forceReload);
+                applyPatchPage(first, true);
+                const stale = bool(first.stale);
+                const cached = bool(first.cached);
+                if (cached && (forceReload || stale)) {
+                    const live = await searchPatchPage(1, true);
+                    applyPatchPage(live, true);
+                    await prefetchRemaining(num(live.nextPage, 2), bool(live.hasMore));
+                    return;
+                }
+                if (!cached || bool(first.hasMore)) {
+                    await prefetchRemaining(num(first.nextPage, 2), bool(first.hasMore));
+                }
             } finally {
                 setPatchLoaded(true);
             }
@@ -126,8 +190,26 @@ export function PluginsView({
         if (tab !== "patchstorage" || !https || patchLoaded) {
             return;
         }
-        loadPatchStorage();
+        loadPatchStorage(false);
     }, [tab, https, patchLoaded]);
+
+    useEffect(() => {
+        if (tab !== "patchstorage" || !patchHasMore) {
+            return;
+        }
+        const sentinel = listEndRef.current;
+        if (!sentinel) {
+            return;
+        }
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting) && !prefetching.current && patchHasMore) {
+                const page = Math.floor(patches.length / 100) + 1;
+                void prefetchRemaining(page, true);
+            }
+        }, { rootMargin: "240px" });
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, [tab, patchHasMore, patches.length]);
 
     const visiblePatches = useMemo(() => {
         const needle = patchQuery.trim().toLowerCase();
@@ -276,9 +358,11 @@ export function PluginsView({
                         sort={patchSort}
                         patches={visiblePatches}
                         total={patches.length}
+                        hasMore={patchHasMore}
+                        listEndRef={listEndRef}
                         onQuery={setPatchQuery}
                         onSort={setPatchSort}
-                        onReload={loadPatchStorage}
+                        onReload={() => loadPatchStorage(true)}
                         onInstall={(patchId, title) => work(`Installing ${title}…`, async () => {
                             await engine.client.request("plugins/patchstorage/install", { patchId });
                             await refreshStatus();
@@ -348,7 +432,7 @@ function InstalledTab({
                 )}
             </div>
             <div className="panel stack">
-                <h2>PATCHSTORAGE / USER BUNDLES</h2>
+                <h2>PATCHSTORAGE</h2>
                 {bundles.map((bundle) => {
                     const directories = arr(bundle.directories).map((item) => String(item));
                     const names = directories.length ? directories : [str(bundle.directory)];
@@ -578,6 +662,8 @@ function PatchStorageTab({
     sort,
     patches,
     total,
+    hasMore,
+    listEndRef,
     onQuery,
     onSort,
     onReload,
@@ -588,6 +674,8 @@ function PatchStorageTab({
     sort: PatchSort;
     patches: JsonObject[];
     total: number;
+    hasMore: boolean;
+    listEndRef: { current: HTMLDivElement | null };
     onQuery: (value: string) => void;
     onSort: (value: PatchSort) => void;
     onReload: () => void;
@@ -598,9 +686,9 @@ function PatchStorageTab({
             <div className="panel stack">
                 <h2>PATCHSTORAGE</h2>
                 <div className="muted">
-                    LV2 plugins built for Raspberry Pi 64-bit (rpi-aarch64). Opening this page lists every
-                    matching plugin. Pi-MFX downloads a file you asked for onto this Pi. Each plugin keeps
-                    its own license.
+                    LV2 plugins built for Raspberry Pi 64-bit (rpi-aarch64). The first page
+                    opens immediately; more plugins load as you scroll. Pi-MFX downloads a file
+                    you asked for onto this Pi. Each plugin keeps its own license.
                 </div>
                 {!https && <div className="danger">This build has no HTTPS support, so PatchStorage is unavailable.</div>}
                 <div className="row">
@@ -631,7 +719,7 @@ function PatchStorageTab({
                         ? "No plugins loaded yet."
                         : query.trim()
                             ? `${patches.length} of ${total} plugins`
-                            : `${total} plugins`}
+                            : `${total} plugins${hasMore ? " so far" : ""}`}
                 </div>
                 {patches.map((patch) => (
                     <div className="list-item" key={num(patch.id)}>
@@ -661,6 +749,8 @@ function PatchStorageTab({
                 {total > 0 && patches.length === 0 && (
                     <div className="muted">No plugins match that filter.</div>
                 )}
+                {hasMore && <div className="muted">Loading more…</div>}
+                <div ref={listEndRef} />
             </div>
         </>
     );

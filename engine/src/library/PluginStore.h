@@ -41,11 +41,16 @@ public:
     Json hotspotStatus(std::string& error);
     Json hotspotConfig(std::string& error);
     Json applyHotspot(const Json& payload, std::string& error);
+    Json wifiScan(std::string& error);
+    Json wifiConnect(const Json& payload, std::string& error);
+    Json wifiDisconnect(std::string& error);
 
 private:
     Json helperCall(const std::string& op, const Json& args, std::string& error, int timeoutSeconds);
     bool helperPing();
     bool resolvePatchstorageIds(std::string& error);
+    Json loadPatchstorageCache() const;
+    void savePatchstorageCache(const Json& items, bool complete);
     Json httpsGet(const std::string& url, std::string& error, int timeoutSeconds = 30);
     bool httpsDownload(const std::string& url, const std::string& destPath, std::string& error);
     bool extractArchive(const std::string& archive, const std::string& dest, std::string& error);

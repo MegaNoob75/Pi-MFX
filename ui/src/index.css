@@ -167,6 +167,25 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     box-shadow: var(--mfx-surface-header-shadow, 0 1px 0 var(--mfx-border), 0 5px 18px rgba(0, 0, 0, 0.35));
 }
 
+.shell-mid {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+}
+
+.shell-hint {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--mfx-muted);
+    font-size: 0.62rem;
+    letter-spacing: 0.03em;
+    line-height: 1.2;
+}
+
 .shell-title {
     min-width: 0;
     overflow: hidden;
@@ -492,6 +511,16 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     border-right: 1px solid var(--mfx-border);
 }
 
+.split-pane-title {
+    flex: 0 0 auto;
+    padding: 8px 6px 2px;
+    color: var(--mfx-purple-light);
+    font-size: 0.72rem;
+    font-weight: 900;
+    letter-spacing: 0.12em;
+    text-align: center;
+}
+
 .split-tools,
 .split-toolbar {
     display: flex;
@@ -586,6 +615,61 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     background: var(--mfx-panel-alt);
 }
 
+.editor-screen.editor-with-library {
+    flex-direction: row;
+}
+
+.editor-library {
+    flex: 0 0 min(240px, 34vw);
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    border-right: 1px solid var(--mfx-border);
+    background: var(--mfx-panel);
+    padding: 8px;
+}
+
+.editor-library-bank {
+    margin: 10px 4px 4px;
+    color: var(--mfx-purple-light);
+    font-size: 0.68rem;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+}
+
+.editor-library-bank:first-child {
+    margin-top: 0;
+}
+
+.editor-library-row {
+    display: block;
+    width: 100%;
+    min-height: 40px;
+    margin-bottom: 4px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--mfx-border);
+    background: var(--mfx-panel-alt);
+    color: inherit;
+    font: inherit;
+    font-weight: 800;
+    text-align: left;
+}
+
+.editor-library-row.selected {
+    border-color: var(--mfx-cyan);
+    background: var(--mfx-cyan-surface);
+    color: var(--mfx-cyan-text);
+}
+
+.editor-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 .editor-toolbar {
     flex: 0 0 auto;
     display: flex;
@@ -597,9 +681,35 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     background: var(--mfx-panel);
 }
 
+.editor-toolbar.editor-chain-bar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    flex-wrap: nowrap;
+}
+
+.editor-preset-name {
+    justify-self: center;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: var(--mfx-purple-light);
+    font: inherit;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+}
+
 .editor-toolbar-copy {
     flex: 1 1 180px;
     min-width: 0;
+}
+
+.editor-chain-bar .editor-toolbar-copy {
+    grid-column: 1 / -1;
 }
 
 .editor-toolbar-copy strong {
@@ -1127,7 +1237,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 }
 
 .toast-ok {
-    top: calc(8px * var(--mfx-ui-scale, 1));
+    top: calc(var(--mfx-header-height) + 8px);
     bottom: auto;
     border-color: var(--mfx-cyan);
     background: var(--mfx-cyan-surface);
@@ -1372,15 +1482,20 @@ button.list-item {
 .toast {
     position: fixed;
     left: 50%;
-    bottom: 18px;
+    top: calc(var(--mfx-header-height) + 8px);
+    bottom: auto;
     transform: translateX(-50%);
     z-index: 50;
-    max-width: min(520px, calc(100vw - 24px));
-    padding: 10px 14px;
+    width: max-content;
+    max-width: min(36rem, calc(100vw - 24px));
+    padding: 8px 12px;
     border-radius: 10px;
     border: 1px solid var(--mfx-danger);
     background: #3b1520;
     color: var(--mfx-text);
+    cursor: pointer;
+    text-align: center;
+    line-height: 1.35;
 }
 
 .dialog-backdrop {
