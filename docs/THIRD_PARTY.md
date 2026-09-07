@@ -1,37 +1,41 @@
 # Third-party components and originality policy
 
 This document explains what Pi-MFX depends on, how it depends on it, and the
-rules contributors must follow. [`../NOTICE.md`](../NOTICE.md) is the short
+rules contributors must follow. `[../NOTICE.md](../NOTICE.md)` is the short
 credit list; this is the reasoning behind it. Verbatim license texts are in
-[`../licenses/`](../licenses/).
+`[../licenses/](../licenses/)`.
 
 ## 1. Originality rules
 
 Pi-MFX is MIT-licensed original work. These rules are not optional.
 
 1. **Do not copy source from another project.** Not from PiPedal, MODEP,
-   mod-ui, mod-host, Guitarix, or any earlier MultiFX firmware or bridge script.
+  mod-ui, mod-host, Guitarix, or any earlier MultiFX firmware or bridge script.
    Not "adapted", not "with the variables renamed". This includes build files,
    systemd units, udev rules, ALSA configs, and JSON schemas.
 2. **Reimplementing observable behaviour is fine.** Interoperable file formats,
-   published protocols, and standard APIs (LV2, ALSA, MIDI, HTTP, WebSocket,
+  published protocols, and standard APIs (LV2, ALSA, MIDI, HTTP, WebSocket,
    TONE3000's REST API) may be implemented from their specifications.
 3. **The UI is our own design.** Pi-MFX reproduces the look and interaction of
-   the author's earlier MultiFX front-end because that design belongs to this
+  the author's earlier MultiFX front-end because that design belongs to this
    project's author. It is re-implemented as new TypeScript against the Pi-MFX
    API — no files are copied across, and no screen that belonged to PiPedal is
    carried over.
 4. **Link, do not vendor.** Dependencies are consumed as system libraries or
-   package-manager packages. If something genuinely must be vendored, it goes in
+  package-manager packages. If something genuinely must be vendored, it goes in
    `third_party/<name>/` with its unmodified license file and a NOTICE row.
 5. **Ship no content you do not own.** No factory presets lifted from another
-   product, no bundled NAM captures, no bundled impulse responses, no vendor
+  product, no bundled NAM captures, no bundled impulse responses, no vendor
    device-tree overlays.
 6. **Adding a dependency is a licensing decision.** New dependency means: a file
-   in `licenses/`, a row in `NOTICE.md`, and a check that the license is
+  in `licenses/`, a row in `NOTICE.md`, and a check that the license is
    compatible with MIT distribution.
 
+
+
 ## 2. What Pi-MFX links against
+
+
 
 ### LV2 (ISC)
 
@@ -70,16 +74,19 @@ The browser UI. Standard tooling, consumed through npm, listed in
 `ui/package.json`. Transitive npm licenses are recorded by `npm ls --json` at
 release time.
 
-### ESP-IDF / Arduino-ESP32 (Apache-2.0) and TinyUSB (MIT)
+### ESP-IDF / Arduino-ESP32 (Apache-2.0) and Control Surface (GPL-3.0)
 
-The optional controller firmware toolchain. Pi-MFX distributes firmware
-**source** only; the framework comes from the user's PlatformIO installation.
+The optional controller firmware toolchain. USB MIDI uses the Control Surface
+library (same transport as the earlier MultiFX sketch). Pi-MFX distributes
+firmware **source** only; Arduino IDE supplies the ESP32 core and libraries.
 
 ## 3. Services, formats, and hardware named in Pi-MFX
 
+
+
 ### TONE3000
 
-Pi-MFX talks to the published TONE3000 API at <https://www.tone3000.com/api> so
+Pi-MFX talks to the published TONE3000 API at [https://www.tone3000.com/api](https://www.tone3000.com/api) so
 a signed-in user can browse and download **their own** models and impulse
 responses. The client is written from the API documentation. Pi-MFX does not
 bundle, mirror, cache for redistribution, or re-host TONE3000 content, and it
@@ -114,7 +121,7 @@ service names or install paths, and does not depend on either being installed.
 Plugins are independent works, frequently GPL-licensed, that the user installs.
 Pi-MFX loads them at runtime through the LV2 ABI, exactly as any LV2 host does.
 It does not include, modify, statically link, or relicense them, and it ships no
-plugin binaries. See [`PLUGIN_LICENSES.md`](PLUGIN_LICENSES.md).
+plugin binaries. See `[PLUGIN_LICENSES.md](PLUGIN_LICENSES.md)`.
 
 ## 5. Release checklist
 
@@ -124,5 +131,7 @@ Before tagging a release:
 - [ ] `NOTICE.md` matches `licenses/`.
 - [ ] `npm ls --json` reviewed for a license that MIT distribution cannot carry.
 - [ ] No plugin binaries, NAM models, IR files, or third-party presets in the
-      tree or in the release artifact.
+  ```
+  tree or in the release artifact.
+  ```
 - [ ] No file in the tree originates from another project's repository.

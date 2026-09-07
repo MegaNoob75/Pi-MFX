@@ -1,7 +1,7 @@
 ESP-IDF and Arduino-ESP32
 Used by Pi-MFX: build toolchain and runtime for the optional ESP32-S3 foot
 controller firmware. Pi-MFX ships firmware source only; the framework itself is
-supplied by the user's PlatformIO or ESP-IDF installation.
+supplied by the user's Arduino IDE (esp32 core) installation.
 Upstream: https://github.com/espressif/esp-idf
           https://github.com/espressif/arduino-esp32
 

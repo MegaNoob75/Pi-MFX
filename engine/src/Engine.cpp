@@ -18,6 +18,25 @@ float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
 }
 
+/// Performance stores switch → preset as { bankId: { controlId: presetId } }.
+/// MIDI selectPreset used to ignore that map and only read binding.presetId,
+/// which Learn never fills, so learned footswitches did nothing.
+std::string assignedPresetForControl(const ControllerConfig& config,
+                                     const std::string& bankId,
+                                     const std::string& controlId) {
+    if (bankId.empty() || controlId.empty() || !config.presetAssignments.isObject()) {
+        return {};
+    }
+    if (!config.presetAssignments.has(bankId)) {
+        return {};
+    }
+    const Json& bankMap = config.presetAssignments[bankId];
+    if (!bankMap.isObject() || !bankMap.has(controlId)) {
+        return {};
+    }
+    return bankMap[controlId].asString();
+}
+
 const char* kNoteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
 TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate) {
@@ -1513,7 +1532,13 @@ void Engine::runAction(const ActionRequest& request) {
     } else if (request.action == "bankDown") {
         stepBank(-1, error);
     } else if (request.action == "selectPreset") {
-        selectPreset(binding.bankId, binding.presetId, error);
+        const ControllerConfig config = controller_.config();
+        std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
+        std::string presetId = binding.presetId;
+        if (presetId.empty()) {
+            presetId = assignedPresetForControl(config, bankId, request.controlId);
+        }
+        selectPreset(bankId, presetId, error);
     } else if (request.action == "selectSnapshot") {
         selectSnapshot(binding.snapshotId, error);
     } else if (request.action == "toggleEffect") {
@@ -1611,7 +1636,11 @@ void Engine::refreshLeds() {
                     }
                 }
             } else if (control.binding.action == "selectPreset") {
-                state.on = control.binding.presetId == activePresetId_;
+                std::string presetId = control.binding.presetId;
+                if (presetId.empty()) {
+                    presetId = assignedPresetForControl(config, activeBankId_, control.id);
+                }
+                state.on = !presetId.empty() && presetId == activePresetId_;
             } else if (control.binding.action == "bypassAll") {
                 state.on = bypassAll_.load(std::memory_order_relaxed);
             }

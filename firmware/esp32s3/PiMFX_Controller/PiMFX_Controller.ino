@@ -5,19 +5,22 @@
  *   identity request 0x01 / reply 0x10, set-LED 0x02, CC for switches and pots.
  * Flash this sketch, not the earlier MultiFX controller firmware.
  *
- * Arduino IDE needs these libraries installed (PlatformIO already lists them):
- *   Adafruit TinyUSB Library
+ * USB MIDI uses the same Control Surface transport as the old MultiFX .ino.
+ * The SysEx and Learn protocol are Pi-MFX, not MultiFX.
+ *
+ * Arduino IDE needs these libraries installed:
+ *   Control Surface (by Pieter P)
  *   Adafruit NeoPixel
  * Tools → USB Mode must be USB-OTG (TinyUSB).
  */
 
-#include "Adafruit_TinyUSB.h"
+#include <Control_Surface.h>
 #include <Adafruit_NeoPixel.h>
 
 #include "Pins.h"
 #include "Protocol.h"
 
-Adafruit_USBD_MIDI usbMidi;
+USBMIDI_Interface midi;
 Adafruit_NeoPixel pixels(pimfx::kLedCount, pimfx::kLedPin, NEO_GRB + NEO_KHZ800);
 
 namespace {
@@ -36,40 +39,21 @@ bool encoderButtonStable = false;
 bool encoderButtonRaw = false;
 uint32_t encoderButtonChangedAt = 0;
 
-uint8_t sysexIn[128];
-size_t sysexInLength = 0;
-bool sysexInActive = false;
 uint32_t lastIdentityAt = 0;
 uint8_t identityBurstsLeft = 8;
 
-void sendPacket(uint8_t cin, uint8_t b0, uint8_t b1 = 0, uint8_t b2 = 0) {
-    uint8_t packet[4] = {static_cast<uint8_t>(cin & 0x0F), b0, b1, b2};
-    usbMidi.writePacket(packet);
-}
-
 void sendControlChange(uint8_t cc, uint8_t value) {
-    sendPacket(0x0B, static_cast<uint8_t>(0xB0 | pimfx::kMidiChannel), cc, value & 0x7F);
+    midi.sendControlChange({cc, Channel_1}, value & 0x7F);
 }
 
-void sendSysEx(const uint8_t* data, size_t length) {
-    size_t offset = 0;
-    while (offset < length) {
-        const size_t remain = length - offset;
-        if (remain > 3) {
-            sendPacket(0x04, data[offset], data[offset + 1], data[offset + 2]);
-            offset += 3;
-        } else if (remain == 3) {
-            sendPacket(0x07, data[offset], data[offset + 1], data[offset + 2]);
-            offset += 3;
-        } else if (remain == 2) {
-            sendPacket(0x06, data[offset], data[offset + 1], 0);
-            offset += 2;
-        } else {
-            sendPacket(0x05, data[offset], 0, 0);
-            offset += 1;
-        }
+void sendIdentityReply();
+void handleIncomingSysEx(SysExMessage sysex);
+
+struct PiMfxMidiCallbacks : MIDI_Callbacks {
+    void onSysExMessage(MIDI_Interface &, SysExMessage sysex) override {
+        handleIncomingSysEx(sysex);
     }
-}
+} midiCallbacks;
 
 void sendIdentityReply() {
     const uint8_t message[] = {
@@ -87,7 +71,7 @@ void sendIdentityReply() {
         1,
         pimfx::kSysExEnd
     };
-    sendSysEx(message, sizeof(message));
+    midi.sendSysEx(message);
     lastIdentityAt = millis();
 }
 
@@ -117,60 +101,31 @@ void applyLedMessage(const uint8_t* payload, size_t length) {
     pixels.show();
 }
 
-bool isOurs(const uint8_t* message, size_t length) {
-    return length >= 6
-        && message[0] == pimfx::kSysExStart
-        && message[1] == pimfx::kManufacturer
-        && message[2] == pimfx::kSignatureA
-        && message[3] == pimfx::kSignatureB
-        && message[length - 1] == pimfx::kSysExEnd;
-}
-
-void handleSysEx(const uint8_t* message, size_t length) {
-    if (!isOurs(message, length)) {
+void handleIncomingSysEx(SysExMessage sysex) {
+    const uint8_t* data = sysex.data;
+    uint16_t start = 0;
+    uint16_t end = sysex.length;
+    if (end > 0 && data[0] == pimfx::kSysExStart) {
+        start = 1;
+    }
+    if (end > start && data[end - 1] == pimfx::kSysExEnd) {
+        --end;
+    }
+    if (end - start < 4) {
         return;
     }
-    const uint8_t command = message[4];
+    if (data[start] != pimfx::kManufacturer
+        || data[start + 1] != pimfx::kSignatureA
+        || data[start + 2] != pimfx::kSignatureB) {
+        return;
+    }
+    const uint8_t command = data[start + 3];
     if (command == pimfx::kCommandIdentityRequest) {
         sendIdentityReply();
         return;
     }
     if (command == pimfx::kCommandSetLeds) {
-        applyLedMessage(message + 5, length - 6);
-    }
-}
-
-void takeMidiByte(uint8_t byte) {
-    if (byte == pimfx::kSysExStart) {
-        sysexInActive = true;
-        sysexInLength = 0;
-        sysexIn[sysexInLength++] = byte;
-        return;
-    }
-    if (!sysexInActive) {
-        return;
-    }
-    if (sysexInLength < sizeof(sysexIn)) {
-        sysexIn[sysexInLength++] = byte;
-    }
-    if (byte == pimfx::kSysExEnd) {
-        handleSysEx(sysexIn, sysexInLength);
-        sysexInActive = false;
-        sysexInLength = 0;
-    }
-}
-
-void pollUsbMidi() {
-    uint8_t packet[4];
-    while (usbMidi.readPacket(packet)) {
-        const uint8_t cin = packet[0] & 0x0F;
-        const uint8_t bytes = (cin == 0x5 || cin == 0xF) ? 1
-            : (cin == 0x2 || cin == 0x6 || cin == 0xC || cin == 0xD) ? 2
-            : (cin == 0x0 || cin == 0x1) ? 0
-            : 3;
-        for (uint8_t i = 0; i < bytes; ++i) {
-            takeMidiByte(packet[1 + i]);
-        }
+        applyLedMessage(data + start + 4, static_cast<size_t>(end - start - 4));
     }
 }
 
@@ -214,15 +169,15 @@ void pollPots() {
         : (raw << pimfx::kAnalogFilterShift);
     analogPrimed[i] = true;
     const uint32_t filtered = analogAccum[i] >> pimfx::kAnalogFilterShift;
-    const uint8_t midi = static_cast<uint8_t>((filtered * 127UL) / 4095UL);
-    analogFiltered[i] = midi;
-    const int delta = static_cast<int>(midi) - static_cast<int>(analogLastSent[i]);
+    const uint8_t midiValue = static_cast<uint8_t>((filtered * 127UL) / 4095UL);
+    analogFiltered[i] = midiValue;
+    const int delta = static_cast<int>(midiValue) - static_cast<int>(analogLastSent[i]);
     if (delta > static_cast<int>(pimfx::kAnalogHysteresis)
         || delta < -static_cast<int>(pimfx::kAnalogHysteresis)
-        || (midi == 0 && analogLastSent[i] != 0)
-        || (midi == 127 && analogLastSent[i] != 127)) {
-        analogLastSent[i] = midi;
-        sendControlChange(pimfx::kPots[i].cc, midi);
+        || (midiValue == 0 && analogLastSent[i] != 0)
+        || (midiValue == 127 && analogLastSent[i] != 127)) {
+        analogLastSent[i] = midiValue;
+        sendControlChange(pimfx::kPots[i].cc, midiValue);
     }
 }
 
@@ -255,17 +210,8 @@ void pollEncoder() {
 
 void setup() {
     analogReadResolution(12);
-
-    TinyUSBDevice.setManufacturerDescriptor("Pi-MFX");
-    TinyUSBDevice.setProductDescriptor("Pi-MFX Controller");
-    usbMidi.begin();
-#if defined(ARDUINO_ARCH_ESP32)
-    if (TinyUSBDevice.mounted()) {
-        TinyUSBDevice.detach();
-        delay(10);
-        TinyUSBDevice.attach();
-    }
-#endif
+    Control_Surface.begin();
+    midi.setCallbacks(midiCallbacks);
 
     for (uint8_t i = 0; i < pimfx::kSwitchCount; ++i) {
         setupDigital(pimfx::kSwitches[i].pin);
@@ -286,13 +232,13 @@ void setup() {
 }
 
 void loop() {
-    pollUsbMidi();
+    Control_Surface.loop();
     pollSwitches();
     pollPots();
     pollEncoder();
 
     const uint32_t now = millis();
-    if (TinyUSBDevice.mounted() && identityBurstsLeft > 0 && now - lastIdentityAt >= 400) {
+    if (identityBurstsLeft > 0 && now - lastIdentityAt >= 400) {
         sendIdentityReply();
         --identityBurstsLeft;
     }

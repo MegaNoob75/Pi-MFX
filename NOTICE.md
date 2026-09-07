@@ -42,7 +42,7 @@ screens, Pi-MFX ships its own replacements instead.
 | libcurl | HTTPS for TONE3000 and update checks | curl license (MIT/X derivative) — see [`licenses/curl-MIT.txt`](licenses/curl-MIT.txt) |
 | React, Vite, TypeScript | Browser UI | MIT — see [`licenses/react-MIT.txt`](licenses/react-MIT.txt), [`licenses/vite-MIT.txt`](licenses/vite-MIT.txt), [`licenses/typescript-Apache-2.0.txt`](licenses/typescript-Apache-2.0.txt) |
 | ESP-IDF / Arduino-ESP32 | Controller firmware toolchain | Apache-2.0 — see [`licenses/esp-idf-Apache-2.0.txt`](licenses/esp-idf-Apache-2.0.txt) |
-| TinyUSB | USB MIDI on ESP32-S3 | MIT — see [`licenses/tinyusb-MIT.txt`](licenses/tinyusb-MIT.txt) |
+| Control Surface | USB MIDI on the ESP32-S3 floorboard | GPL-3.0, compiled by the user in Arduino IDE |
 
 Pi-MFX links against these libraries as installed by the operating system or the
 firmware toolchain. It does not vendor their source. If a small header ever has

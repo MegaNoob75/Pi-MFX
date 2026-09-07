@@ -437,7 +437,7 @@ function ControllerSettings({
                                         {id}
                                         {bool(port.input) ? " · in" : ""}
                                         {bool(port.output) ? " · out" : ""}
-                                        {bool(port.looksLikeController) ? " · looks like a Pi-MFX board" : ""}
+                                        {bool(port.looksLikeController) ? " · looks like an ESP32 board" : ""}
                                     </div>
                                 </div>
                                 <span className="muted">{selected ? "SELECTED" : "SELECT"}</span>

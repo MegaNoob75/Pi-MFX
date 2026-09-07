@@ -13,10 +13,7 @@ node_modules/
 ui/dist/
 *.tsbuildinfo
 
-# PlatformIO / ESP32
-.pio/
-.pioenvs/
-.piolibdeps/
+# Arduino / ESP32
 firmware/**/build/
 
 # Editors / OS

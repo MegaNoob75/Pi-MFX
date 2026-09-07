@@ -25,6 +25,7 @@ bool nameLooksLikeController(const std::string& name) {
     return lower.find("pi-mfx") != std::string::npos
         || lower.find("pimfx") != std::string::npos
         || lower.find("esp32") != std::string::npos
+        || lower.find("espressif") != std::string::npos
         || lower.find("tinyusb") != std::string::npos;
 }
 

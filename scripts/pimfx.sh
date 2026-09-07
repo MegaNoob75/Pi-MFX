@@ -43,6 +43,7 @@ Actions:
   display-refresh  Re-apply Chromium flags and hide the system keyboard
   display-remove   Undo the touchscreen session
   status           Branch, service, audio cards
+  reboot           Reboot the Pi
   remove           Stop the service and undo OS changes
 
 Options:
@@ -103,7 +104,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|install|update|rebuild|display|display-refresh|display-remove|status|remove) ;;
+        menu|install|update|rebuild|display|display-refresh|display-remove|status|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -388,6 +389,13 @@ do_complete() {
     configure_touchscreen
 }
 
+do_reboot() {
+    if confirm "Reboot this Pi now?"; then
+        log "Rebooting"
+        systemctl reboot
+    fi
+}
+
 show_menu() {
     local choice
     while true; do
@@ -401,10 +409,11 @@ show_menu() {
   6) Remove touchscreen display
   7) Status
   8) Remove Pi-MFX
-  9) Exit
+  9) Reboot now
+  10) Exit
 MENU
         echo
-        read -r -p "Choose [1-9]: " choice
+        read -r -p "Choose [1-10]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
@@ -420,8 +429,9 @@ MENU
                 fi
                 do_remove confirmed || warn "remove did not finish"
                 ;;
-            9|q|Q) return 0 ;;
-            *) warn "pick a number from 1 to 9"; pause_for_menu; continue ;;
+            9) do_reboot ;;
+            10|q|Q) return 0 ;;
+            *) warn "pick a number from 1 to 10"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -445,6 +455,7 @@ main() {
         display-refresh) refresh_touchscreen_session ;;
         display-remove) remove_touchscreen ;;
         remove) do_remove ;;
+        reboot) do_reboot ;;
     esac
     [[ "$ACTION" == "menu" ]] || offer_reboot
 }

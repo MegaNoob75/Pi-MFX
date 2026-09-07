@@ -17,34 +17,28 @@ Protocol details: [CONTROLLER_PROTOCOL.md](CONTROLLER_PROTOCOL.md).
 - Footswitches to ground (active-low; firmware enables pull-ups)
 - Optional pots between 3.3 V and GND
 - Optional WS2812 / NeoPixel strip on GPIO 48
-- [PlatformIO](https://platformio.org/) **or** Arduino IDE 2 with the Espressif
-  **esp32** core, **Adafruit TinyUSB**, and **Adafruit NeoPixel**
-
-## Flash with PlatformIO
-
-On the Windows PC, from the Pi-MFX clone:
-
-```text
-cd firmware/esp32s3
-pio run -t upload
-```
-
-If the serial port does not appear: hold **BOOT**, tap **RST**, release **BOOT**.
+- Arduino IDE 2 with the Espressif **esp32** core, **Control Surface**
+  (by Pieter P), and **Adafruit NeoPixel**
 
 ## Flash with Arduino IDE
 
-The sketch will not compile until both Adafruit libraries are installed.
-PlatformIO pulls them automatically; Arduino IDE does not.
+The sketch will not compile until both libraries are installed.
 
 1. Open `firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino`.
 2. Board: **ESP32S3 Dev Module**.
 3. USB Mode: **USB-OTG (TinyUSB)**. USB CDC on Boot: **Disabled**.
+   Hardware CDC and JTAG makes a serial port, not MIDI.
 4. Sketch → Include Library → Manage Libraries, then install:
-   - **Adafruit TinyUSB Library** (by Adafruit)
+   - **Control Surface** (by Pieter P) — same USB MIDI stack as the old MultiFX sketch
    - **Adafruit NeoPixel** (by Adafruit)
 5. Upload.
 
-Windows and the Pi should show a MIDI device named **Pi-MFX Controller**.
+If the serial port does not appear: hold **BOOT**, tap **RST**, release **BOOT**.
+
+Windows and the Pi should list a MIDI device named something like **ESP32**,
+**ESP32S3**, or **TinyUSB** — the same kind of name the MultiFX `.ino` used.
+If they show a COM / “USB JTAG” serial device instead, USB Mode was wrong:
+re-select USB-OTG (TinyUSB) and upload again, then unplug and replug.
 
 ## Default wiring (ESP32-S3 DevKitC-1)
 
@@ -60,7 +54,8 @@ Edit `Pins.h` if your enclosure uses different GPIOs, then flash again.
 ## On the Pi
 
 1. Plug the ESP32 into the Pi.
-2. Settings → Controller → Hardware Setup: enable the floorboard and pick
-   **Pi-MFX Controller** (or leave the port blank and let it match by name).
+2. Settings → Controller → Hardware Setup: pick the **ESP32** MIDI device
+   (not Midi Through) and press SELECT. Hardware buttons stay dead until
+   a device is selected.
 3. Add a switch or pot, press **LEARN**, then use the matching control.
 4. Assign presets by holding a Performance tile — not from Hardware Setup.

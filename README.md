@@ -69,7 +69,7 @@ instructions, including audio HAT overlays and kiosk mode, are in
 | --- | --- |
 | `engine/` | C++17 audio engine: ALSA backend, LV2 host, control server |
 | `ui/` | Vite + React browser UI |
-| `firmware/` | ESP32-S3 USB-MIDI controller firmware (Arduino / PlatformIO) |
+| `firmware/` | ESP32-S3 USB-MIDI controller firmware (Arduino IDE) |
 | `scripts/` | `pimfx.sh` menu, install / update / uninstall, OS hardening |
 | `systemd/` | `pimfx.service` |
 | `docs/` | Install, low latency, DIY controller, protocol, licenses |
