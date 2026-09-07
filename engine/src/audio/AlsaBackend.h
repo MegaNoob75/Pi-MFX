@@ -52,7 +52,6 @@ private:
                     const std::string& device,
                     bool capture,
                     AudioSettings& settings,
-                    bool matchExact,
                     std::string& error);
 
     void closeStream(Stream& stream);
@@ -68,7 +67,6 @@ private:
 
     Stream capture_;
     Stream playback_;
-    bool streamsLinked_ = false;
     int fifoPriority_ = 80;
 
     AudioProcessor* processor_ = nullptr;

@@ -180,13 +180,11 @@ bool AlsaBackend::openStream(Stream& stream,
                              const std::string& device,
                              bool capture,
                              AudioSettings& settings,
-                             bool matchExact,
                              std::string& error) {
     const snd_pcm_stream_t direction = capture ? SND_PCM_STREAM_CAPTURE : SND_PCM_STREAM_PLAYBACK;
     const char* label = capture ? "capture" : "playback";
 
-    const int openMode = SND_PCM_NO_AUTO_RESAMPLE | SND_PCM_NO_AUTO_CHANNELS | SND_PCM_NO_AUTO_FORMAT;
-    int result = snd_pcm_open(&stream.pcm, device.c_str(), direction, openMode);
+    int result = snd_pcm_open(&stream.pcm, device.c_str(), direction, 0);
     if (result < 0) {
         error = std::string("cannot open ") + label + " device '" + device + "': " + snd_strerror(result);
         stream.pcm = nullptr;
@@ -244,46 +242,27 @@ bool AlsaBackend::openStream(Stream& stream,
     snd_pcm_hw_params_set_rate_resample(stream.pcm, hw, 0);
 
     unsigned rate = settings.sampleRate;
+    result = snd_pcm_hw_params_set_rate_near(stream.pcm, hw, &rate, nullptr);
+    if (result < 0) {
+        error = std::string(label) + ": cannot set " + std::to_string(settings.sampleRate)
+              + " Hz: " + snd_strerror(result);
+        return false;
+    }
+
     snd_pcm_uframes_t period = settings.periodFrames;
+    result = snd_pcm_hw_params_set_period_size_near(stream.pcm, hw, &period, nullptr);
+    if (result < 0) {
+        error = std::string(label) + ": cannot set a period of " + std::to_string(settings.periodFrames)
+              + " frames: " + snd_strerror(result);
+        return false;
+    }
+
     unsigned periods = settings.periodCount;
-    if (matchExact) {
-        result = snd_pcm_hw_params_set_rate(stream.pcm, hw, rate, 0);
-        if (result < 0) {
-            error = std::string(label) + ": cannot match capture rate "
-                  + std::to_string(rate) + " Hz: " + snd_strerror(result);
-            return false;
-        }
-        result = snd_pcm_hw_params_set_period_size(stream.pcm, hw, period, 0);
-        if (result < 0) {
-            error = std::string(label) + ": cannot match capture period "
-                  + std::to_string(settings.periodFrames) + " frames: " + snd_strerror(result);
-            return false;
-        }
-        result = snd_pcm_hw_params_set_periods(stream.pcm, hw, periods, 0);
-        if (result < 0) {
-            error = std::string(label) + ": cannot match capture period count "
-                  + std::to_string(settings.periodCount) + ": " + snd_strerror(result);
-            return false;
-        }
-    } else {
-        result = snd_pcm_hw_params_set_rate_near(stream.pcm, hw, &rate, nullptr);
-        if (result < 0) {
-            error = std::string(label) + ": cannot set " + std::to_string(settings.sampleRate)
-                  + " Hz: " + snd_strerror(result);
-            return false;
-        }
-        result = snd_pcm_hw_params_set_period_size_near(stream.pcm, hw, &period, nullptr);
-        if (result < 0) {
-            error = std::string(label) + ": cannot set a period of " + std::to_string(settings.periodFrames)
-                  + " frames: " + snd_strerror(result);
-            return false;
-        }
-        result = snd_pcm_hw_params_set_periods_near(stream.pcm, hw, &periods, nullptr);
-        if (result < 0) {
-            error = std::string(label) + ": cannot set " + std::to_string(settings.periodCount)
-                  + " periods: " + snd_strerror(result);
-            return false;
-        }
+    result = snd_pcm_hw_params_set_periods_near(stream.pcm, hw, &periods, nullptr);
+    if (result < 0) {
+        error = std::string(label) + ": cannot set " + std::to_string(settings.periodCount)
+              + " periods: " + snd_strerror(result);
+        return false;
     }
 
     result = snd_pcm_hw_params(stream.pcm, hw);
@@ -369,11 +348,11 @@ bool AlsaBackend::start(const AudioSettings& settings,
     const std::string captureDevice =
         resolved.captureDevice.empty() ? resolved.device : resolved.captureDevice;
 
-    if (!openStream(capture_, captureDevice, true, resolved, false, error)) {
+    if (!openStream(capture_, captureDevice, true, resolved, error)) {
         closeStream(capture_);
         return false;
     }
-    if (!openStream(playback_, resolved.device, false, resolved, true, error)) {
+    if (!openStream(playback_, resolved.device, false, resolved, error)) {
         closeStream(capture_);
         closeStream(playback_);
         return false;
@@ -382,11 +361,8 @@ bool AlsaBackend::start(const AudioSettings& settings,
 
     // Linking lets the driver start both directions on the same sample when
     // they share a card, which removes the drift between them entirely.
-    streamsLinked_ = false;
     if (resolved.captureDevice.empty()) {
-        if (snd_pcm_link(capture_.pcm, playback_.pcm) >= 0) {
-            streamsLinked_ = true;
-        } else {
+        if (snd_pcm_link(capture_.pcm, playback_.pcm) < 0) {
             logDebug("audio: streams could not be linked; running them independently");
         }
     }
@@ -515,24 +491,21 @@ void AlsaBackend::run() {
     const unsigned frames = settings.periodFrames;
     const double periodSeconds = static_cast<double>(frames) / settings.sampleRate;
 
-    // Linked duplex starts both directions together, so playback needs at least
-    // one period queued or the first start underruns. Independent playback can
-    // start on the first real write. Never pre-roll a full buffer — that was
-    // adding a whole extra period of audible delay.
-    unsigned preroll = 0;
-    if (streamsLinked_) {
-        preroll = settings.startImmediately ? 1u : std::max(1u, settings.periodCount - 1);
-    } else if (!settings.startImmediately) {
-        preroll = std::max(1u, settings.periodCount - 1);
-    }
-    std::fill(playback_.buffer.begin(), playback_.buffer.end(), 0);
-    for (unsigned i = 0; i < preroll; ++i) {
-        if (playback_.mmap) {
-            snd_pcm_mmap_writei(playback_.pcm, playback_.buffer.data(), frames);
-        } else {
-            snd_pcm_writei(playback_.pcm, playback_.buffer.data(), frames);
+    // Queue periodCount-1 silent periods before the first real write. USB
+    // needs that slack; one period was not enough and xran at settings that
+    // were previously stable. startImmediately only changes the start
+    // threshold, not how much is queued.
+    auto prerollSilence = [&]() {
+        std::fill(playback_.buffer.begin(), playback_.buffer.end(), 0);
+        for (unsigned i = 0; i + 1 < settings.periodCount; ++i) {
+            if (playback_.mmap) {
+                snd_pcm_mmap_writei(playback_.pcm, playback_.buffer.data(), frames);
+            } else {
+                snd_pcm_writei(playback_.pcm, playback_.buffer.data(), frames);
+            }
         }
-    }
+    };
+    prerollSilence();
 
     int result = snd_pcm_start(capture_.pcm);
     if (result < 0 && result != -EBADFD) {
@@ -565,6 +538,7 @@ void AlsaBackend::run() {
                 break;
             }
             snd_pcm_prepare(playback_.pcm);
+            prerollSilence();
             snd_pcm_start(capture_.pcm);
             continue;
         }
@@ -603,6 +577,7 @@ void AlsaBackend::run() {
                 reportFailure(std::string("playback failed: ") + snd_strerror(recovered));
                 break;
             }
+            prerollSilence();
             continue;
         }
 
