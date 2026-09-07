@@ -1,6 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { bool, obj, str, objects, type JsonObject } from "../json";
+
+function thisPageRedirect(): string {
+    return `${window.location.origin}/`;
+}
+
+function parseOAuthCallback(text: string): { code: string; state: string } | null {
+    const raw = text.trim();
+    const tryParams = (params: URLSearchParams) => {
+        const code = params.get("code") ?? "";
+        const state = params.get("state") ?? "";
+        return code && state ? { code, state } : null;
+    };
+    try {
+        const fromUrl = tryParams(new URL(raw).searchParams);
+        if (fromUrl) {
+            return fromUrl;
+        }
+    } catch {
+        // not a full URL
+    }
+    const query = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : raw;
+    return tryParams(new URLSearchParams(query));
+}
 
 export function Tone3000View({
     engine,
@@ -14,16 +37,17 @@ export function Tone3000View({
     const [source, setSource] = useState("search");
     const [tones, setTones] = useState<JsonObject[]>([]);
     const [key, setKey] = useState("");
-    const [redirect, setRedirect] = useState("");
+    const [redirect, setRedirect] = useState(thisPageRedirect);
     const [code, setCode] = useState("");
     const [state, setState] = useState("");
     const [message, setMessage] = useState("");
+    const completingOauth = useRef(false);
 
     const refresh = () => {
         void engine.client.request("tone3000/status").then((result) => {
             setStatus(result);
             setKey(str(result.publishableKey));
-            setRedirect(str(result.redirectUri));
+            setRedirect(str(result.redirectUri, thisPageRedirect()));
         }).catch((error: unknown) => {
             setMessage(error instanceof Error ? error.message : String(error));
         });
@@ -32,6 +56,38 @@ export function Tone3000View({
     useEffect(() => {
         refresh();
     }, [engine.client]);
+
+    useEffect(() => {
+        const parsed = parseOAuthCallback(window.location.href);
+        if (!parsed || bool(status.connected) || completingOauth.current) {
+            return;
+        }
+        completingOauth.current = true;
+        setCode(parsed.code);
+        setState(parsed.state);
+        void run(async () => {
+            try {
+                await engine.client.request("tone3000/auth/complete", parsed);
+                setMessage("Signed in to TONE3000.");
+            } finally {
+                const url = new URL(window.location.href);
+                url.searchParams.delete("code");
+                url.searchParams.delete("state");
+                window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+                refresh();
+            }
+        });
+    }, [engine.client, status.connected]);
+
+    const applyCodeField = (text: string) => {
+        const parsed = parseOAuthCallback(text);
+        if (parsed) {
+            setCode(parsed.code);
+            setState(parsed.state);
+            return;
+        }
+        setCode(text);
+    };
 
     const search = () => {
         void run(async () => {
@@ -51,8 +107,9 @@ export function Tone3000View({
         <div className="panel stack">
             <h2>TONE3000</h2>
             <div className="muted">
-                Sign in with your own TONE3000 account. Pi-MFX never ships factory packs and
-                only downloads a file you asked for onto this Pi.
+                Use the <strong>publishable</strong> key from tone3000.com → Settings → API Keys
+                (<code>t3k_pub_…</code>). Do not paste a secret key. Register this page&apos;s address
+                as a redirect URI on that same API key, then sign in.
             </div>
             {!bool(status.available, true) && (
                 <div className="danger">This build has no HTTPS support, so TONE3000 is unavailable.</div>
@@ -63,26 +120,37 @@ export function Tone3000View({
                 <input value={key} onChange={(event) => setKey(event.target.value)} />
             </label>
             <label className="field">
-                <span>Redirect URI (same value registered on tone3000.com)</span>
+                <span>Redirect URI (must match tone3000.com exactly)</span>
                 <input value={redirect} onChange={(event) => setRedirect(event.target.value)} />
             </label>
             <div className="row">
+                <button type="button" className="btn" onClick={() => setRedirect(thisPageRedirect())}>
+                    USE THIS ADDRESS
+                </button>
                 <button type="button" className="btn" onClick={() => {
                     void run(async () => {
                         await engine.client.request("tone3000/configure", {
-                            publishableKey: key,
-                            redirectUri: redirect
+                            publishableKey: key.trim(),
+                            redirectUri: redirect.trim() || thisPageRedirect()
                         });
                         refresh();
+                        setMessage("Key saved. Sign in next.");
                     });
                 }}>SAVE KEYS</button>
                 <button type="button" className="btn btn-accent" onClick={() => {
                     void run(async () => {
+                        const uri = redirect.trim() || thisPageRedirect();
+                        if (!redirect.trim()) {
+                            setRedirect(uri);
+                        }
+                        await engine.client.request("tone3000/configure", {
+                            publishableKey: key.trim(),
+                            redirectUri: uri
+                        });
                         const result = await engine.client.request("tone3000/auth/start", { prompt: "" });
                         const url = str(result.authorizeUrl);
                         if (url) {
-                            window.open(url, "_blank", "noopener");
-                            setMessage("Finish sign-in in the browser, then paste code and state below.");
+                            window.location.assign(url);
                         }
                     });
                 }}>SIGN IN</button>
@@ -98,8 +166,8 @@ export function Tone3000View({
             {!bool(status.connected) && (
                 <div className="row">
                     <label className="field">
-                        <span>OAuth code</span>
-                        <input value={code} onChange={(event) => setCode(event.target.value)} />
+                        <span>OAuth code or full redirect URL</span>
+                        <input value={code} onChange={(event) => applyCodeField(event.target.value)} />
                     </label>
                     <label className="field">
                         <span>State</span>
@@ -107,7 +175,8 @@ export function Tone3000View({
                     </label>
                     <button type="button" className="btn" onClick={() => {
                         void run(async () => {
-                            await engine.client.request("tone3000/auth/complete", { code, state });
+                            const parsed = parseOAuthCallback(code) ?? { code, state };
+                            await engine.client.request("tone3000/auth/complete", parsed);
                             refresh();
                         });
                     }}>COMPLETE</button>

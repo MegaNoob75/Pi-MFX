@@ -4,7 +4,7 @@ import { LETTER_ROWS, NUMERIC_ROWS, SYMBOL_ROWS, type KeyboardLayer, type Keyboa
 import { loadKeyboardAppearance, onKeyboardAppearanceChange } from "./settings";
 import { resolveMultiFXKeyboardTheme } from "./keyboardTheme";
 import { themePaintToCss } from "../theme/theme";
-import { eraseSelection, overlayRoot, replaceSelection, type EditableElement } from "./utils";
+import { eraseSelection, overlayRoot, replaceSelection, sanitizePaste, type EditableElement } from "./utils";
 import "./Keyboard.css";
 
 export interface KeyboardSession {
@@ -58,9 +58,30 @@ export function Keyboard({
         setSelection({ start: result.start, end: result.end });
     };
 
+    const pasteText = (raw: string) => {
+        const text = sanitizePaste(raw, session.layout, session.target);
+        if (text) {
+            insert(text);
+        }
+    };
+
     useEffect(() => {
+        let pasteHandled = false;
         const onKey = (event: KeyboardEvent) => {
-            if (event.ctrlKey || event.metaKey || event.altKey) {
+            if (event.altKey) {
+                return;
+            }
+            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+                pasteHandled = false;
+                window.setTimeout(() => {
+                    if (pasteHandled) {
+                        return;
+                    }
+                    void navigator.clipboard?.readText?.().then(pasteText).catch(() => undefined);
+                }, 0);
+                return;
+            }
+            if (event.ctrlKey || event.metaKey) {
                 return;
             }
             if (event.key === "Enter") {
@@ -77,8 +98,23 @@ export function Keyboard({
                 insert(event.key);
             }
         };
+        const onPaste = (event: ClipboardEvent) => {
+            const text = event.clipboardData?.getData("text/plain")
+                || event.clipboardData?.getData("text")
+                || "";
+            if (!text) {
+                return;
+            }
+            event.preventDefault();
+            pasteHandled = true;
+            pasteText(text);
+        };
         window.addEventListener("keydown", onKey, true);
-        return () => window.removeEventListener("keydown", onKey, true);
+        window.addEventListener("paste", onPaste, true);
+        return () => {
+            window.removeEventListener("keydown", onKey, true);
+            window.removeEventListener("paste", onPaste, true);
+        };
     });
 
     const letterRows = LETTER_ROWS.map((row) => row.map((letter) => (

@@ -107,6 +107,21 @@ export function replaceSelection(
     return { value: next, start: cursor, end: cursor };
 }
 
+export function sanitizePaste(
+    text: string,
+    layout: KeyboardLayout,
+    target: EditableElement | null
+): string {
+    let next = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (layout === "numeric") {
+        return next.replace(/[^0-9.-]/g, "");
+    }
+    if (!(target instanceof HTMLTextAreaElement)) {
+        next = next.replace(/\n/g, "");
+    }
+    return next;
+}
+
 export function eraseSelection(
     value: string,
     start: number,
