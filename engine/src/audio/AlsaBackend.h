@@ -36,6 +36,7 @@ public:
     std::vector<AudioDeviceInfo> enumerateDevices() override;
 
     void setFailureHandler(std::function<void(const std::string&)> handler) override;
+    void configureRealtime(int fifoPriority) override;
 
 private:
     struct Stream {
@@ -43,6 +44,7 @@ private:
         unsigned channels = 0;
         int format = 0;         ///< snd_pcm_format_t, kept opaque in the header
         unsigned sampleBytes = 0;
+        bool mmap = false;
         std::vector<uint8_t> buffer;
     };
 
@@ -50,6 +52,7 @@ private:
                     const std::string& device,
                     bool capture,
                     AudioSettings& settings,
+                    bool matchExact,
                     std::string& error);
 
     void closeStream(Stream& stream);
@@ -65,6 +68,8 @@ private:
 
     Stream capture_;
     Stream playback_;
+    bool streamsLinked_ = false;
+    int fifoPriority_ = 80;
 
     AudioProcessor* processor_ = nullptr;
     AudioMetrics* metrics_ = nullptr;

@@ -26,9 +26,9 @@ bool setThreadRealtime(int priority, std::string& message);
 
 /// Pins the calling thread to `cpus`.
 ///
-/// Pi-MFX pins the audio thread but deliberately leaves the other cores
-/// unrestricted: NAM and convolution plugins spawn worker threads, and
-/// isolating cores starves them. Passing an empty list clears any affinity.
+/// Pi-MFX does not pin the audio thread or isolate cores. NAM and convolution
+/// plugins spawn worker threads, and taking cores away from the scheduler
+/// starves them. Passing an empty list clears any affinity.
 bool setThreadAffinity(const std::vector<int>& cpus, std::string& message);
 
 /// Holds /dev/cpu_dma_latency open at 0 us for the lifetime of the process,

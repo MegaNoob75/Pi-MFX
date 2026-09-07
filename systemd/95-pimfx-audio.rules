@@ -10,3 +10,9 @@ KERNEL=="pcmC*D*[cp]", GROUP="audio", MODE="0660"
 KERNEL=="midiC*D*", GROUP="audio", MODE="0660"
 KERNEL=="seq", GROUP="audio", MODE="0660"
 KERNEL=="timer", GROUP="audio", MODE="0660"
+
+# USB autosuspend sleeps the interface between ALSA periods and adds
+# milliseconds of wake latency. A dedicated pedalboard keeps every USB
+# device awake, including the audio interface and the MIDI controller.
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/autosuspend", ATTR{power/autosuspend}="-1"

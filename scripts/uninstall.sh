@@ -69,6 +69,7 @@ rm -f /etc/systemd/system/pimfx-wifi-powersave.service
 rm -f /etc/security/limits.d/95-pimfx-audio.conf
 rm -f /etc/udev/rules.d/95-pimfx-audio.rules
 rm -f /etc/sysctl.d/95-pimfx-audio.conf
+rm -f /etc/modprobe.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
 rm -f "$PREFIX/libexec/pimfx/plugin-helper.py"
 rmdir "$PREFIX/libexec/pimfx" >/dev/null 2>&1 || true
@@ -89,8 +90,9 @@ CMDLINE=/boot/firmware/cmdline.txt
 if [[ -f "$CMDLINE.pimfx-backup" ]]; then
     log "Restoring the kernel command line"
     mv "$CMDLINE.pimfx-backup" "$CMDLINE"
-elif [[ -f "$CMDLINE" ]] && grep -q threadirqs "$CMDLINE"; then
-    sed -i 's/ threadirqs//' "$CMDLINE"
+elif [[ -f "$CMDLINE" ]]; then
+    grep -q threadirqs "$CMDLINE" && sed -i 's/ threadirqs//' "$CMDLINE"
+    grep -q 'usbcore.autosuspend' "$CMDLINE" && sed -i -E 's/ usbcore.autosuspend[=-][^ ]*//' "$CMDLINE"
 fi
 
 # Swap and the governor return to their defaults on the next boot now that the

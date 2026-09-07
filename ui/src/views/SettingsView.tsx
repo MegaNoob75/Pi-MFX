@@ -819,11 +819,12 @@ function SystemSettings({
         <div className="page-scroll stack">
             <div className="panel stack">
                 <h2>REALTIME</h2>
+                <div className="muted">
+                    The audio thread stays on SCHED_FIFO. Cores are not isolated and the audio
+                    thread is not pinned, so NAM and convolution worker threads can use the whole
+                    Pi. Isolating cores made those plugins fight the audio thread for one CPU.
+                </div>
                 <div className="row">
-                    <button type="button" className={`btn ${bool(system.pinAudioThread, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...system, pinAudioThread: !bool(system.pinAudioThread, true) })}>
-                        PIN AUDIO THREAD
-                    </button>
                     <button type="button" className={`btn ${bool(system.lockMemory, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...system, lockMemory: !bool(system.lockMemory, true) })}>
                         LOCK MEMORY
@@ -833,11 +834,6 @@ function SystemSettings({
                         HOLD CPU LATENCY
                     </button>
                 </div>
-                <label className="field">
-                    <span>Audio CPU (0-based)</span>
-                    <input type="number" min={0} max={7} value={num(system.audioCpu, 3)}
-                        onChange={(event) => save({ ...system, audioCpu: Number(event.target.value) })} />
-                </label>
             </div>
             <div className="panel">
                 <h2>DIAGNOSTICS</h2>

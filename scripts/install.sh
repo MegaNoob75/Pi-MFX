@@ -7,9 +7,9 @@
 # the CPU governor to performance, and installs a systemd service. Every change
 # is listed in docs/LOW_LATENCY.md and every one is undone by uninstall.sh.
 #
-# It deliberately does NOT isolate CPU cores. NAM and convolution plugins use
-# worker threads, and isolcpus starves them; the audio thread gets realtime
-# priority and one pinned core instead, leaving the rest for plugin workers.
+# It deliberately does NOT isolate CPU cores or pin the audio thread. NAM and
+# convolution plugins use worker threads, and taking cores away from the
+# scheduler starves them. The audio thread gets SCHED_FIFO instead.
 
 set -euo pipefail
 
@@ -206,14 +206,25 @@ EOF
 
     # threadirqs lets the sound card's interrupt run at a realtime priority of
     # its own instead of in hard IRQ context. No isolcpus: see the note at the
-    # top of this file.
+    # top of this file. usbcore.autosuspend=-1 stops the interface sleeping
+    # between 64-frame periods.
     CMDLINE=/boot/firmware/cmdline.txt
     [[ -f "$CMDLINE" ]] || CMDLINE=/boot/cmdline.txt
-    if [[ -f "$CMDLINE" ]] && ! grep -q threadirqs "$CMDLINE"; then
-        log "  Adding threadirqs to the kernel command line (takes effect after reboot)"
-        cp "$CMDLINE" "$CMDLINE.pimfx-backup"
-        sed -i '1 s/$/ threadirqs/' "$CMDLINE"
+    if [[ -f "$CMDLINE" ]]; then
+        if ! grep -q threadirqs "$CMDLINE"; then
+            log "  Adding threadirqs to the kernel command line (takes effect after reboot)"
+            cp "$CMDLINE" "$CMDLINE.pimfx-backup"
+            sed -i '1 s/$/ threadirqs/' "$CMDLINE"
+        fi
+        if ! grep -q 'usbcore.autosuspend' "$CMDLINE"; then
+            log "  Disabling USB autosuspend on the kernel command line (takes effect after reboot)"
+            [[ -f "$CMDLINE.pimfx-backup" ]] || cp "$CMDLINE" "$CMDLINE.pimfx-backup"
+            sed -i '1 s/$/ usbcore.autosuspend=-1/' "$CMDLINE"
+        fi
     fi
+
+    install -Dm644 "$REPO_DIR/systemd/95-pimfx-usbcore.conf" /etc/modprobe.d/95-pimfx-audio.conf
+    echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null || true
 
     # Wi-Fi power saving introduces multi-millisecond stalls, which show up as
     # a stuttering UI and, on some boards, as USB latency.

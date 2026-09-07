@@ -461,7 +461,7 @@ Json SystemSettings::toJson() const {
 
 SystemSettings SystemSettings::fromJson(const Json& json) {
     SystemSettings settings;
-    settings.pinAudioThread = json["pinAudioThread"].asBool(true);
+    settings.pinAudioThread = json["pinAudioThread"].asBool(false);
     settings.audioCpu = std::max(0, std::min(15, json["audioCpu"].asInt(3)));
     settings.audioThreadPriority = std::max(1, std::min(95, json["audioThreadPriority"].asInt(80)));
     settings.workerThreadPriority = std::max(1, std::min(94, json["workerThreadPriority"].asInt(70)));

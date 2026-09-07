@@ -223,6 +223,8 @@ bool Engine::restartAudio(std::string& error) {
 
     backend_->stop();
 
+    backend_->configureRealtime(settings_.system.audioThreadPriority);
+
     if (!backend_->start(settings_.audio, this, &metrics_, error)) {
         return false;
     }

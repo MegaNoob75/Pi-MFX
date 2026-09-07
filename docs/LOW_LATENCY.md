@@ -103,27 +103,27 @@ for swap, and a page fault in the audio thread is an audible dropout.
 Disabled on `wlan0`. Its wake-up stalls are measured in milliseconds and show
 up as a stuttering UI, and on some boards as USB latency.
 
-## Why there is no `isolcpus`
+## Why there is no `isolcpus` or audio-thread pin
 
 Isolating cores is the usual advice, and for Pi-MFX it is the wrong advice.
 
 Neural Amp Modeler, convolution reverbs, and other heavy plugins spawn worker
 threads through the LV2 worker extension and expect them to run on other cores.
 `isolcpus` removes those cores from the scheduler's general pool, so the workers
-end up competing for the one core the audio thread is already on. The result is
-worse than not isolating at all.
+end up competing for the one core the audio thread is already on. Pinning the
+audio thread to a single core has the same shape of problem: it takes a core
+away from those workers. The result is worse than not isolating at all.
 
 Pi-MFX instead:
 
 - runs the audio thread at `SCHED_FIFO` 80, above everything else,
-- optionally pins it to one core (Settings → System, core 3 by default),
-- leaves all four cores available to plugin workers,
+- leaves all cores available to plugin workers,
 - runs plugin workers below the audio thread so a slow load can never delay a
   period.
 
-If you have a specific chain that measurably benefits from isolation, Settings →
-System documents how to add `isolcpus` by hand, with the warning above attached.
-It is not the default because for most chains it makes things worse.
+If you have a specific chain that measurably benefits from isolation, you can
+add `isolcpus` by hand, with the warning above attached. It is not the default
+because for most NAM chains it makes things worse.
 
 ## Hardware notes
 

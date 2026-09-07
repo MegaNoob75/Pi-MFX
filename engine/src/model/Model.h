@@ -229,9 +229,11 @@ struct UiSettings {
 
 /// Realtime tuning the user can change without editing files on the Pi.
 struct SystemSettings {
-    /// Pin the audio thread to one core. Worker threads are deliberately left
-    /// free to use the others, because NAM and convolution rely on them.
-    bool pinAudioThread = true;
+    /// Do not pin the audio thread or isolate cores. NAM, convolution, and
+    /// other LV2s spawn worker threads and need the scheduler to place them
+    /// on every core. SCHED_FIFO on the audio thread is what keeps them from
+    /// delaying a period.
+    bool pinAudioThread = false;
     int audioCpu = 3;
     int audioThreadPriority = 80;
     int workerThreadPriority = 70;

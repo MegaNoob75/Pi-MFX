@@ -64,6 +64,11 @@ public:
     /// Reported when the stream dies on its own, for example when a USB
     /// interface is unplugged mid-set. Invoked on a non-realtime thread.
     virtual void setFailureHandler(std::function<void(const std::string&)> handler) = 0;
+
+    /// Applied the next time the realtime thread starts.
+    virtual void configureRealtime(int fifoPriority) {
+        (void)fifoPriority;
+    }
 };
 
 /// Creates the ALSA backend on Linux and the mock backend elsewhere.

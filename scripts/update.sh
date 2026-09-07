@@ -101,6 +101,18 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         install -Dm644 "$REPO_DIR/systemd/95-pimfx-audio.rules" /etc/udev/rules.d/95-pimfx-audio.rules
         udevadm control --reload-rules >/dev/null 2>&1 || true
         udevadm trigger --subsystem-match=sound >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=usb >/dev/null 2>&1 || true
+    fi
+    if [[ -f "$REPO_DIR/systemd/95-pimfx-usbcore.conf" ]]; then
+        install -Dm644 "$REPO_DIR/systemd/95-pimfx-usbcore.conf" /etc/modprobe.d/95-pimfx-audio.conf
+        echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null || true
+    fi
+    CMDLINE=/boot/firmware/cmdline.txt
+    [[ -f "$CMDLINE" ]] || CMDLINE=/boot/cmdline.txt
+    if [[ -f "$CMDLINE" ]] && ! grep -q 'usbcore.autosuspend' "$CMDLINE"; then
+        log "Disabling USB autosuspend on the kernel command line (reboot once to apply)"
+        [[ -f "$CMDLINE.pimfx-backup" ]] || cp "$CMDLINE" "$CMDLINE.pimfx-backup"
+        sed -i '1 s/$/ usbcore.autosuspend=-1/' "$CMDLINE"
     fi
     log "Restarting pimfx"
     systemctl restart pimfx.service
