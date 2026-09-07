@@ -177,8 +177,9 @@ struct ControllerConfig {
     int gridRows = 2;
     int gridColumns = 4;
 
-    /// Which USB-MIDI port the controller appears on. Empty means "accept the
-    /// first Pi-MFX controller that identifies itself".
+    /// ALSA raw MIDI id the floorboard is attached to, e.g. "hw:2,0,0". Empty
+    /// means the user still has to pick a device in Settings → Controller,
+    /// unless exactly one MIDI input is present.
     std::string midiPort;
 
     /// Mirror the controller's layout on screen so a tablet shows the same

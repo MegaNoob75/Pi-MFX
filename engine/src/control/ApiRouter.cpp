@@ -25,8 +25,8 @@ Json envelope(bool ok, const std::string& error, const Json& payload) {
 
 } // namespace
 
-ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, HttpServer& server)
-    : engine_(engine), tone3000_(tone3000), server_(server) {}
+ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plugins, HttpServer& server)
+    : engine_(engine), tone3000_(tone3000), plugins_(plugins), server_(server) {}
 
 void ApiRouter::attach() {
     server_.setRequestHandler([this](const HttpRequest& request, HttpResponse& response) {
@@ -192,6 +192,14 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
     if (command == "preset/reorder") {
         ok = engine_.reorderPreset(payload["presetId"].asString(), payload["index"].asInt(0), error);
+        return Json::object();
+    }
+    if (command == "preset/move") {
+        ok = engine_.movePresetToBank(
+            payload["presetId"].asString(),
+            payload["bankId"].asString(),
+            payload["index"].asInt(0),
+            error);
         return Json::object();
     }
     if (command == "bank/create") {
@@ -367,11 +375,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         engine_.setTunerEnabled(payload["enabled"].asBool(true));
         return Json::object();
     }
-    if (command == "plugins/rescan") {
-        std::string rescanError;
-        ok = engine_.catalog().rescan(rescanError);
-        error = rescanError;
-        return engine_.catalogState(false);
+    if (command.rfind("plugins/", 0) == 0) {
+        return pluginsCommand(command.substr(8), payload, ok, error);
     }
 
     if (command.rfind("tone3000/", 0) == 0) {
@@ -438,6 +443,126 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
                                      storedPath, error);
         Json result = Json::object();
         result.set("path", storedPath);
+        return result;
+    }
+
+    ok = false;
+    error = "unknown command";
+    return Json::object();
+}
+
+void ApiRouter::publishCatalog() {
+    std::string rescanError;
+    engine_.catalog().rescan(rescanError);
+    engine_.publishState();
+    server_.broadcast(engine_.catalogState(false).dump());
+}
+
+Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
+                               bool& ok, std::string& error) {
+    if (command == "status") {
+        Json json = plugins_.status();
+        json.set("pluginCount", static_cast<int>(engine_.catalog().plugins().size()));
+        json.set("lv2Available", engine_.catalog().available());
+        return json;
+    }
+    if (command == "rescan") {
+        std::string rescanError;
+        ok = engine_.catalog().rescan(rescanError);
+        error = rescanError;
+        engine_.publishState();
+        server_.broadcast(engine_.catalogState(false).dump());
+        return engine_.catalogState(false);
+    }
+    if (command == "apt/search") {
+        const Json result = plugins_.aptSearch(payload["query"].asString(), error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "apt/list") {
+        const Json result = plugins_.aptList(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "apt/install") {
+        ok = plugins_.aptInstall(payload["package"].asString(), error);
+        if (ok) {
+            publishCatalog();
+        }
+        Json result = Json::object();
+        result.set("package", payload["package"].asString());
+        return result;
+    }
+    if (command == "apt/remove") {
+        ok = plugins_.aptRemove(payload["package"].asString(), error);
+        if (ok) {
+            publishCatalog();
+        }
+        Json result = Json::object();
+        result.set("package", payload["package"].asString());
+        return result;
+    }
+    if (command == "repo/list") {
+        const Json result = plugins_.repoList(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "repo/add") {
+        ok = plugins_.repoAdd(payload, error);
+        if (!ok) {
+            return Json::object();
+        }
+        Json result = plugins_.repoList(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "repo/remove") {
+        ok = plugins_.repoRemove(payload["id"].asString(), error);
+        if (!ok) {
+            return Json::object();
+        }
+        Json result = plugins_.repoList(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "github/list") {
+        const Json result = plugins_.recommended(true, error);
+        ok = true;
+        Json wrapper = Json::object();
+        wrapper.set("recommended", result);
+        return wrapper;
+    }
+    if (command == "github/install") {
+        ok = plugins_.githubInstall(payload["id"].asString(), error);
+        if (ok) {
+            publishCatalog();
+        }
+        Json result = Json::object();
+        result.set("id", payload["id"].asString());
+        return result;
+    }
+    if (command == "patchstorage/search") {
+        const Json result = plugins_.patchstorageSearch(payload, error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "patchstorage/install") {
+        ok = plugins_.patchstorageInstall(payload["patchId"].asInt64(), error);
+        if (ok) {
+            publishCatalog();
+        }
+        Json result = Json::object();
+        result.set("patchId", payload["patchId"].asInt());
+        result.set("bundles", plugins_.installedBundles());
+        return result;
+    }
+    if (command == "bundle/remove") {
+        ok = plugins_.bundleRemove(payload["directory"].asString(), error);
+        if (ok) {
+            publishCatalog();
+        }
+        Json result = Json::object();
+        result.set("bundles", plugins_.installedBundles());
         return result;
     }
 

@@ -112,6 +112,7 @@ bool Engine::start(std::string& error) {
     }
 
     std::string catalogError;
+    catalog_.setUserBundleDirectory(storage_.paths().lv2Dir);
     if (!catalog_.rescan(catalogError)) {
         logWarn("lv2: " + catalogError);
     }
@@ -157,6 +158,9 @@ bool Engine::start(std::string& error) {
         if (!midi_.start(settings_.controller.midiPort, midiError)) {
             controllerError_ = midiError;
             logInfo("midi: " + midiError);
+        } else if (settings_.controller.midiPort != midi_.activePort()) {
+            settings_.controller.midiPort = midi_.activePort();
+            persistSettings();
         }
     }
 
@@ -753,6 +757,61 @@ bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::strin
     return true;
 }
 
+bool Engine::movePresetToBank(const std::string& presetId, const std::string& targetBankId, int newIndex, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    Bank* source = nullptr;
+    auto found = std::vector<Preset>::iterator();
+    for (Bank& bank : banks_) {
+        auto it = std::find_if(bank.presets.begin(), bank.presets.end(),
+                               [&](const Preset& preset) { return preset.id == presetId; });
+        if (it != bank.presets.end()) {
+            source = &bank;
+            found = it;
+            break;
+        }
+    }
+    if (!source) {
+        error = "no such preset";
+        return false;
+    }
+    Bank* target = findBank(targetBankId);
+    if (!target) {
+        error = "no such bank";
+        return false;
+    }
+    if (source->id == target->id) {
+        Preset moved = *found;
+        source->presets.erase(found);
+        newIndex = std::max(0, std::min(newIndex, static_cast<int>(source->presets.size())));
+        source->presets.insert(source->presets.begin() + newIndex, std::move(moved));
+        storage_.saveBank(*source);
+        notify();
+        return true;
+    }
+    if (source->presets.size() < 2) {
+        error = "a bank must keep at least one preset";
+        return false;
+    }
+    Preset moved = *found;
+    source->presets.erase(found);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(target->presets.size())));
+    target->presets.insert(target->presets.begin() + newIndex, std::move(moved));
+    if (settings_.controller.presetAssignments.has(source->id)) {
+        const Json& current = settings_.controller.presetAssignments[source->id];
+        Json cleaned = Json::object();
+        for (const Json::Member& member : current.members()) {
+            if (member.second.asString() != presetId) {
+                cleaned.set(member.first, member.second);
+            }
+        }
+        settings_.controller.presetAssignments.set(source->id, cleaned);
+    }
+    storage_.saveBank(*source);
+    storage_.saveBank(*target);
+    notify();
+    return true;
+}
+
 bool Engine::createBank(const std::string& name, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
     Bank bank;
@@ -1295,17 +1354,26 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
 
 bool Engine::applyControllerConfig(const Json& json, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
+    const std::string previousPort = settings_.controller.midiPort;
+    const bool wasEnabled = settings_.controller.enabled;
     settings_.controller = ControllerConfig::fromJson(json);
     controller_.setConfig(settings_.controller);
 
-    if (settings_.controller.enabled && !midi_.isRunning()) {
-        std::string midiError;
-        if (!midi_.start(settings_.controller.midiPort, midiError)) {
-            controllerError_ = midiError;
-        } else {
-            controllerError_.clear();
+    const bool portChanged = settings_.controller.midiPort != previousPort;
+
+    if (settings_.controller.enabled) {
+        if (!midi_.isRunning() || portChanged || !wasEnabled) {
+            std::string midiError;
+            if (!midi_.start(settings_.controller.midiPort, midiError)) {
+                controllerError_ = midiError;
+            } else {
+                controllerError_.clear();
+                settings_.controller.midiPort = midi_.activePort();
+                controller_.setConfig(settings_.controller);
+                midi_.send(ControllerRuntime::encodeIdentityRequest());
+            }
         }
-    } else if (!settings_.controller.enabled && midi_.isRunning()) {
+    } else if (midi_.isRunning()) {
         midi_.stop();
     }
 
@@ -1325,6 +1393,7 @@ bool Engine::connectController(const std::string& port, std::string& error) {
     }
     settings_.controller.enabled = true;
     settings_.controller.midiPort = midi_.activePort();
+    controller_.setConfig(settings_.controller);
     controllerError_.clear();
     persistSettings();
 
@@ -1732,7 +1801,10 @@ void Engine::housekeepingThread() {
 bool Engine::persistSettings() {
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
-    settings_.controller = controller_.config();
+    ControllerConfig config = controller_.config();
+    config.enabled = settings_.controller.enabled;
+    config.midiPort = midi_.isRunning() ? midi_.activePort() : settings_.controller.midiPort;
+    settings_.controller = std::move(config);
     return storage_.saveSettings(settings_);
 }
 
@@ -1741,6 +1813,10 @@ void Engine::notify() {
     if (listener_) {
         listener_(fullState());
     }
+}
+
+void Engine::publishState() {
+    notify();
 }
 
 void Engine::notifyPerformance() {

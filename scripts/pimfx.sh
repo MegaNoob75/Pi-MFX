@@ -46,8 +46,6 @@ Actions:
   remove           Stop the service and undo OS changes
 
 Options:
-  --with-plugins         Install the starter LV2 set (install only)
-  --no-plugins           Skip those packages
   --no-tuning            Install the service but leave the OS alone
   --port <n>             Web UI port (default 8080)
   --display-user USER    Account that auto-logs in on the screen
@@ -55,6 +53,7 @@ Options:
   -y, --yes              Accept confirmation prompts
   -h, --help             This text
 
+LV2 plugins are installed from Settings -> Plugins after the engine is running.
 Banks and models in /var/lib/pimfx are left alone unless you pass --purge.
 EOF
 }
@@ -83,7 +82,10 @@ parse_args() {
     fi
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --with-plugins|--no-plugins|--no-tuning)
+            --with-plugins|--no-plugins)
+                warn "plugin packages are installed from Settings -> Plugins, not the installer"
+                shift ;;
+            --no-tuning)
                 INSTALL_ARGS+=("$1"); shift ;;
             --port)
                 [[ $# -ge 2 ]] || die "--port needs a number"
@@ -382,7 +384,7 @@ do_remove() {
 }
 
 do_complete() {
-    do_install --with-plugins
+    do_install
     configure_touchscreen
 }
 
@@ -391,7 +393,7 @@ show_menu() {
     while true; do
         draw_banner
         cat <<'MENU'
-  1) Complete setup  (install + plugins + touchscreen)
+  1) Complete setup  (install + touchscreen)
   2) Install / first-time setup
   3) Update  (pull, rebuild, restart)
   4) Rebuild local files  (after MobaXterm copy, no git pull)

@@ -20,7 +20,6 @@ DATA_ROOT="${DATA_ROOT:-/var/lib/pimfx}"
 WEB_ROOT="/usr/share/pimfx/web"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-INSTALL_PLUGINS="ask"
 SKIP_TUNING="no"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -33,21 +32,21 @@ Usage: sudo bash ./scripts/install.sh [options]
 
 Or run the menu instead:  sudo bash ./scripts/pimfx.sh
 
-  --with-plugins      Install a starter set of LV2 plugins from the distro
-  --no-plugins        Do not install any plugins (default when non-interactive)
   --no-tuning         Install the service but make no system audio changes
   --port <n>          Port for the web UI (default 8080)
   --user <name>       Service account to create and run as (default pimfx)
   -h, --help          This text
 
-Plugins are separate works under their own licenses; see docs/PLUGIN_LICENSES.md.
+LV2 plugins are installed later from Settings -> Plugins, not by this script.
+See docs/PLUGIN_LICENSES.md.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --with-plugins) INSTALL_PLUGINS="yes"; shift ;;
-        --no-plugins)   INSTALL_PLUGINS="no"; shift ;;
+        --with-plugins|--no-plugins)
+            warn "plugin packages are installed from Settings -> Plugins, not the installer"
+            shift ;;
         --no-tuning)    SKIP_TUNING="yes"; shift ;;
         --port)         PIMFX_PORT="$2"; shift 2 ;;
         --user)         PIMFX_USER="$2"; shift 2 ;;
@@ -91,32 +90,7 @@ apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config git \
     libasound2-dev liblilv-dev lv2-dev \
     libcurl4-openssl-dev libsndfile1-dev libsamplerate0-dev \
-    nodejs npm
-
-if [[ "$INSTALL_PLUGINS" == "ask" ]]; then
-    if [[ -t 0 ]]; then
-        cat <<'EOF'
-
-Pi-MFX ships no effects of its own. A starter set is available from the
-Raspberry Pi OS repositories, under each plugin's own license (mostly GPL):
-
-  calf-plugins  x42-plugins  zam-plugins  guitarix-lv2  lsp-plugins-lv2
-
-Pi-MFX works without them; you can install plugins yourself at any time.
-EOF
-        read -r -p "Install the starter plugin set? [y/N] " reply
-        [[ "$reply" =~ ^[Yy]$ ]] && INSTALL_PLUGINS="yes" || INSTALL_PLUGINS="no"
-    else
-        INSTALL_PLUGINS="no"
-    fi
-fi
-
-if [[ "$INSTALL_PLUGINS" == "yes" ]]; then
-    log "Installing starter LV2 plugins (each under its own license)"
-    apt-get install -y --no-install-recommends \
-        calf-plugins x42-plugins zam-plugins guitarix-lv2 lsp-plugins-lv2 || \
-        warn "some plugin packages were unavailable; Pi-MFX will run without them"
-fi
+    nodejs npm python3 xz-utils unzip gnupg ca-certificates
 
 # ---------------------------------------------------------------------------
 # 3. Build
@@ -151,7 +125,7 @@ cp -r "$REPO_DIR/ui/dist/." "$WEB_ROOT/"
 
 install -d -o "$PIMFX_USER" -g "$PIMFX_USER" \
     "$DATA_ROOT" "$DATA_ROOT/banks" "$DATA_ROOT/models" "$DATA_ROOT/irs" \
-    "$DATA_ROOT/themes" "$DATA_ROOT/downloads"
+    "$DATA_ROOT/themes" "$DATA_ROOT/downloads" "$DATA_ROOT/lv2"
 
 # ---------------------------------------------------------------------------
 # 5. System tuning
@@ -273,7 +247,17 @@ sed -e "s|@USER@|$PIMFX_USER|g" \
     -e "s|@PORT@|$PIMFX_PORT|g" \
     "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
 
+log "Installing the plugin helper"
+install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugin-helper.py"
+sed -e "s|@USER@|$PIMFX_USER|g" \
+    -e "s|@PREFIX@|$PREFIX|g" \
+    -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
+    "$REPO_DIR/systemd/pimfx-plugin-helper.service.in" > /etc/systemd/system/pimfx-plugin-helper.service
+
 systemctl daemon-reload
+systemctl enable pimfx-plugin-helper.service >/dev/null
+systemctl restart pimfx-plugin-helper.service \
+    || warn "plugin helper did not start; apt installs from the UI will be unavailable"
 systemctl enable pimfx.service >/dev/null
 systemctl restart pimfx.service
 
@@ -302,8 +286,8 @@ First steps:
   2. Settings -> Controller: if you built a floorboard, connect it and use
      Learn to assign each switch. You do not need one; the browser is a
      complete control surface on its own.
-  3. Add effects to the chain. Pi-MFX ships none; install LV2 plugins and they
-     appear in the picker.
+  3. Settings -> Plugins: install LV2 effects from apt or PatchStorage, then
+     add them to a chain. Pi-MFX ships none.
 
 EOF
 

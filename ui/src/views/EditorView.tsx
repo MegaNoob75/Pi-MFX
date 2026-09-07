@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { controlValue, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { PluginBrowser } from "./PluginBrowser";
 
-type EditPage = "chain" | "controls" | "bindings";
+type EditPage = "chain" | "controls" | "bindings" | "io";
 
 export function EditorView({
     engine,
@@ -24,10 +25,16 @@ export function EditorView({
     const plugins = objects(catalog.plugins);
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
+    const [ioKind, setIoKind] = useState<"input" | "output">("input");
     const [browser, setBrowser] = useState<{ mode: "add" | "replace"; index: number } | null>(null);
     const [dragId, setDragId] = useState("");
     const [dragOverTrash, setDragOverTrash] = useState(false);
+    const [dropGap, setDropGap] = useState<number | null>(null);
+    const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
     const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
+    const chainPageRef = useRef<HTMLDivElement | null>(null);
+    const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
+    const [chainCardWidth, setChainCardWidth] = useState(142);
 
     const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
     const plugin = obj(obj(selected).plugin);
@@ -41,14 +48,88 @@ export function EditorView({
     const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
 
     useEffect(() => {
-        onPageChange?.(page, page === "chain" ? undefined : effectTitle);
-    }, [page, effectTitle]);
+        onPageChange?.(page, page === "chain" ? undefined : page === "io" ? (ioKind === "input" ? "INPUT" : "OUTPUT") : effectTitle);
+    }, [page, effectTitle, ioKind]);
+
+    const previousBackRequestRef = useRef(backRequest);
 
     useEffect(() => {
-        if (backRequest > 0) {
-            setPage("chain");
+        if (backRequest === previousBackRequestRef.current) {
+            return;
         }
+        previousBackRequestRef.current = backRequest;
+        setPage((current) => (current === "bindings" ? "controls" : "chain"));
     }, [backRequest]);
+
+    useEffect(() => {
+        if (page !== "chain") {
+            return;
+        }
+        const element = chainPageRef.current;
+        if (!element) {
+            return;
+        }
+        const updateLayout = () => {
+            const style = getComputedStyle(element);
+            const availableWidth = Math.max(
+                1,
+                element.clientWidth
+                    - (parseFloat(style.paddingLeft) || 0)
+                    - (parseFloat(style.paddingRight) || 0)
+            );
+            const uiScale = Math.max(0.5, parseFloat(
+                getComputedStyle(document.documentElement).getPropertyValue("--mfx-ui-scale")
+            ) || 1);
+            const targetCardWidth = 142 * uiScale;
+            const connectorWidth = 70 * uiScale;
+            const itemsPerRow = Math.max(2, Math.floor(
+                (availableWidth + connectorWidth) / (targetCardWidth + connectorWidth)
+            ));
+            const widthForCards = (availableWidth - Math.max(0, itemsPerRow - 1) * connectorWidth) / itemsPerRow;
+            setChainItemsPerRow(itemsPerRow);
+            setChainCardWidth(Math.max(118 * uiScale, Math.min(210 * uiScale, widthForCards)));
+        };
+        updateLayout();
+        const observer = new ResizeObserver(updateLayout);
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [page]);
+
+    const chainNodes = useMemo(() => {
+        const nodes: {
+            key: string;
+            kind: "input" | "plugin" | "output";
+            globalIndex: number;
+            slot?: JsonObject;
+            chainIndex?: number;
+        }[] = [{ key: "input", kind: "input", globalIndex: 0 }];
+        chain.forEach((slot, index) => {
+            nodes.push({
+                key: str(slot.id),
+                kind: "plugin",
+                globalIndex: index + 1,
+                slot,
+                chainIndex: index
+            });
+        });
+        nodes.push({ key: "output", kind: "output", globalIndex: chain.length + 1 });
+        return nodes;
+    }, [chain]);
+
+    const chainRows = useMemo(() => {
+        const rows: typeof chainNodes[] = [];
+        for (let i = 0; i < chainNodes.length; i += chainItemsPerRow) {
+            rows.push(chainNodes.slice(i, i + chainItemsPerRow));
+        }
+        return rows;
+    }, [chainNodes, chainItemsPerRow]);
+
+    const addAfter = (globalIndex: number) => {
+        if (lockChain || globalIndex < 0 || globalIndex >= chainNodes.length - 1) {
+            return;
+        }
+        setBrowser({ mode: "add", index: globalIndex });
+    };
 
     const openControls = (slotId: string) => {
         setSelectedId(slotId);
@@ -70,17 +151,29 @@ export function EditorView({
         event.currentTarget.setPointerCapture(event.pointerId);
     };
 
+    const isTrashAtPoint = (x: number, y: number) => {
+        const trash = document.querySelector("[data-chain-trash]") as HTMLElement | null;
+        if (!trash) {
+            return false;
+        }
+        const rect = trash.getBoundingClientRect();
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
+
     const onPointerMove = (event: React.PointerEvent) => {
         const drag = dragRef.current;
         if (!drag) {
             return;
         }
-        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 8) {
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 10) {
             drag.dragging = true;
             setDragId(drag.id);
+            setDragGhost({ title: drag.title, x: event.clientX, y: event.clientY });
         }
-        const trash = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-trash]");
-        setDragOverTrash(Boolean(trash));
+        setDragOverTrash(isTrashAtPoint(event.clientX, event.clientY));
+        const gap = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
+        const gapIndex = Number(gap?.dataset.chainIndex);
+        setDropGap(Number.isInteger(gapIndex) ? gapIndex : null);
     };
 
     const onPointerUp = (slot: JsonObject, event: React.PointerEvent) => {
@@ -89,15 +182,14 @@ export function EditorView({
         const wasDragging = Boolean(drag?.dragging);
         setDragId("");
         setDragOverTrash(false);
+        setDragGhost(null);
+        setDropGap(null);
         if (!drag || !wasDragging) {
             openControls(str(slot.id));
             return;
         }
-        const trash = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-trash]");
-        if (trash) {
-            if (window.confirm(`Remove ${drag.title}?`)) {
-                void run(() => client.request("chain/remove", { slotId: drag.id }));
-            }
+        if (isTrashAtPoint(event.clientX, event.clientY)) {
+            void run(() => client.request("chain/remove", { slotId: drag.id }));
             return;
         }
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
@@ -133,72 +225,131 @@ export function EditorView({
                             <span>{lockChain ? "Snapshot editing cannot add, remove or reorder effects." : "Tap to edit • drag to reorder • + inserts an effect"}</span>
                         </div>
                     </div>
-                    <div className="chain-page">
-                        <div className="chain-wrap">
-                            <div className="chain-slot endpoint">
-                                <strong>INPUT</strong>
-                                <div className="muted">SIGNAL IN</div>
-                            </div>
-                            {chain.map((slot, index) => {
-                                const info = obj(slot.plugin);
-                                const on = bool(slot.enabled, true);
-                                const active = str(obj(selected).id) === str(slot.id) && page !== "chain";
-                                return (
-                                    <button
-                                        key={str(slot.id)}
-                                        type="button"
-                                        data-chain-index={index}
-                                        className={`chain-slot${active ? " selected" : ""}${on ? "" : " off"}${dragId === str(slot.id) ? " dragging" : ""}`}
-                                        onPointerDown={(event) => onPointerDown(slot, index, event)}
-                                        onPointerMove={onPointerMove}
-                                        onPointerUp={(event) => onPointerUp(slot, event)}
-                                        onPointerCancel={() => {
-                                            dragRef.current = null;
-                                            setDragId("");
-                                            setDragOverTrash(false);
-                                        }}
-                                    >
-                                        <div className="chain-slot-top">
-                                            <span className="chain-handle">⋮⋮</span>
-                                            <strong>{str(slot.name) || str(info.name, str(slot.uri))}</strong>
-                                            <span
-                                                className={`chain-led${on ? " on" : ""}`}
-                                                role="switch"
-                                                aria-checked={on}
-                                                onPointerDown={(event) => event.stopPropagation()}
-                                                onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    void run(() => client.request("chain/enable", {
-                                                        slotId: str(slot.id),
-                                                        enabled: !on
-                                                    }));
-                                                }}
-                                            />
+                    <div className="chain-page" ref={chainPageRef}>
+                        {chainRows.map((logicalRow, rowIndex) => {
+                            const flowsLeft = rowIndex % 2 === 1;
+                            const visualRow = flowsLeft ? [...logicalRow].reverse() : logicalRow;
+                            return (
+                                <div key={`row-${rowIndex}`}>
+                                    <div className={`chain-row${flowsLeft ? " rtl" : ""}`}>
+                                        {visualRow.map((node, visualIndex) => {
+                                            const nextVisual = visualRow[visualIndex + 1];
+                                            const sourceIndex = nextVisual
+                                                ? Math.min(node.globalIndex, nextVisual.globalIndex)
+                                                : -1;
+                                            return (
+                                                <div key={node.key} className="chain-node">
+                                                    {node.kind === "plugin" && node.slot
+                                                        ? (
+                                                            <ChainPluginCard
+                                                                slot={node.slot}
+                                                                chainIndex={node.chainIndex ?? 0}
+                                                                cardWidth={chainCardWidth}
+                                                                selected={str(obj(selected).id) === str(node.slot.id)}
+                                                                dragging={dragId === str(node.slot.id)}
+                                                                lockChain={lockChain}
+                                                                onPointerDown={(event) => onPointerDown(node.slot!, node.chainIndex ?? 0, event)}
+                                                                onPointerMove={onPointerMove}
+                                                                onPointerUp={(event) => onPointerUp(node.slot!, event)}
+                                                                onPointerCancel={() => {
+                                                                    dragRef.current = null;
+                                                                    setDragId("");
+                                                                    setDragOverTrash(false);
+                                                                }}
+                                                                onToggle={() => void run(() => client.request("chain/enable", {
+                                                                    slotId: str(node.slot!.id),
+                                                                    enabled: !bool(node.slot!.enabled, true)
+                                                                }))}
+                                                            />
+                                                        )
+                                                        : (
+                                                            <button
+                                                                type="button"
+                                                                className={`chain-slot endpoint${selectedId === node.kind ? " selected" : ""}`}
+                                                                style={{ flex: `0 0 ${chainCardWidth}px`, width: chainCardWidth }}
+                                                                onClick={() => {
+                                                                    setIoKind(node.kind === "input" ? "input" : "output");
+                                                                    setSelectedId(node.kind);
+                                                                    setPage("io");
+                                                                }}
+                                                            >
+                                                                <strong>{node.kind === "input" ? "INPUT" : "OUTPUT"}</strong>
+                                                                <div className="muted">{node.kind === "input" ? "SIGNAL IN" : "SIGNAL OUT"}</div>
+                                                            </button>
+                                                        )}
+                                                    {nextVisual && sourceIndex >= 0 && (
+                                                        <div
+                                                            className={`chain-connector${flowsLeft ? " left" : " right"}${dropGap === sourceIndex ? " drop-active" : ""}`}
+                                                            data-chain-index={sourceIndex}
+                                                        >
+                                                            <button
+                                                                type="button"
+                                                                className="chain-insert"
+                                                                disabled={lockChain}
+                                                                onClick={() => addAfter(sourceIndex)}
+                                                            >
+                                                                +
+                                                            </button>
+                                                            <span className="chain-flow-line" />
+                                                            <span className="chain-flow-arrow">{flowsLeft ? "◀" : "▶"}</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    {rowIndex < chainRows.length - 1 && (
+                                        <div
+                                            className={`chain-turn ${flowsLeft ? "left" : "right"}${dropGap === logicalRow[logicalRow.length - 1].globalIndex ? " drop-active" : ""}`}
+                                            data-chain-index={logicalRow[logicalRow.length - 1].globalIndex}
+                                        >
+                                            {!lockChain && (
+                                                <button
+                                                    type="button"
+                                                    className="chain-insert"
+                                                    onClick={() => addAfter(logicalRow[logicalRow.length - 1].globalIndex)}
+                                                >
+                                                    +
+                                                </button>
+                                            )}
+                                            <span className="chain-turn-line" />
+                                            <span className="chain-flow-arrow">▼</span>
                                         </div>
-                                        <div className="muted">{str(info.brand) || str(info.category)}</div>
-                                    </button>
-                                );
-                            })}
-                            {!lockChain && (
-                                <button type="button" className="chain-slot chain-add" onClick={() => setBrowser({ mode: "add", index: chain.length })}>
-                                    + ADD
-                                </button>
-                            )}
-                            <div className="chain-slot endpoint">
-                                <strong>OUTPUT</strong>
-                                <div className="muted">SIGNAL OUT</div>
-                            </div>
-                        </div>
-                        {dragId && (
-                            <div className={`chain-trash${dragOverTrash ? " active" : ""}`} data-chain-trash="true">
-                                DROP HERE TO REMOVE
-                            </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                        {dragGhost && (
+                            <>
+                                <div className={`chain-trash-icon${dragOverTrash ? " active" : ""}`} data-chain-trash="true">🗑</div>
+                                {createPortal(
+                                    <div className="chain-ghost" style={{ left: dragGhost.x + 16, top: dragGhost.y + 14 }}>
+                                        <div>{dragGhost.title}</div>
+                                        <div className="muted">MOVE EFFECT</div>
+                                    </div>,
+                                    document.body
+                                )}
+                            </>
                         )}
                     </div>
                 </>
             )}
 
-            {page !== "chain" && selected && (
+            {page === "io" && (
+                <>
+                    <div className="editor-toolbar">
+                        <div className="editor-toolbar-copy">
+                            <strong>{ioKind === "input" ? "INPUT" : "OUTPUT"}</strong>
+                            <span>{ioKind === "input" ? "Guitar input gain and channel" : "Output level"}</span>
+                        </div>
+                    </div>
+                    <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
+                        <ChainIoPanel kind={ioKind} engine={engine} run={run} />
+                    </div>
+                </>
+            )}
+
+            {page !== "chain" && page !== "io" && selected && (
                 <>
                     <div className="editor-toolbar">
                         <div className="editor-toolbar-copy">
@@ -301,13 +452,71 @@ export function EditorView({
                 }}
             />
             {plugins.length === 0 && page === "chain" && (
-                <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Rescan from Settings → System.</div>
+                <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Settings → Plugins.</div>
             )}
         </div>
     );
 }
 
-function EffectControls({
+function ChainPluginCard({
+    slot,
+    chainIndex,
+    cardWidth,
+    selected,
+    dragging,
+    lockChain,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    onToggle
+}: {
+    slot: JsonObject;
+    chainIndex: number;
+    cardWidth: number;
+    selected: boolean;
+    dragging: boolean;
+    lockChain: boolean;
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    onPointerCancel: () => void;
+    onToggle: () => void;
+}) {
+    const info = obj(slot.plugin);
+    const on = bool(slot.enabled, true);
+    return (
+        <button
+            type="button"
+            data-chain-index={chainIndex}
+            className={`chain-slot${selected ? " selected" : ""}${on ? "" : " off"}${dragging ? " dragging" : ""}`}
+            style={{ flex: `0 0 ${cardWidth}px`, width: cardWidth }}
+            onPointerDown={lockChain ? undefined : onPointerDown}
+            onPointerMove={lockChain ? undefined : onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={lockChain ? undefined : onPointerCancel}
+        >
+            <div className="chain-slot-top">
+                <span className="chain-handle">⋮⋮</span>
+                <strong>{str(slot.name) || str(info.name, str(slot.uri))}</strong>
+                <span
+                    className={`chain-led${on ? " on" : ""}`}
+                    role="switch"
+                    aria-checked={on}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onToggle();
+                    }}
+                />
+            </div>
+            <div className="muted">{on ? "ACTIVE" : "BYPASSED"}</div>
+            <div className="muted" style={{ fontSize: "0.62rem" }}>TAP TO EDIT • LED = BYPASS</div>
+        </button>
+    );
+}
+
+export function EffectControls({
     selected,
     ports,
     properties,
@@ -513,13 +722,33 @@ function BindingsPanel({
                             ))}
                         </select>
                         {bound && (
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={() => void run(() => client.request("controller/learn", { controlId: str(bound.id) }))}
-                            >
-                                {learningId === str(bound.id) ? "LISTENING…" : "LEARN"}
-                            </button>
+                            <>
+                                <button
+                                    type="button"
+                                    className={`btn ${bool(obj(bound.binding).inverted) ? "btn-active" : ""}`}
+                                    onClick={() => {
+                                        const next = controls.map((control) => str(control.id) === str(bound.id)
+                                            ? {
+                                                ...control,
+                                                binding: {
+                                                    ...obj(control.binding),
+                                                    inverted: !bool(obj(control.binding).inverted)
+                                                }
+                                            }
+                                            : control);
+                                        void run(() => client.request("controller/config", { ...controller, controls: next }));
+                                    }}
+                                >
+                                    {bool(obj(bound.binding).inverted) ? "REVERSE ON" : "REVERSE"}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => void run(() => client.request("controller/learn", { controlId: str(bound.id) }))}
+                                >
+                                    {learningId === str(bound.id) ? "LISTENING…" : "LEARN"}
+                                </button>
+                            </>
                         )}
                     </div>
                 );
@@ -527,6 +756,58 @@ function BindingsPanel({
             {controls.length === 0 && (
                 <div className="muted">Add switches and pots in Settings → Controller first.</div>
             )}
+        </div>
+    );
+}
+
+function ChainIoPanel({
+    kind,
+    engine,
+    run
+}: {
+    kind: "input" | "output";
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+}) {
+    const audio = obj(engine.state.audio);
+    const save = (patch: JsonObject) => {
+        void run(() => engine.client.request("audio/settings", { ...audio, ...patch }));
+    };
+    if (kind === "input") {
+        return (
+            <div className="panel stack">
+                <div className="muted">These are the same input controls as Settings → Audio. MultiFX opens them from the INPUT card.</div>
+                <label className="field">
+                    <span>Input gain (dB)</span>
+                    <input
+                        type="number"
+                        value={num(audio.inputGainDb)}
+                        onChange={(event) => save({ inputGainDb: Number(event.target.value) })}
+                    />
+                </label>
+                <label className="field">
+                    <span>Guitar input channel</span>
+                    <input
+                        type="number"
+                        min={1}
+                        value={num(audio.guitarInput, 2)}
+                        onChange={(event) => save({ guitarInput: Number(event.target.value) })}
+                    />
+                </label>
+            </div>
+        );
+    }
+    return (
+        <div className="panel stack">
+            <div className="muted">These are the same output controls as Settings → Audio. MultiFX opens them from the OUTPUT card.</div>
+            <label className="field">
+                <span>Output gain (dB)</span>
+                <input
+                    type="number"
+                    value={num(audio.outputGainDb)}
+                    onChange={(event) => save({ outputGainDb: Number(event.target.value) })}
+                />
+            </label>
         </div>
     );
 }

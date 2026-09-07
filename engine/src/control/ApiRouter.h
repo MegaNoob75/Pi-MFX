@@ -2,6 +2,7 @@
 
 #include "Engine.h"
 #include "control/HttpServer.h"
+#include "library/PluginStore.h"
 #include "library/Tone3000.h"
 
 #include <memory>
@@ -16,7 +17,7 @@ namespace pimfx {
 /// drift apart.
 class ApiRouter {
 public:
-    ApiRouter(Engine& engine, Tone3000Client& tone3000, HttpServer& server);
+    ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plugins, HttpServer& server);
 
     /// Wires the router into the server and starts pushing state to clients.
     void attach();
@@ -31,9 +32,12 @@ private:
     Json dispatch(const std::string& command, const Json& payload, bool& ok, std::string& error);
 
     Json tone3000Command(const std::string& command, const Json& payload, bool& ok, std::string& error);
+    Json pluginsCommand(const std::string& command, const Json& payload, bool& ok, std::string& error);
+    void publishCatalog();
 
     Engine& engine_;
     Tone3000Client& tone3000_;
+    PluginStore& plugins_;
     HttpServer& server_;
 };
 

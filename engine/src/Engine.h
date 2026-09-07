@@ -76,6 +76,7 @@ public:
     bool renamePreset(const std::string& presetId, const std::string& name, std::string& error);
     bool deletePreset(const std::string& presetId, std::string& error);
     bool reorderPreset(const std::string& presetId, int newIndex, std::string& error);
+    bool movePresetToBank(const std::string& presetId, const std::string& targetBankId, int newIndex, std::string& error);
     bool createBank(const std::string& name, std::string& error);
     bool renameBank(const std::string& bankId, const std::string& name, std::string& error);
     bool deleteBank(const std::string& bankId, std::string& error);
@@ -132,6 +133,10 @@ public:
     Storage& storage() { return storage_; }
     Lv2Catalog& catalog() { return catalog_; }
     const Settings& settings() const { return settings_; }
+
+    /// Pushes full state to UI listeners. Used after a catalog rescan so
+    /// pluginCount updates without restarting audio.
+    void publishState();
 
     void tapTempo();
     TunerReading tuner() const;

@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { obj, str, objects, type JsonObject } from "../json";
-import { askText } from "../keyboard/ask";
 
 type EditState = {
     mode: "newBank" | "renameBank" | "renamePreset" | "cloneBank";
@@ -22,14 +21,53 @@ export function BanksView({
     const activePreset = findPreset(state);
     const presets = objects(obj(activeBank).presets);
     const [focused, setFocused] = useState<"banks" | "presets">("presets");
+    const [cursorPreset, setCursorPreset] = useState("");
     const [edit, setEdit] = useState<EditState>(null);
     const [confirm, setConfirm] = useState<"bank" | "preset" | null>(null);
     const [busy, setBusy] = useState(false);
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
+    const selectedPresetId = cursorPreset || presetId;
     const bankIndex = banks.findIndex((bank) => str(bank.id) === bankId);
-    const presetIndex = presets.findIndex((preset) => str(preset.id) === presetId);
+    const presetIndex = presets.findIndex((preset) => str(preset.id) === selectedPresetId);
+
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            const target = event.target as HTMLElement | null;
+            if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || edit || confirm)) {
+                return;
+            }
+            if (!["ArrowDown", "ArrowUp", "Enter", "Delete"].includes(event.key)) {
+                return;
+            }
+            event.preventDefault();
+            if (event.key === "Delete") {
+                setConfirm(focused === "banks" ? "bank" : "preset");
+                return;
+            }
+            if (event.key === "Enter") {
+                if (focused === "presets" && selectedPresetId) {
+                    mutate(() => client.request("preset/select", { bankId, presetId: selectedPresetId }));
+                }
+                return;
+            }
+            const direction = event.key === "ArrowDown" ? 1 : -1;
+            if (focused === "banks") {
+                const next = banks[bankIndex + direction];
+                if (next) {
+                    selectBank(str(next.id));
+                }
+                return;
+            }
+            const nextPreset = presets[presetIndex + direction];
+            if (nextPreset) {
+                setCursorPreset(str(nextPreset.id));
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [banks, bankIndex, presets, presetIndex, focused, selectedPresetId, bankId, edit, confirm, busy]);
 
     const mutate = (work: () => Promise<unknown>) => {
         if (busy) {
@@ -112,16 +150,25 @@ export function BanksView({
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={downloadBank}>DOWNLOAD</button>
                     <label className="btn btn-accent">
                         UPLOAD
-                        <input type="file" accept="application/json,.json,.pimfx-bank.json" hidden disabled={busy} onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            if (!file) {
+                        <input
+                            type="file"
+                            accept="application/json,.json,.pimfx-bank.json"
+                            hidden
+                            multiple
+                            disabled={busy}
+                            onChange={(event) => {
+                            const files = Array.from(event.target.files ?? []);
+                            event.target.value = "";
+                            if (files.length === 0 || busy) {
                                 return;
                             }
-                            void file.text().then((text) => {
-                                const bank = JSON.parse(text) as JsonObject;
-                                mutate(() => client.request("bank/import", { bank }));
-                            });
-                            event.target.value = "";
+                            setBusy(true);
+                            void run(async () => {
+                                for (const file of files) {
+                                    const bank = JSON.parse(await file.text()) as JsonObject;
+                                    await client.request("bank/import", { bank });
+                                }
+                            }).finally(() => setBusy(false));
                         }} />
                     </label>
                 </div>
@@ -136,7 +183,7 @@ export function BanksView({
                     <button type="button" className="btn" disabled={bankIndex < 0 || bankIndex >= banks.length - 1 || busy} onClick={() => {
                         mutate(() => client.request("bank/reorder", { bankId, index: bankIndex + 1 }));
                     }}>↓</button>
-                    <button type="button" className="btn btn-danger" disabled={banks.length < 2 || busy} onClick={() => setConfirm("bank")}>DELETE</button>
+                    <button type="button" className="btn btn-danger" disabled={!activeBank || busy} onClick={() => setConfirm("bank")}>DELETE</button>
                     {busy && <span className="muted">Updating…</span>}
                 </div>
                 <div className="split-list">
@@ -144,6 +191,7 @@ export function BanksView({
                         <button
                             key={str(bank.id)}
                             type="button"
+                            data-bank-id={str(bank.id)}
                             className={`split-row${str(bank.id) === bankId || (focused === "banks" && str(bank.id) === bankId) ? " selected" : ""}`}
                             onClick={() => selectBank(str(bank.id))}
                         >
@@ -155,37 +203,81 @@ export function BanksView({
 
             <section className="split-pane" onPointerDown={() => setFocused("presets")}>
                 <div className="split-toolbar">
-                    <button type="button" className="btn btn-accent" disabled={busy} onClick={() => {
-                        void askText("New preset name", "Untitled").then((name) => {
-                            if (name?.trim()) {
-                                mutate(() => client.request("preset/saveAs", { name: name.trim() }));
-                            }
-                        });
-                    }}>SAVE AS</button>
                     <button type="button" className="btn" disabled={!activePreset || busy} onClick={() => {
-                        setEdit({ mode: "renamePreset", title: "Rename Preset", value: str(obj(activePreset).name) });
+                        setEdit({ mode: "renamePreset", title: "Rename Preset", value: str(obj(presets.find((item) => str(item.id) === selectedPresetId) ?? activePreset).name) });
                     }}>RENAME</button>
                     <button type="button" className="btn" disabled={presetIndex <= 0 || busy} onClick={() => {
-                        mutate(() => client.request("preset/reorder", { presetId, index: presetIndex - 1 }));
+                        mutate(() => client.request("preset/reorder", { presetId: selectedPresetId, index: presetIndex - 1 }));
                     }}>↑</button>
                     <button type="button" className="btn" disabled={presetIndex < 0 || presetIndex >= presets.length - 1 || busy} onClick={() => {
-                        mutate(() => client.request("preset/reorder", { presetId, index: presetIndex + 1 }));
+                        mutate(() => client.request("preset/reorder", { presetId: selectedPresetId, index: presetIndex + 1 }));
                     }}>↓</button>
-                    <button type="button" className="btn btn-danger" disabled={presets.length < 2 || busy} onClick={() => setConfirm("preset")}>DELETE</button>
+                    <button type="button" className="btn btn-danger" disabled={!selectedPresetId || busy} onClick={() => setConfirm("preset")}>DELETE</button>
                 </div>
                 <div className="split-list">
-                    {presets.map((preset) => (
-                        <button
+                    {presets.map((preset, index) => (
+                        <div
                             key={str(preset.id)}
-                            type="button"
-                            className={`split-row${str(preset.id) === presetId ? " selected" : ""}`}
-                            onClick={() => mutate(() => client.request("preset/select", {
+                            className={`split-row split-row-drag${str(preset.id) === selectedPresetId ? " selected" : ""}`}
+                            data-preset-index={index}
+                            onClick={() => setCursorPreset(str(preset.id))}
+                            onDoubleClick={() => mutate(() => client.request("preset/select", {
                                 bankId,
                                 presetId: str(preset.id)
                             }))}
                         >
-                            {str(preset.name)}
-                        </button>
+                            <span
+                                className="split-row-handle"
+                                onPointerDown={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    const startY = event.clientY;
+                                    const from = index;
+                                    const pointerId = event.pointerId;
+                                    (event.currentTarget as HTMLElement).setPointerCapture(pointerId);
+                                    const move = (moveEvent: PointerEvent) => {
+                                        if (moveEvent.pointerId !== pointerId) {
+                                            return;
+                                        }
+                                        const over = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
+                                        const bankEl = over?.closest("[data-bank-id]") as HTMLElement | null;
+                                        const presetEl = over?.closest("[data-preset-index]") as HTMLElement | null;
+                                        (event.currentTarget as HTMLElement).dataset.dropBank = bankEl?.dataset.bankId ?? "";
+                                        (event.currentTarget as HTMLElement).dataset.dropIndex = presetEl?.dataset.presetIndex ?? String(from);
+                                        void startY;
+                                    };
+                                    const up = (upEvent: PointerEvent) => {
+                                        if (upEvent.pointerId !== pointerId) {
+                                            return;
+                                        }
+                                        window.removeEventListener("pointermove", move);
+                                        window.removeEventListener("pointerup", up);
+                                        const handle = event.currentTarget as HTMLElement;
+                                        const dropBank = handle.dataset.dropBank ?? "";
+                                        const dropIndex = Number(handle.dataset.dropIndex);
+                                        if (dropBank && dropBank !== bankId) {
+                                            mutate(() => client.request("preset/move", {
+                                                presetId: str(preset.id),
+                                                bankId: dropBank,
+                                                index: 0
+                                            }));
+                                            return;
+                                        }
+                                        if (Number.isInteger(dropIndex) && dropIndex !== from) {
+                                            mutate(() => client.request("preset/reorder", {
+                                                presetId: str(preset.id),
+                                                index: dropIndex
+                                            }));
+                                        }
+                                    };
+                                    window.addEventListener("pointermove", move);
+                                    window.addEventListener("pointerup", up);
+                                }}
+                            >
+                                ☰
+                            </span>
+                            <span style={{ flex: 1, minWidth: 0 }}>{str(preset.name)}</span>
+                        </div>
                     ))}
                 </div>
             </section>
@@ -228,7 +320,7 @@ export function BanksView({
                         <div className="mfx-overlay-title danger">
                             {confirm === "bank"
                                 ? `Delete bank “${str(obj(activeBank).name)}”?`
-                                : `Delete preset “${str(obj(activePreset).name)}”?`}
+                                : `Delete preset “${str(obj(presets.find((item) => str(item.id) === selectedPresetId) ?? activePreset).name)}”?`}
                         </div>
                         <div className="row" style={{ justifyContent: "flex-end" }}>
                             <button type="button" className="btn" onClick={() => setConfirm(null)}>CANCEL</button>
@@ -238,7 +330,7 @@ export function BanksView({
                                 if (kind === "bank") {
                                     mutate(() => client.request("bank/delete", { bankId }));
                                 } else {
-                                    mutate(() => client.request("preset/delete", { presetId }));
+                                    mutate(() => client.request("preset/delete", { presetId: selectedPresetId }));
                                 }
                             }}>DELETE</button>
                         </div>

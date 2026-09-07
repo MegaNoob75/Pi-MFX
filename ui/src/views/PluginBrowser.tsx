@@ -99,7 +99,7 @@ export function PluginBrowser({
                             type="button"
                             className={`plugin-tile${selected === str(item.uri) ? " selected" : ""}`}
                             onClick={() => setSelected(str(item.uri))}
-                            onDoubleClick={() => onChoose(str(item.uri))}
+                            onDoubleClick={() => setSelected(str(item.uri))}
                         >
                             <strong>{str(item.name)}</strong>
                             <small>{[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}</small>

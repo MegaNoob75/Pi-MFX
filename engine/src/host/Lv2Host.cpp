@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 
 #if defined(PIMFX_HAVE_LILV)
@@ -249,6 +250,35 @@ struct Lv2Catalog::Impl {
     }
 };
 
+void loadUserBundles(LilvWorld* world, const std::string& directory) {
+    if (!world || directory.empty()) {
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec)) {
+        return;
+    }
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, ec)) {
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        std::string path = entry.path().string();
+        const std::string name = entry.path().filename().string();
+        if (name.size() < 4 || name.compare(name.size() - 4, 4, ".lv2") != 0) {
+            continue;
+        }
+        if (path.empty() || (path.back() != '/' && path.back() != '\\')) {
+            path += '/';
+        }
+        LilvNode* uri = lilv_new_file_uri(world, nullptr, path.c_str());
+        if (!uri) {
+            continue;
+        }
+        lilv_world_load_bundle(world, uri);
+        lilv_node_free(uri);
+    }
+}
+
 Lv2Catalog::Lv2Catalog() : impl_(std::make_unique<Impl>()) {}
 Lv2Catalog::~Lv2Catalog() = default;
 
@@ -284,6 +314,7 @@ bool Lv2Catalog::rescan(std::string& error) {
     }
 
     lilv_world_load_all(impl.world);
+    loadUserBundles(impl.world, userBundleDirectory_);
     impl.plugins = lilv_world_get_all_plugins(impl.world);
 
     std::vector<PluginInfo> discovered;
@@ -1000,6 +1031,10 @@ Json PluginInstance::saveState() const { return Json::object(); }
 void PluginInstance::loadState(const Json&) {}
 
 #endif
+
+void Lv2Catalog::setUserBundleDirectory(std::string directory) {
+    userBundleDirectory_ = std::move(directory);
+}
 
 const PluginInfo* Lv2Catalog::find(const std::string& uri) const {
     for (const PluginInfo& info : plugins_) {

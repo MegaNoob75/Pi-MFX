@@ -15,8 +15,8 @@ struct MidiPortInfo {
     std::string name;
     bool input = true;
     bool output = false;
-    /// Set when the device identifies itself as a Pi-MFX controller, so the UI
-    /// can preselect it instead of making the user guess.
+    /// Set when the name looks like a Pi-MFX / ESP32 board, so the UI can
+    /// highlight it. The user still has to select the device.
     bool looksLikeController = false;
 };
 
@@ -47,8 +47,8 @@ public:
 
     ~MidiInput();
 
-    /// Opens `port`, or the first device that looks like a controller when
-    /// `port` is empty. Returns false with a reason the UI can display.
+    /// Opens `port`. If `port` is empty and exactly one MIDI input exists, that
+    /// device is used. Otherwise the UI must pick a port.
     bool start(const std::string& port, std::string& error);
     void stop();
     bool isRunning() const { return running_.load(std::memory_order_acquire); }
@@ -64,10 +64,18 @@ public:
     static std::vector<MidiPortInfo> enumeratePorts();
 
 private:
+    bool startRaw(const std::string& port, std::string& error);
+    bool startSeq(int client, int port, std::string& error);
     void run();
+    void runRaw();
+    void runSeq();
 
     void* input_ = nullptr;   ///< snd_rawmidi_t*
     void* output_ = nullptr;  ///< snd_rawmidi_t*
+    void* seq_ = nullptr;     ///< snd_seq_t*
+    int seqOurPort_ = -1;
+    int seqPeerClient_ = -1;
+    int seqPeerPort_ = -1;
     std::string port_;
     mutable std::mutex portMutex_;
     std::mutex sendMutex_;

@@ -25,7 +25,7 @@ export type View =
     | SettingsPage
     | "about";
 
-type EditSubpage = "chain" | "controls" | "bindings";
+type EditSubpage = "chain" | "controls" | "bindings" | "io";
 
 const titles: Record<string, string> = {
     performance: "PERFORMANCE",
@@ -41,6 +41,7 @@ const titles: Record<string, string> = {
     keyboard: "KEYBOARD",
     ui: "PI-MFX UI",
     library: "LIBRARY",
+    plugins: "PLUGINS",
     backup: "BACKUP",
     system: "SYSTEM",
     about: "ABOUT"
@@ -63,7 +64,7 @@ export function App() {
     useEffect(() => installResponsiveSizing(), []);
 
     const settingsPages: SettingsPage[] = [
-        "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "backup", "system"
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "plugins", "backup", "system"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
     const snapshotMode = bool(engine.state.snapshotMode);
@@ -184,6 +185,9 @@ export function App() {
             if (editSubpage === "controls") {
                 return `EFFECT — ${editEffectTitle ?? "SETTINGS"}`;
             }
+            if (editSubpage === "io") {
+                return editEffectTitle ?? "INPUT / OUTPUT";
+            }
         }
         return titles[view] ?? "PI-MFX";
     }, [view, snapshotMode, editSubpage, editEffectTitle]);
@@ -191,7 +195,7 @@ export function App() {
     const shellBackVisible = view !== "performance" || snapshotMode;
 
     return (
-        <div className="app">
+        <div className="app mfx-app-root">
             <ThemeRoot ui={ui} />
             <header className="shell">
                 <button type="button" className="btn-mfx" onClick={() => {
@@ -295,7 +299,7 @@ export function App() {
                 )}
                 {view === "layout" && <LayoutEditorView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
-                    || view === "library" || view === "system" || view === "backup") && (
+                    || view === "library" || view === "plugins" || view === "system" || view === "backup") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}

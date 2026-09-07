@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { askText } from "../keyboard/ask";
 import type { EngineSnapshot } from "../api";
 import { findPreset } from "../api";
 import { num, obj, str, objects } from "../json";
@@ -17,8 +16,7 @@ const DEFAULT_SNAPSHOT_COLORS = [
 
 export function SnapshotManagerView({
     engine,
-    run,
-    onEdit
+    run
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
@@ -28,7 +26,6 @@ export function SnapshotManagerView({
     const preset = findPreset(state);
     const snapshots = objects(obj(preset).snapshots);
     const active = num(obj(preset).activeSnapshot, -1);
-    const slotCount = Math.max(SNAPSHOT_SLOTS, snapshots.length);
     const [renameIndex, setRenameIndex] = useState<number | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [message, setMessage] = useState("");
@@ -63,8 +60,8 @@ export function SnapshotManagerView({
                 Create/update captures the current live sound. Recall, rename, colour
                 and delete follow the same lifecycle as MultiFX.
             </div>
-            <div className="snapshot-grid" style={{ gridTemplateRows: `repeat(${Math.ceil(slotCount / 3)}, minmax(0, 1fr))` }}>
-                {Array.from({ length: slotCount }, (_, index) => {
+            <div className="snapshot-grid" style={{ gridTemplateRows: "repeat(2, minmax(0, 1fr))" }}>
+                {Array.from({ length: SNAPSHOT_SLOTS }, (_, index) => {
                     const snapshot = snapshots[index];
                     const selected = snapshot && index === active;
                     const color = str(obj(snapshot).color, DEFAULT_SNAPSHOT_COLORS[index] ?? "#22d3ee");
@@ -132,6 +129,11 @@ export function SnapshotManagerView({
                                     </div>
                                     <div className="snapshot-card-actions">
                                         <button type="button" className="btn btn-accent" onClick={() => {
+                                            if (selected) {
+                                                void run(() => client.request("preset/restoreLive"))
+                                                    .then(() => show("CLEARED • BASE PRESET"));
+                                                return;
+                                            }
                                             void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
                                                 .then(() => show(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} ACTIVE`));
                                         }}>RECALL</button>
@@ -139,9 +141,6 @@ export function SnapshotManagerView({
                                             void run(() => client.request("snapshot/update", { snapshotId: str(snapshot.id) }))
                                                 .then(() => show(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} UPDATED`));
                                         }}>UPDATE</button>
-                                        {onEdit && (
-                                            <button type="button" className="btn" onClick={() => onEdit(str(snapshot.id))}>EDIT</button>
-                                        )}
                                         <button type="button" className="btn" onClick={() => {
                                             setRenameIndex(index);
                                             setRenameValue(str(snapshot.name, `Snapshot ${index + 1}`));
@@ -177,25 +176,6 @@ export function SnapshotManagerView({
                         </div>
                     );
                 })}
-            </div>
-            <div className="row" style={{ padding: "8px 4px 0" }}>
-                <button
-                    type="button"
-                    className={`btn ${engine.state.snapshotMode ? "btn-active" : ""}`}
-                    onClick={() => void run(() => client.request("snapshot/mode", {
-                        enabled: !engine.state.snapshotMode
-                    }))}
-                >
-                    SNAPSHOT MODE
-                </button>
-                <button type="button" className="btn" onClick={() => {
-                    void askText("Snapshot name", `Snapshot ${snapshots.length + 1}`).then((name) => {
-                        if (name?.trim()) {
-                            void run(() => client.request("snapshot/capture", { name: name.trim() }))
-                                .then(() => show("SNAPSHOT CREATED"));
-                        }
-                    });
-                }}>CAPTURE</button>
             </div>
         </div>
     );

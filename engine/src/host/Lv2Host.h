@@ -98,6 +98,10 @@ public:
     /// usable until the new one is ready.
     bool rescan(std::string& error);
 
+    /// Extra bundle directory owned by Pi-MFX (`/var/lib/pimfx/lv2`). Loaded
+    /// in addition to the system LV2 path after each rescan.
+    void setUserBundleDirectory(std::string directory);
+
     bool available() const;
 
     const std::vector<PluginInfo>& plugins() const { return plugins_; }
@@ -115,6 +119,7 @@ private:
     std::unique_ptr<Impl> impl_;
     std::vector<PluginInfo> plugins_;
     UridMap urids_;
+    std::string userBundleDirectory_;
 };
 
 /// A live plugin.

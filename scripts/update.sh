@@ -48,7 +48,7 @@ else
 fi
 
 if ! command -v cmake >/dev/null 2>&1; then
-    die "cmake is not installed. This Pi has not been set up yet. Run:  sudo bash ./scripts/install.sh --with-plugins"
+    die "cmake is not installed. This Pi has not been set up yet. Run:  sudo bash ./scripts/pimfx.sh"
 fi
 
 log "Building the engine"
@@ -81,7 +81,21 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         -e "s|@WEB_ROOT@|$WEB_ROOT|g" \
         -e "s|@PORT@|$PIMFX_PORT|g" \
         "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
+    if [[ -f "$REPO_DIR/scripts/plugin-helper.py" ]]; then
+        log "Refreshing the plugin helper"
+        install -d -o "$PIMFX_USER" -g "$PIMFX_USER" "$DATA_ROOT/lv2"
+        install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugin-helper.py"
+        sed -e "s|@USER@|$PIMFX_USER|g" \
+            -e "s|@PREFIX@|$PREFIX|g" \
+            -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
+            "$REPO_DIR/systemd/pimfx-plugin-helper.service.in" > /etc/systemd/system/pimfx-plugin-helper.service
+    fi
     systemctl daemon-reload
+    if [[ -f /etc/systemd/system/pimfx-plugin-helper.service ]]; then
+        systemctl enable pimfx-plugin-helper.service >/dev/null 2>&1 || true
+        systemctl restart pimfx-plugin-helper.service \
+            || warn "plugin helper did not start; apt installs from the UI will be unavailable"
+    fi
     if [[ -f "$REPO_DIR/systemd/95-pimfx-audio.rules" ]]; then
         log "Refreshing audio udev rules"
         install -Dm644 "$REPO_DIR/systemd/95-pimfx-audio.rules" /etc/udev/rules.d/95-pimfx-audio.rules
@@ -93,7 +107,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     sleep 1
     systemctl --no-pager --full status pimfx.service || true
 else
-    die "pimfx is not installed yet. First time on this Pi: sudo bash ./scripts/install.sh --with-plugins"
+    die "pimfx is not installed yet. First time on this Pi: sudo bash ./scripts/pimfx.sh"
 fi
 
 ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"

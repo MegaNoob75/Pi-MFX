@@ -126,6 +126,27 @@ export function snapRect(rect: LayoutRect, snap = 0.02): LayoutRect {
     });
 }
 
+export function snapRectToPixels(
+    rect: LayoutRect,
+    canvasWidth: number,
+    canvasHeight: number,
+    snapPixels: number
+): LayoutRect {
+    if (snapPixels <= 0) {
+        return clampRect(rect);
+    }
+    const stepX = snapPixels / Math.max(1, canvasWidth);
+    const stepY = snapPixels / Math.max(1, canvasHeight);
+    const quantizeX = (value: number) => Math.round(value / stepX) * stepX;
+    const quantizeY = (value: number) => Math.round(value / stepY) * stepY;
+    return clampRect({
+        x: quantizeX(rect.x),
+        y: quantizeY(rect.y),
+        width: quantizeX(rect.width),
+        height: quantizeY(rect.height)
+    });
+}
+
 export function analogMinSize(kind: string): { width: number; height: number } {
     if (kind === "slider" || kind === "expression") {
         return { width: 0.1, height: 0.22 };

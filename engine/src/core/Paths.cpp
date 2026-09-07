@@ -44,6 +44,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.modelsDir = joinPath(root, "models");
     paths.irsDir = joinPath(root, "irs");
     paths.downloadsDir = joinPath(root, "downloads");
+    paths.lv2Dir = joinPath(root, "lv2");
 
     paths.webRoot = environment("PIMFX_WEB_ROOT");
     if (paths.webRoot.empty()) {
@@ -58,6 +59,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.modelsDir);
     makeDirectories(paths.irsDir);
     makeDirectories(paths.downloadsDir);
+    makeDirectories(paths.lv2Dir);
     return paths;
 }
 
@@ -66,6 +68,7 @@ std::string Paths::banksDir() const { return joinPath(dataRoot, "banks"); }
 std::string Paths::controllerFile() const { return joinPath(dataRoot, "controller.json"); }
 std::string Paths::themesDir() const { return joinPath(dataRoot, "themes"); }
 std::string Paths::credentialsFile() const { return joinPath(dataRoot, "credentials.json"); }
+std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json"); }
 
 bool fileExists(const std::string& path) {
     std::error_code ec;

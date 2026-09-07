@@ -1,7 +1,7 @@
-import type { CSSProperties } from "react";
-import { useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { findBank, findPreset, formatMs, isAnalogKind, peakDb, type EngineSnapshot } from "../api";
+import { findBank, findPreset, isAnalogKind, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
@@ -14,7 +14,20 @@ import {
     readStatusWidgets,
     unplacedIds
 } from "../layout";
-import { analogFeedback, PerformanceControl, type PerformanceTile } from "./PerformanceControl";
+import {
+    analogFeedback,
+    PerformanceControl,
+    type AnalogFeedback,
+    type LightState,
+    type PerformanceTile,
+    type SwitchRole
+} from "./PerformanceControl";
+
+const SNAPSHOT_GRID_COLUMNS = 3;
+const SNAPSHOT_GRID_ROWS = 2;
+const SNAPSHOT_SLOT_COUNT = SNAPSHOT_GRID_COLUMNS * SNAPSHOT_GRID_ROWS;
+const PRESET_DRAG_THRESHOLD = 24;
+const PRESET_BASELINE_KEY = "pimfx-preset-baseline";
 
 type PresetMenu = {
     kind: "preset";
@@ -41,14 +54,32 @@ type SnapshotMenu = {
     kind: "snapshot";
     snapshotId: string;
     index: number;
+    empty?: boolean;
 };
 
 type TileMenu = PresetMenu | AssignMenu | DeleteMenu | SnapshotMenu;
 
+type PresetDrag = {
+    pointerId: number;
+    controlId: string;
+    slotIndex: number;
+    name: string;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    offsetX: number;
+    offsetY: number;
+    dragging: boolean;
+    holdTimer: number | null;
+    holdFired: boolean;
+};
+
 export function PerformanceView({
     engine,
     run,
-    onSnapshots,
     onEdit,
     onEditSnapshot
 }: {
@@ -76,21 +107,75 @@ export function PerformanceView({
     const bypassAll = bool(state.bypassAll);
     const snapshotMode = bool(state.snapshotMode);
     const tuner = obj(meters.tuner);
-    const showTuner = bool(ui.showTuner, true);
-    const showLatency = bool(ui.showLatencyMeter, true);
     const layoutMode = str(controller.layoutMode, "grid");
+    const useFreeform = layoutMode === "freeform" && !snapshotMode;
     const mirror = bool(controller.mirrorLayoutOnScreen, true);
     const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
     const snapshotWriteBlocked = snapshotMode || activeSnapshot >= 0;
+    const feedbackOn = loadUiBehavior().parameterFeedback;
 
     const positions = obj(state.controlPositions);
     const chain = objects(state.chain);
-    const feedbackOn = loadUiBehavior().parameterFeedback;
     const [bankMenuOpen, setBankMenuOpen] = useState(false);
     const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menu, setMenu] = useState<TileMenu | null>(null);
     const [renameValue, setRenameValue] = useState("");
+    const [toast, setToast] = useState("");
+    const [pressedId, setPressedId] = useState("");
+    const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
+    const [dropTargetId, setDropTargetId] = useState("");
+    const [dragOverTrash, setDragOverTrash] = useState(false);
+    const [feedback, setFeedback] = useState<AnalogFeedback | null>(null);
+    const [selectedPresetSlot, setSelectedPresetSlot] = useState(0);
+    const dragRef = useRef<PresetDrag | null>(null);
+    const toastTimer = useRef<number | null>(null);
+    const feedbackTimer = useRef<number | null>(null);
+    const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
+    const presetModified = useMemo(
+        () => isPresetModified(str(state.activePresetId), chainSignature),
+        [state.activePresetId, chainSignature]
+    );
+
+    const showFeedback = (next: AnalogFeedback | null) => {
+        setFeedback(next);
+        if (feedbackTimer.current !== null) {
+            window.clearTimeout(feedbackTimer.current);
+            feedbackTimer.current = null;
+        }
+        if (!next) {
+            return;
+        }
+        const duration = Number.parseInt(
+            getComputedStyle(document.documentElement).getPropertyValue("--mfx-feedback-duration-ms"),
+            10
+        );
+        feedbackTimer.current = window.setTimeout(
+            () => setFeedback(null),
+            Number.isFinite(duration) ? duration : 2600
+        );
+    };
+
+    const showToast = (text: string) => {
+        setToast(text);
+        if (toastTimer.current !== null) {
+            window.clearTimeout(toastTimer.current);
+        }
+        toastTimer.current = window.setTimeout(() => setToast(""), 1800);
+    };
+
+    useEffect(() => () => {
+        if (toastTimer.current !== null) {
+            window.clearTimeout(toastTimer.current);
+        }
+        if (feedbackTimer.current !== null) {
+            window.clearTimeout(feedbackTimer.current);
+        }
+    }, []);
+
+    useEffect(() => {
+        rememberPresetBaseline(str(state.activePresetId), chainSignature);
+    }, [state.activePresetId]);
 
     const assigned = (controlId: string) => {
         const bankMap = obj(obj(controller.presetAssignments)[str(bank?.id)]);
@@ -125,19 +210,259 @@ export function PerformanceView({
         setMenu({ kind: "preset", controlId, slotIndex, presetId, canAssign });
     };
 
+    const roleForAction = (action: string): SwitchRole => {
+        if (action === "selectPreset") {
+            return "preset";
+        }
+        if (action === "bankUp" || action === "bankDown") {
+            return "navigation";
+        }
+        if (action === "snapshotMode") {
+            return "snapshot";
+        }
+        if (action === "bypassAll") {
+            return "bypass";
+        }
+        return "utility";
+    };
+
+    const valueForAction = (action: string, presetName: string, empty: boolean) => {
+        if (action === "selectPreset") {
+            return empty ? "+" : presetName || "+";
+        }
+        if (action === "bankUp") {
+            return "BANK UP";
+        }
+        if (action === "bankDown") {
+            return "BANK DOWN";
+        }
+        if (action === "bypassAll") {
+            return bypassAll ? "CHAIN ACTIVE" : "CHAIN BYPASS";
+        }
+        if (action === "snapshotMode") {
+            return snapshotMode ? "EXIT SNAPSHOTS" : "SNAPSHOT MODE";
+        }
+        if (action === "none" || action === "") {
+            return "UNASSIGNED";
+        }
+        return action.toUpperCase();
+    };
+
+    const holdLabelFor = (holdAction: string) => {
+        if (!holdAction || holdAction === "none") {
+            return undefined;
+        }
+        if (holdAction === "bankUp") {
+            return "BANK UP";
+        }
+        if (holdAction === "bankDown") {
+            return "BANK DOWN";
+        }
+        if (holdAction === "bypassAll") {
+            return "CHAIN BYPASS";
+        }
+        if (holdAction === "snapshotMode") {
+            return "SNAPSHOT MODE";
+        }
+        if (holdAction === "selectPreset") {
+            return "PRESET";
+        }
+        return holdAction.replace(/([A-Z])/g, " $1").trim().toUpperCase();
+    };
+
+    const lightForPreset = (isActive: boolean): LightState => {
+        if (!isActive) {
+            return "inactive";
+        }
+        if (bypassAll) {
+            return "bypass";
+        }
+        if (snapshotMode || activeSnapshot >= 0) {
+            return "snapshot";
+        }
+        if (presetModified) {
+            return "modified";
+        }
+        return "active";
+    };
+
+    const isTrashAtPoint = (x: number, y: number) => {
+        const trash = document.querySelector("[data-mfx-performance-trash='true']") as HTMLElement | null;
+        if (!trash) {
+            return false;
+        }
+        const rect = trash.getBoundingClientRect();
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
+
+    const dropTargetAtPoint = (x: number, y: number) => {
+        const element = document.elementFromPoint(x, y) as HTMLElement | null;
+        const switchEl = element?.closest("[data-mfx-performance-preset-index]") as HTMLElement | null;
+        return switchEl?.dataset.mfxPerformancePresetIndex ?? "";
+    };
+
+    const swapAssignments = (sourceId: string, targetId: string) => {
+        const next = bankMap();
+        const sourcePreset = str(next[sourceId]);
+        const targetPreset = str(next[targetId]);
+        if (!sourcePreset) {
+            return;
+        }
+        if (targetPreset) {
+            next[sourceId] = targetPreset;
+        } else {
+            delete next[sourceId];
+        }
+        next[targetId] = sourcePreset;
+        void run(() => saveAssignments(next)).then(() => {
+            showToast(targetPreset ? "Preset assignments swapped" : "Preset moved to empty switch");
+        });
+    };
+
+    const clearAssignment = (controlId: string) => {
+        const next = bankMap();
+        delete next[controlId];
+        void run(() => saveAssignments(next)).then(() => showToast("Assignment cleared — preset kept"));
+    };
+
+    const beginPresetDrag = (event: ReactPointerEvent<HTMLButtonElement>, controlId: string, slotIndex: number, name: string) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const candidate: PresetDrag = {
+            pointerId: event.pointerId,
+            controlId,
+            slotIndex,
+            name,
+            startX: event.clientX,
+            startY: event.clientY,
+            x: event.clientX,
+            y: event.clientY,
+            width: rect.width,
+            height: rect.height,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            dragging: false,
+            holdTimer: null,
+            holdFired: false
+        };
+        dragRef.current = candidate;
+        try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+            // optional
+        }
+        candidate.holdTimer = window.setTimeout(() => {
+            if (dragRef.current?.pointerId !== candidate.pointerId || dragRef.current.dragging) {
+                return;
+            }
+            dragRef.current.holdFired = true;
+            openPresetMenu(controlId, slotIndex, assigned(controlId), true);
+        }, 600);
+    };
+
+    const movePresetDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        const candidate = dragRef.current;
+        if (!candidate || candidate.pointerId !== event.pointerId) {
+            return;
+        }
+        const travel = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY);
+        if (!candidate.dragging && travel >= PRESET_DRAG_THRESHOLD) {
+            candidate.dragging = true;
+            if (candidate.holdTimer !== null) {
+                window.clearTimeout(candidate.holdTimer);
+                candidate.holdTimer = null;
+            }
+        }
+        if (!candidate.dragging) {
+            return;
+        }
+        event.preventDefault();
+        candidate.x = event.clientX;
+        candidate.y = event.clientY;
+        const overTrash = isTrashAtPoint(event.clientX, event.clientY);
+        setPresetDrag({ ...candidate });
+        setDragOverTrash(overTrash);
+        setDropTargetId(overTrash ? "" : dropTargetAtPoint(event.clientX, event.clientY));
+    };
+
+    const endPresetDrag = (event: ReactPointerEvent<HTMLButtonElement>, onTap: () => void) => {
+        const candidate = dragRef.current;
+        if (!candidate || candidate.pointerId !== event.pointerId) {
+            return;
+        }
+        if (candidate.holdTimer !== null) {
+            window.clearTimeout(candidate.holdTimer);
+        }
+        const wasDragging = candidate.dragging;
+        const holdFired = candidate.holdFired;
+        const overTrash = wasDragging && isTrashAtPoint(event.clientX, event.clientY);
+        const dropIndex = overTrash ? "" : dropTargetAtPoint(event.clientX, event.clientY);
+        dragRef.current = null;
+        setPresetDrag(null);
+        setDropTargetId("");
+        setDragOverTrash(false);
+        setPressedId("");
+        if (holdFired) {
+            return;
+        }
+        if (wasDragging) {
+            event.preventDefault();
+            if (overTrash) {
+                clearAssignment(candidate.controlId);
+                return;
+            }
+            const target = dropIndex === "" ? undefined : visibleControls[Number(dropIndex)];
+            const targetId = str(obj(target).id);
+            if (targetId && targetId !== candidate.controlId) {
+                swapAssignments(candidate.controlId, targetId);
+            }
+            return;
+        }
+        onTap();
+    };
+
     const visibleControls = controls.filter((control) => !hidden.has(str(control.id)));
     const useConfigured = visibleControls.length > 0 && (mirror || controls.length > 0);
 
     const tiles: PerformanceTile[] = snapshotMode
-        ? snapshots.map((snapshot, index) => ({
-            id: str(snapshot.id),
-            label: str(snapshot.name, `SNAP ${index + 1}`),
-            active: activeSnapshot === index,
-            color: str(snapshot.color),
-            rect: gridCellRect(index, 3, 2),
-            onPress: () => void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) })),
-            onLongPress: () => setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index })
-        }))
+        ? Array.from({ length: SNAPSHOT_SLOT_COUNT }, (_, index) => {
+            const snapshot = snapshots[index];
+            const empty = !snapshot;
+            return {
+                id: snapshot ? str(snapshot.id) : `empty-snap-${index}`,
+                switchLabel: `SNAPSHOT ${index + 1}`,
+                valueText: empty ? "EMPTY" : str(snapshot.name, `Snapshot ${index + 1}`),
+                empty: false,
+                role: "snapshot" as const,
+                lightState: (!empty && activeSnapshot === index ? "snapshot" : "inactive") as LightState,
+                active: !empty && activeSnapshot === index,
+                rect: gridCellRect(index, SNAPSHOT_GRID_COLUMNS, SNAPSHOT_GRID_ROWS),
+                onPress: () => {
+                    if (empty) {
+                        showToast(`SNAPSHOT ${index + 1} IS EMPTY — HOLD TO CREATE`);
+                        return;
+                    }
+                    if (activeSnapshot === index) {
+                        void run(() => client.request("preset/restoreLive")).then(() => showToast("CLEARED • BASE PRESET"));
+                        return;
+                    }
+                    void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
+                        .then(() => showToast(`${str(snapshot.name, `SNAPSHOT ${index + 1}`)} ACTIVE`));
+                },
+                onLongPress: () => {
+                    if (empty) {
+                        void run(async () => {
+                            const result = await client.request("snapshot/capture", { name: `Snapshot ${index + 1}` });
+                            const snapshotId = str(result.snapshotId);
+                            if (snapshotId) {
+                                onEditSnapshot?.(snapshotId);
+                            }
+                        });
+                        return;
+                    }
+                    setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index });
+                }
+            };
+        })
         : useConfigured
             ? visibleControls.map((control, index) => {
                 const binding = obj(control.binding);
@@ -150,6 +475,8 @@ export function PerformanceView({
                 const presetId = assignedPreset || str(binding.presetId);
                 const presetItem = presets.find((entry) => str(entry.id) === presetId);
                 const minSize = analogMinSize(kind);
+                const empty = canAssign && !presetId;
+                const analogInfo = analog ? analogFeedback(control, chain) : null;
                 const active = presetId === str(state.activePresetId)
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
@@ -157,16 +484,34 @@ export function PerformanceView({
                         obj(chain.find((slot) => str(slot.id) === str(binding.slotId))).enabled,
                         true
                     ));
+                const slotIndex = index;
                 return {
                     id: controlId,
-                    label: !analog && canAssign && presetItem ? str(presetItem.name) : str(control.label, controlId),
+                    switchLabel: str(control.label, controlId),
+                    valueText: analog
+                        ? analogInfo?.value || ""
+                        : valueForAction(action, str(obj(presetItem).name), empty),
+                    holdLabel: analog ? undefined : (empty ? undefined : holdLabelFor(str(binding.holdAction))),
+                    empty,
+                    role: analog ? "utility" : roleForAction(action),
+                    lightState: action === "selectPreset" ? lightForPreset(active) : (active ? "active" : "inactive"),
                     active,
-                    color: "",
-                    kind,
                     analog,
-                    value: num(positions[controlId], analog ? 0 : (active ? 1 : 0)),
-                    feedback: feedbackOn ? analogFeedback(control, chain) : "",
-                    rect: layoutMode === "freeform"
+                    analogSource: analogInfo?.source,
+                    analogFunction: analog && analogInfo
+                        ? (analogInfo.effect ? `${analogInfo.effect} · ${analogInfo.parameter}` : analogInfo.parameter)
+                        : undefined,
+                    analogValue: analogInfo?.value,
+                    assigned: analog ? analogInfo?.parameter !== "UNASSIGNED" : undefined,
+                    kind,
+                    value: num(positions[controlId], analog ? analogInfo?.range ?? 0 : (active ? 1 : 0)),
+                    presetSlotIndex: canAssign ? slotIndex : undefined,
+                    dropTarget: dropTargetId === String(slotIndex),
+                    dragging: presetDrag?.controlId === controlId && presetDrag.dragging,
+                    pressed: pressedId === controlId,
+                    encoderSelected: canAssign && slotIndex === selectedPresetSlot,
+                    freeform: useFreeform,
+                    rect: useFreeform
                         ? clampRect({
                             x: num(control.x, gridCellRect(index, columns, rows).x),
                             y: num(control.y, gridCellRect(index, columns, rows).y),
@@ -175,6 +520,10 @@ export function PerformanceView({
                         })
                         : gridCellRect(index, columns, rows),
                     onPress: () => {
+                        if (empty) {
+                            openPresetMenu(controlId, slotIndex, "", true);
+                            return;
+                        }
                         if (canAssign && presetId) {
                             void run(() => client.request("preset/select", {
                                 bankId: str(obj(bank).id),
@@ -187,25 +536,45 @@ export function PerformanceView({
                     },
                     onValue: analog
                         ? (value: number) => {
-                            void client.request("controller/value", {
-                                controlId,
-                                value
-                            }).catch(() => undefined);
+                            void client.request("controller/value", { controlId, value }).catch(() => undefined);
                         }
                         : undefined,
-                    onLongPress: canAssign || analog
-                        ? () => openPresetMenu(controlId, index, presetId, true)
+                    onLongPress: canAssign
+                        ? () => openPresetMenu(controlId, slotIndex, presetId, true)
+                        : undefined,
+                    onFeedback: analog && feedbackOn ? showFeedback : undefined,
+                    onPresetPointerDown: canAssign && presetId
+                        ? (event) => {
+                            setPressedId(controlId);
+                            beginPresetDrag(event, controlId, slotIndex, str(obj(presetItem).name, "Preset"));
+                        }
+                        : undefined,
+                    onPresetPointerMove: canAssign && presetId ? movePresetDrag : undefined,
+                    onPresetPointerUp: canAssign && presetId
+                        ? (event) => {
+                            endPresetDrag(event, () => {
+                                void run(() => client.request("preset/select", {
+                                    bankId: str(obj(bank).id),
+                                    presetId
+                                }));
+                            });
+                        }
                         : undefined
                 };
             })
             : Array.from({ length: Math.min(switchCount, rows * columns) }, (_, index) => {
                 const item = presets[index];
                 const presetId = item ? str(item.id) : "";
+                const empty = !item;
                 return {
                     id: item ? str(item.id) : `empty-${index}`,
-                    label: item ? str(item.name) : "—",
-                    active: !!(item && str(item.id) === str(state.activePresetId)),
-                    color: "",
+                    switchLabel: `SW ${index + 1}`,
+                    valueText: empty ? "+" : str(item.name),
+                    empty,
+                    role: "preset" as const,
+                    lightState: lightForPreset(!empty && str(item.id) === str(state.activePresetId)),
+                    active: !!(!empty && str(item.id) === str(state.activePresetId)),
+                    encoderSelected: index === selectedPresetSlot,
                     rect: gridCellRect(index, columns, rows),
                     onPress: () => {
                         if (item) {
@@ -218,6 +587,10 @@ export function PerformanceView({
                     onLongPress: () => openPresetMenu(item ? str(item.id) : `empty-${index}`, index, presetId, false)
                 };
             });
+
+    const stageTiles = snapshotMode || useFreeform
+        ? tiles
+        : tiles.filter((tile) => !tile.analog);
 
     const presetOptions = (current: PresetMenu) => {
         if (!current.presetId) {
@@ -281,7 +654,9 @@ export function PerformanceView({
                     return;
                 }
                 closeMenu();
-                void run(() => client.request("preset/save"));
+                void run(() => client.request("preset/save")).then(() => {
+                    rememberPresetBaseline(str(state.activePresetId), signatureForChain(chain), true);
+                });
                 break;
             case "Assign Preset to This Switch":
             case "Assign Different Preset":
@@ -289,9 +664,7 @@ export function PerformanceView({
                 break;
             case "Remove From Switch": {
                 closeMenu();
-                const next = bankMap();
-                delete next[current.controlId];
-                void run(() => saveAssignments(next));
+                clearAssignment(current.controlId);
                 break;
             }
             case "Create New Preset":
@@ -354,203 +727,249 @@ export function PerformanceView({
 
     const assignPreset = (presetId: string, controlId: string) => {
         closeMenu();
-        void run(() => saveAssignments({ ...bankMap(), [controlId]: presetId }));
+        void run(() => saveAssignments({ ...bankMap(), [controlId]: presetId }))
+            .then(() => showToast("Preset assigned to switch"));
     };
 
     const selectedPreset = menu?.kind === "preset"
         ? presets.find((entry) => str(entry.id) === menu.presetId)
         : undefined;
 
+    const widgetValues = {
+        bank: str(obj(bank).name, "—"),
+        preset: str(obj(preset).name, "—"),
+        dsp: `${(num(meters.dspLoad) * 100).toFixed(0)}%`,
+        xruns: `${num(meters.xruns)}`,
+        audio: bool(meters.running, bool(state.audioRunning)) ? "RUN" : "STOP",
+        bypass: bypassAll ? "ON" : "OFF",
+        snaps: snapshotMode ? "ON" : "OFF",
+        tuner: bool(tuner.valid)
+            ? `${str(tuner.note)} ${num(tuner.cents) >= 0 ? "+" : ""}${num(tuner.cents).toFixed(0)}¢`
+            : "—"
+    };
+
+    const selectBankId = (id: string) => {
+        setBankMenuOpen(false);
+        const item = banks.find((entry) => str(entry.id) === id);
+        const first = objects(obj(item).presets)[0];
+        if (first) {
+            void run(() => client.request("preset/select", {
+                bankId: id,
+                presetId: str(first.id)
+            }));
+        }
+    };
+
+    const selectPresetId = (id: string) => {
+        setPresetMenuOpen(false);
+        void run(() => client.request("preset/select", {
+            bankId: str(obj(bank).id),
+            presetId: id
+        }));
+    };
+
+    const bankPicker = (
+        <NamePicker
+            variant={useFreeform ? "freeform" : "grid-bank"}
+            label="CURRENT BANK"
+            value={`${str(obj(bank).name, "No Bank")} \u25BE`}
+            open={bankMenuOpen}
+            onToggle={() => {
+                setPresetMenuOpen(false);
+                setBankMenuOpen((open) => !open);
+            }}
+            options={banks.map((item) => ({
+                id: str(item.id),
+                name: str(item.name),
+                selected: str(item.id) === str(obj(bank).id)
+            }))}
+            onPick={selectBankId}
+        />
+    );
+
+    const presetPicker = (
+        <NamePicker
+            variant={useFreeform ? "freeform" : "grid-preset"}
+            label="ACTIVE PRESET"
+            value={`${str(obj(preset).name, "No Preset")} \u25BE`}
+            open={presetMenuOpen}
+            onToggle={() => {
+                setBankMenuOpen(false);
+                setPresetMenuOpen((open) => !open);
+            }}
+            options={presets.map((item) => ({
+                id: str(item.id),
+                name: str(item.name),
+                selected: str(item.id) === str(state.activePresetId)
+            }))}
+            onPick={selectPresetId}
+        />
+    );
+
+    const presetSlotCount = snapshotMode
+        ? SNAPSHOT_SLOT_COUNT
+        : tiles.filter((tile) => tile.presetSlotIndex != null).length || tiles.length;
+
+    useEffect(() => {
+        setSelectedPresetSlot((current) => Math.min(current, Math.max(0, presetSlotCount - 1)));
+    }, [presetSlotCount]);
+
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            const target = event.target as HTMLElement | null;
+            if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
+                return;
+            }
+            if (menu || bankMenuOpen || presetMenuOpen) {
+                return;
+            }
+            if (!["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) {
+                return;
+            }
+            event.preventDefault();
+            if (event.key === "Escape") {
+                setSelectedPresetSlot(0);
+                return;
+            }
+            if (event.key === "Enter" && !event.repeat) {
+                const tile = tiles.find((item) => item.presetSlotIndex === selectedPresetSlot) ?? tiles[selectedPresetSlot];
+                tile?.onPress();
+                return;
+            }
+            const direction = event.key === "ArrowDown" ? 1 : -1;
+            const next = selectedPresetSlot + direction;
+            if (next >= 0 && next < presetSlotCount) {
+                setSelectedPresetSlot(next);
+                return;
+            }
+            const bankIndex = banks.findIndex((item) => str(item.id) === str(obj(bank).id));
+            const neighbour = banks[bankIndex + direction];
+            if (!neighbour) {
+                return;
+            }
+            const neighbourPresets = objects(obj(neighbour).presets);
+            const pick = direction > 0 ? neighbourPresets[0] : neighbourPresets[neighbourPresets.length - 1];
+            if (!pick) {
+                return;
+            }
+            setSelectedPresetSlot(direction > 0 ? 0 : Math.max(0, presetSlotCount - 1));
+            void run(() => client.request("preset/select", {
+                bankId: str(neighbour.id),
+                presetId: str(pick.id)
+            }));
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [
+        menu,
+        bankMenuOpen,
+        presetMenuOpen,
+        tiles,
+        selectedPresetSlot,
+        presetSlotCount,
+        banks,
+        bank,
+        client,
+        run
+    ]);
+
     return (
         <div className="performance">
-            <div className="panel identity">
-                <div className="identity-select">
-                    <div className="field-label">CURRENT BANK</div>
-                    <button type="button" className="identity-value" onClick={() => {
-                        setPresetMenuOpen(false);
-                        setBankMenuOpen((open) => !open);
-                    }}>
-                        {`${str(obj(bank).name, "No Bank")} \u25BE`}
-                    </button>
-                    {bankMenuOpen && (
-                        <div className="identity-menu">
-                            {banks.map((item) => (
-                                <button
-                                    key={str(item.id)}
-                                    type="button"
-                                    className={`mfx-overlay-option${str(item.id) === str(obj(bank).id) ? " selected" : ""}`}
-                                    onClick={() => {
-                                        setBankMenuOpen(false);
-                                        const first = objects(item.presets)[0];
-                                        if (first) {
-                                            void run(() => client.request("preset/select", {
-                                                bankId: str(item.id),
-                                                presetId: str(first.id)
-                                            }));
-                                        }
-                                    }}
-                                >
-                                    {str(item.name)}
-                                </button>
-                            ))}
-                        </div>
-                    )}
+            {!useFreeform && (
+                <div className="performance-header">
+                    {bankPicker}
+                    <div className="performance-header-split">
+                        {presetPicker}
+                    </div>
                 </div>
-                <div className="identity-select">
-                    <div className="field-label">ACTIVE PRESET</div>
-                    <button type="button" className="identity-value" onClick={() => {
-                        setBankMenuOpen(false);
-                        setPresetMenuOpen((open) => !open);
-                    }}>
-                        {`${str(obj(preset).name, "No Preset")} \u25BE`}
-                    </button>
-                    {presetMenuOpen && (
-                        <div className="identity-menu">
-                            {presets.map((item) => (
-                                <button
-                                    key={str(item.id)}
-                                    type="button"
-                                    className={`mfx-overlay-option${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
-                                    onClick={() => {
-                                        setPresetMenuOpen(false);
-                                        void run(() => client.request("preset/select", {
-                                            bankId: str(obj(bank).id),
-                                            presetId: str(item.id)
-                                        }));
-                                    }}
-                                >
-                                    {str(item.name)}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                </div>
-                <div className="row identity-actions">
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("bank/step", { delta: -1 }))}>BANK −</button>
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("bank/step", { delta: 1 }))}>BANK +</button>
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("preset/step", { delta: -1 }))}>PRESET −</button>
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("preset/step", { delta: 1 }))}>PRESET +</button>
-                    <button
-                        type="button"
-                        className={`btn ${bypassAll ? "btn-danger" : ""}`}
-                        onClick={() => void run(() => client.request("chain/bypass", { bypassed: !bypassAll }))}
-                    >
-                        {bypassAll ? "BYPASSED" : "BYPASS"}
-                    </button>
-                    <button
-                        type="button"
-                        className={`btn ${snapshotMode ? "btn-active" : ""}`}
-                        onClick={() => void run(() => client.request("snapshot/mode", { enabled: !snapshotMode }))}
-                    >
-                        SNAPS
-                    </button>
-                    <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("tap"))}>
-                        TAP {num(obj(preset).tempo, 120).toFixed(1)}
-                    </button>
-                </div>
-            </div>
+            )}
 
-            <div className={`performance-stage ${layoutMode}`}>
-                {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
+            <div className={`performance-stage ${useFreeform ? "freeform" : "grid"}`}>
+                {useFreeform && STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                     const widget = widgets[id];
-                    const text = widgetText(id, {
-                        bank: str(obj(bank).name, "—"),
-                        preset: str(obj(preset).name, "—"),
-                        dsp: `${(num(meters.dspLoad) * 100).toFixed(0)}%`,
-                        xruns: `${num(meters.xruns)}`,
-                        audio: bool(meters.running, bool(state.audioRunning)) ? "RUN" : "STOP",
-                        bypass: bypassAll ? "ON" : "OFF",
-                        snaps: snapshotMode ? "ON" : "OFF",
-                        tuner: bool(tuner.valid)
-                            ? `${str(tuner.note)} ${num(tuner.cents) >= 0 ? "+" : ""}${num(tuner.cents).toFixed(0)}¢`
-                            : "—"
-                    });
                     return (
                         <div key={id} className="status-widget" style={rectStyle(widget.rect)}>
-                            {widget.showLabel && <div className="field-label">{STATUS_WIDGET_LABELS[id]}</div>}
-                            <strong className="marquee">{text}</strong>
+                            {id === "currentBank" ? bankPicker
+                                : id === "activePreset" ? presetPicker
+                                    : (
+                                        <>
+                                            {widget.showLabel && (
+                                                <div className="field-label mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
+                                            )}
+                                            <strong className="marquee mfx-performance-ui-value">{widgetText(id, widgetValues)}</strong>
+                                        </>
+                                    )}
                         </div>
                     );
                 })}
 
-                {layoutMode === "grid"
-                    ? (
-                        <div
-                            className="switch-grid"
-                            style={{
-                                gridTemplateColumns: `repeat(${snapshotMode ? Math.min(3, Math.max(1, snapshots.length || 1)) : columns}, minmax(0, 1fr))`,
-                                gridTemplateRows: `repeat(${snapshotMode ? 2 : rows}, minmax(88px, 1fr))`
-                            }}
-                        >
-                            {tiles.map((tile) => (
-                                <PerformanceControl key={tile.id} tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
-                            ))}
-                        </div>
-                    )
-                    : tiles.map((tile) => (
+                {useFreeform
+                    ? stageTiles.map((tile) => (
                         <div key={tile.id} className="freeform-slot" style={tile.rect ? rectStyle(tile.rect) : undefined}>
                             <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
                         </div>
-                    ))}
-            </div>
-
-            <div className="row">
-                {snapshots.map((snapshot, index) => (
-                    <button
-                        key={str(snapshot.id)}
-                        type="button"
-                        className={`btn ${activeSnapshot === index ? "btn-active" : ""}`}
-                        style={str(snapshot.color) ? { borderColor: str(snapshot.color) } : undefined}
-                        onClick={() => void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))}
-                        onContextMenu={(event) => {
-                            event.preventDefault();
-                            setMenu({ kind: "snapshot", snapshotId: str(snapshot.id), index });
-                        }}
-                    >
-                        {str(snapshot.name, `SNAP ${index + 1}`)}
-                    </button>
-                ))}
-                <button type="button" className="btn" onClick={() => {
-                    void askText("Snapshot name", `Snap ${snapshots.length + 1}`).then((name) => {
-                        if (name?.trim()) {
-                            void run(() => client.request("snapshot/capture", { name: name.trim() }));
-                        }
-                    });
-                }}>CAPTURE</button>
-                {onSnapshots && <button type="button" className="btn" onClick={onSnapshots}>MANAGE</button>}
-            </div>
-
-            <div className="panel">
-                <div className="row">
-                    {showLatency && (
-                        <>
-                            <Meter label="DSP" value={num(meters.dspLoad)} text={`${(num(meters.dspLoad) * 100).toFixed(0)}%`} />
-                            <div>
-                                <div className="field-label">ROUND TRIP</div>
-                                <strong>{formatMs(num(meters.roundTripMs))}</strong>
-                                <div className="muted">{num(meters.xruns)} xruns · {formatMs(num(meters.bufferMs))} buffer</div>
-                            </div>
-                        </>
-                    )}
-                    <Meter label="IN" value={num(meters.inputPeak)} text={peakDb(num(meters.inputPeak))} />
-                    <Meter label="OUT" value={num(meters.outputPeak)} text={peakDb(num(meters.outputPeak))} />
-                    {showTuner && (
-                        <div>
-                            <div className="field-label">TUNER</div>
-                            <strong>{bool(tuner.valid) ? `${str(tuner.note)} ${num(tuner.cents) >= 0 ? "+" : ""}${num(tuner.cents).toFixed(0)}¢` : "—"}</strong>
-                            <div className="muted">{bool(tuner.valid) ? `${num(tuner.frequency).toFixed(1)} Hz` : "waiting"}</div>
+                    ))
+                    : (
+                        <div
+                            className="switch-grid"
+                            style={{
+                                gridTemplateColumns: `repeat(${snapshotMode ? SNAPSHOT_GRID_COLUMNS : columns}, minmax(0, 1fr))`,
+                                gridTemplateRows: `repeat(${snapshotMode ? SNAPSHOT_GRID_ROWS : rows}, minmax(0, 1fr))`
+                            }}
+                        >
+                            {stageTiles.map((tile) => (
+                                <PerformanceControl key={tile.id} tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
+                            ))}
                         </div>
                     )}
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("meters/reset"))}>RESET</button>
-                    <button
-                        type="button"
-                        className={`btn ${bool(tuner.enabled) ? "btn-active" : ""}`}
-                        onClick={() => void run(() => client.request("tuner", { enabled: !bool(tuner.enabled) }))}
-                    >
-                        TUNER
-                    </button>
-                </div>
             </div>
+
+            {toast && createPortal(
+                <div className="toast toast-ok" role="status">{toast}</div>,
+                document.body
+            )}
+
+            {feedback && createPortal(
+                <div className="mfx-theme-feedback performance-feedback" role="status">
+                    <div>
+                        <div className="performance-feedback-source">{feedback.source}</div>
+                        <div className="performance-feedback-param">
+                            {feedback.effect ? `${feedback.effect} · ${feedback.parameter}` : feedback.parameter}
+                        </div>
+                    </div>
+                    <strong>{feedback.value}</strong>
+                    <div className="performance-feedback-track">
+                        <span style={{ width: `${Math.round(feedback.range * 100)}%` }} />
+                    </div>
+                </div>,
+                document.body
+            )}
+
+            {presetDrag?.dragging && createPortal(
+                <div
+                    className="performance-drag-ghost"
+                    style={{
+                        left: presetDrag.x - presetDrag.offsetX,
+                        top: presetDrag.y - presetDrag.offsetY,
+                        width: presetDrag.width,
+                        height: presetDrag.height
+                    }}
+                >
+                    <div>{presetDrag.name}</div>
+                    <small>MOVE PRESET</small>
+                </div>,
+                document.body
+            )}
+
+            {presetDrag?.dragging && createPortal(
+                <div
+                    data-mfx-performance-trash="true"
+                    className={`performance-trash${dragOverTrash ? " active" : ""}`}
+                >
+                    🗑
+                </div>,
+                document.body
+            )}
 
             {menu?.kind === "preset" && createPortal(
                 <div className="mfx-overlay" onClick={closeMenu}>
@@ -653,7 +1072,7 @@ export function PerformanceView({
                                         void run(() => client.request("snapshot/rename", {
                                             snapshotId: menu.snapshotId,
                                             name: name.trim()
-                                        }));
+                                        })).then(() => showToast("SNAPSHOT RENAMED"));
                                     }
                                 });
                             }}
@@ -664,10 +1083,9 @@ export function PerformanceView({
                             type="button"
                             className="mfx-overlay-option danger"
                             onClick={() => {
-                                if (window.confirm("Delete this snapshot?")) {
-                                    closeMenu();
-                                    void run(() => client.request("snapshot/delete", { snapshotId: menu.snapshotId }));
-                                }
+                                closeMenu();
+                                void run(() => client.request("snapshot/delete", { snapshotId: menu.snapshotId }))
+                                    .then(() => showToast(`SNAPSHOT ${menu.index + 1} DELETED`));
                             }}
                         >
                             DELETE SNAPSHOT
@@ -677,6 +1095,61 @@ export function PerformanceView({
                 </div>,
                 document.body
             )}
+        </div>
+    );
+}
+
+function NamePicker({
+    variant,
+    label,
+    value,
+    open,
+    onToggle,
+    options,
+    onPick
+}: {
+    variant: "freeform" | "grid-bank" | "grid-preset";
+    label: string;
+    value: string;
+    open: boolean;
+    onToggle: () => void;
+    options: { id: string; name: string; selected: boolean }[];
+    onPick: (id: string) => void;
+}) {
+    const menu = open && (
+        <div className="identity-menu">
+            {options.map((item) => (
+                <button
+                    key={item.id}
+                    type="button"
+                    className={`mfx-overlay-option${item.selected ? " selected" : ""}`}
+                    onClick={() => onPick(item.id)}
+                >
+                    {item.name}
+                </button>
+            ))}
+        </div>
+    );
+
+    if (variant === "grid-preset") {
+        return (
+            <div className="identity-select performance-preset-inline">
+                <span className="mfx-performance-ui-label">Active Preset:</span>
+                <button type="button" className="identity-value mfx-performance-ui-value" onClick={onToggle}>
+                    {value}
+                </button>
+                {menu}
+            </div>
+        );
+    }
+
+    return (
+        <div className={`identity-select${variant === "freeform" ? " performance-picker-freeform" : ""}`}>
+            <div className="field-label mfx-performance-ui-label">{variant === "grid-bank" ? "Current Bank" : label}</div>
+            <button type="button" className="identity-value mfx-performance-ui-value" onClick={onToggle}>
+                {value}
+            </button>
+            {menu}
         </div>
     );
 }
@@ -704,13 +1177,41 @@ function rectStyle(rect: { x: number; y: number; width: number; height: number }
     };
 }
 
-function Meter({ label, value, text }: { label: string; value: number; text: string }) {
-    const width = `${Math.max(0, Math.min(1, value)) * 100}%`;
-    return (
-        <div className="meter">
-            <div className="field-label">{label}</div>
-            <div className="meter-track"><div className="meter-fill" style={{ width }} /></div>
-            <strong>{text}</strong>
-        </div>
-    );
+function signatureForChain(chain: JsonObject[]): string {
+    return JSON.stringify(chain.map((slot) => ({
+        id: str(slot.id),
+        uri: str(slot.uri),
+        enabled: bool(slot.enabled, true),
+        name: str(slot.name),
+        controls: obj(obj(slot.state).controls),
+        properties: obj(obj(slot.state).properties)
+    })));
+}
+
+function readPresetBaseline(): { id: string; signature: string } {
+    try {
+        const parsed = JSON.parse(sessionStorage.getItem(PRESET_BASELINE_KEY) || "{}") as JsonObject;
+        return { id: str(parsed.id), signature: str(parsed.signature) };
+    } catch {
+        return { id: "", signature: "" };
+    }
+}
+
+function rememberPresetBaseline(presetId: string, signature: string, force = false) {
+    if (!presetId || !signature) {
+        return;
+    }
+    const stored = readPresetBaseline();
+    if (!force && stored.id === presetId && stored.signature) {
+        return;
+    }
+    sessionStorage.setItem(PRESET_BASELINE_KEY, JSON.stringify({ id: presetId, signature }));
+}
+
+function isPresetModified(presetId: string, signature: string): boolean {
+    const stored = readPresetBaseline();
+    if (!stored.id || stored.id !== presetId || !stored.signature) {
+        return false;
+    }
+    return stored.signature !== signature;
 }

@@ -38,6 +38,7 @@ target_sources(pimfx PRIVATE
     src/midi/Mapping.cpp
     src/midi/MidiInput.cpp
     src/library/Tone3000.cpp
+    src/library/PluginStore.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -73,7 +74,7 @@ if(PkgConfig_FOUND)
         target_link_libraries(pimfx PRIVATE PkgConfig::CURL)
         target_compile_definitions(pimfx PRIVATE PIMFX_HAVE_CURL=1)
     else()
-        message(STATUS "pimfx: libcurl not found; TONE3000 downloads disabled in this build")
+        message(STATUS "pimfx: libcurl not found; TONE3000 and PatchStorage downloads disabled in this build")
     endif()
 
     pkg_check_modules(SNDFILE IMPORTED_TARGET sndfile)

@@ -45,8 +45,8 @@ cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
 
-Pick **1) Complete setup** for a first Pi with plugins and an attached
-touchscreen, or **2) Install** for the engine and web UI only.
+Pick **1) Complete setup** for a first Pi with an attached touchscreen, or
+**2) Install** for the engine and web UI only.
 
 This builds the engine and the UI, creates a `pimfx` service account, installs
 a systemd service, and tunes the OS for audio. Everything it changes is listed
@@ -55,17 +55,17 @@ in [LOW_LATENCY.md](LOW_LATENCY.md) and undone from the same menu (**Remove**).
 Scripted options (no menu):
 
 ```bash
-sudo bash ./scripts/pimfx.sh install --with-plugins
+sudo bash ./scripts/pimfx.sh install
 sudo bash ./scripts/pimfx.sh install --no-tuning
 sudo bash ./scripts/pimfx.sh install --port 8000
 sudo bash ./scripts/pimfx.sh update
 sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
 ```
 
-Pi-MFX ships no effects. `--with-plugins` installs packages from the Raspberry
-Pi OS repositories under their own licenses; see
-[PLUGIN_LICENSES.md](PLUGIN_LICENSES.md). You can skip it and install plugins
-yourself later — anything LV2 shows up in the picker.
+Pi-MFX ships no effects. After the engine is running, open
+**Settings → Plugins** to install LV2 packages from Raspberry Pi OS, add extra
+apt repos, or download Raspberry Pi builds from PatchStorage. See
+[PLUGIN_LICENSES.md](PLUGIN_LICENSES.md).
 
 Reboot afterwards to pick up the `threadirqs` kernel option.
 
@@ -93,8 +93,8 @@ The round-trip figure is measured from the driver, not calculated.
 
 ## 6. Build a chain
 
-**Editor** → add effects. If the picker is empty, no LV2 plugins are installed;
-install some and press Rescan.
+**Editor** → add effects. If the picker is empty, install LV2 plugins from
+**Settings → Plugins**, then Rescan.
 
 For amp captures and cabs you need a NAM-capable LV2 plugin and a convolution
 plugin. Once installed, effects that take a `.nam` file or an impulse response

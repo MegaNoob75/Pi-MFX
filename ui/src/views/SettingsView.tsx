@@ -5,6 +5,7 @@ import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } 
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
+import { PluginsView } from "./PluginsView";
 
 export type SettingsPage =
     | "audio"
@@ -15,7 +16,8 @@ export type SettingsPage =
     | "theme"
     | "layout"
     | "keyboard"
-    | "backup";
+    | "backup"
+    | "plugins";
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
     return (
@@ -29,6 +31,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="PLUGINS" subtitle="Apt repos, install, remove and PatchStorage" onClick={() => onOpen("plugins")} />
                 <HubCard title="SYSTEM" subtitle="Audio, library, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
         </div>
@@ -66,7 +69,7 @@ function SystemHub({
             <div className="mfx-hub-grid">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen?.("audio")} />
                 <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen?.("library")} />
-                <HubCard title="REALTIME" subtitle="Audio thread, memory lock, LV2 rescan and diagnostics" onClick={() => setRealtime(true)} />
+                <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => setRealtime(true)} />
             </div>
         </div>
     );
@@ -106,6 +109,9 @@ export function SettingsPage({
     }
     if (page === "library") {
         return <LibrarySettings engine={engine} run={run} />;
+    }
+    if (page === "plugins") {
+        return <PluginsView engine={engine} run={run} />;
     }
     if (page === "system") {
         return <SystemHub engine={engine} run={run} onOpen={onOpen} />;
@@ -254,6 +260,7 @@ function ControllerHub({
     onOpenLayout?: () => void;
 }) {
     const [page, setPage] = useState<"hub" | "hardware" | "diagnostics">("hub");
+    const { client } = engine;
     const controller = obj(engine.state.controller);
     const connected = bool(controller.connected);
     if (page === "hardware") {
@@ -318,6 +325,29 @@ function ControllerHub({
                 Hardware defines what is connected. Layout only changes where it appears.
                 Assign presets by holding a Performance switch, the same way as MultiFX.
             </div>
+            <div>
+                <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                        if (!window.confirm("Restore the default Performance layout?")) {
+                            return;
+                        }
+                        void run(() => client.request("controller/config", {
+                            ...controller,
+                            layoutMode: "grid",
+                            gridRows: 2,
+                            gridColumns: 4,
+                            performanceLayout: {
+                                ...obj(controller.performanceLayout),
+                                unplacedControlIds: []
+                            }
+                        }));
+                    }}
+                >
+                    RESTORE DEFAULT LAYOUT
+                </button>
+            </div>
         </div>
     );
 }
@@ -329,20 +359,42 @@ function ControllerSettings({
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-    const { client, state } = engine;
+    const { client, state, connected } = engine;
     const controller = obj(state.controller);
     const controls = objects(controller.controls);
     const [ports, setPorts] = useState<JsonObject[]>([]);
 
-    useEffect(() => {
+    const refreshPorts = () => {
         void client.request("midi/ports").then((result) => {
             setPorts(objects(result.ports));
         }).catch(() => undefined);
-    }, [client, controller.midiPort]);
+    };
+
+    useEffect(() => {
+        refreshPorts();
+    }, [client, controller.midiPort, controller.activePort]);
 
     const save = (next: JsonObject) => {
-        void run(() => client.request("controller/config", next));
+        const config = { ...next };
+        delete config.connected;
+        delete config.activePort;
+        delete config.learning;
+        delete config.learningControlId;
+        void run(() => client.request("controller/config", {
+            ...config,
+            midiPort: str(config.midiPort) || str(controller.activePort) || str(controller.midiPort)
+        }));
     };
+
+    const selectPort = (portId: string) => {
+        void run(async () => {
+            const result = await client.request("controller/connect", { port: portId });
+            setPorts(objects(result.ports));
+        });
+    };
+
+    const selectedPort = str(controller.activePort) || str(controller.midiPort);
+    const listedIds = new Set(ports.map((port) => str(port.id)));
 
     return (
         <div className="stack">
@@ -362,24 +414,55 @@ function ControllerSettings({
                         onBlur={(event) => save({ ...controller, name: event.target.value })}
                     />
                 </label>
-                <label className="field">
-                    <span>MIDI port</span>
-                    <select
-                        value={str(controller.midiPort)}
-                        onChange={(event) => {
-                            const port = event.target.value;
-                            save({ ...controller, midiPort: port, enabled: true });
-                            void run(() => client.request("controller/connect", { port }));
-                        }}
-                    >
-                        <option value="">First controller that identifies itself</option>
-                        {ports.map((port) => (
-                            <option key={str(port.id)} value={str(port.id)}>
-                                {str(port.name)}{bool(port.looksLikeController) ? " · controller" : ""}
-                            </option>
-                        ))}
-                    </select>
-                </label>
+                <div className="stack">
+                    <div className="field-label">MIDI devices</div>
+                    <div className="muted">
+                        {bool(controller.connected)
+                            ? `Listening on ${selectedPort || "the selected port"}`
+                            : "Pick the floorboard or MIDI interface from the list. Hardware buttons stay dead until a device is selected."}
+                    </div>
+                    {ports.map((port) => {
+                        const id = str(port.id);
+                        const selected = id === selectedPort;
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                className={`list-item ${selected ? "selected" : ""}`}
+                                onClick={() => selectPort(id)}
+                            >
+                                <div>
+                                    <strong>{str(port.name, id)}</strong>
+                                    <div className="muted">
+                                        {id}
+                                        {bool(port.input) ? " · in" : ""}
+                                        {bool(port.output) ? " · out" : ""}
+                                        {bool(port.looksLikeController) ? " · looks like a Pi-MFX board" : ""}
+                                    </div>
+                                </div>
+                                <span className="muted">{selected ? "SELECTED" : "SELECT"}</span>
+                            </button>
+                        );
+                    })}
+                    {selectedPort && !listedIds.has(selectedPort) && (
+                        <div className="list-item selected">
+                            <div>
+                                <strong>{selectedPort}</strong>
+                                <div className="muted">Saved port is not plugged in right now</div>
+                            </div>
+                        </div>
+                    )}
+                    {ports.length === 0 && (
+                        <div className="muted">
+                            {connected
+                                ? "No MIDI devices found. Plug the controller in and press Rescan."
+                                : "The engine is offline. MIDI devices are listed by the Pi, not this browser."}
+                        </div>
+                    )}
+                    <div className="row">
+                        <button type="button" className="btn" onClick={refreshPorts}>RESCAN MIDI</button>
+                    </div>
+                </div>
                 <div className="row">
                     <button type="button" className={`btn ${bool(controller.enabled) ? "btn-active" : ""}`}
                         onClick={() => save({ ...controller, enabled: !bool(controller.enabled) })}>
@@ -567,7 +650,7 @@ function ControllerSettings({
                         </label>
                         <button type="button" className={`btn ${bool(binding.inverted) ? "btn-active" : ""}`}
                             onClick={() => patchBinding({ ...binding, inverted: !bool(binding.inverted) })}>
-                            INV
+                            {bool(binding.inverted) ? "REVERSE ON" : "REVERSE"}
                         </button>
                         <select
                             value={str(control.ledId)}
@@ -578,10 +661,20 @@ function ControllerSettings({
                                 <option key={str(led.id)} value={str(led.id)}>{str(led.label, str(led.id))}</option>
                             ))}
                         </select>
+                        <label className="field" style={{ minWidth: 72 }}>
+                            <span>{bool(control.useNoteMessages) ? "Note" : "CC"}</span>
+                            <input
+                                type="number"
+                                min={-1}
+                                max={127}
+                                value={num(control.channel, -1)}
+                                onChange={(event) => patch({ ...control, channel: Number(event.target.value) })}
+                            />
+                        </label>
                         <span className="muted">
                             {num(control.channel, -1) >= 0
                                 ? `ch ${num(control.midiChannel) || "any"} ${bool(control.useNoteMessages) ? "note" : "CC"} ${num(control.channel)}`
-                                : "not learned"}
+                                : "not learned — stock Pi-MFX firmware is CC 20–27"}
                         </span>
                         <button type="button" className="btn" onClick={() => void run(() => client.request("controller/learn", { controlId: str(control.id) }))}>
                             {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
@@ -745,13 +838,6 @@ function SystemSettings({
                     <input type="number" min={0} max={7} value={num(system.audioCpu, 3)}
                         onChange={(event) => save({ ...system, audioCpu: Number(event.target.value) })} />
                 </label>
-            </div>
-            <div className="panel stack">
-                <h2>PLUGINS</h2>
-                <div className="muted">{num(engine.state.pluginCount)} plugins · LV2 {bool(engine.state.lv2Available, true) ? "available" : "not available"}</div>
-                <button type="button" className="btn" onClick={() => void run(() => engine.client.request("plugins/rescan"))}>
-                    RESCAN LV2
-                </button>
             </div>
             <div className="panel">
                 <h2>DIAGNOSTICS</h2>

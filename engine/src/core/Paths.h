@@ -16,6 +16,7 @@ struct Paths {
     std::string modelsDir;    ///< NAM captures
     std::string irsDir;       ///< impulse responses
     std::string downloadsDir; ///< partial TONE3000 downloads
+    std::string lv2Dir;       ///< user-installed LV2 bundles (PatchStorage, copies)
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 
@@ -24,6 +25,7 @@ struct Paths {
     std::string controllerFile() const;
     std::string themesDir() const;
     std::string credentialsFile() const;
+    std::string pluginsFile() const;
 };
 
 bool fileExists(const std::string& path);

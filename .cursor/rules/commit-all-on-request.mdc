@@ -1,0 +1,15 @@
+---
+description: When Ross asks to commit and push, include every change since the last commit
+alwaysApply: true
+---
+
+# Commit and push the full working tree
+
+When Ross asks to commit and/or push:
+
+- Stage **all** changes since the last commit: modified, added, and deleted project files, including untracked source.
+- Do not leave related work out, and do not ask which files to include.
+- Still skip secrets (`.env`, credentials, `secrets.json`) and machine-only junk (`node_modules`, `dist`, build dirs).
+- Write a subject and a short body that explain why.
+- Push after the commit when he asked to push, or when he asked to commit and push.
+- Do not commit or push unless he asked.

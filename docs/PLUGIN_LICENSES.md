@@ -7,10 +7,12 @@ their own licenses. This page explains the boundary and what it means for you.
 ## Pi-MFX ships no plugins
 
 There are no plugin binaries in this repository and none in any Pi-MFX release
-artifact. `scripts/install.sh` can, at your explicit choice, run `apt install`
-for well-known plugin packages — but that installs them from your distribution
-under their own licenses, exactly as if you had typed the command yourself.
-Skip that step and Pi-MFX still runs; the chain simply starts empty.
+artifact. After install, **Settings → Plugins** can run `apt` for well-known
+plugin packages, install recommended Raspberry Pi `.deb` packs such as
+[ToobAmp](https://github.com/rerdavies/ToobAmp), and download LV2 builds from
+PatchStorage — but that installs them onto your Pi under their own licenses,
+exactly as if you had typed the command yourself. Skip that and Pi-MFX still
+runs; the chain simply starts empty.
 
 ## Why hosting a GPL plugin is fine
 
@@ -27,9 +29,11 @@ including offering their source.
 
 ## Where Pi-MFX looks for plugins
 
-Standard LV2 search paths, plus anything in `LV2_PATH`:
+Standard LV2 search paths, plus anything in `LV2_PATH`, plus user bundles in
+`/var/lib/pimfx/lv2` (PatchStorage installs land here):
 
 ```
+/var/lib/pimfx/lv2
 ~/.lv2
 /usr/lib/lv2
 /usr/local/lib/lv2
@@ -37,6 +41,13 @@ Standard LV2 search paths, plus anything in `LV2_PATH`:
 ```
 
 Anything lilv can see, Pi-MFX can list.
+
+## PatchStorage
+
+The Plugins page can search [PatchStorage](https://patchstorage.com) for LV2
+plugins with an `rpi-aarch64` build and extract a bundle you asked for into
+`/var/lib/pimfx/lv2`. Pi-MFX does not vendor those files in git. Each plugin
+keeps the license its author published on PatchStorage.
 
 ## Plugins commonly used with Pi-MFX
 
@@ -48,6 +59,7 @@ are the licenses at the time of writing and they can change.
 | Neural Amp Modeler LV2 | Amp captures (`.nam`) | Usually MIT or GPL depending on the port |
 | Aidadsp / RTNeural LV2 | Neural captures | Check the specific port |
 | Convolution / IR loaders | Cabinet impulse responses | Usually GPL |
+| ToobAmp | Raspberry Pi guitar pack (NAM, cab, delay, EQ, …) | See [rerdavies/ToobAmp](https://github.com/rerdavies/ToobAmp) |
 | Calf Studio Gear | Modulation, dynamics, EQ | LGPL-2.1+ |
 | GxPlugins.lv2, Guitarix | Amps, drives, cabinets | GPL-2.0+ |
 | ZamPlugins | Compressors, EQ, gates | GPL-2.0+ |

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import type { EngineSnapshot } from "../api";
+import { isAnalogKind, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import {
     STATUS_WIDGET_IDS,
@@ -9,11 +9,24 @@ import {
     clampRect,
     gridCellRect,
     readStatusWidgets,
-    snapRect,
+    snapRectToPixels,
     statusWidgetsToJson,
     unplacedIds,
     type LayoutRect
 } from "../layout";
+import { PerformanceControl, type SwitchRole } from "./PerformanceControl";
+
+const SNAP_PIXELS_KEY = "pimfx-layout-snap-pixels";
+const SNAP_ENABLED_KEY = "pimfx-layout-snap-enabled";
+
+function loadSnapPixels(): number {
+    const value = Number(window.localStorage.getItem(SNAP_PIXELS_KEY));
+    return Number.isFinite(value) ? Math.min(64, Math.max(1, Math.round(value))) : 8;
+}
+
+function loadSnapEnabled(): boolean {
+    return window.localStorage.getItem(SNAP_ENABLED_KEY) !== "0";
+}
 
 export function LayoutEditorView({
     engine,
@@ -25,6 +38,7 @@ export function LayoutEditorView({
     const controller = obj(engine.state.controller);
     const controls = objects(controller.controls);
     const layout = obj(controller.performanceLayout);
+    const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
     const [mode, setMode] = useState<"grid" | "freeform">(
         str(controller.layoutMode, "grid") === "freeform" ? "freeform" : "grid"
     );
@@ -34,12 +48,34 @@ export function LayoutEditorView({
     const [hiddenIds, setHiddenIds] = useState(() => unplacedIds(layout));
     const [draftRects, setDraftRects] = useState<Record<string, LayoutRect>>({});
     const [selectedId, setSelectedId] = useState("");
-    const [snap, setSnap] = useState(true);
+    const [snapEnabled, setSnapEnabled] = useState(loadSnapEnabled);
+    const [snapPixels, setSnapPixels] = useState(loadSnapPixels);
     const [message, setMessage] = useState("");
+    const [measurement, setMeasurement] = useState<{
+        mode: string;
+        clientX: number;
+        clientY: number;
+        rect: LayoutRect;
+    } | null>(null);
     const stageRef = useRef<HTMLDivElement>(null);
-    const drag = useRef<{ id: string; startX: number; startY: number; rect: LayoutRect; last: LayoutRect } | null>(null);
+    const drag = useRef<{
+        id: string;
+        mode: "move" | "resize";
+        startX: number;
+        startY: number;
+        rect: LayoutRect;
+        last: LayoutRect;
+    } | null>(null);
 
     const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
+
+    const applySnap = (rect: LayoutRect) => {
+        const box = stageRef.current?.getBoundingClientRect();
+        if (!snapEnabled || !box) {
+            return clampRect(rect);
+        }
+        return snapRectToPixels(rect, box.width, box.height, snapPixels);
+    };
 
     const controlRect = (control: JsonObject, index: number): LayoutRect => {
         const id = str(control.id);
@@ -57,14 +93,16 @@ export function LayoutEditorView({
             : gridCellRect(index, columns, rows);
     };
 
-    const onPointerDown = (id: string, rect: LayoutRect, event: ReactPointerEvent) => {
+    const onPointerDown = (id: string, rect: LayoutRect, event: ReactPointerEvent, gesture: "move" | "resize" = "move") => {
         if (mode !== "freeform") {
             return;
         }
         event.preventDefault();
+        event.stopPropagation();
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { id, startX: event.clientX, startY: event.clientY, rect, last: rect };
+        drag.current = { id, mode: gesture, startX: event.clientX, startY: event.clientY, rect, last: rect };
         setSelectedId(id);
+        setMeasurement({ mode: gesture.toUpperCase(), clientX: event.clientX, clientY: event.clientY, rect });
     };
 
     const onPointerMove = (event: ReactPointerEvent) => {
@@ -74,11 +112,19 @@ export function LayoutEditorView({
         const box = stageRef.current.getBoundingClientRect();
         const dx = (event.clientX - drag.current.startX) / box.width;
         const dy = (event.clientY - drag.current.startY) / box.height;
-        const next = snap
-            ? snapRect({ ...drag.current.rect, x: drag.current.rect.x + dx, y: drag.current.rect.y + dy })
-            : clampRect({ ...drag.current.rect, x: drag.current.rect.x + dx, y: drag.current.rect.y + dy });
+        const base = drag.current.rect;
+        const raw = drag.current.mode === "resize"
+            ? { ...base, width: base.width + dx, height: base.height + dy }
+            : { ...base, x: base.x + dx, y: base.y + dy };
+        const next = applySnap(raw);
         const id = drag.current.id;
         drag.current.last = next;
+        setMeasurement({
+            mode: drag.current.mode.toUpperCase(),
+            clientX: event.clientX,
+            clientY: event.clientY,
+            rect: next
+        });
         if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
             setWidgets((current) => ({ ...current, [id]: { ...current[id], rect: next } }));
         } else {
@@ -94,6 +140,7 @@ export function LayoutEditorView({
         const id = drag.current.id;
         const last = drag.current.last;
         drag.current = null;
+        setMeasurement(null);
         if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
             setWidgets((current) => ({
                 ...current,
@@ -223,9 +270,34 @@ export function LayoutEditorView({
                             {item.toUpperCase()}
                         </button>
                     ))}
-                    <button type="button" className={`btn ${snap ? "btn-active" : ""}`} onClick={() => setSnap((value) => !value)}>
+                    <button
+                        type="button"
+                        className={`btn ${snapEnabled ? "btn-active" : ""}`}
+                        onClick={() => {
+                            setSnapEnabled((value) => {
+                                const next = !value;
+                                window.localStorage.setItem(SNAP_ENABLED_KEY, next ? "1" : "0");
+                                return next;
+                            });
+                        }}
+                    >
                         SNAP
                     </button>
+                    <label className="field" style={{ minWidth: 92 }}>
+                        <span>Snap px</span>
+                        <input
+                            type="number"
+                            min={1}
+                            max={64}
+                            value={snapPixels}
+                            disabled={!snapEnabled}
+                            onChange={(event) => {
+                                const next = Math.min(64, Math.max(1, Number(event.target.value) || 8));
+                                setSnapPixels(next);
+                                window.localStorage.setItem(SNAP_PIXELS_KEY, String(next));
+                            }}
+                        />
+                    </label>
                     <label className="btn">
                         IMPORT
                         <input type="file" accept="application/json" hidden onChange={(event) => {
@@ -291,32 +363,78 @@ export function LayoutEditorView({
                     {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                         const widget = widgets[id];
                         return (
-                            <button
+                            <div
                                 key={id}
-                                type="button"
                                 className={`layout-item status${selectedId === id ? " selected" : ""}`}
                                 style={rectStyle(widget.rect)}
                                 onPointerDown={(event) => onPointerDown(id, widget.rect, event)}
                             >
-                                {STATUS_WIDGET_LABELS[id]}
-                            </button>
+                                <div className="layout-item-preview layout-item-preview--status">
+                                    {widget.showLabel && (
+                                        <div className="mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
+                                    )}
+                                    <strong className="mfx-performance-ui-value">{STATUS_WIDGET_LABELS[id]}</strong>
+                                </div>
+                                {mode === "freeform" && (
+                                    <span
+                                        className="layout-resize"
+                                        onPointerDown={(event) => onPointerDown(id, widget.rect, event, "resize")}
+                                    />
+                                )}
+                            </div>
                         );
                     })}
                     {placedControls.map((control, index) => {
                         const id = str(control.id);
                         const rect = controlRect(control, index);
+                        const kind = str(control.kind, "switch");
+                        const analog = isAnalogKind(kind);
+                        const action = str(obj(control.binding).action, "selectPreset");
                         return (
-                            <button
+                            <div
                                 key={id}
-                                type="button"
                                 className={`layout-item switch${selectedId === id ? " selected" : ""}`}
                                 style={rectStyle(rect)}
                                 onPointerDown={(event) => onPointerDown(id, rect, event)}
                             >
-                                {str(control.label, id)}
-                            </button>
+                                <div className="layout-item-preview">
+                                    <PerformanceControl
+                                        tile={{
+                                            id,
+                                            switchLabel: str(control.label, id),
+                                            valueText: analog ? "0.00" : str(control.label, id),
+                                            role: analog ? "utility" : roleForAction(action),
+                                            lightState: "inactive",
+                                            active: false,
+                                            analog,
+                                            analogSource: str(control.label, id),
+                                            analogFunction: analog ? "LAYOUT PREVIEW" : undefined,
+                                            analogValue: analog ? "0.00" : undefined,
+                                            assigned: analog,
+                                            kind,
+                                            value: 0.45,
+                                            freeform: true,
+                                            onPress: () => undefined
+                                        }}
+                                        switchStyle={switchStyle}
+                                        bypassed={false}
+                                    />
+                                </div>
+                                {mode === "freeform" && (
+                                    <span
+                                        className="layout-resize"
+                                        onPointerDown={(event) => onPointerDown(id, rect, event, "resize")}
+                                    />
+                                )}
+                            </div>
                         );
                     })}
+                    {measurement && stageRef.current && (
+                        <LayoutMeasurementPopup
+                            measurement={measurement}
+                            canvas={stageRef.current.getBoundingClientRect()}
+                        />
+                    )}
                 </div>
             </div>
             <div className="muted" style={{ padding: "0 12px 8px" }}>
@@ -326,6 +444,46 @@ export function LayoutEditorView({
             </div>
         </div>
     );
+}
+
+function LayoutMeasurementPopup({
+    measurement,
+    canvas
+}: {
+    measurement: { mode: string; clientX: number; clientY: number; rect: LayoutRect };
+    canvas: DOMRect;
+}) {
+    const popupWidth = 188;
+    const popupHeight = 62;
+    const left = Math.max(8, Math.min(window.innerWidth - popupWidth - 8, measurement.clientX + 16));
+    const top = Math.max(8, Math.min(window.innerHeight - popupHeight - 8, measurement.clientY + 16));
+    return (
+        <div className="layout-measurement" style={{ left, top }}>
+            <div className="layout-measurement-mode">{measurement.mode}</div>
+            <div className="layout-measurement-values">
+                <span>X {Math.round(measurement.rect.x * canvas.width)}px</span>
+                <span>Y {Math.round(measurement.rect.y * canvas.height)}px</span>
+                <span>W {Math.round(measurement.rect.width * canvas.width)}px</span>
+                <span>H {Math.round(measurement.rect.height * canvas.height)}px</span>
+            </div>
+        </div>
+    );
+}
+
+function roleForAction(action: string): SwitchRole {
+    if (action === "selectPreset") {
+        return "preset";
+    }
+    if (action === "bankUp" || action === "bankDown") {
+        return "navigation";
+    }
+    if (action === "snapshotMode") {
+        return "snapshot";
+    }
+    if (action === "bypassAll") {
+        return "bypass";
+    }
+    return "utility";
 }
 
 function rectStyle(rect: LayoutRect): CSSProperties {

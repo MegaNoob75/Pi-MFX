@@ -1,0 +1,38 @@
+---
+description: MultiFX at PiPedal-MultiFX is the UI/behavior source of truth. Read those files before changing Pi-MFX screens.
+alwaysApply: true
+---
+
+# MultiFX is the UI source of truth
+
+Pi-MFX must **look and behave like** the MultiFX product next to it. The engine, protocol, and ESP32 firmware are original. The screens are not “inspired by” MultiFX — they should match it.
+
+## Always open MultiFX first
+
+Before changing any Pi-MFX UI file, **read the matching MultiFX source** under:
+
+`C:\Users\ross7\Documents\GitHub\PiPedal-MultiFX\vite\src\multifx`
+
+| Pi-MFX | MultiFX source |
+|---|---|
+| `ui/src/App.tsx` shell/menu | `MultiFXApp.tsx` |
+| `ui/src/views/PerformanceView.tsx` | `FootControllerView.tsx` |
+| `ui/src/views/EditorView.tsx` | `MultiFXEditView.tsx` |
+| `ui/src/views/BanksView.tsx` | `MultiFXBankPresetView.tsx` |
+| `ui/src/views/SettingsView.tsx` | `MultiFXSettingsHub.tsx`, `MultiFXSettingsView.tsx` |
+| snapshots | `MultiFXSnapshotManager.tsx`, `MultiFXSnapshotEditView.tsx` |
+| theme / keyboard / layout | matching `MultiFX*.tsx` in that folder |
+
+Do **not** restyle from memory or from a conversation summary. If a summary says a view already matches, open MultiFX and check.
+
+## Match content, not extra chrome
+
+- Performance grid is a stacked Current Bank / Active Preset header plus a full-bleed switch grid. No BANK±, PRESET±, BYPASS, SNAPS, TAP, snapshot strip, or meters/tuner panel on that page — those exist as **layout widgets** or **switch actions**.
+- Freeform Performance places bank/preset/status/analog widgets on the stage.
+- Editor chain is **serpentine** with connectors and insert-between, not a wrapping flex row of cards.
+- Keep Pi-MFX page content **below** the shell (do not copy MultiFX’s overlapping `padding-left: 78px` duplicate headers).
+- Do **not** copy `vite/src/pipedal/*`, MultiFX ESP32 sketches, or MultiFX SysEx.
+
+## Intentionally different
+
+Pi-MFX Audio / Library / Realtime settings replace PiPedal `SettingsDialog`. About legal text is Pi-MFX. Labels say PI-MFX, not PI-MULTIFX.
