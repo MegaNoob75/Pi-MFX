@@ -131,7 +131,7 @@ To undo just the screen session: menu item **6**, or
 
 The attached screen can show only the **PI-MFX** logo while the Pi boots and
 shuts down, with kernel and systemd text kept in the journal. This is original
-Pi-MFX artwork (no PiPedal mark). From the setup menu pick **7) Boot screen**,
+Pi-MFX artwork. From the setup menu pick **7) Boot screen**,
 or:
 
 ```bash

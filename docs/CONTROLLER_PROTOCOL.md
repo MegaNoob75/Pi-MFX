@@ -2,11 +2,8 @@
 
 USB-MIDI between the Pi engine and a DIY floorboard. Manufacturer byte `0x7D`
 (non-commercial / educational) plus `'M'` `'F'` so other `0x7D` devices on the
-same bus are ignored.
-
-This is **not** the earlier MultiFX SysEx (`7D 4D 46 58` plus profile/config
-commands). A MultiFX-flashed board will still send ordinary CC, but identity
-and RGB LEDs only work with Pi-MFX firmware.
+same bus are ignored. Identity and RGB LEDs require the Pi-MFX firmware in this
+repository.
 
 ## SysEx wrapper
 

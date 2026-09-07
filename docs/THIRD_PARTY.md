@@ -9,18 +9,14 @@ credit list; this is the reasoning behind it. Verbatim license texts are in
 
 Pi-MFX is MIT-licensed original work. These rules are not optional.
 
-1. **Do not copy source from another project.** Not from PiPedal, MODEP,
-  mod-ui, mod-host, Guitarix, or any earlier MultiFX firmware or bridge script.
-   Not "adapted", not "with the variables renamed". This includes build files,
-   systemd units, udev rules, ALSA configs, and JSON schemas.
+1. **Do not copy source from another project.** Not "adapted", not "with the
+   variables renamed". This includes build files, systemd units, udev rules,
+   ALSA configs, and JSON schemas.
 2. **Reimplementing observable behaviour is fine.** Interoperable file formats,
   published protocols, and standard APIs (LV2, ALSA, MIDI, HTTP, WebSocket,
    TONE3000's REST API) may be implemented from their specifications.
-3. **The UI is our own design.** Pi-MFX reproduces the look and interaction of
-  the author's earlier MultiFX front-end because that design belongs to this
-   project's author. It is re-implemented as new TypeScript against the Pi-MFX
-   API — no files are copied across, and no screen that belonged to PiPedal is
-   carried over.
+3. **Write original UI.** Screens, theme, and interaction are implemented as
+   TypeScript against the Pi-MFX API.
 4. **Link, do not vendor.** Dependencies are consumed as system libraries or
   package-manager packages. If something genuinely must be vendored, it goes in
    `third_party/<name>/` with its unmodified license file and a NOTICE row.
@@ -77,8 +73,8 @@ release time.
 ### ESP-IDF / Arduino-ESP32 (Apache-2.0) and Control Surface (GPL-3.0)
 
 The optional controller firmware toolchain. USB MIDI uses the Control Surface
-library (same transport as the earlier MultiFX sketch). Pi-MFX distributes
-firmware **source** only; Arduino IDE supplies the ESP32 core and libraries.
+library. Pi-MFX distributes firmware **source** only; Arduino IDE supplies the
+ESP32 core and libraries.
 
 ## 3. Services, formats, and hardware named in Pi-MFX
 
@@ -108,13 +104,6 @@ HiFiBerry, Audio Injector, IQaudIO and others are named in documentation so
 users can identify their board and enable the correct overlay. Those are the
 vendors' trademarks, used descriptively. Pi-MFX ships no vendor files and
 implies no endorsement.
-
-### PiPedal and MODEP
-
-Named only to state, accurately, that Pi-MFX is neither of them and shares no
-code with them. Credit to both projects for showing what a Pi guitar processor
-can be. Pi-MFX does not read or write their preset formats, does not reuse their
-service names or install paths, and does not depend on either being installed.
 
 ## 4. LV2 plugins are not part of Pi-MFX
 

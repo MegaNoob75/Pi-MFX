@@ -2,33 +2,16 @@
 
 Pi-MFX is copyright (c) 2026 Ross and is released under the [MIT License](LICENSE).
 
-This file records what Pi-MFX uses, what it deliberately does not use, and who
-deserves credit. Full third-party license texts live in [`licenses/`](licenses/).
-See [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for the reasoning behind each
-choice and [`docs/PLUGIN_LICENSES.md`](docs/PLUGIN_LICENSES.md) for the LV2
-plugins users install themselves.
+This file records third-party credits for Pi-MFX. Full license texts live in
+[`licenses/`](licenses/). See [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for
+how those components are used, and [`docs/PLUGIN_LICENSES.md`](docs/PLUGIN_LICENSES.md)
+for the LV2 plugins users install themselves.
 
-## What Pi-MFX is
+## Pi-MFX
 
-Pi-MFX is an original headless guitar multi-effects system for the Raspberry Pi 5.
-The audio engine, control protocol, preset format, and ESP32 controller firmware
-are written from scratch for this project.
-
-## What Pi-MFX is not
-
-Pi-MFX is **not** a fork of, and contains **no source copied from**:
-
-- PiPedal (Robin E. R. Davies) — engine, `vite/src/pipedal/*` UI, ALSA host,
-  settings dialogs, updater, TONE3000 downloader, `.piBank` format
-- MODEP / mod-ui / mod-host
-- Guitarix UI
-- Any earlier MultiFX ESP32 sketch, its SysEx protocol, or its Python MIDI bridge
-
-The user interface intentionally reproduces the look and interaction of the
-author's own earlier MultiFX front-end (the MultiFX-owned screens, theme roles,
-Performance layout, and Hardware Setup flow). That design work belongs to the
-author of this project. Where the earlier front-end embedded PiPedal-owned
-screens, Pi-MFX ships its own replacements instead.
+Pi-MFX is a headless guitar multi-effects system for the Raspberry Pi 5.
+The audio engine, control protocol, preset format, browser UI, and ESP32
+controller firmware are written for this project.
 
 ## Third-party components (linked, not pasted)
 

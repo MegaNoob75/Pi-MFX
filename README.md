@@ -15,7 +15,6 @@ an optional DIY footswitch controller you build and wire yourself.
 - **Build any controller you can wire.** Switches, buttons, pots, sliders,
   expression pedals, encoders, and optional mono or RGB LEDs — mapped in the UI,
   not hardcoded in firmware.
-- **Original code.** Not a PiPedal or MODEP fork. See [NOTICE.md](NOTICE.md).
 
 ## Status
 

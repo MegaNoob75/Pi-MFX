@@ -6,10 +6,8 @@ Optional USB-MIDI floorboard for Pi-MFX. Firmware lives in this repo:
 firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino
 ```
 
-Do **not** flash the MultiFX Arduino sketch from the other project. That board
-uses a different SysEx header, so Pi-MFX cannot identify it or drive RGB LEDs.
-
-Protocol details: [CONTROLLER_PROTOCOL.md](CONTROLLER_PROTOCOL.md).
+Flash the sketch in this repository so the engine can identify the board and
+drive RGB LEDs. Protocol details: [CONTROLLER_PROTOCOL.md](CONTROLLER_PROTOCOL.md).
 
 ## What you need
 
@@ -29,14 +27,14 @@ The sketch will not compile until both libraries are installed.
 3. USB Mode: **USB-OTG (TinyUSB)**. USB CDC on Boot: **Disabled**.
    Hardware CDC and JTAG makes a serial port, not MIDI.
 4. Sketch → Include Library → Manage Libraries, then install:
-   - **Control Surface** (by Pieter P) — same USB MIDI stack as the old MultiFX sketch
+   - **Control Surface** (by Pieter P)
    - **Adafruit NeoPixel** (by Adafruit)
 5. Upload.
 
 If the serial port does not appear: hold **BOOT**, tap **RST**, release **BOOT**.
 
 Windows and the Pi should list a MIDI device named something like **ESP32**,
-**ESP32S3**, or **TinyUSB** — the same kind of name the MultiFX `.ino` used.
+**ESP32S3**, or **TinyUSB**.
 If they show a COM / “USB JTAG” serial device instead, USB Mode was wrong:
 re-select USB-OTG (TinyUSB) and upload again, then unplug and replug.
 
