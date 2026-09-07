@@ -1,8 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, str, objects, type JsonObject } from "../json";
 
 type PluginTab = "installed" | "apt" | "repos" | "patchstorage";
+type PatchSort = "downloads" | "alpha" | "newest" | "updated";
+
+function sortPatches(list: JsonObject[], sort: PatchSort): JsonObject[] {
+    const copy = [...list];
+    copy.sort((left, right) => {
+        if (sort === "alpha") {
+            return str(left.title).localeCompare(str(right.title), undefined, { sensitivity: "base" });
+        }
+        if (sort === "newest") {
+            return str(right.date).localeCompare(str(left.date)) || num(right.id) - num(left.id);
+        }
+        if (sort === "updated") {
+            return str(right.modified).localeCompare(str(left.modified))
+                || str(right.date).localeCompare(str(left.date));
+        }
+        return num(right.downloads) - num(left.downloads);
+    });
+    return copy;
+}
 
 export function PluginsView({
     engine,
@@ -24,6 +43,8 @@ export function PluginsView({
     const [repoKeyUrl, setRepoKeyUrl] = useState("");
     const [patchQuery, setPatchQuery] = useState("");
     const [patches, setPatches] = useState<JsonObject[]>([]);
+    const [patchSort, setPatchSort] = useState<PatchSort>("downloads");
+    const [patchLoaded, setPatchLoaded] = useState(false);
     const [busy, setBusy] = useState("");
     const [recommended, setRecommended] = useState<JsonObject[]>([]);
 
@@ -69,18 +90,6 @@ export function PluginsView({
         }).catch(() => undefined);
     }, [engine.client, tab]);
 
-    const helper = bool(status.helperAvailable);
-    const https = bool(status.httpsAvailable, true);
-    const bundles = objects(status.bundles);
-    const suggested = arr(status.suggestedPackages).map((item) => String(item));
-    const suggestedPackages = suggested.length ? suggested : [
-        "calf-plugins",
-        "x42-plugins",
-        "zam-plugins",
-        "guitarix-lv2",
-        "lsp-plugins-lv2"
-    ];
-
     const work = (label: string, task: () => Promise<void>) => {
         void run(async () => {
             setBusy(label);
@@ -91,6 +100,54 @@ export function PluginsView({
             }
         });
     };
+
+    const helper = bool(status.helperAvailable);
+    const https = bool(status.httpsAvailable, true);
+
+    const loadPatchStorage = () => {
+        if (!https) {
+            return;
+        }
+        work("Loading PatchStorage…", async () => {
+            try {
+                const next = await engine.client.request("plugins/patchstorage/search", {
+                    query: "",
+                    perPage: 100,
+                    all: true
+                });
+                setPatches(objects(next.items));
+            } finally {
+                setPatchLoaded(true);
+            }
+        });
+    };
+
+    useEffect(() => {
+        if (tab !== "patchstorage" || !https || patchLoaded) {
+            return;
+        }
+        loadPatchStorage();
+    }, [tab, https, patchLoaded]);
+
+    const visiblePatches = useMemo(() => {
+        const needle = patchQuery.trim().toLowerCase();
+        const filtered = needle
+            ? patches.filter((patch) => {
+                const blob = `${str(patch.title)} ${str(patch.author)} ${str(patch.excerpt)} ${str(patch.license)}`.toLowerCase();
+                return blob.includes(needle);
+            })
+            : patches;
+        return sortPatches(filtered, patchSort);
+    }, [patches, patchQuery, patchSort]);
+    const bundles = objects(status.bundles);
+    const suggested = arr(status.suggestedPackages).map((item) => String(item));
+    const suggestedPackages = suggested.length ? suggested : [
+        "calf-plugins",
+        "x42-plugins",
+        "zam-plugins",
+        "guitarix-lv2",
+        "lsp-plugins-lv2"
+    ];
 
     return (
         <div className="mfx-screen">
@@ -216,18 +273,18 @@ export function PluginsView({
                     <PatchStorageTab
                         https={https}
                         query={patchQuery}
-                        patches={patches}
+                        sort={patchSort}
+                        patches={visiblePatches}
+                        total={patches.length}
                         onQuery={setPatchQuery}
-                        onSearch={() => work("Searching PatchStorage…", async () => {
-                            const next = await engine.client.request("plugins/patchstorage/search", {
-                                query: patchQuery,
-                                page: 1
-                            });
-                            setPatches(objects(next.items));
-                        })}
+                        onSort={setPatchSort}
+                        onReload={loadPatchStorage}
                         onInstall={(patchId, title) => work(`Installing ${title}…`, async () => {
                             await engine.client.request("plugins/patchstorage/install", { patchId });
                             await refreshStatus();
+                            setPatches((list) => list.map((item) => (
+                                num(item.id) === patchId ? { ...item, installed: true } : item
+                            )));
                         })}
                     />
                 )}
@@ -518,16 +575,22 @@ function ReposTab({
 function PatchStorageTab({
     https,
     query,
+    sort,
     patches,
+    total,
     onQuery,
-    onSearch,
+    onSort,
+    onReload,
     onInstall
 }: {
     https: boolean;
     query: string;
+    sort: PatchSort;
     patches: JsonObject[];
+    total: number;
     onQuery: (value: string) => void;
-    onSearch: () => void;
+    onSort: (value: PatchSort) => void;
+    onReload: () => void;
     onInstall: (patchId: number, title: string) => void;
 }) {
     return (
@@ -535,26 +598,41 @@ function PatchStorageTab({
             <div className="panel stack">
                 <h2>PATCHSTORAGE</h2>
                 <div className="muted">
-                    LV2 plugins built for Raspberry Pi 64-bit (rpi-aarch64). Pi-MFX downloads a file you asked for
-                    onto this Pi. Each plugin keeps its own license.
+                    LV2 plugins built for Raspberry Pi 64-bit (rpi-aarch64). Opening this page lists every
+                    matching plugin. Pi-MFX downloads a file you asked for onto this Pi. Each plugin keeps
+                    its own license.
                 </div>
                 {!https && <div className="danger">This build has no HTTPS support, so PatchStorage is unavailable.</div>}
-                <label className="field">
-                    <span>Search</span>
-                    <input
-                        value={query}
-                        onChange={(event) => onQuery(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                                onSearch();
-                            }
-                        }}
-                    />
-                </label>
-                <button type="button" className="btn btn-accent" disabled={!https} onClick={onSearch}>SEARCH</button>
+                <div className="row">
+                    <label className="field">
+                        <span>Filter</span>
+                        <input
+                            value={query}
+                            onChange={(event) => onQuery(event.target.value)}
+                            placeholder="NAM, delay, reverb…"
+                        />
+                    </label>
+                    <label className="field">
+                        <span>Sort</span>
+                        <select value={sort} onChange={(event) => onSort(event.target.value as PatchSort)}>
+                            <option value="downloads">Most downloads</option>
+                            <option value="alpha">Alphabetical</option>
+                            <option value="newest">Newest</option>
+                            <option value="updated">Recently updated</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="button" className="btn" disabled={!https} onClick={onReload}>RELOAD</button>
             </div>
             <div className="panel stack">
-                <h2>RESULTS</h2>
+                <h2>PLUGINS</h2>
+                <div className="muted">
+                    {total === 0
+                        ? "No plugins loaded yet."
+                        : query.trim()
+                            ? `${patches.length} of ${total} plugins`
+                            : `${total} plugins`}
+                </div>
                 {patches.map((patch) => (
                     <div className="list-item" key={num(patch.id)}>
                         <div>
@@ -566,17 +644,23 @@ function PatchStorageTab({
                             </div>
                             {str(patch.excerpt) && <div className="muted">{str(patch.excerpt)}</div>}
                         </div>
-                        <button
-                            type="button"
-                            className="btn btn-accent"
-                            disabled={!https}
-                            onClick={() => onInstall(num(patch.id), str(patch.title))}
-                        >
-                            INSTALL
-                        </button>
+                        {bool(patch.installed) ? (
+                            <button type="button" className="btn" disabled>INSTALLED</button>
+                        ) : (
+                            <button
+                                type="button"
+                                className="btn btn-accent"
+                                disabled={!https}
+                                onClick={() => onInstall(num(patch.id), str(patch.title))}
+                            >
+                                INSTALL
+                            </button>
+                        )}
                     </div>
                 ))}
-                {patches.length === 0 && <div className="muted">Search for NAM, reverb, delay, or leave blank for popular LV2 builds.</div>}
+                {total > 0 && patches.length === 0 && (
+                    <div className="muted">No plugins match that filter.</div>
+                )}
             </div>
         </>
     );

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 #include <vector>
 
 #if defined(PIMFX_HAVE_CURL)
@@ -307,7 +308,7 @@ void collectBundles(const fs::path& root, std::vector<fs::path>& out) {
     }
 }
 
-Json summarizePatch(const Json& item) {
+Json summarizePatch(const Json& item, bool installed) {
     Json out = Json::object();
     out.set("id", item["id"].asInt());
     out.set("title", item["title"].asString());
@@ -315,7 +316,18 @@ Json summarizePatch(const Json& item) {
     out.set("url", item["url"].asString());
     out.set("slug", item["slug"].asString());
     out.set("downloads", item["download_count"].asInt());
+    std::string created = item["created_at"].asString();
+    if (created.empty()) {
+        created = item["date"].asString();
+    }
+    std::string updated = item["updated_at"].asString();
+    if (updated.empty()) {
+        updated = item["modified"].asString();
+    }
+    out.set("date", created);
+    out.set("modified", updated);
     out.set("author", item["author"]["name"].asString());
+    out.set("installed", installed);
     if (item["license"].isObject()) {
         out.set("license", item["license"]["name"].asString());
     }
@@ -578,7 +590,7 @@ bool PluginStore::githubInstall(const std::string& id, std::string& error) {
 
     Json args = Json::object();
     args.set("path", dest);
-    const Json reply = helperCall("deb-install", args, error, 180);
+    const Json reply = helperCall("deb-install", args, error, 300);
     removeFile(dest);
     if (!error.empty()) {
         return false;
@@ -750,34 +762,55 @@ Json PluginStore::patchstorageSearch(const Json& query, std::string& error) {
         return Json();
     }
 
-    const int page = std::max(1, query["page"].asInt(1));
-    const int perPage = std::min(40, std::max(1, query["perPage"].asInt(20)));
+    const int startPage = std::max(1, query["page"].asInt(1));
+    const int perPage = std::min(100, std::max(1, query["perPage"].asInt(100)));
+    const bool fetchAll = query["all"].asBool(true);
     const std::string search = query["query"].asString();
 
-    std::string url = std::string(kPatchstorageBase) + "/patches/?platforms="
-        + std::to_string(platformId_)
-        + "&targets=" + std::to_string(targetId_)
-        + "&page=" + std::to_string(page)
-        + "&per_page=" + std::to_string(perPage)
-        + "&orderby=download_count";
-    if (!search.empty()) {
-        url += "&search=" + urlEncode(search);
-    }
-
-    const Json result = httpsGet(url, error, 45);
-    if (!error.empty()) {
-        return Json();
+    std::unordered_set<int64_t> installed;
+    for (const Json& bundle : loadRegistry()["bundles"].items()) {
+        const int64_t patchId = bundle["patchId"].asInt64();
+        if (patchId > 0) {
+            installed.insert(patchId);
+        }
     }
 
     Json items = Json::array();
-    const Json list = result.isArray() ? result : result["items"];
-    for (const Json& item : list.items()) {
-        items.push(summarizePatch(item));
+    int page = startPage;
+    const int lastPage = fetchAll ? startPage + 19 : startPage;
+    while (page <= lastPage) {
+        std::string url = std::string(kPatchstorageBase) + "/patches/?platforms="
+            + std::to_string(platformId_)
+            + "&targets=" + std::to_string(targetId_)
+            + "&page=" + std::to_string(page)
+            + "&per_page=" + std::to_string(perPage)
+            + "&orderby=download_count";
+        if (!search.empty()) {
+            url += "&search=" + urlEncode(search);
+        }
+
+        const Json result = httpsGet(url, error, 45);
+        if (!error.empty()) {
+            return Json();
+        }
+
+        const Json list = result.isArray() ? result : result["items"];
+        int count = 0;
+        for (const Json& item : list.items()) {
+            const bool have = installed.count(item["id"].asInt64()) > 0;
+            items.push(summarizePatch(item, have));
+            ++count;
+        }
+        if (!fetchAll || count < perPage) {
+            break;
+        }
+        ++page;
     }
 
     Json wrapper = Json::object();
     wrapper.set("items", items);
-    wrapper.set("page", page);
+    wrapper.set("page", startPage);
+    wrapper.set("count", static_cast<int>(items.size()));
     wrapper.set("platformId", platformId_);
     wrapper.set("targetId", targetId_);
     wrapper.set("target", "rpi-aarch64");
@@ -799,18 +832,23 @@ bool PluginStore::extractArchive(const std::string& archive, const std::string& 
     std::vector<std::string> listArgs;
     std::vector<std::string> extractArgs;
     const std::string lower = toLower(archive);
+    // Raspberry Pi OS ships GNU tar. --no-absolute-filenames is a bsdtar flag
+    // and makes GNU tar abort. GNU tar already strips leading '/' unless -P.
+    const auto gnuTar = [&](const char* listFlag, const char* extractFlag) {
+        listArgs = {"tar", listFlag, archive};
+        extractArgs = {"tar", "--no-same-owner", extractFlag, archive, "-C", dest};
+    };
     if (endsWith(lower, ".zip")) {
         listArgs = {"unzip", "-Z1", archive};
         extractArgs = {"unzip", "-q", "-o", archive, "-d", dest};
     } else if (endsWith(lower, ".tar.xz") || endsWith(lower, ".txz")) {
-        listArgs = {"tar", "-tJf", archive};
-        extractArgs = {"tar", "-xJf", archive, "-C", dest, "--no-same-owner", "--no-absolute-filenames"};
-    } else if (endsWith(lower, ".tar.bz2") || endsWith(lower, ".tbz2")) {
-        listArgs = {"tar", "-tjf", archive};
-        extractArgs = {"tar", "-xjf", archive, "-C", dest, "--no-same-owner", "--no-absolute-filenames"};
+        gnuTar("-tJf", "-xJf");
+    } else if (endsWith(lower, ".tar.bz2") || endsWith(lower, ".tbz2") || endsWith(lower, ".tbz")) {
+        gnuTar("-tjf", "-xjf");
+    } else if (endsWith(lower, ".tar") && !endsWith(lower, ".tar.gz") && !endsWith(lower, ".tgz")) {
+        gnuTar("-tf", "-xf");
     } else {
-        listArgs = {"tar", "-tzf", archive};
-        extractArgs = {"tar", "-xzf", archive, "-C", dest, "--no-same-owner", "--no-absolute-filenames"};
+        gnuTar("-tzf", "-xzf");
     }
 
     std::string listing;

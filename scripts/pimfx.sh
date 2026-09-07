@@ -226,7 +226,8 @@ export SDL_IM_MODULE=none
 exec /usr/bin/chromium \\
     --ozone-platform=wayland \\
     --start-maximized \\
-    --disable-features=WaylandWindowDecorations,VirtualKeyboard,OnScreenKeyboard \\
+    --overscroll-history-navigation=0 \\
+    --disable-features=WaylandWindowDecorations,VirtualKeyboard,OnScreenKeyboard,TouchDragAndContextMenu \\
     --app='${url}' \\
     --password-store=basic
 AUTOSTART

@@ -17,12 +17,13 @@ Restart=on-failure
 RestartSec=2
 
 # Already root; do not let the helper gain extra capabilities.
+# Do not set RestrictSUIDSGID: apt-get drops to the _apt user (uid 42) and
+# local .deb installs fail with "seteuid 42" / "Method file has died".
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
-RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 

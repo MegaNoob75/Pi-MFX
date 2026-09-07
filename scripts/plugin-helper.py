@@ -62,7 +62,22 @@ def fail(conn: socket.socket, message: str) -> None:
     reply(conn, {"ok": False, "error": message})
 
 
-def run(args: list[str], timeout: int, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+# apt-get's file/http methods drop to _apt (uid 42). The helper is a locked-down
+# systemd unit, so that seteuid fails. Stay root and still use apt-get so local
+# .deb installs pull dependencies (ToobAmp requires apt-get, not apt or dpkg).
+APT_GET = [
+    "apt-get",
+    "-o", "APT::Sandbox::User=root",
+    "-o", "Dpkg::Use-Pty=0",
+]
+
+
+def run(
+    args: list[str],
+    timeout: int,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     merged["DEBIAN_FRONTEND"] = "noninteractive"
     if env:
@@ -74,7 +89,12 @@ def run(args: list[str], timeout: int, env: dict[str, str] | None = None) -> sub
         text=True,
         timeout=timeout,
         env=merged,
+        cwd=cwd,
     )
+
+
+def apt_get(args: list[str], timeout: int, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    return run([*APT_GET, *args], timeout=timeout, cwd=cwd)
 
 
 def valid_https(url: str) -> bool:
@@ -208,7 +228,7 @@ def download_key(repo_id: str, key_url: str, timeout: int) -> str:
 def handle(request: dict) -> dict:
     op = request.get("op") or ""
     timeout = int(request.get("timeout") or 60)
-    timeout = max(10, min(timeout, 240))
+    timeout = max(10, min(timeout, 300))
 
     if op == "ping":
         return {"ok": True, "version": 1}
@@ -274,9 +294,15 @@ def handle(request: dict) -> dict:
         architecture = arch.stdout.strip()
         if architecture not in {"arm64", "all"}:
             return {"ok": False, "error": "that package is not an arm64 build"}
-        result = run(["apt-get", "install", "-y", path], timeout=timeout)
+        directory, filename = os.path.split(path)
+        update = apt_get(["update"], timeout=min(timeout, 90))
+        # ToobAmp: apt-get install ./package.deb so dependencies are resolved.
+        result = apt_get(["install", "-y", f"./{filename}"], timeout=timeout, cwd=directory)
         if result.returncode != 0:
-            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt install failed"}
+            detail = (result.stderr or result.stdout).strip() or "apt-get install failed"
+            if update.returncode != 0:
+                detail = ((update.stderr or update.stdout).strip() + "\n" + detail).strip()
+            return {"ok": False, "error": detail}
         return {"ok": True, "package": package, "installed": True}
 
     if op == "apt-install":
@@ -284,12 +310,9 @@ def handle(request: dict) -> dict:
         allowed, message = allow_package(name)
         if not allowed:
             return {"ok": False, "error": message}
-        result = run(
-            ["apt-get", "install", "-y", "--no-install-recommends", name],
-            timeout=timeout,
-        )
+        result = apt_get(["install", "-y", "--no-install-recommends", name], timeout=timeout)
         if result.returncode != 0:
-            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt install failed"}
+            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt-get install failed"}
         return {"ok": True, "package": name, "installed": True}
 
     if op == "apt-remove":
@@ -297,15 +320,15 @@ def handle(request: dict) -> dict:
         allowed, message = allow_package(name)
         if not allowed:
             return {"ok": False, "error": message}
-        result = run(["apt-get", "remove", "-y", name], timeout=timeout)
+        result = apt_get(["remove", "-y", name], timeout=timeout)
         if result.returncode != 0:
-            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt remove failed"}
+            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt-get remove failed"}
         return {"ok": True, "package": name, "installed": False}
 
     if op == "apt-update":
-        result = run(["apt-get", "update"], timeout=timeout)
+        result = apt_get(["update"], timeout=timeout)
         if result.returncode != 0:
-            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt update failed"}
+            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt-get update failed"}
         return {"ok": True}
 
     if op == "repo-list":
@@ -339,11 +362,11 @@ def handle(request: dict) -> dict:
         path = repo_path(repo_id)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(line)
-        update = run(["apt-get", "update"], timeout=timeout)
+        update = apt_get(["update"], timeout=timeout)
         if update.returncode != 0:
             return {
                 "ok": False,
-                "error": (update.stderr or update.stdout).strip() or "apt update failed after adding the repo",
+                "error": (update.stderr or update.stdout).strip() or "apt-get update failed after adding the repo",
             }
         return {"ok": True, "repos": list_repos()}
 
@@ -357,7 +380,7 @@ def handle(request: dict) -> dict:
             os.remove(path)
         if os.path.exists(key):
             os.remove(key)
-        run(["apt-get", "update"], timeout=timeout)
+        apt_get(["update"], timeout=timeout)
         return {"ok": True, "repos": list_repos()}
 
     return {"ok": False, "error": f"unknown helper op: {op}"}

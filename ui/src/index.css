@@ -26,20 +26,23 @@
 }
 
 html,
-body {
+body,
+#root {
     margin: 0;
     width: 100%;
     height: 100%;
     background: var(--mfx-bg);
     color: var(--mfx-text);
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+    touch-action: manipulation;
 }
 
 #root {
-    margin: 0;
-    width: 100%;
-    height: 100%;
     overflow: hidden;
-    background: var(--mfx-bg);
 }
 
 * {
@@ -73,13 +76,20 @@ button {
     cursor: pointer;
 }
 
+.app,
+.app * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
 .app {
     position: absolute;
     inset: 0;
     overflow: hidden;
     background: var(--mfx-bg);
-    -webkit-user-select: none;
-    user-select: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .mfx-app-root {

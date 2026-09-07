@@ -241,11 +241,21 @@ export function PerformanceControl({
             data-control-kind={tile.kind ?? "pot"}
             data-assigned={assigned ? "true" : "false"}
             data-adjustable="true"
-            style={style}
+            style={{ touchAction: "none", WebkitTouchCallout: "none", userSelect: "none", ...style }}
             onPointerDown={(event) => begin(event, className.includes("popout"))}
             onPointerMove={move}
             onPointerUp={end}
             onPointerCancel={end}
+            onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!tile.onLongPress) {
+                    return;
+                }
+                clearHold();
+                hold.current.suppressed = true;
+                tile.onLongPress();
+            }}
         >
             <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />
             <ControlGraphic kind={tile.kind ?? "pot"} range={range} active={tile.active} />
@@ -294,11 +304,11 @@ export function PerformanceControl({
             onPointerUp={end}
             onPointerCancel={end}
             onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
                 if (!tile.onLongPress) {
                     return;
                 }
-                event.preventDefault();
-                event.stopPropagation();
                 clearHold();
                 hold.current.suppressed = true;
                 tile.onLongPress();
