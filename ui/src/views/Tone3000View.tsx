@@ -128,18 +128,18 @@ function modelUrl(model: JsonObject): string {
 }
 
 function modelIsIr(tone: JsonObject, model: JsonObject): boolean {
-    const text = `${str(model.kind)} ${str(model.format)} ${str(model.name)} ${toneGear(tone)} ${str(tone.format)}`;
+    if (str(tone.format) === "ir" || toneGear(tone) === "ir") {
+        return true;
+    }
+    const text = `${str(model.kind)} ${str(model.format)} ${str(model.name)}`;
     return /(?:^|\b)ir(?:\b|$)|impulse/i.test(text);
 }
 
 function pageSizeFor(source: CatalogSource): number {
-    if (source === "trending" || source === "latest") {
-        return 10;
+    if (source === "downloaded" || source === "favorited" || source === "created") {
+        return 50;
     }
-    if (source === "search") {
-        return 25;
-    }
-    return 24;
+    return 25;
 }
 
 function buildListPayload(
@@ -150,49 +150,30 @@ function buildListPayload(
     page: number,
     refresh: boolean
 ): JsonObject {
-    const pageSize = pageSizeFor(source);
     const ir = gear === "ir";
-    const payload: JsonObject = { refresh };
-
-    if (source === "trending") {
-        if (ir) {
-            return { ...payload, source: "search", format: "ir", sort: "trending", page_size: 10 };
-        }
-        if (!gear) {
-            return { ...payload, source: "search", sort: "trending", page, page_size: 25 };
-        }
-        return { ...payload, source: "trending", gear };
+    if (source === "downloaded" || source === "favorited" || source === "created") {
+        return { refresh, source, page, page_size: pageSizeFor(source) };
     }
 
-    if (source === "latest") {
-        if (!gear) {
-            return { ...payload, source: "latest" };
-        }
-        if (ir) {
-            return { ...payload, source: "search", format: "ir", sort: "newest", page, page_size: pageSize };
-        }
-        return { ...payload, source: "search", gears: gear, sort: "newest", page, page_size: pageSize };
+    // Trending / latest homepage feeds are only 10 items. Search is paginated,
+    // so those tabs keep loading through /tones/search as the user scrolls.
+    const body: JsonObject = {
+        refresh,
+        source: "search",
+        page,
+        page_size: pageSizeFor("search"),
+        sort: source === "latest" ? "newest" : source === "trending" ? "trending" : sort
+    };
+    if (source === "search" && query.trim()) {
+        body.query = query.trim();
     }
-
-    if (source === "search") {
-        const body: JsonObject = {
-            ...payload,
-            source: "search",
-            query: query.trim(),
-            sort,
-            page,
-            page_size: pageSize
-        };
-        if (ir) {
-            body.format = "ir";
-        } else if (gear) {
-            body.gears = gear;
-            body.format = "nam";
-        }
-        return body;
+    if (ir) {
+        body.format = "ir";
+    } else if (gear) {
+        body.gears = gear;
+        body.format = "nam";
     }
-
-    return { ...payload, source, page, page_size: pageSize };
+    return body;
 }
 
 export function Tone3000View({
@@ -210,7 +191,6 @@ export function Tone3000View({
     const [tones, setTones] = useState<JsonObject[]>([]);
     const [modelsByTone, setModelsByTone] = useState<Record<string, JsonObject[]>>({});
     const [expandedId, setExpandedId] = useState("");
-    const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(false);
     const [cached, setCached] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -221,6 +201,13 @@ export function Tone3000View({
     const [message, setMessage] = useState("");
     const completingOauth = useRef(false);
     const loadSeq = useRef(0);
+    const pageRef = useRef(1);
+    const hasMoreRef = useRef(false);
+    const busyRef = useRef(false);
+    const catalogRef = useRef({ source, gear, query, sort });
+    const scrollerRef = useRef<HTMLDivElement>(null);
+    const sentinelRef = useRef<HTMLDivElement>(null);
+    catalogRef.current = { source, gear, query, sort };
 
     const refresh = () => {
         void engine.client.request("tone3000/status").then((result) => {
@@ -258,32 +245,56 @@ export function Tone3000View({
         });
     }, [engine.client, status.connected]);
 
-    const fetchTones = async (opts: { refresh?: boolean; append?: boolean; nextPage?: number } = {}) => {
+    const fetchTones = async (opts: { refresh?: boolean; append?: boolean } = {}) => {
+        if (opts.append && (busyRef.current || !hasMoreRef.current)) {
+            return;
+        }
         const seq = ++loadSeq.current;
-        const nextPage = opts.append ? (opts.nextPage ?? page + 1) : 1;
-        const payload = buildListPayload(source, gear, query, sort, nextPage, Boolean(opts.refresh));
+        const catalog = catalogRef.current;
+        const nextPage = opts.append ? pageRef.current + 1 : 1;
+        busyRef.current = true;
         setLoading(true);
         try {
+            const payload = buildListPayload(
+                catalog.source,
+                catalog.gear,
+                catalog.query,
+                catalog.sort,
+                nextPage,
+                Boolean(opts.refresh)
+            );
             const result = await engine.client.request("tone3000/tones", payload);
             if (seq !== loadSeq.current) {
                 return;
             }
             const list = extractList(result.result);
-            const filtered = source === "downloaded" || source === "favorited" || source === "created"
-                ? list.filter((tone) => matchesGear(tone, gear))
+            const filtered = catalog.source === "downloaded" || catalog.source === "favorited"
+                || catalog.source === "created"
+                ? list.filter((tone) => matchesGear(tone, catalog.gear))
                 : list;
-            setTones((current) => opts.append ? [...current, ...filtered] : filtered);
-            setPage(nextPage);
-            setHasMore(list.length >= num(payload.page_size, pageSizeFor(source)));
+            setTones((current) => {
+                if (!opts.append) {
+                    return filtered;
+                }
+                const seen = new Set(current.map((tone) => toneKey(tone)));
+                return [...current, ...filtered.filter((tone) => !seen.has(toneKey(tone)))];
+            });
+            pageRef.current = nextPage;
+            const more = list.length >= num(payload.page_size, pageSizeFor(catalog.source));
+            hasMoreRef.current = more;
+            setHasMore(more);
             setCached(bool(result.cached));
             setMessage(filtered.length || opts.append ? "" : "No tones in this section.");
         } catch (error: unknown) {
             if (seq !== loadSeq.current) {
                 return;
             }
+            hasMoreRef.current = false;
+            setHasMore(false);
             setMessage(error instanceof Error ? error.message : String(error));
         } finally {
             if (seq === loadSeq.current) {
+                busyRef.current = false;
                 setLoading(false);
             }
         }
@@ -293,14 +304,41 @@ export function Tone3000View({
         if (!bool(status.connected)) {
             return;
         }
+        pageRef.current = 1;
+        hasMoreRef.current = false;
+        scrollerRef.current?.scrollTo({ top: 0 });
         const delay = source === "search" && query.trim() ? 400 : 0;
         const timer = window.setTimeout(() => {
             void fetchTones({ refresh: false, append: false });
         }, delay);
         return () => window.clearTimeout(timer);
-        // query/source/gear/sort are the catalog keys; fetchTones closes over them.
+        // query/source/gear/sort are the catalog keys; fetchTones reads them from refs.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [status.connected, source, gear, sort, query]);
+
+    useEffect(() => {
+        if (!bool(status.connected) || !hasMore || loading) {
+            return;
+        }
+        const root = scrollerRef.current;
+        const sentinel = sentinelRef.current;
+        if (!root || !sentinel) {
+            return;
+        }
+        const io = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                void fetchTones({ append: true });
+            }
+        }, { root, rootMargin: "280px" });
+        io.observe(sentinel);
+        const rootBox = root.getBoundingClientRect();
+        const sentBox = sentinel.getBoundingClientRect();
+        if (sentBox.top <= rootBox.bottom + 280) {
+            void fetchTones({ append: true });
+        }
+        return () => io.disconnect();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [status.connected, tones, hasMore, loading]);
 
     const applyCodeField = (text: string) => {
         const parsed = parseOAuthCallback(text);
@@ -312,36 +350,73 @@ export function Tone3000View({
         setCode(text);
     };
 
+    const resolveModel = async (model: JsonObject): Promise<JsonObject> => {
+        if (modelUrl(model)) {
+            return model;
+        }
+        const id = jsonId(model.id);
+        if (!id) {
+            return model;
+        }
+        const result = await engine.client.request("tone3000/model", { modelId: id });
+        const body = obj(result.result);
+        const nested = objects(body.data)[0];
+        return { ...model, ...body, ...(nested ?? {}) };
+    };
+
     const loadModels = async (tone: JsonObject): Promise<JsonObject[]> => {
         const id = toneKey(tone);
-        if (modelsByTone[id]) {
+        if (modelsByTone[id]?.length) {
             return modelsByTone[id];
         }
-        const preferA2 = await engine.client.request("tone3000/models", {
-            toneId: id,
-            architecture: "2",
-            page_size: 50
-        });
-        let list = extractList(preferA2.result);
-        if (list.length === 0) {
-            const fallback = await engine.client.request("tone3000/models", { toneId: id, page_size: 50 });
-            list = extractList(fallback.result);
+        const requests = await Promise.allSettled([
+            engine.client.request("tone3000/models", { toneId: id, architecture: "2", page_size: 50 }),
+            engine.client.request("tone3000/models", { toneId: id, page_size: 50 })
+        ]);
+        const merged: JsonObject[] = [];
+        const seen = new Set<string>();
+        for (const request of requests) {
+            if (request.status !== "fulfilled") {
+                continue;
+            }
+            for (const model of extractList(request.value.result)) {
+                const key = jsonId(model.id, modelUrl(model) || str(model.name));
+                if (!key || seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                merged.push(model);
+            }
         }
-        setModelsByTone((current) => ({ ...current, [id]: list }));
-        return list;
+        const withUrls: JsonObject[] = [];
+        for (const model of merged) {
+            try {
+                withUrls.push(await resolveModel(model));
+            } catch {
+                withUrls.push(model);
+            }
+        }
+        setModelsByTone((current) => ({ ...current, [id]: withUrls }));
+        return withUrls;
     };
 
     const downloadOne = async (tone: JsonObject, model: JsonObject) => {
-        const url = modelUrl(model);
-        if (!url) {
+        const resolved = await resolveModel(model);
+        const url = modelUrl(resolved);
+        const modelId = jsonId(resolved.id, jsonId(model.id));
+        if (!url && !modelId) {
             throw new Error("that model has no download URL");
         }
-        await engine.client.request("tone3000/download", {
+        setMessage(`Downloading ${str(resolved.name, toneName(tone))}…`);
+        const result = await engine.client.request("tone3000/download", {
             url,
-            name: str(model.name, toneName(tone)),
-            kind: modelIsIr(tone, model) ? "ir" : "model"
+            modelId,
+            name: str(resolved.name, toneName(tone)),
+            kind: modelIsIr(tone, resolved) ? "ir" : "model"
         });
+        const stored = str(result.path);
         await engine.client.request("library");
+        setMessage(stored ? `Saved ${str(resolved.name, toneName(tone))} to the library.` : `Saved ${toneName(tone)} to the library.`);
     };
 
     const downloadBest = async (tone: JsonObject) => {
@@ -349,7 +424,9 @@ export function Tone3000View({
         if (models.length === 0) {
             throw new Error("no downloadable models for that tone");
         }
-        const preferred = models.find((item) => jsonId(item.architecture_version) === "2") ?? models[0];
+        const preferred = models.find((item) => jsonId(item.architecture_version) === "2")
+            ?? models.find((item) => modelUrl(item) || jsonId(item.id))
+            ?? models[0];
         await downloadOne(tone, preferred);
     };
 
@@ -531,6 +608,7 @@ export function Tone3000View({
                             ))}
                         </div>
                     )}
+                    <div className="t3k-scroll" ref={scrollerRef}>
                     <div className="t3k-grid">
                         {tones.map((tone) => {
                             const id = toneKey(tone);
@@ -559,7 +637,6 @@ export function Tone3000View({
                                                 className="btn btn-accent"
                                                 onClick={() => void run(async () => {
                                                     await downloadBest(tone);
-                                                    setMessage(`Saved ${name} to the library.`);
                                                 })}
                                             >
                                                 DOWNLOAD
@@ -585,7 +662,8 @@ export function Tone3000View({
                                                 {models.length === 0 && <div className="muted">No models listed.</div>}
                                                 {models.map((model, modelIndex) => {
                                                     const url = modelUrl(model);
-                                                    if (!url) {
+                                                    const modelId = jsonId(model.id);
+                                                    if (!url && !modelId) {
                                                         return null;
                                                     }
                                                     return (
@@ -602,7 +680,6 @@ export function Tone3000View({
                                                                 className="btn btn-accent"
                                                                 onClick={() => void run(async () => {
                                                                     await downloadOne(tone, model);
-                                                                    setMessage(`Saved ${str(model.name, name)} to the library.`);
                                                                 })}
                                                             >
                                                                 DOWNLOAD
@@ -617,16 +694,14 @@ export function Tone3000View({
                             );
                         })}
                     </div>
-                    {hasMore && source !== "trending" && source !== "latest" && (
-                        <button
-                            type="button"
-                            className="btn"
-                            disabled={loading}
-                            onClick={() => void fetchTones({ append: true })}
-                        >
-                            LOAD MORE
-                        </button>
+                    <div ref={sentinelRef} className="t3k-sentinel" />
+                    {loading && tones.length > 0 && (
+                        <div className="muted" style={{ padding: "8px 12px 12px" }}>Loading more…</div>
                     )}
+                    {!hasMore && tones.length > 0 && (
+                        <div className="muted" style={{ padding: "8px 12px 12px" }}>End of list.</div>
+                    )}
+                    </div>
                 </div>
             )}
         </div>

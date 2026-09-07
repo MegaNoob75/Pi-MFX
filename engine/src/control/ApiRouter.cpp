@@ -476,6 +476,13 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         wrapper.set("result", result);
         return wrapper;
     }
+    if (command == "model") {
+        const Json result = tone3000_.model(payload["modelId"].asString(), error);
+        ok = error.empty();
+        Json wrapper = Json::object();
+        wrapper.set("result", result);
+        return wrapper;
+    }
     if (command == "models") {
         const Json result = tone3000_.models(payload["toneId"].asString(), payload, error);
         ok = error.empty();
@@ -484,10 +491,34 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         return wrapper;
     }
     if (command == "download") {
+        std::string url = payload["url"].asString();
+        std::string name = payload["name"].asString();
+        const std::string modelId = payload["modelId"].asString();
+        if (!modelId.empty()) {
+            std::string modelError;
+            const Json model = tone3000_.model(modelId, modelError);
+            if (modelError.empty()) {
+                std::string fresh = model["model_url"].asString();
+                if (fresh.empty()) {
+                    fresh = model["url"].asString();
+                }
+                if (fresh.empty()) {
+                    fresh = model["download_url"].asString();
+                }
+                if (!fresh.empty()) {
+                    url = fresh;
+                }
+                if (name.empty()) {
+                    name = model["name"].asString();
+                }
+            } else if (url.empty()) {
+                ok = false;
+                error = modelError;
+                return Json::object();
+            }
+        }
         std::string storedPath;
-        ok = tone3000_.downloadModel(payload["url"].asString(),
-                                     payload["name"].asString(),
-                                     payload["kind"].asString("model"),
+        ok = tone3000_.downloadModel(url, name, payload["kind"].asString("model"),
                                      storedPath, error);
         Json result = Json::object();
         result.set("path", storedPath);

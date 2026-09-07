@@ -2178,6 +2178,20 @@ button.list-item {
     gap: 10px;
 }
 
+.t3k-scroll {
+    max-height: min(62vh, 720px);
+    min-height: 280px;
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--mfx-border);
+    border-radius: 12px;
+    background: var(--mfx-bg);
+}
+
+.t3k-sentinel {
+    height: 1px;
+}
+
 .t3k-card {
     display: flex;
     flex-direction: column;

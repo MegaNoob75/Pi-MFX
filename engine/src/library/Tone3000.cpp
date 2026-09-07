@@ -49,7 +49,8 @@ bool request(const std::string& url,
              const std::string& bearer,
              std::string& responseBody,
              long& statusCode,
-             std::string& error) {
+             std::string& error,
+             long timeoutSeconds = 60) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = "could not start an HTTPS request";
@@ -72,7 +73,7 @@ bool request(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSeconds);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Pi-MFX/" PIMFX_VERSION);
     // Certificate verification stays on. A guitar pedal on a hotel network is
@@ -496,6 +497,22 @@ Json Tone3000Client::tone(const std::string& toneId, std::string& error) {
     return authorizedGet("/tones/" + urlEncode(toneId), error);
 }
 
+Json Tone3000Client::model(const std::string& modelId, std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (modelId.empty()) {
+        error = "no model id";
+        return Json();
+    }
+    Json json = authorizedGet("/models/" + urlEncode(modelId), error);
+    if (!error.empty()) {
+        return json;
+    }
+    if (json["model_url"].asString().empty() && json["data"].isObject()) {
+        return json["data"];
+    }
+    return json;
+}
+
 Json Tone3000Client::models(const std::string& toneId, const Json& query, std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (toneId.empty()) {
@@ -526,18 +543,30 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return false;
     }
 
-    // TONE3000's own model_url host wants the access token. CDN / object-store
-    // links are already signed and must not receive a Bearer header.
-    const bool toneHost = url.find("://www.tone3000.com") != std::string::npos
-                       || url.find("://tone3000.com/") != std::string::npos;
-    if (toneHost && !ensureAccessToken(error)) {
+    if (!ensureAccessToken(error)) {
         return false;
     }
+
     std::string body;
     long status = 0;
-    if (!request(url, "GET", std::string(), toneHost ? tokens_.accessToken : std::string(),
-                 body, status, error)) {
+    // TONE3000's docs say model_url downloads need the access token. Some
+    // hosts are pre-signed CDNs that reject a Bearer header, so a 4xx retry
+    // without it still lands the file.
+    auto fetch = [&](const std::string& bearer) {
+        body.clear();
+        status = 0;
+        error.clear();
+        return request(url, "GET", std::string(), bearer, body, status, error, 300);
+    };
+
+    if (!fetch(tokens_.accessToken)) {
         return false;
+    }
+    if (status == 400 || status == 401 || status == 403) {
+        logInfo("tone3000: download HTTP " + std::to_string(status) + " with token, retrying without");
+        if (!fetch(std::string())) {
+            return false;
+        }
     }
     if (status < 200 || status >= 300) {
         error = "download failed (HTTP " + std::to_string(status) + ")";

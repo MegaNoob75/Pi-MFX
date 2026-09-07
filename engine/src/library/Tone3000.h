@@ -56,6 +56,7 @@ public:
     Json listTones(const std::string& source, const Json& query, std::string& error,
                    bool* cached = nullptr);
     Json tone(const std::string& toneId, std::string& error);
+    Json model(const std::string& modelId, std::string& error);
     Json models(const std::string& toneId, const Json& query, std::string& error);
 
     /// Downloads one model file into the library. `kind` is "model" or "ir",
