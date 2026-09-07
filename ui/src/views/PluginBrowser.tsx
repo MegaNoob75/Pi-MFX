@@ -82,7 +82,6 @@ export function PluginBrowser({
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="Search plugins..."
                     autoComplete="off"
-                    autoFocus
                     className="input"
                 />
                 <select value={category} onChange={(event) => setCategory(event.target.value)}>

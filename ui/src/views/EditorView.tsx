@@ -543,13 +543,49 @@ export function EffectControls({
             <div className="control-grid">
                 {ports.map((port) => {
                     const symbol = str(port.symbol);
+                    const name = str(port.name, symbol);
                     const min = num(port.min, 0);
                     const max = num(port.max, 1);
                     const value = controlValue(selected, symbol, num(port.default, min));
                     const stepped = bool(port.integer) || bool(port.toggled);
+                    const apply = (next: number) => {
+                        const clamped = clampPortValue(next, min, max, stepped);
+                        void client.request("chain/control", {
+                            slotId: str(selected.id),
+                            port: symbol,
+                            value: clamped
+                        }).catch(() => undefined);
+                    };
+                    const editNumber = () => {
+                        void (async () => {
+                            const typed = await askText(name, formatEditableValue(value, port), "numeric");
+                            if (typed === null) {
+                                return;
+                            }
+                            const parsed = Number(typed.trim());
+                            if (!Number.isFinite(parsed)) {
+                                return;
+                            }
+                            await run(() => client.request("chain/control", {
+                                slotId: str(selected.id),
+                                port: symbol,
+                                value: clampPortValue(parsed, min, max, stepped)
+                            }));
+                        })();
+                    };
                     return (
-                        <label key={symbol} className="control-card field">
-                            <span>{str(port.name, symbol)} <span className="muted">{formatControl(value, port)}</span></span>
+                        <div key={symbol} className="control-card field">
+                            <div className="control-card-head">
+                                <span>{name}</span>
+                                {!bool(port.toggled) && arr(port.scalePoints).filter(isObj).length === 0 && (
+                                    <button type="button" className="control-value" onClick={editNumber}>
+                                        {formatControl(value, port)}
+                                    </button>
+                                )}
+                                {(bool(port.toggled) || arr(port.scalePoints).filter(isObj).length > 0) && (
+                                    <span className="muted">{formatControl(value, port)}</span>
+                                )}
+                            </div>
                             {bool(port.toggled) ? (
                                 <button
                                     type="button"
@@ -582,19 +618,13 @@ export function EffectControls({
                                     type="range"
                                     min={min}
                                     max={max}
-                                    step={stepped ? 1 : (max - min) / 200}
+                                    step={stepped ? 1 : "any"}
                                     value={value}
-                                    onChange={(event) => {
-                                        const next = Number(event.target.value);
-                                        void client.request("chain/control", {
-                                            slotId: str(selected.id),
-                                            port: symbol,
-                                            value: next
-                                        }).catch(() => undefined);
-                                    }}
+                                    aria-label={name}
+                                    onChange={(event) => apply(Number(event.target.value))}
                                 />
                             )}
-                        </label>
+                        </div>
                     );
                 })}
             </div>
@@ -816,4 +846,16 @@ function formatControl(value: number, port: JsonObject): string {
     const unit = str(port.unit);
     const digits = bool(port.integer) || bool(port.toggled) ? 0 : 2;
     return `${value.toFixed(digits)}${unit ? ` ${unit}` : ""}`;
+}
+
+function formatEditableValue(value: number, port: JsonObject): string {
+    if (bool(port.integer) || bool(port.toggled)) {
+        return String(Math.round(value));
+    }
+    return String(Number(value.toFixed(4)));
+}
+
+function clampPortValue(value: number, min: number, max: number, integer: boolean): number {
+    const next = integer ? Math.round(value) : value;
+    return Math.min(max, Math.max(min, next));
 }

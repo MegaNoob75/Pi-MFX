@@ -1309,9 +1309,40 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     gap: 10px;
 }
 
+.field input[type="range"],
 .control-card input[type="range"] {
     width: 100%;
+    min-height: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
     accent-color: var(--mfx-purple);
+}
+
+.field input[type="range"]:focus,
+.control-card input[type="range"]:focus {
+    border: none;
+}
+
+.control-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.control-value {
+    margin: 0;
+    padding: 0;
+    min-height: 0;
+    border: none;
+    background: transparent;
+    color: var(--mfx-cyan);
+    font: inherit;
+    font-weight: 800;
+    cursor: pointer;
 }
 
 .list-item {
@@ -1453,6 +1484,8 @@ button.list-item {
     font: inherit;
     font-weight: 800;
     overflow: hidden;
+    cursor: move;
+    touch-action: none;
 }
 
 .layout-item.switch {
@@ -1464,7 +1497,11 @@ button.list-item {
 .layout-item-preview {
     width: 100%;
     height: 100%;
-    pointer-events: none;
+    pointer-events: none !important;
+}
+
+.layout-item-preview * {
+    pointer-events: none !important;
 }
 
 .layout-item-preview--status {
@@ -1870,11 +1907,14 @@ button.list-item {
     position: absolute;
     right: 2px;
     bottom: 2px;
+    z-index: 3;
     width: 16px;
     height: 16px;
     border-radius: 3px;
     background: var(--mfx-cyan);
     cursor: nwse-resize;
+    pointer-events: auto;
+    touch-action: none;
 }
 
 .split-row-drag {

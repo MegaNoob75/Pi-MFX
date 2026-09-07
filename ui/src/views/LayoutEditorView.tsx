@@ -99,7 +99,7 @@ export function LayoutEditorView({
         }
         event.preventDefault();
         event.stopPropagation();
-        event.currentTarget.setPointerCapture(event.pointerId);
+        stageRef.current?.setPointerCapture(event.pointerId);
         drag.current = { id, mode: gesture, startX: event.clientX, startY: event.clientY, rect, last: rect };
         setSelectedId(id);
         setMeasurement({ mode: gesture.toUpperCase(), clientX: event.clientX, clientY: event.clientY, rect });
