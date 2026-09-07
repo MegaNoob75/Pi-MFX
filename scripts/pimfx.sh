@@ -463,6 +463,8 @@ MENU
         *) warn "pick a number from 1 to 4" ;;
     esac
 }
+
+do_reboot() {
     if confirm "Reboot this Pi now?"; then
         log "Rebooting"
         systemctl reboot
