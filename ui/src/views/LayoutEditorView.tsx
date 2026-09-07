@@ -53,6 +53,8 @@ export function LayoutEditorView({
     const [hiddenIds, setHiddenIds] = useState(() => unplacedIds(layout));
     const [draftRects, setDraftRects] = useState<Record<string, LayoutRect>>({});
     const [selectedId, setSelectedId] = useState("");
+    const [groupMode, setGroupMode] = useState(false);
+    const [groupIds, setGroupIds] = useState<string[]>([]);
     const [snapEnabled, setSnapEnabled] = useState(loadSnapEnabled);
     const [snapPixels, setSnapPixels] = useState(loadSnapPixels);
     const [message, setMessage] = useState("");
@@ -73,6 +75,8 @@ export function LayoutEditorView({
     } | null>(null);
 
     const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
+    const grouped = useMemo(() => new Set(groupIds), [groupIds]);
+    const canArrange = stage === "snapshots" || mode === "freeform";
 
     const applySnap = (rect: LayoutRect) => {
         const box = stageRef.current?.getBoundingClientRect();
@@ -98,12 +102,131 @@ export function LayoutEditorView({
             : gridCellRect(index, columns, rows);
     };
 
+    const placedControls = useMemo(
+        () => controls.filter((control) => !hidden.has(str(control.id))),
+        [controls, hidden]
+    );
+
+    const visibleIds = useMemo(() => {
+        if (stage === "snapshots") {
+            return snapshotWidgets.map((widget) => widget.id);
+        }
+        return [
+            ...STATUS_WIDGET_IDS.filter((id) => widgets[id].visible),
+            ...placedControls.map((control) => str(control.id))
+        ];
+    }, [stage, snapshotWidgets, widgets, placedControls]);
+
+    const minSizeForId = (id: string): { width: number; height: number } => {
+        const control = controls.find((item) => str(item.id) === id);
+        if (control) {
+            return analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
+        }
+        return { width: 0.08, height: 0.08 };
+    };
+
+    const rectForId = (id: string): LayoutRect | null => {
+        if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
+            return widgets[id]?.rect ?? null;
+        }
+        if (id.startsWith("snap-slot-")) {
+            return snapshotWidgets.find((item) => item.id === id)?.rect ?? null;
+        }
+        const control = controls.find((item) => str(item.id) === id);
+        if (!control) {
+            return null;
+        }
+        const index = placedControls.findIndex((item) => str(item.id) === id);
+        return controlRect(control, index >= 0 ? index : 0);
+    };
+
+    const sizedRect = (id: string, base: LayoutRect, size: { width: number; height: number }): LayoutRect => {
+        const min = minSizeForId(id);
+        return clampRect({
+            ...base,
+            width: Math.max(min.width, size.width),
+            height: Math.max(min.height, size.height)
+        });
+    };
+
+    const patchRects = (updates: Record<string, LayoutRect>) => {
+        const ids = Object.keys(updates);
+        const statusIds = ids.filter((id) => STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number]));
+        const snapIds = ids.filter((id) => id.startsWith("snap-slot-"));
+        const controlIds = ids.filter((id) => !statusIds.includes(id) && !snapIds.includes(id));
+        if (statusIds.length > 0) {
+            setWidgets((current) => {
+                const next = { ...current };
+                for (const id of statusIds) {
+                    if (next[id]) {
+                        next[id] = { ...next[id], rect: updates[id] };
+                    }
+                }
+                return next;
+            });
+        }
+        if (snapIds.length > 0) {
+            setSnapshotWidgets((current) => current.map((item) => (
+                updates[item.id] ? { ...item, rect: updates[item.id] } : item
+            )));
+        }
+        if (controlIds.length > 0) {
+            setDraftRects((current) => {
+                const next = { ...current };
+                for (const id of controlIds) {
+                    next[id] = updates[id];
+                }
+                return next;
+            });
+        }
+    };
+
+    const applySizeToGroup = (sourceId: string, size: { width: number; height: number }) => {
+        const targets = groupIds.filter((id) => id !== sourceId);
+        if (targets.length === 0) {
+            return;
+        }
+        const updates: Record<string, LayoutRect> = {};
+        for (const id of targets) {
+            const current = rectForId(id);
+            if (!current) {
+                continue;
+            }
+            updates[id] = sizedRect(id, current, size);
+        }
+        if (Object.keys(updates).length > 0) {
+            patchRects(updates);
+        }
+    };
+
+    const matchGroupToId = (sourceId: string) => {
+        const source = rectForId(sourceId);
+        if (!source || groupIds.filter((id) => id !== sourceId).length === 0) {
+            return;
+        }
+        applySizeToGroup(sourceId, { width: source.width, height: source.height });
+        setMessage("Grouped widgets now match that size.");
+    };
+
+    const toggleGroupMember = (id: string) => {
+        setGroupIds((current) => (
+            current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+        ));
+        setSelectedId(id);
+        setMessage("");
+    };
+
     const onPointerDown = (id: string, rect: LayoutRect, event: ReactPointerEvent, gesture: "move" | "resize" = "move") => {
-        if (stage !== "snapshots" && mode !== "freeform") {
+        if (!canArrange) {
+            setSelectedId(id);
             return;
         }
         event.preventDefault();
         event.stopPropagation();
+        if (groupMode && gesture === "move") {
+            toggleGroupMember(id);
+            return;
+        }
         stageRef.current?.setPointerCapture(event.pointerId);
         drag.current = { id, mode: gesture, startX: event.clientX, startY: event.clientY, rect, last: rect };
         setSelectedId(id);
@@ -130,46 +253,37 @@ export function LayoutEditorView({
             clientY: event.clientY,
             rect: next
         });
-        if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
-            setWidgets((current) => ({ ...current, [id]: { ...current[id], rect: next } }));
-        } else if (id.startsWith("snap-slot-")) {
-            setSnapshotWidgets((current) => current.map((item) => (
-                item.id === id ? { ...item, rect: next } : item
-            )));
-        } else {
-            setDraftRects((current) => ({ ...current, [id]: next }));
+        const updates: Record<string, LayoutRect> = { [id]: next };
+        if (drag.current.mode === "resize" && grouped.has(id) && groupIds.length > 1) {
+            for (const other of groupIds) {
+                if (other === id) {
+                    continue;
+                }
+                const current = rectForId(other);
+                if (current) {
+                    updates[other] = sizedRect(other, current, { width: next.width, height: next.height });
+                }
+            }
         }
+        patchRects(updates);
         setMessage("");
     };
 
-    const onPointerUp = () => {
+    const onPointerUp = (event: ReactPointerEvent) => {
         if (!drag.current) {
             return;
         }
         const id = drag.current.id;
         const last = drag.current.last;
+        const gesture = drag.current.mode;
+        const click = Math.hypot(event.clientX - drag.current.startX, event.clientY - drag.current.startY) < 10;
         drag.current = null;
         setMeasurement(null);
-        if (STATUS_WIDGET_IDS.includes(id as typeof STATUS_WIDGET_IDS[number])) {
-            setWidgets((current) => ({
-                ...current,
-                [id]: { ...current[id], rect: last }
-            }));
-            return;
+        patchRects({ [id]: last });
+        if (click && !groupMode && gesture === "move" && grouped.has(id) && groupIds.length > 1) {
+            matchGroupToId(id);
         }
-        if (id.startsWith("snap-slot-")) {
-            setSnapshotWidgets((current) => current.map((item) => (
-                item.id === id ? { ...item, rect: last } : item
-            )));
-            return;
-        }
-        setDraftRects((current) => ({ ...current, [id]: last }));
     };
-
-    const placedControls = useMemo(
-        () => controls.filter((control) => !hidden.has(str(control.id))),
-        [controls, hidden]
-    );
 
     const toggleHidden = (id: string) => {
         setHiddenIds((current) => (
@@ -258,6 +372,8 @@ export function LayoutEditorView({
                 }
             }
             setDraftRects(nextRects);
+            setGroupIds([]);
+            setGroupMode(false);
             setMessage("Layout imported. Choose SAVE LAYOUT to apply it.");
         }).catch((error: unknown) => {
             window.alert(error instanceof Error ? error.message : String(error));
@@ -281,6 +397,10 @@ export function LayoutEditorView({
         setMessage("");
     };
 
+    const itemClassName = (kind: "switch" | "status", id: string) => (
+        `layout-item ${kind}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}`
+    );
+
     return (
         <div className="layout-editor">
             <div className="layout-editor-toolbar">
@@ -294,6 +414,8 @@ export function LayoutEditorView({
                                 onClick={() => {
                                     setStage(item);
                                     setSelectedId("");
+                                    setGroupMode(false);
+                                    setGroupIds([]);
                                     setMessage("");
                                 }}
                             >
@@ -318,6 +440,9 @@ export function LayoutEditorView({
                             className={`btn ${mode === item ? "btn-active" : ""}`}
                             onClick={() => {
                                 setMode(item);
+                                if (item === "grid") {
+                                    setGroupMode(false);
+                                }
                                 setMessage("");
                             }}
                         >
@@ -365,6 +490,56 @@ export function LayoutEditorView({
                     <button type="button" className="btn" onClick={exportLayout}>EXPORT</button>
                     <button type="button" className="btn btn-accent" onClick={saveLayout}>SAVE LAYOUT</button>
                 </div>
+                {canArrange && (
+                    <div className="row layout-group-toolbar">
+                        <button
+                            type="button"
+                            className={`btn ${groupMode ? "btn-active" : ""}`}
+                            onClick={() => {
+                                setGroupMode((value) => !value);
+                                setMessage(groupMode
+                                    ? (groupIds.length ? `${groupIds.length} grouped. Tap one to match that size, or resize one to sync.` : "")
+                                    : "GROUP on. Tap widgets to add or remove them.");
+                            }}
+                        >
+                            GROUP
+                        </button>
+                        <button
+                            type="button"
+                            className="btn"
+                            onClick={() => {
+                                setGroupIds(visibleIds);
+                                setGroupMode(false);
+                                setMessage(`Grouped all ${visibleIds.length} widgets. Tap one to match that size, or MATCH SIZE.`);
+                            }}
+                        >
+                            GROUP ALL
+                        </button>
+                        <button
+                            type="button"
+                            className="btn"
+                            disabled={groupIds.length === 0}
+                            onClick={() => {
+                                setGroupIds([]);
+                                setGroupMode(false);
+                                setMessage("Group cleared.");
+                            }}
+                        >
+                            CLEAR GROUP
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-accent"
+                            disabled={!selectedId || groupIds.filter((id) => id !== selectedId).length === 0}
+                            onClick={() => matchGroupToId(selectedId)}
+                        >
+                            MATCH SIZE
+                        </button>
+                        {groupIds.length > 0 && (
+                            <div className="muted">{groupIds.length} grouped{groupMode ? " · tap to add or remove" : ""}</div>
+                        )}
+                    </div>
+                )}
                 {mode === "grid" && stage === "performance" && (
                     <div className="row">
                         <label className="field">
@@ -438,8 +613,7 @@ export function LayoutEditorView({
                 </aside>
                 <div
                     ref={stageRef}
-                    className="layout-stage"
-                    onPointerMove={onPointerMove}
+                    className={`layout-stage${groupMode ? " is-grouping" : ""}`}
                     onPointerUp={onPointerUp}
                     onPointerCancel={onPointerUp}
                 >
@@ -447,8 +621,8 @@ export function LayoutEditorView({
                         ? snapshotWidgets.map((widget) => (
                             <div
                                 key={widget.id}
-                                className={`layout-item switch${selectedId === widget.id ? " selected" : ""}`}
-                                style={rectStyle(widget.rect)}
+                                className={itemClassName("switch", widget.id)}
+                                style={rectStyle(widget.rect, selectedId === widget.id ? 3 : grouped.has(widget.id) ? 2 : 1)}
                                 onPointerDown={(event) => onPointerDown(widget.id, widget.rect, event)}
                             >
                                 <div className="layout-item-preview">
@@ -480,8 +654,8 @@ export function LayoutEditorView({
                         return (
                             <div
                                 key={id}
-                                className={`layout-item status${selectedId === id ? " selected" : ""}`}
-                                style={rectStyle(widget.rect)}
+                                className={itemClassName("status", id)}
+                                style={rectStyle(widget.rect, selectedId === id ? 3 : grouped.has(id) ? 2 : 1)}
                                 onPointerDown={(event) => onPointerDown(id, widget.rect, event)}
                             >
                                 <div className="layout-item-preview layout-item-preview--status">
@@ -508,8 +682,8 @@ export function LayoutEditorView({
                         return (
                             <div
                                 key={id}
-                                className={`layout-item switch${selectedId === id ? " selected" : ""}`}
-                                style={rectStyle(rect)}
+                                className={itemClassName("switch", id)}
+                                style={rectStyle(rect, selectedId === id ? 3 : grouped.has(id) ? 2 : 1)}
                                 onPointerDown={(event) => onPointerDown(id, rect, event)}
                             >
                                 <div className="layout-item-preview">
@@ -602,11 +776,12 @@ function roleForAction(action: string): SwitchRole {
     return "utility";
 }
 
-function rectStyle(rect: LayoutRect): CSSProperties {
+function rectStyle(rect: LayoutRect, zIndex = 1): CSSProperties {
     return {
         left: `${rect.x * 100}%`,
         top: `${rect.y * 100}%`,
         width: `${rect.width * 100}%`,
-        height: `${rect.height * 100}%`
+        height: `${rect.height * 100}%`,
+        zIndex
     };
 }

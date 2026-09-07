@@ -71,6 +71,7 @@ std::string Paths::credentialsFile() const { return joinPath(dataRoot, "credenti
 std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json"); }
 std::string Paths::hotspotFile() const { return joinPath(dataRoot, "hotspot.json"); }
 std::string Paths::patchstorageCacheFile() const { return joinPath(dataRoot, "patchstorage-cache.json"); }
+std::string Paths::tone3000CacheFile() const { return joinPath(dataRoot, "tone3000-cache.json"); }
 
 bool fileExists(const std::string& path) {
     std::error_code ec;

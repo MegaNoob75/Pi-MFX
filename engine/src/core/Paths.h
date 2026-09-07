@@ -28,6 +28,7 @@ struct Paths {
     std::string pluginsFile() const;
     std::string hotspotFile() const;
     std::string patchstorageCacheFile() const;
+    std::string tone3000CacheFile() const;
 };
 
 bool fileExists(const std::string& path);

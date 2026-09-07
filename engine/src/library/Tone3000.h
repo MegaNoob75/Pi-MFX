@@ -49,8 +49,12 @@ public:
     Json status() const;
 
     /// `source` is "search", "created", "favorited", "downloaded", "trending",
-    /// or "latest".
-    Json listTones(const std::string& source, const Json& query, std::string& error);
+    /// or "latest". Results are cached on the Pi so tabbing Trending /
+    /// Downloaded / gear sections does not hammer TONE3000. Pass
+    /// `refresh: true` in `query` to bypass the cache. `cached` is set when
+    /// the returned payload came from disk.
+    Json listTones(const std::string& source, const Json& query, std::string& error,
+                   bool* cached = nullptr);
     Json tone(const std::string& toneId, std::string& error);
     Json models(const std::string& toneId, const Json& query, std::string& error);
 
@@ -71,6 +75,10 @@ private:
     Json authorizedGet(const std::string& path, std::string& error);
     void loadCredentials();
     void saveCredentials();
+    Json loadListCache() const;
+    void saveListCache(const Json& cache) const;
+    Json cachedList(const std::string& key, int64_t ttlSeconds) const;
+    void rememberList(const std::string& key, const Json& payload);
 
     Paths paths_;
     mutable std::mutex mutex_;

@@ -460,10 +460,13 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         return tone3000_.status();
     }
     if (command == "tones") {
-        const Json result = tone3000_.listTones(payload["source"].asString("search"), payload, error);
+        bool cached = false;
+        const Json result = tone3000_.listTones(payload["source"].asString("search"), payload, error,
+                                                &cached);
         ok = error.empty();
         Json wrapper = Json::object();
         wrapper.set("result", result);
+        wrapper.set("cached", cached);
         return wrapper;
     }
     if (command == "tone") {

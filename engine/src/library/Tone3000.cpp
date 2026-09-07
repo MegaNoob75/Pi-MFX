@@ -4,6 +4,8 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <ctime>
+#include <limits>
 
 #if defined(PIMFX_HAVE_CURL)
 #include <curl/curl.h>
@@ -302,6 +304,8 @@ void Tone3000Client::logout() {
     pendingState_.clear();
     pendingVerifier_.clear();
     saveCredentials();
+    // Downloaded / favorited lists belong to the signed-in user.
+    removeFile(paths_.tone3000CacheFile());
 }
 
 bool Tone3000Client::ensureAccessToken(std::string& error) {
@@ -359,8 +363,90 @@ Json Tone3000Client::authorizedGet(const std::string& path, std::string& error) 
 #endif
 }
 
-Json Tone3000Client::listTones(const std::string& source, const Json& query, std::string& error) {
+namespace {
+
+int64_t listCacheTtlSeconds(const std::string& source) {
+    if (source == "trending" || source == "latest") {
+        return 15 * 60;
+    }
+    if (source == "search") {
+        return 10 * 60;
+    }
+    return 5 * 60;
+}
+
+constexpr size_t kMaxListCacheEntries = 40;
+
+} // namespace
+
+Json Tone3000Client::loadListCache() const {
+    std::string text;
+    if (!readFile(paths_.tone3000CacheFile(), text) || text.empty()) {
+        return Json::object();
+    }
+    std::string parseError;
+    Json json = Json::parse(text, &parseError);
+    if (!parseError.empty() || !json.isObject()) {
+        return Json::object();
+    }
+    return json;
+}
+
+void Tone3000Client::saveListCache(const Json& cache) const {
+    writeFileAtomic(paths_.tone3000CacheFile(), cache.dump());
+}
+
+Json Tone3000Client::cachedList(const std::string& key, int64_t ttlSeconds) const {
+    const Json cache = loadListCache();
+    const Json& entry = cache["entries"][key];
+    if (!entry.isObject()) {
+        return Json();
+    }
+    const int64_t fetchedAt = entry["fetchedAt"].asInt64();
+    if (fetchedAt <= 0) {
+        return Json();
+    }
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    if (now < fetchedAt || now - fetchedAt > ttlSeconds) {
+        return Json();
+    }
+    return entry["payload"];
+}
+
+void Tone3000Client::rememberList(const std::string& key, const Json& payload) {
+    Json cache = loadListCache();
+    Json entries = cache["entries"].isObject() ? cache["entries"] : Json::object();
+    Json entry = Json::object();
+    entry.set("fetchedAt", static_cast<int64_t>(std::time(nullptr)));
+    entry.set("payload", payload);
+    entries.set(key, entry);
+
+    while (entries.members().size() > kMaxListCacheEntries) {
+        std::string oldestKey;
+        int64_t oldest = std::numeric_limits<int64_t>::max();
+        for (const auto& member : entries.members()) {
+            const int64_t fetchedAt = member.second["fetchedAt"].asInt64();
+            if (fetchedAt < oldest) {
+                oldest = fetchedAt;
+                oldestKey = member.first;
+            }
+        }
+        if (oldestKey.empty()) {
+            break;
+        }
+        entries.remove(oldestKey);
+    }
+
+    cache.set("entries", entries);
+    saveListCache(cache);
+}
+
+Json Tone3000Client::listTones(const std::string& source, const Json& query, std::string& error,
+                               bool* cached) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (cached) {
+        *cached = false;
+    }
 
     std::string path;
     if (source == "created" || source == "favorited" || source == "downloaded"
@@ -382,7 +468,23 @@ Json Tone3000Client::listTones(const std::string& source, const Json& query, std
         separator = "&";
     }
 
-    return authorizedGet(path, error);
+    const bool refresh = query["refresh"].asBool(false);
+    if (!refresh) {
+        Json hit = cachedList(path, listCacheTtlSeconds(source));
+        if (!hit.isNull()) {
+            if (cached) {
+                *cached = true;
+            }
+            error.clear();
+            return hit;
+        }
+    }
+
+    Json result = authorizedGet(path, error);
+    if (error.empty()) {
+        rememberList(path, result);
+    }
+    return result;
 }
 
 Json Tone3000Client::tone(const std::string& toneId, std::string& error) {
@@ -424,11 +526,17 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return false;
     }
 
-    // Model URLs from the API are already signed, so no bearer token is sent
-    // to whatever storage host they point at.
+    // TONE3000's own model_url host wants the access token. CDN / object-store
+    // links are already signed and must not receive a Bearer header.
+    const bool toneHost = url.find("://www.tone3000.com") != std::string::npos
+                       || url.find("://tone3000.com/") != std::string::npos;
+    if (toneHost && !ensureAccessToken(error)) {
+        return false;
+    }
     std::string body;
     long status = 0;
-    if (!request(url, "GET", std::string(), std::string(), body, status, error)) {
+    if (!request(url, "GET", std::string(), toneHost ? tokens_.accessToken : std::string(),
+                 body, status, error)) {
         return false;
     }
     if (status < 200 || status >= 300) {
