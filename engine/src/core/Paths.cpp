@@ -58,6 +58,8 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.themesDir());
     makeDirectories(paths.modelsDir);
     makeDirectories(paths.irsDir);
+    makeDirectories(joinPath(paths.modelsDir, "TONE3000"));
+    makeDirectories(joinPath(paths.irsDir, "TONE3000"));
     makeDirectories(paths.downloadsDir);
     makeDirectories(paths.lv2Dir);
     return paths;

@@ -373,13 +373,36 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         std::string storedPath;
         ok = engine_.storeLibraryFile(payload["kind"].asString("model"),
                                       payload["name"].asString(),
-                                      contents, storedPath, error);
+                                      contents,
+                                      payload["directory"].asString(),
+                                      storedPath, error);
         Json result = Json::object();
         result.set("path", storedPath);
         return result;
     }
     if (command == "library/delete") {
         ok = engine_.deleteLibraryFile(payload["path"].asString(), error);
+        return Json::object();
+    }
+    if (command == "library/list") {
+        const Json result = engine_.libraryList(payload["kind"].asString("model"),
+                                                payload["directory"].asString(), error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "library/mkdir") {
+        ok = engine_.libraryMkdir(payload["kind"].asString("model"),
+                                  payload["directory"].asString(), error);
+        return Json::object();
+    }
+    if (command == "library/rename") {
+        ok = engine_.libraryRename(payload["path"].asString(), payload["name"].asString(), error);
+        return Json::object();
+    }
+    if (command == "library/move") {
+        ok = engine_.libraryMove(payload["path"].asString(),
+                                 payload["kind"].asString("model"),
+                                 payload["directory"].asString(), error);
         return Json::object();
     }
 
@@ -519,6 +542,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         }
         std::string storedPath;
         ok = tone3000_.downloadModel(url, name, payload["kind"].asString("model"),
+                                     payload["directory"].asString(),
                                      storedPath, error);
         Json result = Json::object();
         result.set("path", storedPath);

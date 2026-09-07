@@ -236,3 +236,110 @@ export function gridCellRect(index: number, columns: number, rows: number): Layo
         height: 0.82 / Math.max(1, rows) - 0.02
     });
 }
+
+export interface LayoutGroup {
+    id: string;
+    name: string;
+    memberIds: string[];
+}
+
+export function readLayoutGroups(layout: JsonObject): LayoutGroup[] {
+    return arr(layout.groups).map((value, index) => {
+        const item = obj(value);
+        const memberIds = arr(item.memberIds).map((id) => str(id)).filter(Boolean);
+        return {
+            id: str(item.id, `group-${index + 1}`),
+            name: str(item.name, `Group ${index + 1}`),
+            memberIds
+        };
+    }).filter((group) => group.id);
+}
+
+export function layoutGroupsToJson(groups: LayoutGroup[]): JsonObject[] {
+    return groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        memberIds: [...group.memberIds]
+    }));
+}
+
+export function newLayoutGroupId(groups: LayoutGroup[]): string {
+    let index = groups.length + 1;
+    const used = new Set(groups.map((group) => group.id));
+    while (used.has(`group-${index}`)) {
+        index += 1;
+    }
+    return `group-${index}`;
+}
+
+export function rectsOverlap(a: LayoutRect, b: LayoutRect, gap = 0.004): boolean {
+    return a.x < b.x + b.width - gap
+        && a.x + a.width > b.x + gap
+        && a.y < b.y + b.height - gap
+        && a.y + a.height > b.y + gap;
+}
+
+export function rectContainsPoint(rect: LayoutRect, x: number, y: number): boolean {
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+}
+
+export function resizeRect(
+    base: LayoutRect,
+    dx: number,
+    dy: number,
+    corner: "se" | "nw",
+    min: { width: number; height: number } = { width: 0.08, height: 0.08 }
+): LayoutRect {
+    if (corner === "se") {
+        return clampRect({
+            ...base,
+            width: Math.max(min.width, base.width + dx),
+            height: Math.max(min.height, base.height + dy)
+        });
+    }
+    const width = Math.max(min.width, base.width - dx);
+    const height = Math.max(min.height, base.height - dy);
+    return clampRect({
+        x: base.x + base.width - width,
+        y: base.y + base.height - height,
+        width,
+        height
+    });
+}
+
+export function spaceRectsEvenly(rects: LayoutRect[]): LayoutRect[] {
+    if (rects.length === 0) {
+        return [];
+    }
+    if (rects.length === 1) {
+        return [clampRect(rects[0])];
+    }
+    const minX = Math.min(...rects.map((rect) => rect.x));
+    const maxX = Math.max(...rects.map((rect) => rect.x + rect.width));
+    const minY = Math.min(...rects.map((rect) => rect.y));
+    const maxY = Math.max(...rects.map((rect) => rect.y + rect.height));
+    const spanX = maxX - minX;
+    const spanY = maxY - minY;
+    const vertical = spanY > spanX;
+    const ordered = rects.map((rect, index) => ({ rect, index }))
+        .sort((a, b) => vertical ? a.rect.y - b.rect.y : a.rect.x - b.rect.x);
+    const totalSize = ordered.reduce((sum, item) => sum + (vertical ? item.rect.height : item.rect.width), 0);
+    const box = vertical ? Math.max(spanY, totalSize) : Math.max(spanX, totalSize);
+    const gap = ordered.length > 1 ? Math.max(0, (box - totalSize) / (ordered.length - 1)) : 0;
+    let cursor = vertical ? minY : minX;
+    const next = rects.map((rect) => ({ ...rect }));
+    for (const item of ordered) {
+        const current = next[item.index];
+        if (vertical) {
+            current.y = cursor;
+            current.x = minX + (spanX - current.width) / 2;
+            cursor += current.height + gap;
+        } else {
+            current.x = cursor;
+            current.y = minY + (spanY - current.height) / 2;
+            cursor += current.width + gap;
+        }
+        next[item.index] = clampRect(current);
+    }
+    return next;
+}

@@ -132,7 +132,15 @@ public:
     // --- library ---------------------------------------------------------
     bool storeLibraryFile(const std::string& kind, const std::string& name,
                           const std::string& contents, std::string& storedPath, std::string& error);
+    bool storeLibraryFile(const std::string& kind, const std::string& name,
+                          const std::string& contents, const std::string& directory,
+                          std::string& storedPath, std::string& error);
     bool deleteLibraryFile(const std::string& path, std::string& error);
+    Json libraryList(const std::string& kind, const std::string& directory, std::string& error);
+    bool libraryMkdir(const std::string& kind, const std::string& directory, std::string& error);
+    bool libraryRename(const std::string& path, const std::string& newName, std::string& error);
+    bool libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
+                     std::string& error);
 
     Storage& storage() { return storage_; }
     Lv2Catalog& catalog() { return catalog_; }

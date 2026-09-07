@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { isAnalogKind, normalizeControlKind, type EngineSnapshot } from "../api";
+import { findPreset, isAnalogKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import {
     STATUS_WIDGET_IDS,
@@ -8,19 +8,41 @@ import {
     analogMinSize,
     clampRect,
     gridCellRect,
+    layoutGroupsToJson,
+    newLayoutGroupId,
+    readLayoutGroups,
     readSnapshotWidgets,
     readStatusWidgets,
+    rectContainsPoint,
+    rectsOverlap,
+    resizeRect,
     snapRectToPixels,
     snapshotWidgetId,
     snapshotWidgetsToJson,
+    spaceRectsEvenly,
     statusWidgetsToJson,
     unplacedIds,
+    type LayoutGroup,
     type LayoutRect
 } from "../layout";
-import { PerformanceControl, type SwitchRole } from "./PerformanceControl";
-
+import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
 const SNAP_PIXELS_KEY = "pimfx-layout-snap-pixels";
 const SNAP_ENABLED_KEY = "pimfx-layout-snap-enabled";
+
+const ACTION_LABELS: Record<string, string> = {
+    none: "Unassigned",
+    selectPreset: "Select Preset",
+    presetUp: "Preset Up",
+    presetDown: "Preset Down",
+    bankUp: "Bank Up",
+    bankDown: "Bank Down",
+    snapshotMode: "Snapshot Mode",
+    bypassAll: "Bypass All",
+    tapTempo: "Tap Tempo",
+    tuner: "Tuner",
+    setParameter: "Set Parameter",
+    toggleEffect: "Toggle Effect"
+};
 
 function loadSnapPixels(): number {
     const value = Number(window.localStorage.getItem(SNAP_PIXELS_KEY));
@@ -41,6 +63,8 @@ export function LayoutEditorView({
     const controller = obj(engine.state.controller);
     const controls = objects(controller.controls);
     const layout = obj(controller.performanceLayout);
+    const chain = objects(engine.state.chain);
+    const parameterBindings = objects(obj(findPreset(engine.state)).parameterBindings);
     const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
     const [mode, setMode] = useState<"grid" | "freeform">(
         str(controller.layoutMode, "grid") === "freeform" ? "freeform" : "grid"
@@ -53,11 +77,14 @@ export function LayoutEditorView({
     const [hiddenIds, setHiddenIds] = useState(() => unplacedIds(layout));
     const [draftRects, setDraftRects] = useState<Record<string, LayoutRect>>({});
     const [selectedId, setSelectedId] = useState("");
+    const [groups, setGroups] = useState(() => readLayoutGroups(layout));
+    const [activeGroupId, setActiveGroupId] = useState(() => readLayoutGroups(layout)[0]?.id ?? "");
     const [groupMode, setGroupMode] = useState(false);
-    const [groupIds, setGroupIds] = useState<string[]>([]);
+    const [groupName, setGroupName] = useState("");
     const [snapEnabled, setSnapEnabled] = useState(loadSnapEnabled);
     const [snapPixels, setSnapPixels] = useState(loadSnapPixels);
     const [message, setMessage] = useState("");
+    const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
     const [measurement, setMeasurement] = useState<{
         mode: string;
         clientX: number;
@@ -65,17 +92,22 @@ export function LayoutEditorView({
         rect: LayoutRect;
     } | null>(null);
     const stageRef = useRef<HTMLDivElement>(null);
+    const groupsRef = useRef(groups);
+    groupsRef.current = groups;
+    const swapTargetRef = useRef<string | null>(null);
     const drag = useRef<{
         id: string;
-        mode: "move" | "resize";
+        mode: "move" | "resize-se" | "resize-nw";
         startX: number;
         startY: number;
         rect: LayoutRect;
         last: LayoutRect;
+        lastValid: Record<string, LayoutRect>;
     } | null>(null);
 
     const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
-    const grouped = useMemo(() => new Set(groupIds), [groupIds]);
+    const activeGroup = groups.find((group) => group.id === activeGroupId);
+    const grouped = useMemo(() => new Set(activeGroup?.memberIds ?? []), [activeGroup]);
     const canArrange = stage === "snapshots" || mode === "freeform";
 
     const applySnap = (rect: LayoutRect) => {
@@ -140,6 +172,15 @@ export function LayoutEditorView({
         return controlRect(control, index >= 0 ? index : 0);
     };
 
+    const placedEntries = (): { id: string; rect: LayoutRect }[] => (
+        visibleIds
+            .map((id) => {
+                const rect = rectForId(id);
+                return rect ? { id, rect } : null;
+            })
+            .filter((item): item is { id: string; rect: LayoutRect } => item !== null)
+    );
+
     const sizedRect = (id: string, base: LayoutRect, size: { width: number; height: number }): LayoutRect => {
         const min = minSizeForId(id);
         return clampRect({
@@ -181,42 +222,139 @@ export function LayoutEditorView({
         }
     };
 
-    const applySizeToGroup = (sourceId: string, size: { width: number; height: number }) => {
-        const targets = groupIds.filter((id) => id !== sourceId);
-        if (targets.length === 0) {
-            return;
+    const wouldCollide = (updates: Record<string, LayoutRect>, ignore: Set<string>) => {
+        const nextById = new Map(placedEntries().map((item) => [item.id, item.rect]));
+        for (const [id, rect] of Object.entries(updates)) {
+            nextById.set(id, rect);
         }
+        return Object.entries(updates).some(([id, rect]) => (
+            [...nextById.entries()].some(([otherId, otherRect]) => (
+                otherId !== id && !ignore.has(otherId) && rectsOverlap(rect, otherRect)
+            ))
+        ));
+    };
+
+    const groupForId = (id: string) => groupsRef.current.find((group) => group.memberIds.includes(id));
+
+    const applySizeToMembers = (memberIds: string[], size: { width: number; height: number }) => {
+        const outsiders = placedEntries().filter((item) => !memberIds.includes(item.id));
         const updates: Record<string, LayoutRect> = {};
-        for (const id of targets) {
+        for (const id of memberIds) {
             const current = rectForId(id);
             if (!current) {
                 continue;
             }
-            updates[id] = sizedRect(id, current, size);
+            const next = sizedRect(id, current, size);
+            if (outsiders.some((item) => rectsOverlap(next, item.rect))) {
+                continue;
+            }
+            updates[id] = next;
         }
         if (Object.keys(updates).length > 0) {
             patchRects(updates);
         }
+        return updates;
     };
 
-    const matchGroupToId = (sourceId: string) => {
-        const source = rectForId(sourceId);
-        if (!source || groupIds.filter((id) => id !== sourceId).length === 0) {
+    const matchActiveGroupSize = () => {
+        const members = activeGroup?.memberIds.filter((id) => visibleIds.includes(id)) ?? [];
+        if (members.length < 2) {
+            setMessage("Add at least two widgets to this group first.");
             return;
         }
-        applySizeToGroup(sourceId, { width: source.width, height: source.height });
-        setMessage("Grouped widgets now match that size.");
+        const sourceId = members.includes(selectedId) ? selectedId : members[0];
+        const source = rectForId(sourceId);
+        if (!source) {
+            return;
+        }
+        applySizeToMembers(members, { width: source.width, height: source.height });
+        setMessage("Grouped widgets now match that size. Resize one to keep them in sync.");
+    };
+
+    const spaceActiveGroup = () => {
+        const members = activeGroup?.memberIds.filter((id) => visibleIds.includes(id)) ?? [];
+        if (members.length < 2) {
+            setMessage("Add at least two widgets to this group first.");
+            return;
+        }
+        const current = members
+            .map((id) => {
+                const rect = rectForId(id);
+                return rect ? { id, rect } : null;
+            })
+            .filter((item): item is { id: string; rect: LayoutRect } => item !== null);
+        const spaced = spaceRectsEvenly(current.map((item) => item.rect));
+        const updates: Record<string, LayoutRect> = {};
+        current.forEach((item, index) => {
+            updates[item.id] = spaced[index];
+        });
+        const outsiders = placedEntries().filter((item) => !members.includes(item.id));
+        const overlap = Object.entries(updates).some(([, rect]) => (
+            outsiders.some((item) => rectsOverlap(rect, item.rect))
+        ));
+        if (overlap) {
+            setMessage("Even spacing would overlap another widget. Move this group first.");
+            return;
+        }
+        patchRects(updates);
+        setMessage("Grouped widgets are spaced evenly.");
+    };
+
+    const ensureActiveGroup = (): string => {
+        if (activeGroupId && groupsRef.current.some((group) => group.id === activeGroupId)) {
+            return activeGroupId;
+        }
+        const id = newLayoutGroupId(groupsRef.current);
+        const group: LayoutGroup = { id, name: `Group ${groupsRef.current.length + 1}`, memberIds: [] };
+        setGroups((current) => [...current, group]);
+        setActiveGroupId(id);
+        return id;
+    };
+
+    const addGroup = () => {
+        const name = groupName.trim() || `Group ${groups.length + 1}`;
+        const id = newLayoutGroupId(groups);
+        setGroups((current) => [...current, { id, name, memberIds: [] }]);
+        setActiveGroupId(id);
+        setGroupName("");
+        setGroupMode(true);
+        setMessage(`Group “${name}” added. Tap widgets to add them.`);
+    };
+
+    const deleteActiveGroup = () => {
+        if (!activeGroup) {
+            return;
+        }
+        setGroups((current) => current.filter((group) => group.id !== activeGroup.id));
+        setActiveGroupId("");
+        setGroupMode(false);
+        setMessage(`Deleted group “${activeGroup.name}”.`);
     };
 
     const toggleGroupMember = (id: string) => {
-        setGroupIds((current) => (
-            current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
-        ));
+        const groupId = ensureActiveGroup();
+        setGroups((current) => current.map((group) => {
+            if (group.id === groupId) {
+                const memberIds = group.memberIds.includes(id)
+                    ? group.memberIds.filter((item) => item !== id)
+                    : [...group.memberIds, id];
+                return { ...group, memberIds };
+            }
+            return {
+                ...group,
+                memberIds: group.memberIds.filter((item) => item !== id)
+            };
+        }));
         setSelectedId(id);
         setMessage("");
     };
 
-    const onPointerDown = (id: string, rect: LayoutRect, event: ReactPointerEvent, gesture: "move" | "resize" = "move") => {
+    const onPointerDown = (
+        id: string,
+        rect: LayoutRect,
+        event: ReactPointerEvent,
+        gesture: "move" | "resize-se" | "resize-nw" = "move"
+    ) => {
         if (!canArrange) {
             setSelectedId(id);
             return;
@@ -228,9 +366,24 @@ export function LayoutEditorView({
             return;
         }
         stageRef.current?.setPointerCapture(event.pointerId);
-        drag.current = { id, mode: gesture, startX: event.clientX, startY: event.clientY, rect, last: rect };
+        drag.current = {
+            id,
+            mode: gesture,
+            startX: event.clientX,
+            startY: event.clientY,
+            rect,
+            last: rect,
+            lastValid: { [id]: rect }
+        };
+        swapTargetRef.current = null;
+        setSwapTargetId(null);
         setSelectedId(id);
-        setMeasurement({ mode: gesture.toUpperCase(), clientX: event.clientX, clientY: event.clientY, rect });
+        setMeasurement({
+            mode: gesture === "move" ? "MOVE" : "RESIZE",
+            clientX: event.clientX,
+            clientY: event.clientY,
+            rect
+        });
     };
 
     const onPointerMove = (event: ReactPointerEvent) => {
@@ -241,30 +394,55 @@ export function LayoutEditorView({
         const dx = (event.clientX - drag.current.startX) / box.width;
         const dy = (event.clientY - drag.current.startY) / box.height;
         const base = drag.current.rect;
-        const raw = drag.current.mode === "resize"
-            ? { ...base, width: base.width + dx, height: base.height + dy }
-            : { ...base, x: base.x + dx, y: base.y + dy };
-        const next = applySnap(raw);
         const id = drag.current.id;
-        drag.current.last = next;
+        const min = minSizeForId(id);
+        const next = drag.current.mode === "move"
+            ? applySnap({ ...base, x: base.x + dx, y: base.y + dy })
+            : applySnap(resizeRect(base, dx, dy, drag.current.mode === "resize-nw" ? "nw" : "se", min));
+
+        let swapId: string | null = null;
+        if (drag.current.mode === "move") {
+            const centerX = next.x + next.width / 2;
+            const centerY = next.y + next.height / 2;
+            const hit = placedEntries().find((item) => (
+                item.id !== id && rectContainsPoint(item.rect, centerX, centerY)
+            ));
+            swapId = hit?.id ?? null;
+        }
+        if (swapTargetRef.current !== swapId) {
+            swapTargetRef.current = swapId;
+            setSwapTargetId(swapId);
+        }
+
+        const ignore = new Set<string>(swapId ? [swapId] : []);
+        const updates: Record<string, LayoutRect> = { [id]: next };
+        if (drag.current.mode !== "move") {
+            const group = groupForId(id);
+            if (group && group.memberIds.length > 1) {
+                for (const other of group.memberIds) {
+                    if (other === id) {
+                        continue;
+                    }
+                    const current = rectForId(other);
+                    if (current) {
+                        updates[other] = sizedRect(other, current, { width: next.width, height: next.height });
+                    }
+                }
+            }
+        }
+
+        const blocked = wouldCollide(updates, ignore);
         setMeasurement({
-            mode: drag.current.mode.toUpperCase(),
+            mode: drag.current.mode === "move" ? "MOVE" : "RESIZE",
             clientX: event.clientX,
             clientY: event.clientY,
             rect: next
         });
-        const updates: Record<string, LayoutRect> = { [id]: next };
-        if (drag.current.mode === "resize" && grouped.has(id) && groupIds.length > 1) {
-            for (const other of groupIds) {
-                if (other === id) {
-                    continue;
-                }
-                const current = rectForId(other);
-                if (current) {
-                    updates[other] = sizedRect(other, current, { width: next.width, height: next.height });
-                }
-            }
+        if (blocked && !swapId) {
+            return;
         }
+        drag.current.last = next;
+        drag.current.lastValid = updates;
         patchRects(updates);
         setMessage("");
     };
@@ -273,15 +451,27 @@ export function LayoutEditorView({
         if (!drag.current) {
             return;
         }
-        const id = drag.current.id;
-        const last = drag.current.last;
-        const gesture = drag.current.mode;
-        const click = Math.hypot(event.clientX - drag.current.startX, event.clientY - drag.current.startY) < 10;
+        const session = drag.current;
+        const swapId = swapTargetRef.current;
+        const click = Math.hypot(event.clientX - session.startX, event.clientY - session.startY) < 10;
         drag.current = null;
+        swapTargetRef.current = null;
+        setSwapTargetId(null);
         setMeasurement(null);
-        patchRects({ [id]: last });
-        if (click && !groupMode && gesture === "move" && grouped.has(id) && groupIds.length > 1) {
-            matchGroupToId(id);
+        if (session.mode === "move" && swapId && swapId !== session.id && !click) {
+            const targetRect = rectForId(swapId);
+            if (targetRect) {
+                patchRects({
+                    [session.id]: { ...targetRect },
+                    [swapId]: { ...session.rect }
+                });
+                setMessage("Widgets swapped.");
+                return;
+            }
+        }
+        patchRects(session.lastValid);
+        if (click && session.mode === "move") {
+            setSelectedId(session.id);
         }
     };
 
@@ -317,7 +507,8 @@ export function LayoutEditorView({
                 ...layout,
                 elements: statusWidgetsToJson(widgets),
                 snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
-                unplacedControlIds: hiddenIds
+                unplacedControlIds: hiddenIds,
+                groups: layoutGroupsToJson(groups)
             },
             controls: nextControls
         };
@@ -353,12 +544,15 @@ export function LayoutEditorView({
             }
             const importedLayout = obj(parsed.performanceLayout);
             const imported = objects(parsed.controls);
+            const importedGroups = readLayoutGroups(importedLayout);
             setMode(str(parsed.layoutMode, mode) === "freeform" ? "freeform" : "grid");
             setRows(Math.max(1, num(parsed.gridRows, rows)));
             setColumns(Math.max(1, num(parsed.gridColumns, columns)));
             setWidgets(readStatusWidgets(importedLayout));
             setSnapshotWidgets(readSnapshotWidgets(importedLayout));
             setHiddenIds(unplacedIds(importedLayout));
+            setGroups(importedGroups);
+            setActiveGroupId(importedGroups[0]?.id ?? "");
             const nextRects: Record<string, LayoutRect> = {};
             for (const item of imported) {
                 const id = str(item.id);
@@ -372,7 +566,6 @@ export function LayoutEditorView({
                 }
             }
             setDraftRects(nextRects);
-            setGroupIds([]);
             setGroupMode(false);
             setMessage("Layout imported. Choose SAVE LAYOUT to apply it.");
         }).catch((error: unknown) => {
@@ -398,7 +591,22 @@ export function LayoutEditorView({
     };
 
     const itemClassName = (kind: "switch" | "status", id: string) => (
-        `layout-item ${kind}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}`
+        `layout-item ${kind}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}${swapTargetId === id ? " swap-target" : ""}`
+    );
+
+    const resizeHandles = (id: string, rect: LayoutRect) => (
+        canArrange && (stage === "snapshots" || mode === "freeform") ? (
+            <>
+                <span
+                    className="layout-resize layout-resize-nw"
+                    onPointerDown={(event) => onPointerDown(id, rect, event, "resize-nw")}
+                />
+                <span
+                    className="layout-resize"
+                    onPointerDown={(event) => onPointerDown(id, rect, event, "resize-se")}
+                />
+            </>
+        ) : null
     );
 
     return (
@@ -415,7 +623,6 @@ export function LayoutEditorView({
                                     setStage(item);
                                     setSelectedId("");
                                     setGroupMode(false);
-                                    setGroupIds([]);
                                     setMessage("");
                                 }}
                             >
@@ -496,9 +703,14 @@ export function LayoutEditorView({
                             type="button"
                             className={`btn ${groupMode ? "btn-active" : ""}`}
                             onClick={() => {
+                                if (!groupMode) {
+                                    ensureActiveGroup();
+                                }
                                 setGroupMode((value) => !value);
                                 setMessage(groupMode
-                                    ? (groupIds.length ? `${groupIds.length} grouped. Tap one to match that size, or resize one to sync.` : "")
+                                    ? (activeGroup?.memberIds.length
+                                        ? `${activeGroup.memberIds.length} in “${activeGroup.name}”. MATCH SIZE or SPACE EVENLY.`
+                                        : "")
                                     : "GROUP on. Tap widgets to add or remove them.");
                             }}
                         >
@@ -508,35 +720,39 @@ export function LayoutEditorView({
                             type="button"
                             className="btn"
                             onClick={() => {
-                                setGroupIds(visibleIds);
+                                const groupId = ensureActiveGroup();
+                                setGroups((current) => current.map((group) => (
+                                    group.id === groupId
+                                        ? { ...group, memberIds: [...visibleIds] }
+                                        : { ...group, memberIds: group.memberIds.filter((id) => !visibleIds.includes(id)) }
+                                )));
                                 setGroupMode(false);
-                                setMessage(`Grouped all ${visibleIds.length} widgets. Tap one to match that size, or MATCH SIZE.`);
+                                setMessage(`Grouped all ${visibleIds.length} widgets.`);
                             }}
                         >
                             GROUP ALL
                         </button>
                         <button
                             type="button"
-                            className="btn"
-                            disabled={groupIds.length === 0}
-                            onClick={() => {
-                                setGroupIds([]);
-                                setGroupMode(false);
-                                setMessage("Group cleared.");
-                            }}
-                        >
-                            CLEAR GROUP
-                        </button>
-                        <button
-                            type="button"
                             className="btn btn-accent"
-                            disabled={!selectedId || groupIds.filter((id) => id !== selectedId).length === 0}
-                            onClick={() => matchGroupToId(selectedId)}
+                            disabled={(activeGroup?.memberIds.length ?? 0) < 2}
+                            onClick={matchActiveGroupSize}
                         >
                             MATCH SIZE
                         </button>
-                        {groupIds.length > 0 && (
-                            <div className="muted">{groupIds.length} grouped{groupMode ? " · tap to add or remove" : ""}</div>
+                        <button
+                            type="button"
+                            className="btn"
+                            disabled={(activeGroup?.memberIds.length ?? 0) < 2}
+                            onClick={spaceActiveGroup}
+                        >
+                            SPACE EVENLY
+                        </button>
+                        {activeGroup && (
+                            <div className="muted">
+                                {activeGroup.name}: {activeGroup.memberIds.length} widget{activeGroup.memberIds.length === 1 ? "" : "s"}
+                                {groupMode ? " · tap to add or remove" : ""}
+                            </div>
                         )}
                     </div>
                 )}
@@ -558,9 +774,52 @@ export function LayoutEditorView({
             </div>
             <div className="layout-editor-body">
                 <aside className="layout-editor-inspector">
+                    {canArrange && (
+                        <>
+                            <div className="field-label">GROUPS</div>
+                            <div className="row" style={{ gap: 6 }}>
+                                <label className="field" style={{ flex: 1, minWidth: 0 }}>
+                                    <span>Name</span>
+                                    <input
+                                        value={groupName}
+                                        placeholder="Switches"
+                                        onChange={(event) => setGroupName(event.target.value)}
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter") {
+                                                addGroup();
+                                            }
+                                        }}
+                                    />
+                                </label>
+                                <button type="button" className="btn btn-accent" onClick={addGroup}>ADD</button>
+                            </div>
+                            {groups.map((group) => (
+                                <button
+                                    key={group.id}
+                                    type="button"
+                                    className={`btn ${activeGroupId === group.id ? "btn-active" : ""}`}
+                                    onClick={() => {
+                                        setActiveGroupId(group.id);
+                                        setGroupMode(true);
+                                        setMessage(`Editing “${group.name}”. Tap widgets to add or remove them.`);
+                                    }}
+                                >
+                                    {group.name} ({group.memberIds.length})
+                                </button>
+                            ))}
+                            {activeGroup && (
+                                <button type="button" className="btn btn-danger" onClick={deleteActiveGroup}>
+                                    DELETE GROUP
+                                </button>
+                            )}
+                            {groups.length === 0 && (
+                                <div className="muted">Name a group, then tap widgets to add them. Groups are saved with SAVE LAYOUT.</div>
+                            )}
+                        </>
+                    )}
                     {stage === "snapshots" ? (
                         <>
-                            <div className="field-label">SNAPSHOTS</div>
+                            <div className="field-label" style={{ marginTop: canArrange ? 12 : 0 }}>SNAPSHOTS</div>
                             <button type="button" className="btn btn-accent" onClick={addSnapshotWidget}>ADD SNAPSHOT</button>
                             {snapshotWidgets.map((widget) => (
                                 <div key={widget.id} className="row" style={{ gap: 6 }}>
@@ -585,7 +844,7 @@ export function LayoutEditorView({
                         </>
                     ) : (
                         <>
-                    <div className="field-label">ELEMENTS</div>
+                    <div className="field-label" style={{ marginTop: canArrange ? 12 : 0 }}>ELEMENTS</div>
                     {STATUS_WIDGET_IDS.map((id) => (
                         <button
                             key={id}
@@ -642,10 +901,7 @@ export function LayoutEditorView({
                                         bypassed={false}
                                     />
                                 </div>
-                                <span
-                                    className="layout-resize"
-                                    onPointerDown={(event) => onPointerDown(widget.id, widget.rect, event, "resize")}
-                                />
+                                {resizeHandles(widget.id, widget.rect)}
                             </div>
                         ))
                         : (
@@ -665,12 +921,7 @@ export function LayoutEditorView({
                                     )}
                                     <strong className="mfx-performance-ui-value">{STATUS_WIDGET_LABELS[id]}</strong>
                                 </div>
-                                {mode === "freeform" && (
-                                    <span
-                                        className="layout-resize"
-                                        onPointerDown={(event) => onPointerDown(id, widget.rect, event, "resize")}
-                                    />
-                                )}
+                                {resizeHandles(id, widget.rect)}
                             </div>
                         );
                     })}
@@ -679,7 +930,9 @@ export function LayoutEditorView({
                         const rect = controlRect(control, index);
                         const kind = normalizeControlKind(str(control.kind, "momentary"));
                         const analog = isAnalogKind(kind);
-                        const action = str(obj(control.binding).action, "selectPreset");
+                        const action = str(obj(control.binding).action, "none");
+                        const presetBind = parameterBindings.find((item) => str(item.controlId) === id);
+                        const caption = functionCaption(control, chain, presetBind);
                         return (
                             <div
                                 key={id}
@@ -692,14 +945,14 @@ export function LayoutEditorView({
                                         tile={{
                                             id,
                                             switchLabel: str(control.label, id),
-                                            valueText: analog ? "0.00" : str(control.label, id),
+                                            valueText: caption,
                                             role: analog ? "utility" : roleForAction(action),
                                             lightState: "inactive",
                                             active: false,
                                             analog,
                                             analogSource: str(control.label, id),
-                                            analogValue: analog ? str(control.label, id) : undefined,
-                                            assigned: analog,
+                                            analogFunction: analog ? caption : undefined,
+                                            assigned: analog ? caption !== "Unassigned" : undefined,
                                             kind,
                                             value: 0.45,
                                             freeform: true,
@@ -709,12 +962,7 @@ export function LayoutEditorView({
                                         bypassed={false}
                                     />
                                 </div>
-                                {mode === "freeform" && (
-                                    <span
-                                        className="layout-resize"
-                                        onPointerDown={(event) => onPointerDown(id, rect, event, "resize")}
-                                    />
-                                )}
+                                {resizeHandles(id, rect)}
                             </div>
                         );
                     })}
@@ -735,6 +983,22 @@ export function LayoutEditorView({
             </div>
         </div>
     );
+}
+
+function functionCaption(control: JsonObject, chain: JsonObject[], presetBind?: JsonObject): string {
+    const kind = normalizeControlKind(str(control.kind, "momentary"));
+    if (isAnalogKind(kind)) {
+        const info = analogFeedback(control, chain, presetBind);
+        if (!info.parameter || info.parameter === "UNASSIGNED") {
+            return "Unassigned";
+        }
+        return info.effect ? `${info.effect} · ${info.parameter}` : info.parameter;
+    }
+    const action = str(obj(control.binding).action, "none");
+    if (!action || action === "none") {
+        return "Unassigned";
+    }
+    return ACTION_LABELS[action] ?? action.replace(/([A-Z])/g, " $1").replace(/^./, (ch) => ch.toUpperCase()).trim();
 }
 
 function LayoutMeasurementPopup({

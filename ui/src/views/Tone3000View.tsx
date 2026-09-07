@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type Json, type JsonObject } from "../json";
+import { LibraryFolderPicker, loadTone3000Dir, saveTone3000Dir, type LibraryKind } from "./LibraryManager";
 
 type CatalogSource = "trending" | "latest" | "search" | "downloaded" | "favorited" | "created";
 
@@ -190,7 +191,13 @@ export function Tone3000View({
     const [sort, setSort] = useState("trending");
     const [tones, setTones] = useState<JsonObject[]>([]);
     const [modelsByTone, setModelsByTone] = useState<Record<string, JsonObject[]>>({});
-    const [expandedId, setExpandedId] = useState("");
+    const [selectedTone, setSelectedTone] = useState<JsonObject | null>(null);
+    const [folderPicker, setFolderPicker] = useState<LibraryKind | null>(null);
+    const [modelDir, setModelDir] = useState(() => loadTone3000Dir("model"));
+    const [irDir, setIrDir] = useState(() => loadTone3000Dir("ir"));
+    const [downloadStatus, setDownloadStatus] = useState("");
+    const [downloadError, setDownloadError] = useState("");
+    const [downloading, setDownloading] = useState(false);
     const [hasMore, setHasMore] = useState(false);
     const [cached, setCached] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -400,6 +407,15 @@ export function Tone3000View({
         return withUrls;
     };
 
+    const saveDir = (kind: LibraryKind, directory: string) => {
+        saveTone3000Dir(kind, directory);
+        if (kind === "ir") {
+            setIrDir(directory);
+        } else {
+            setModelDir(directory);
+        }
+    };
+
     const downloadOne = async (tone: JsonObject, model: JsonObject) => {
         const resolved = await resolveModel(model);
         const url = modelUrl(resolved);
@@ -407,27 +423,58 @@ export function Tone3000View({
         if (!url && !modelId) {
             throw new Error("that model has no download URL");
         }
-        setMessage(`Downloading ${str(resolved.name, toneName(tone))}…`);
+        const ir = modelIsIr(tone, resolved);
+        const directory = ir ? irDir : modelDir;
+        const label = str(resolved.name, toneName(tone));
+        setDownloadStatus(`Downloading ${label}…`);
+        setDownloadError("");
         const result = await engine.client.request("tone3000/download", {
             url,
             modelId,
-            name: str(resolved.name, toneName(tone)),
-            kind: modelIsIr(tone, resolved) ? "ir" : "model"
+            name: label,
+            kind: ir ? "ir" : "model",
+            directory
         });
         const stored = str(result.path);
         await engine.client.request("library");
-        setMessage(stored ? `Saved ${str(resolved.name, toneName(tone))} to the library.` : `Saved ${toneName(tone)} to the library.`);
+        const root = ir ? "irs" : "models";
+        setDownloadStatus(`Saved ${label} to ${root}/${directory || "TONE3000"}.`);
+        return stored;
     };
 
-    const downloadBest = async (tone: JsonObject) => {
-        const models = await loadModels(tone);
+    const downloadModels = async (tone: JsonObject, models: JsonObject[]) => {
         if (models.length === 0) {
             throw new Error("no downloadable models for that tone");
         }
-        const preferred = models.find((item) => jsonId(item.architecture_version) === "2")
-            ?? models.find((item) => modelUrl(item) || jsonId(item.id))
-            ?? models[0];
-        await downloadOne(tone, preferred);
+        setDownloading(true);
+        setDownloadError("");
+        try {
+            const saved: string[] = [];
+            for (let index = 0; index < models.length; index += 1) {
+                setDownloadStatus(`Downloading ${index + 1} of ${models.length}…`);
+                const path = await downloadOne(tone, models[index]);
+                if (path) {
+                    saved.push(path);
+                }
+            }
+            setDownloadStatus(`Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to the library.`);
+        } catch (caught: unknown) {
+            const text = caught instanceof Error ? caught.message : String(caught);
+            setDownloadError(text);
+            setDownloadStatus("");
+            throw caught;
+        } finally {
+            setDownloading(false);
+        }
+    };
+
+    const openTone = (tone: JsonObject) => {
+        setSelectedTone(tone);
+        setDownloadError("");
+        setDownloadStatus("");
+        void loadModels(tone).catch((caught: unknown) => {
+            setDownloadError(caught instanceof Error ? caught.message : String(caught));
+        });
     };
 
     const signedInAs = str(obj(status.user).username);
@@ -528,6 +575,14 @@ export function Tone3000View({
                             REFRESH
                         </button>
                     </div>
+                    <div className="t3k-folders">
+                        <button type="button" className="btn" onClick={() => setFolderPicker("model")}>
+                            NAM FOLDER: {modelDir || "models"}
+                        </button>
+                        <button type="button" className="btn" onClick={() => setFolderPicker("ir")}>
+                            IR FOLDER: {irDir || "irs"}
+                        </button>
+                    </div>
                     <div className="t3k-tabs">
                         {SOURCES.map((item) => (
                             <button
@@ -536,7 +591,7 @@ export function Tone3000View({
                                 className={`btn ${source === item.id ? "btn-active" : ""}`}
                                 onClick={() => {
                                     setSource(item.id);
-                                    setExpandedId("");
+                                    setSelectedTone(null);
                                     if (item.id === "search" && !query.trim()) {
                                         setSort("trending");
                                     }
@@ -554,7 +609,7 @@ export function Tone3000View({
                                 className={`btn ${gear === item.id ? "btn-active" : ""}`}
                                 onClick={() => {
                                     setGear(item.id);
-                                    setExpandedId("");
+                                    setSelectedTone(null);
                                 }}
                             >
                                 {item.label}
@@ -614,10 +669,13 @@ export function Tone3000View({
                             const id = toneKey(tone);
                             const name = toneName(tone);
                             const image = toneImage(tone);
-                            const expanded = expandedId === id;
-                            const models = modelsByTone[id] ?? [];
                             return (
-                                <div key={id} className={`t3k-card${expanded ? " expanded" : ""}`}>
+                                <button
+                                    key={id}
+                                    type="button"
+                                    className={`t3k-card${selectedTone && toneKey(selectedTone) === id ? " expanded" : ""}`}
+                                    onClick={() => openTone(tone)}
+                                >
                                     {image ? (
                                         <img className="t3k-card-image" src={image} alt="" />
                                     ) : (
@@ -631,66 +689,8 @@ export function Tone3000View({
                                             <span>{num(tone.downloads_count)} dl</span>
                                             <span>{num(tone.favorites_count)} fav</span>
                                         </div>
-                                        <div className="t3k-card-actions">
-                                            <button
-                                                type="button"
-                                                className="btn btn-accent"
-                                                onClick={() => void run(async () => {
-                                                    await downloadBest(tone);
-                                                })}
-                                            >
-                                                DOWNLOAD
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="btn"
-                                                onClick={() => {
-                                                    const next = expanded ? "" : id;
-                                                    setExpandedId(next);
-                                                    if (next) {
-                                                        void run(async () => {
-                                                            await loadModels(tone);
-                                                        });
-                                                    }
-                                                }}
-                                            >
-                                                {expanded ? "HIDE" : "MODELS"}
-                                            </button>
-                                        </div>
-                                        {expanded && (
-                                            <div className="t3k-models">
-                                                {models.length === 0 && <div className="muted">No models listed.</div>}
-                                                {models.map((model, modelIndex) => {
-                                                    const url = modelUrl(model);
-                                                    const modelId = jsonId(model.id);
-                                                    if (!url && !modelId) {
-                                                        return null;
-                                                    }
-                                                    return (
-                                                        <div key={`${id}-${jsonId(model.id, String(modelIndex))}`} className="row">
-                                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                                <div>{str(model.name, name)}</div>
-                                                                <div className="muted">
-                                                                    {str(model.size)}
-                                                                    {jsonId(model.architecture_version) ? ` · A${jsonId(model.architecture_version)}` : ""}
-                                                                </div>
-                                                            </div>
-                                                            <button
-                                                                type="button"
-                                                                className="btn btn-accent"
-                                                                onClick={() => void run(async () => {
-                                                                    await downloadOne(tone, model);
-                                                                })}
-                                                            >
-                                                                DOWNLOAD
-                                                            </button>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
                                     </div>
-                                </div>
+                                </button>
                             );
                         })}
                     </div>
@@ -702,8 +702,143 @@ export function Tone3000View({
                         <div className="muted" style={{ padding: "8px 12px 12px" }}>End of list.</div>
                     )}
                     </div>
+                    {selectedTone && (
+                        <ToneDownloadDialog
+                            tone={selectedTone}
+                            models={modelsByTone[toneKey(selectedTone)] ?? []}
+                            loadingModels={!(toneKey(selectedTone) in modelsByTone) && !downloadError}
+                            downloading={downloading}
+                            status={downloadStatus}
+                            error={downloadError}
+                            modelDir={modelDir}
+                            irDir={irDir}
+                            onClose={() => {
+                                if (!downloading) {
+                                    setSelectedTone(null);
+                                    setDownloadError("");
+                                    setDownloadStatus("");
+                                }
+                            }}
+                            onPickFolder={setFolderPicker}
+                            onDownloadAll={() => {
+                                const models = modelsByTone[toneKey(selectedTone)] ?? [];
+                                void downloadModels(selectedTone, models).catch(() => undefined);
+                            }}
+                            onDownloadOne={(model) => {
+                                void downloadModels(selectedTone, [model]).catch(() => undefined);
+                            }}
+                        />
+                    )}
+                    {folderPicker && (
+                        <LibraryFolderPicker
+                            engine={engine}
+                            run={run}
+                            kind={folderPicker}
+                            value={folderPicker === "ir" ? irDir : modelDir}
+                            onPick={(directory) => saveDir(folderPicker, directory)}
+                            onClose={() => setFolderPicker(null)}
+                        />
+                    )}
                 </div>
             )}
+        </div>
+    );
+}
+
+function ToneDownloadDialog({
+    tone,
+    models,
+    loadingModels,
+    downloading,
+    status,
+    error,
+    modelDir,
+    irDir,
+    onClose,
+    onPickFolder,
+    onDownloadAll,
+    onDownloadOne
+}: {
+    tone: JsonObject;
+    models: JsonObject[];
+    loadingModels: boolean;
+    downloading: boolean;
+    status: string;
+    error: string;
+    modelDir: string;
+    irDir: string;
+    onClose: () => void;
+    onPickFolder: (kind: LibraryKind) => void;
+    onDownloadAll: () => void;
+    onDownloadOne: (model: JsonObject) => void;
+}) {
+    const name = toneName(tone);
+    const irTone = modelIsIr(tone, {});
+    const downloadable = models.filter((model) => modelUrl(model) || jsonId(model.id));
+    const hasNam = downloadable.some((model) => !modelIsIr(tone, model));
+    const hasIr = irTone || downloadable.some((model) => modelIsIr(tone, model));
+    return (
+        <div className="dialog-backdrop" onClick={onClose}>
+            <div className="dialog t3k-dialog" onClick={(event) => event.stopPropagation()}>
+                <div className="t3k-dialog-head">
+                    <div>
+                        <div className="t3k-card-gear">{gearLabel(toneGear(tone))}</div>
+                        <h2>{name}</h2>
+                        {creatorName(tone) && <div className="muted">{creatorName(tone)}</div>}
+                    </div>
+                    <button type="button" className="btn" onClick={onClose} disabled={downloading}>CLOSE</button>
+                </div>
+                <div className="row t3k-dialog-folders">
+                    {(hasNam || !hasIr) && (
+                        <button type="button" className="btn" onClick={() => onPickFolder("model")}>
+                            NAM: {modelDir || "models"}
+                        </button>
+                    )}
+                    {hasIr && (
+                        <button type="button" className="btn" onClick={() => onPickFolder("ir")}>
+                            IR: {irDir || "irs"}
+                        </button>
+                    )}
+                </div>
+                <div className="muted">
+                    Download all models for this {irTone ? "IR" : "NAM"}, or save one file at a time.
+                    Files go into the folder chosen above. NAMs and IRs never share a directory.
+                </div>
+                {status && <div className="muted">{status}</div>}
+                {error && <div className="danger">{error}</div>}
+                <button
+                    type="button"
+                    className="btn btn-accent"
+                    disabled={downloading || loadingModels || downloadable.length === 0}
+                    onClick={onDownloadAll}
+                >
+                    {downloading ? "DOWNLOADING…" : `DOWNLOAD ALL${downloadable.length ? ` (${downloadable.length})` : ""}`}
+                </button>
+                <div className="t3k-models">
+                    {loadingModels && <div className="muted">Loading models…</div>}
+                    {!loadingModels && downloadable.length === 0 && <div className="muted">No models listed.</div>}
+                    {downloadable.map((model, modelIndex) => (
+                        <div key={jsonId(model.id, String(modelIndex))} className="row">
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div>{str(model.name, name)}</div>
+                                <div className="muted">
+                                    {str(model.size)}
+                                    {jsonId(model.architecture_version) ? ` · A${jsonId(model.architecture_version)}` : ""}
+                                    {modelIsIr(tone, model) ? " · IR" : " · NAM"}
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                className="btn btn-accent"
+                                disabled={downloading}
+                                onClick={() => onDownloadOne(model)}
+                            >
+                                DOWNLOAD
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
         </div>
     );
 }

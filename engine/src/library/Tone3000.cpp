@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <ctime>
+#include <filesystem>
 #include <limits>
 
 #if defined(PIMFX_HAVE_CURL)
@@ -533,6 +534,7 @@ Json Tone3000Client::models(const std::string& toneId, const Json& query, std::s
 bool Tone3000Client::downloadModel(const std::string& url,
                                    const std::string& suggestedName,
                                    const std::string& kind,
+                                   const std::string& relativeDir,
                                    std::string& storedPath,
                                    std::string& error) {
 #if defined(PIMFX_HAVE_CURL)
@@ -587,9 +589,22 @@ bool Tone3000Client::downloadModel(const std::string& url,
         name += isModel ? ".nam" : ".wav";
     }
 
-    const std::string directory = joinPath(isModel ? paths_.modelsDir : paths_.irsDir, "TONE3000");
+    std::filesystem::path rel;
+    for (const auto& part : std::filesystem::path(relativeDir.empty() ? "TONE3000" : relativeDir)) {
+        const std::string raw = part.string();
+        if (raw.empty() || raw == "." || raw == "..") {
+            continue;
+        }
+        rel /= sanitizeFileName(raw);
+    }
+    if (rel.empty()) {
+        rel = "TONE3000";
+    }
+
+    const std::string root = isModel ? paths_.modelsDir : paths_.irsDir;
+    const std::string directory = joinPath(root, rel.generic_string());
     if (!makeDirectories(directory)) {
-        error = "could not create the TONE3000 folder";
+        error = "could not create that folder";
         return false;
     }
 
@@ -602,7 +617,7 @@ bool Tone3000Client::downloadModel(const std::string& url,
     logInfo("tone3000: saved " + storedPath);
     return true;
 #else
-    (void)url; (void)suggestedName; (void)kind; (void)storedPath;
+    (void)url; (void)suggestedName; (void)kind; (void)relativeDir; (void)storedPath;
     error = "this build has no HTTPS support";
     return false;
 #endif

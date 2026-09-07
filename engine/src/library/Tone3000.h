@@ -59,10 +59,11 @@ public:
     Json model(const std::string& modelId, std::string& error);
     Json models(const std::string& toneId, const Json& query, std::string& error);
 
-    /// Downloads one model file into the library. `kind` is "model" or "ir",
-    /// which decides where it lands.
+    /// Downloads one model file into the library. `kind` is "model" or "ir".
+    /// `relativeDir` is a folder under models/ or irs/; empty means TONE3000.
     bool downloadModel(const std::string& url, const std::string& suggestedName,
-                       const std::string& kind, std::string& storedPath, std::string& error);
+                       const std::string& kind, const std::string& relativeDir,
+                       std::string& storedPath, std::string& error);
 
 private:
     struct Tokens {

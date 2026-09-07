@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 namespace pimfx {
 namespace {
@@ -16,6 +17,18 @@ constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
 
 float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
+}
+
+std::string sanitizeRelDir(const std::string& text) {
+    std::filesystem::path out;
+    for (const auto& part : std::filesystem::path(text)) {
+        const std::string raw = part.string();
+        if (raw.empty() || raw == "." || raw == "..") {
+            continue;
+        }
+        out /= sanitizeFileName(raw);
+    }
+    return out.generic_string();
 }
 
 /// Performance stores switch → preset as { bankId: { controlId: presetId } }.
@@ -2151,6 +2164,12 @@ bool Engine::applyUiSettings(const Json& json, std::string& error) {
 bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
                               const std::string& contents, std::string& storedPath,
                               std::string& error) {
+    return storeLibraryFile(kind, name, contents, std::string(), storedPath, error);
+}
+
+bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
+                              const std::string& contents, const std::string& directory,
+                              std::string& storedPath, std::string& error) {
     const bool isModel = kind == "model";
     const std::string root = isModel ? storage_.paths().modelsDir : storage_.paths().irsDir;
 
@@ -2164,7 +2183,17 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
         return false;
     }
 
-    storedPath = joinPath(root, safeName);
+    const std::string rel = sanitizeRelDir(directory);
+    const std::string destDir = rel.empty() ? root : joinPath(root, rel);
+    if (!makeDirectories(destDir)) {
+        error = "could not create that folder";
+        return false;
+    }
+    storedPath = joinPath(destDir, safeName);
+    if (!storage_.isPathInLibrary(storedPath)) {
+        error = "that folder is not in the library";
+        return false;
+    }
     if (!writeFileAtomic(storedPath, contents)) {
         error = "could not write the file";
         return false;
@@ -2178,8 +2207,142 @@ bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
         error = "that file is not in the Pi-MFX library";
         return false;
     }
+    std::error_code pathEc;
+    const auto candidate = std::filesystem::weakly_canonical(std::filesystem::path(path), pathEc);
+    std::error_code modelsEc;
+    std::error_code irsEc;
+    const auto modelsRoot = std::filesystem::weakly_canonical(std::filesystem::path(storage_.paths().modelsDir), modelsEc);
+    const auto irsRoot = std::filesystem::weakly_canonical(std::filesystem::path(storage_.paths().irsDir), irsEc);
+    if (!pathEc && ((!modelsEc && candidate == modelsRoot) || (!irsEc && candidate == irsRoot))) {
+        error = "cannot delete the library root";
+        return false;
+    }
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+        std::filesystem::remove_all(path, ec);
+        if (ec) {
+            error = "could not delete that folder";
+            return false;
+        }
+        notify();
+        return true;
+    }
     if (!removeFile(path)) {
         error = "could not delete the file";
+        return false;
+    }
+    notify();
+    return true;
+}
+
+Json Engine::libraryList(const std::string& kind, const std::string& directory, std::string& error) {
+    const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+    const std::string rel = sanitizeRelDir(directory);
+    const std::string dir = rel.empty() ? root : joinPath(root, rel);
+    if (!storage_.isPathInLibrary(dir) && dir != root) {
+        error = "that folder is not in the library";
+        return Json();
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) {
+        error = "that folder does not exist";
+        return Json();
+    }
+
+    Json folders = Json::array();
+    Json files = Json::array();
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) {
+            break;
+        }
+        Json item = Json::object();
+        const std::string name = entry.path().filename().string();
+        const std::string childRel = rel.empty() ? name : rel + "/" + name;
+        item.set("name", name);
+        item.set("path", entry.path().string());
+        item.set("relative", childRel);
+        if (entry.is_directory(ec)) {
+            item.set("type", "dir");
+            folders.push(item);
+        } else if (entry.is_regular_file(ec)) {
+            item.set("type", "file");
+            item.set("bytes", static_cast<int64_t>(std::filesystem::file_size(entry.path(), ec)));
+            files.push(item);
+        }
+    }
+
+    Json json = Json::object();
+    json.set("kind", kind == "ir" ? "ir" : "model");
+    json.set("directory", rel);
+    json.set("folders", folders);
+    json.set("files", files);
+    error.clear();
+    return json;
+}
+
+bool Engine::libraryMkdir(const std::string& kind, const std::string& directory, std::string& error) {
+    const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+    const std::string rel = sanitizeRelDir(directory);
+    if (rel.empty()) {
+        error = "give the folder a name";
+        return false;
+    }
+    const std::string dir = joinPath(root, rel);
+    if (!makeDirectories(dir) || !storage_.isPathInLibrary(dir)) {
+        error = "could not create that folder";
+        return false;
+    }
+    notify();
+    return true;
+}
+
+bool Engine::libraryRename(const std::string& path, const std::string& newName, std::string& error) {
+    if (!storage_.isPathInLibrary(path)) {
+        error = "that path is not in the library";
+        return false;
+    }
+    const std::string safe = sanitizeFileName(newName);
+    if (safe.empty()) {
+        error = "that name cannot be used";
+        return false;
+    }
+    const std::string dest = joinPath(parentPath(path), safe);
+    if (!storage_.isPathInLibrary(dest)) {
+        error = "that name cannot be used";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(path, dest, ec);
+    if (ec) {
+        error = "could not rename that";
+        return false;
+    }
+    notify();
+    return true;
+}
+
+bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
+                         std::string& error) {
+    if (!storage_.isPathInLibrary(path)) {
+        error = "that path is not in the library";
+        return false;
+    }
+    const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+    const std::string rel = sanitizeRelDir(directory);
+    const std::string destDir = rel.empty() ? root : joinPath(root, rel);
+    if (!makeDirectories(destDir) || !storage_.isPathInLibrary(destDir)) {
+        error = "that folder is not in the library";
+        return false;
+    }
+    const std::string dest = joinPath(destDir, fileName(path));
+    if (!storage_.isPathInLibrary(dest)) {
+        error = "could not move that there";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(path, dest, ec);
+    if (ec) {
+        error = "could not move that";
         return false;
     }
     notify();

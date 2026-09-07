@@ -1593,6 +1593,11 @@ button.list-item {
     border-color: var(--mfx-cyan);
 }
 
+.layout-item.swap-target {
+    border-color: var(--mfx-purple);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mfx-purple) 70%, transparent);
+}
+
 .layout-stage.is-grouping .layout-item {
     cursor: pointer;
 }
@@ -2034,6 +2039,14 @@ button.list-item {
     touch-action: none;
 }
 
+.layout-resize-nw {
+    right: auto;
+    bottom: auto;
+    left: 2px;
+    top: 2px;
+    cursor: nwse-resize;
+}
+
 .split-row-drag {
     display: flex;
     align-items: center;
@@ -2199,6 +2212,12 @@ button.list-item {
     border-radius: 12px;
     border: 1px solid var(--mfx-border);
     background: var(--mfx-panel-alt);
+    padding: 0;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
 }
 
 .t3k-card.expanded {
@@ -2261,4 +2280,69 @@ button.list-item {
     gap: 6px;
     padding-top: 6px;
     border-top: 1px solid var(--mfx-border);
+}
+
+.t3k-folders,
+.t3k-dialog-folders {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.t3k-dialog {
+    width: min(640px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.t3k-dialog h2 {
+    margin: 4px 0 0;
+}
+
+.t3k-dialog-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.t3k-dialog .t3k-models {
+    max-height: min(40vh, 320px);
+    overflow: auto;
+}
+
+.library-picker-dialog {
+    width: min(640px, calc(100vw - 32px));
+}
+
+.library-browser {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.library-crumbs,
+.library-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.library-crumbs {
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
+.library-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.library-row-name {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
 }

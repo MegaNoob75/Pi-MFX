@@ -4,6 +4,7 @@ import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { snapshotLayoutSlots } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { Tone3000View } from "./Tone3000View";
+import { LibraryFileManager } from "./LibraryManager";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
 import { PluginsView } from "./PluginsView";
@@ -802,62 +803,10 @@ function LibrarySettings({
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-    const models = objects(engine.library.models);
-    const irs = objects(engine.library.impulseResponses);
-
-    const upload = (kind: "model" | "ir", file: File) => {
-        void run(async () => {
-            const data = await readBase64(file);
-            await engine.client.request("library/upload", { kind: kind === "ir" ? "ir" : "model", name: file.name, data });
-            await engine.client.request("library");
-        });
-    };
-
     return (
         <div className="page-scroll stack">
-            <LibraryList title="NAM MODELS" kind="model" files={models} onUpload={upload} onDelete={(path) => {
-                void run(() => engine.client.request("library/delete", { path }));
-            }} />
-            <LibraryList title="IMPULSE RESPONSES" kind="ir" files={irs} onUpload={upload} onDelete={(path) => {
-                void run(() => engine.client.request("library/delete", { path }));
-            }} />
+            <LibraryFileManager engine={engine} run={run} />
             <Tone3000View engine={engine} run={run} />
-        </div>
-    );
-}
-
-function LibraryList({
-    title,
-    kind,
-    files,
-    onUpload,
-    onDelete
-}: {
-    title: string;
-    kind: "model" | "ir";
-    files: JsonObject[];
-    onUpload: (kind: "model" | "ir", file: File) => void;
-    onDelete: (path: string) => void;
-}) {
-    return (
-        <div className="panel stack">
-            <h2>{title}</h2>
-            <input type="file" onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                    onUpload(kind, file);
-                }
-            }} />
-            {files.map((file) => (
-                <div key={str(file.path)} className="list-item">
-                    <div>
-                        <strong>{str(file.name)}</strong>
-                        <div className="muted">{str(file.source)} · {Math.round(num(file.bytes) / 1024)} KB</div>
-                    </div>
-                    <button type="button" className="btn btn-danger" onClick={() => onDelete(str(file.path))}>DELETE</button>
-                </div>
-            ))}
-            {files.length === 0 && <div className="muted">Nothing stored yet.</div>}
         </div>
     );
 }
@@ -910,19 +859,6 @@ function SystemSettings({
             </div>
         </div>
     );
-}
-
-function readBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error("could not read that file"));
-        reader.onload = () => {
-            const text = String(reader.result);
-            const comma = text.indexOf(",");
-            resolve(comma >= 0 ? text.slice(comma + 1) : text);
-        };
-        reader.readAsDataURL(file);
-    });
 }
 
 function UiBehaviorEditor() {
