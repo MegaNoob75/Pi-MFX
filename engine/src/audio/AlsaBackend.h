@@ -57,6 +57,8 @@ private:
     void closeStream(Stream& stream);
     void run();
     void reportFailure(const std::string& message);
+    void writeSilence(unsigned frames, unsigned periodCount);
+    bool resyncAfterXrun(unsigned frames, unsigned periodCount);
 
     void deinterleave(const Stream& stream, unsigned frames);
     void interleave(Stream& stream, unsigned frames);
@@ -67,6 +69,7 @@ private:
 
     Stream capture_;
     Stream playback_;
+    bool streamsLinked_ = false;
     int fifoPriority_ = 80;
 
     AudioProcessor* processor_ = nullptr;

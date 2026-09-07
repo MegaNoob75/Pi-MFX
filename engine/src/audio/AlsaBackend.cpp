@@ -322,6 +322,63 @@ void AlsaBackend::closeStream(Stream& stream) {
     stream.buffer.clear();
 }
 
+void AlsaBackend::writeSilence(unsigned frames, unsigned periodCount) {
+    std::fill(playback_.buffer.begin(), playback_.buffer.end(), 0);
+    for (unsigned i = 0; i + 1 < periodCount; ++i) {
+        if (playback_.mmap) {
+            snd_pcm_mmap_writei(playback_.pcm, playback_.buffer.data(), frames);
+        } else {
+            snd_pcm_writei(playback_.pcm, playback_.buffer.data(), frames);
+        }
+    }
+}
+
+bool AlsaBackend::resyncAfterXrun(unsigned frames, unsigned periodCount) {
+    // Linked prepare/start applies to both streams, so they have to come
+    // apart first, get prepared on their own, then be linked again. Recovering
+    // only the side that reported the error leaves the other in PREPARED or
+    // unlinked. Playback then runs while capture sits, which shows up as
+    // growing delay and a stream of xruns until the card is fully reopened.
+    if (streamsLinked_ && capture_.pcm) {
+        snd_pcm_unlink(capture_.pcm);
+    }
+
+    auto prepare = [](snd_pcm_t* pcm) -> int {
+        if (!pcm) {
+            return -ENODEV;
+        }
+        int err = snd_pcm_prepare(pcm);
+        if (err < 0) {
+            err = snd_pcm_recover(pcm, err, 1);
+        }
+        return err;
+    };
+
+    int err = prepare(playback_.pcm);
+    if (err < 0) {
+        reportFailure(std::string("cannot prepare playback after xrun: ") + snd_strerror(err));
+        return false;
+    }
+    err = prepare(capture_.pcm);
+    if (err < 0) {
+        reportFailure(std::string("cannot prepare capture after xrun: ") + snd_strerror(err));
+        return false;
+    }
+
+    if (streamsLinked_) {
+        snd_pcm_link(capture_.pcm, playback_.pcm);
+    }
+
+    writeSilence(frames, periodCount);
+
+    err = snd_pcm_start(capture_.pcm);
+    if (err < 0 && err != -EBADFD) {
+        reportFailure(std::string("cannot restart capture after xrun: ") + snd_strerror(err));
+        return false;
+    }
+    return true;
+}
+
 bool AlsaBackend::start(const AudioSettings& settings,
                         AudioProcessor* processor,
                         AudioMetrics* metrics,
@@ -361,8 +418,11 @@ bool AlsaBackend::start(const AudioSettings& settings,
 
     // Linking lets the driver start both directions on the same sample when
     // they share a card, which removes the drift between them entirely.
+    streamsLinked_ = false;
     if (resolved.captureDevice.empty()) {
-        if (snd_pcm_link(capture_.pcm, playback_.pcm) < 0) {
+        if (snd_pcm_link(capture_.pcm, playback_.pcm) >= 0) {
+            streamsLinked_ = true;
+        } else {
             logDebug("audio: streams could not be linked; running them independently");
         }
     }
@@ -495,17 +555,7 @@ void AlsaBackend::run() {
     // needs that slack; one period was not enough and xran at settings that
     // were previously stable. startImmediately only changes the start
     // threshold, not how much is queued.
-    auto prerollSilence = [&]() {
-        std::fill(playback_.buffer.begin(), playback_.buffer.end(), 0);
-        for (unsigned i = 0; i + 1 < settings.periodCount; ++i) {
-            if (playback_.mmap) {
-                snd_pcm_mmap_writei(playback_.pcm, playback_.buffer.data(), frames);
-            } else {
-                snd_pcm_writei(playback_.pcm, playback_.buffer.data(), frames);
-            }
-        }
-    };
-    prerollSilence();
+    writeSilence(frames, settings.periodCount);
 
     int result = snd_pcm_start(capture_.pcm);
     if (result < 0 && result != -EBADFD) {
@@ -530,16 +580,9 @@ void AlsaBackend::run() {
             if (metrics_) {
                 metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
             }
-            // snd_pcm_recover handles both underrun and a suspended device
-            // (which happens when the Pi resumes from a power event).
-            const int recovered = snd_pcm_recover(capture_.pcm, static_cast<int>(got), 1);
-            if (recovered < 0) {
-                reportFailure(std::string("capture failed: ") + snd_strerror(recovered));
+            if (!resyncAfterXrun(frames, settings.periodCount)) {
                 break;
             }
-            snd_pcm_prepare(playback_.pcm);
-            prerollSilence();
-            snd_pcm_start(capture_.pcm);
             continue;
         }
 
@@ -572,12 +615,9 @@ void AlsaBackend::run() {
             if (metrics_) {
                 metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
             }
-            const int recovered = snd_pcm_recover(playback_.pcm, static_cast<int>(written), 1);
-            if (recovered < 0) {
-                reportFailure(std::string("playback failed: ") + snd_strerror(recovered));
+            if (!resyncAfterXrun(frames, settings.periodCount)) {
                 break;
             }
-            prerollSilence();
             continue;
         }
 
