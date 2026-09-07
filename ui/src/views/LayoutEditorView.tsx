@@ -614,6 +614,7 @@ export function LayoutEditorView({
                 <div
                     ref={stageRef}
                     className={`layout-stage${groupMode ? " is-grouping" : ""}`}
+                    onPointerMove={onPointerMove}
                     onPointerUp={onPointerUp}
                     onPointerCancel={onPointerUp}
                 >

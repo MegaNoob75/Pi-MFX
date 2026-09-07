@@ -4,5 +4,6 @@
 *.plymouth text eol=lf
 *.script text eol=lf
 *.service.in text eol=lf
-systemd/*.in text eol=lf
+systemd/** text eol=lf
+*.json text eol=lf
 *.ps1 text eol=crlf
