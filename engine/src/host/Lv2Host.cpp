@@ -521,7 +521,7 @@ struct PluginInstance::Impl {
     LV2_URID_Map uridMap{};
     LV2_URID_Unmap uridUnmap{};
     LV2_Worker_Schedule workerSchedule{};
-    LV2_Options_Option options[5]{};
+    LV2_Options_Option options[6]{};
     std::vector<LV2_Feature> featureStorage;
     std::vector<const LV2_Feature*> features;
 
@@ -545,7 +545,7 @@ struct PluginInstance::Impl {
 
     float sampleRateValue = 48000.0f;
     int32_t maxBlockLength = 64;
-    int32_t minBlockLength = 1;
+    int32_t minBlockLength = 64;
     int32_t sequenceSize = 8192;
 
     ~Impl() {
@@ -644,6 +644,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.maxFrames = maxFrames;
     impl.sampleRateValue = static_cast<float>(sampleRate);
     impl.maxBlockLength = static_cast<int32_t>(maxFrames);
+    impl.minBlockLength = impl.maxBlockLength;
 
     UridMap& urids = catalog.urids();
     impl.urids.atomFloat = urids.map(LV2_ATOM__Float);
@@ -673,11 +674,13 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                        sizeof(int32_t), urids.map(LV2_ATOM__Int), &impl.maxBlockLength};
     impl.options[1] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.bufMinBlockLength,
                        sizeof(int32_t), urids.map(LV2_ATOM__Int), &impl.minBlockLength};
-    impl.options[2] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.bufSequenceSize,
+    impl.options[2] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.bufNominalBlockLength,
+                       sizeof(int32_t), urids.map(LV2_ATOM__Int), &impl.maxBlockLength};
+    impl.options[3] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.bufSequenceSize,
                        sizeof(int32_t), urids.map(LV2_ATOM__Int), &impl.sequenceSize};
-    impl.options[3] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.paramSampleRate,
+    impl.options[4] = {LV2_OPTIONS_INSTANCE, 0, impl.urids.paramSampleRate,
                        sizeof(float), impl.urids.atomFloat, &impl.sampleRateValue};
-    impl.options[4] = {LV2_OPTIONS_BLANK, 0, 0, 0, 0, nullptr};
+    impl.options[5] = {LV2_OPTIONS_BLANK, 0, 0, 0, 0, nullptr};
 
     static LV2_Feature boundedBlockLength = {LV2_BUF_SIZE__boundedBlockLength, nullptr};
     static LV2_Feature powerOf2BlockLength = {LV2_BUF_SIZE__powerOf2BlockLength, nullptr};
@@ -919,7 +922,7 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
             lv2_atom_forge_urid(&impl.forge, propertyUrid);
             lv2_atom_forge_key(&impl.forge, impl.urids.patchValue);
             lv2_atom_forge_path(&impl.forge, property.value,
-                                static_cast<uint32_t>(std::strlen(property.value)));
+                                static_cast<uint32_t>(std::strlen(property.value) + 1));
             lv2_atom_forge_pop(&impl.forge, &objectFrame);
         }
 

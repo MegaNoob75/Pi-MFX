@@ -36,7 +36,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
-                <HubCard title="LIBRARY" subtitle="NAM models, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
+                <HubCard title="LIBRARY" subtitle="NAM, AIDA-X, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
                 <HubCard title="PLUGINS" subtitle="Apt repos, install, remove and PatchStorage" onClick={() => onOpen("plugins")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>

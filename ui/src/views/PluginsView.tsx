@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, str, objects, type JsonObject } from "../json";
+import { isChainPlugin } from "./PluginBrowser";
+import { LibraryBrowser } from "./LibraryManager";
 
 type PluginTab = "installed" | "apt" | "repos" | "patchstorage";
 type PatchSort = "downloads" | "alpha" | "newest" | "updated";
@@ -249,6 +251,9 @@ export function PluginsView({
                 {busy && <div className="muted">{busy}</div>}
                 {tab === "installed" && (
                     <InstalledTab
+                        engine={engine}
+                        run={run}
+                        catalog={objects(engine.catalog.plugins)}
                         status={status}
                         aptPackages={aptInstalled}
                         bundles={bundles}
@@ -386,6 +391,9 @@ function TabButton({ label, active, onClick }: { label: string; active: boolean;
 }
 
 function InstalledTab({
+    engine,
+    run,
+    catalog,
     status,
     aptPackages,
     bundles,
@@ -393,6 +401,9 @@ function InstalledTab({
     onRemoveApt,
     onRemoveBundle
 }: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    catalog: JsonObject[];
     status: JsonObject;
     aptPackages: JsonObject[];
     bundles: JsonObject[];
@@ -400,16 +411,39 @@ function InstalledTab({
     onRemoveApt: (name: string) => void;
     onRemoveBundle: (directory: string) => void;
 }) {
+    const chainPlugins = catalog.filter(isChainPlugin).sort((a, b) => str(a.name).localeCompare(str(b.name)));
+    const hidden = Math.max(0, catalog.length - chainPlugins.length);
     return (
         <>
             <div className="panel stack">
-                <h2>CATALOG</h2>
+                <h2>CHAIN PLUGINS</h2>
                 <div className="muted">
-                    {num(status.pluginCount)} plugins loaded
+                    {chainPlugins.length} effects with audio in and out
+                    {hidden ? ` · ${hidden} utilities hidden` : ""}
                     {bool(status.lv2Available, true) ? "" : " · LV2 host not available in this build"}
                 </div>
-                <div className="muted">User bundles: {str(status.lv2Dir, "/var/lib/pimfx/lv2")}</div>
                 <button type="button" className="btn" onClick={onRescan}>RESCAN LV2</button>
+                <div className="plugin-catalog-list">
+                    {chainPlugins.map((plugin) => (
+                        <div className="plugin-catalog-row" key={str(plugin.uri)}>
+                            <div style={{ minWidth: 0 }}>
+                                <strong>{str(plugin.name)}</strong>
+                                <div className="muted">
+                                    {str(plugin.brand, str(plugin.category))}
+                                    {str(plugin.category) && str(plugin.brand) ? ` · ${str(plugin.category)}` : ""}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                    {chainPlugins.length === 0 && <div className="muted">No chain-usable LV2 plugins loaded yet.</div>}
+                </div>
+            </div>
+            <div className="panel stack">
+                <h2>USER LV2</h2>
+                <div className="muted">
+                    Bundles under {str(status.lv2Dir, "/var/lib/pimfx/lv2")}. System plugins in /usr/lib/lv2 stay hidden here.
+                </div>
+                <LibraryBrowser engine={engine} run={run} kind="plugin" dualDefault={false} />
             </div>
             <div className="panel stack">
                 <h2>APT PACKAGES</h2>

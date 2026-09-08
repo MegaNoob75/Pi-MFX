@@ -367,14 +367,10 @@ Json Tone3000Client::authorizedGet(const std::string& path, std::string& error) 
 
 namespace {
 
-int64_t listCacheTtlSeconds(const std::string& source) {
-    if (source == "trending" || source == "latest") {
-        return 15 * 60;
-    }
-    if (source == "search") {
-        return 10 * 60;
-    }
-    return 5 * 60;
+int64_t listCacheTtlSeconds(const std::string&) {
+    // Catalog tabs stay on disk for a day so a 7" kiosk does not refetch
+    // TONE3000 on every visit. REFRESH in the UI still bypasses the cache.
+    return 24 * 60 * 60;
 }
 
 constexpr size_t kMaxListCacheEntries = 40;
@@ -583,10 +579,11 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return false;
     }
 
-    const bool isModel = kind != "ir";
+    const bool isIr = kind == "ir";
+    const bool isAidax = kind == "aidax";
     std::string name = sanitizeFileName(suggestedName.empty() ? "tone3000-download" : suggestedName);
     if (name.find('.') == std::string::npos) {
-        name += isModel ? ".nam" : ".wav";
+        name += isIr ? ".wav" : (isAidax ? ".aidax" : ".nam");
     }
 
     std::filesystem::path rel;
@@ -601,7 +598,7 @@ bool Tone3000Client::downloadModel(const std::string& url,
         rel = "TONE3000";
     }
 
-    const std::string root = isModel ? paths_.modelsDir : paths_.irsDir;
+    const std::string root = isIr ? paths_.irsDir : (isAidax ? paths_.aidaxDir : paths_.modelsDir);
     const std::string directory = joinPath(root, rel.generic_string());
     if (!makeDirectories(directory)) {
         error = "could not create that folder";

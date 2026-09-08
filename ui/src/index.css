@@ -2313,36 +2313,222 @@ button.list-item {
 }
 
 .library-picker-dialog {
-    width: min(640px, calc(100vw - 32px));
+    width: min(920px, calc(100vw - 16px));
+    max-height: calc(100vh - 24px);
+    overflow: auto;
 }
 
-.library-browser {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.library-crumbs,
-.library-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.library-crumbs {
-    flex-direction: row;
+.explorer-kind-tabs {
     flex-wrap: wrap;
 }
 
-.library-row {
+.explorer {
     display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 280px;
 }
 
-.library-row-name {
-    flex: 1;
+.explorer-toolbar,
+.explorer-move-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.explorer-toolbar .btn {
+    min-height: 44px;
+}
+
+.explorer-panes {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    min-height: 240px;
+}
+
+.explorer-dual .explorer-panes {
+    grid-template-columns: 1fr 1fr;
+}
+
+.explorer-pane {
+    display: flex;
+    flex-direction: column;
     min-width: 0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.18);
+    overflow: hidden;
+}
+
+.explorer-pane-active {
+    border-color: var(--accent, #c45c26);
+}
+
+.explorer-crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.explorer-crumbs .btn {
+    min-height: 36px;
+    padding: 4px 10px;
+}
+
+.explorer-body {
+    display: grid;
+    grid-template-columns: minmax(108px, 34%) 1fr;
+    min-height: 200px;
+    flex: 1;
+}
+
+.explorer-tree {
+    overflow: auto;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 4px 0;
+}
+
+.explorer-tree-row,
+.explorer-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 44px;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    color: inherit;
     text-align: left;
+    touch-action: manipulation;
+}
+
+.explorer-tree-row.selected,
+.explorer-row.selected {
+    background: rgba(196, 92, 38, 0.35);
+}
+
+.explorer-tree-twist {
+    width: 22px;
+    flex: 0 0 22px;
+}
+
+.explorer-tree-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.explorer-list {
+    overflow: auto;
+}
+
+.explorer-row-icon {
+    flex: 0 0 22px;
+}
+
+.explorer-row-name {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.explorer-row-name strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.explorer-empty {
+    padding: 16px;
+}
+
+.explorer-status {
+    font-size: 12px;
+}
+
+.explorer-menu-dismiss {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    border: 0;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 0;
+}
+
+.explorer-menu {
+    position: fixed;
+    z-index: 81;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    background: #1c1c1c;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.explorer-menu button {
+    min-height: 48px;
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    padding: 0 16px;
+}
+
+.explorer-menu button:last-child {
+    border-bottom: 0;
+}
+
+.download-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.download-progress-bar {
+    height: 12px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+}
+
+.download-progress-fill {
+    height: 100%;
+    background: var(--accent, #c45c26);
+}
+
+.plugin-catalog-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: min(42vh, 360px);
+    overflow: auto;
+}
+
+.plugin-catalog-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 44px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+@media (max-width: 900px) {
+    .explorer-dual .explorer-panes {
+        grid-template-columns: 1fr;
+    }
+
+    .explorer-body {
+        grid-template-columns: minmax(92px, 30%) 1fr;
+    }
 }

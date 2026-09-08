@@ -135,6 +135,7 @@ export function SnapshotEditView({
                             properties={properties}
                             plugin={plugin}
                             models={objects(library.models)}
+                            aidax={objects(library.aidax)}
                             irs={objects(library.impulseResponses)}
                             run={run}
                             client={client}

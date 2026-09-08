@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type Json, type JsonObject } from "../json";
-import { LibraryFolderPicker, loadTone3000Dir, saveTone3000Dir, type LibraryKind } from "./LibraryManager";
+import { LibraryFolderPicker, libraryRootLabel, loadTone3000Dir, saveTone3000Dir, type LibraryKind } from "./LibraryManager";
 
 type CatalogSource = "trending" | "latest" | "search" | "downloaded" | "favorited" | "created";
 
@@ -136,6 +136,21 @@ function modelIsIr(tone: JsonObject, model: JsonObject): boolean {
     return /(?:^|\b)ir(?:\b|$)|impulse/i.test(text);
 }
 
+function modelIsAidax(tone: JsonObject, model: JsonObject): boolean {
+    const text = `${str(tone.format)} ${str(model.format)} ${str(model.kind)} ${str(model.name)} ${str(model.architecture)}`;
+    return /aida/i.test(text) || /\.aidax$/i.test(text);
+}
+
+function downloadKind(tone: JsonObject, model: JsonObject): LibraryKind {
+    if (modelIsIr(tone, model)) {
+        return "ir";
+    }
+    if (modelIsAidax(tone, model)) {
+        return "aidax";
+    }
+    return "model";
+}
+
 function pageSizeFor(source: CatalogSource): number {
     if (source === "downloaded" || source === "favorited" || source === "created") {
         return 50;
@@ -195,6 +210,9 @@ export function Tone3000View({
     const [folderPicker, setFolderPicker] = useState<LibraryKind | null>(null);
     const [modelDir, setModelDir] = useState(() => loadTone3000Dir("model"));
     const [irDir, setIrDir] = useState(() => loadTone3000Dir("ir"));
+    const [aidaxDir, setAidaxDir] = useState(() => loadTone3000Dir("aidax"));
+    const [pendingDownload, setPendingDownload] = useState<{ tone: JsonObject; models: JsonObject[] } | null>(null);
+    const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0, name: "" });
     const [downloadStatus, setDownloadStatus] = useState("");
     const [downloadError, setDownloadError] = useState("");
     const [downloading, setDownloading] = useState(false);
@@ -411,10 +429,14 @@ export function Tone3000View({
         saveTone3000Dir(kind, directory);
         if (kind === "ir") {
             setIrDir(directory);
+        } else if (kind === "aidax") {
+            setAidaxDir(directory);
         } else {
             setModelDir(directory);
         }
     };
+
+    const dirForKind = (kind: LibraryKind) => (kind === "ir" ? irDir : kind === "aidax" ? aidaxDir : modelDir);
 
     const downloadOne = async (tone: JsonObject, model: JsonObject) => {
         const resolved = await resolveModel(model);
@@ -423,8 +445,8 @@ export function Tone3000View({
         if (!url && !modelId) {
             throw new Error("that model has no download URL");
         }
-        const ir = modelIsIr(tone, resolved);
-        const directory = ir ? irDir : modelDir;
+        const kind = downloadKind(tone, resolved);
+        const directory = dirForKind(kind);
         const label = str(resolved.name, toneName(tone));
         setDownloadStatus(`Downloading ${label}…`);
         setDownloadError("");
@@ -432,13 +454,12 @@ export function Tone3000View({
             url,
             modelId,
             name: label,
-            kind: ir ? "ir" : "model",
+            kind,
             directory
         });
         const stored = str(result.path);
         await engine.client.request("library");
-        const root = ir ? "irs" : "models";
-        setDownloadStatus(`Saved ${label} to ${root}/${directory || "TONE3000"}.`);
+        setDownloadStatus(`Saved ${label} to ${libraryRootLabel(kind)}/${directory || "TONE3000"}.`);
         return stored;
     };
 
@@ -448,16 +469,22 @@ export function Tone3000View({
         }
         setDownloading(true);
         setDownloadError("");
+        setDownloadProgress({ current: 0, total: models.length, name: "" });
         try {
             const saved: string[] = [];
             for (let index = 0; index < models.length; index += 1) {
-                setDownloadStatus(`Downloading ${index + 1} of ${models.length}…`);
+                const label = str(models[index].name, toneName(tone));
+                setDownloadProgress({ current: index + 1, total: models.length, name: label });
+                setDownloadStatus(`Downloading ${index + 1} of ${models.length}: ${label}`);
                 const path = await downloadOne(tone, models[index]);
                 if (path) {
                     saved.push(path);
                 }
             }
-            setDownloadStatus(`Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to the library.`);
+            setDownloadStatus(`Saved ${saved.length} file${saved.length === 1 ? "" : "s"}. ${models.length - saved.length} left unfinished.`);
+            if (saved.length === models.length) {
+                setDownloadStatus(`Saved ${saved.length} of ${models.length} file${models.length === 1 ? "" : "s"} to the library.`);
+            }
         } catch (caught: unknown) {
             const text = caught instanceof Error ? caught.message : String(caught);
             setDownloadError(text);
@@ -466,6 +493,13 @@ export function Tone3000View({
         } finally {
             setDownloading(false);
         }
+    };
+
+    const queueDownload = (tone: JsonObject, models: JsonObject[]) => {
+        const first = models[0];
+        const kind = first ? downloadKind(tone, first) : "model";
+        setPendingDownload({ tone, models });
+        setFolderPicker(kind);
     };
 
     const openTone = (tone: JsonObject) => {
@@ -577,10 +611,13 @@ export function Tone3000View({
                     </div>
                     <div className="t3k-folders">
                         <button type="button" className="btn" onClick={() => setFolderPicker("model")}>
-                            NAM FOLDER: {modelDir || "models"}
+                            NAM: {modelDir || "models"}
+                        </button>
+                        <button type="button" className="btn" onClick={() => setFolderPicker("aidax")}>
+                            AIDA-X: {aidaxDir || "aidax"}
                         </button>
                         <button type="button" className="btn" onClick={() => setFolderPicker("ir")}>
-                            IR FOLDER: {irDir || "irs"}
+                            IR: {irDir || "irs"}
                         </button>
                     </div>
                     <div className="t3k-tabs">
@@ -710,22 +747,25 @@ export function Tone3000View({
                             downloading={downloading}
                             status={downloadStatus}
                             error={downloadError}
+                            progress={downloadProgress}
                             modelDir={modelDir}
                             irDir={irDir}
+                            aidaxDir={aidaxDir}
                             onClose={() => {
                                 if (!downloading) {
                                     setSelectedTone(null);
                                     setDownloadError("");
                                     setDownloadStatus("");
+                                    setDownloadProgress({ current: 0, total: 0, name: "" });
                                 }
                             }}
                             onPickFolder={setFolderPicker}
                             onDownloadAll={() => {
                                 const models = modelsByTone[toneKey(selectedTone)] ?? [];
-                                void downloadModels(selectedTone, models).catch(() => undefined);
+                                queueDownload(selectedTone, models);
                             }}
                             onDownloadOne={(model) => {
-                                void downloadModels(selectedTone, [model]).catch(() => undefined);
+                                queueDownload(selectedTone, [model]);
                             }}
                         />
                     )}
@@ -734,9 +774,19 @@ export function Tone3000View({
                             engine={engine}
                             run={run}
                             kind={folderPicker}
-                            value={folderPicker === "ir" ? irDir : modelDir}
-                            onPick={(directory) => saveDir(folderPicker, directory)}
-                            onClose={() => setFolderPicker(null)}
+                            value={dirForKind(folderPicker)}
+                            onPick={(directory) => {
+                                saveDir(folderPicker, directory);
+                                const pending = pendingDownload;
+                                setPendingDownload(null);
+                                if (pending) {
+                                    void downloadModels(pending.tone, pending.models).catch(() => undefined);
+                                }
+                            }}
+                            onClose={() => {
+                                setFolderPicker(null);
+                                setPendingDownload(null);
+                            }}
                         />
                     )}
                 </div>
@@ -752,8 +802,10 @@ function ToneDownloadDialog({
     downloading,
     status,
     error,
+    progress,
     modelDir,
     irDir,
+    aidaxDir,
     onClose,
     onPickFolder,
     onDownloadAll,
@@ -765,8 +817,10 @@ function ToneDownloadDialog({
     downloading: boolean;
     status: string;
     error: string;
+    progress: { current: number; total: number; name: string };
     modelDir: string;
     irDir: string;
+    aidaxDir: string;
     onClose: () => void;
     onPickFolder: (kind: LibraryKind) => void;
     onDownloadAll: () => void;
@@ -775,8 +829,10 @@ function ToneDownloadDialog({
     const name = toneName(tone);
     const irTone = modelIsIr(tone, {});
     const downloadable = models.filter((model) => modelUrl(model) || jsonId(model.id));
-    const hasNam = downloadable.some((model) => !modelIsIr(tone, model));
+    const hasNam = downloadable.some((model) => downloadKind(tone, model) === "model");
+    const hasAidax = downloadable.some((model) => downloadKind(tone, model) === "aidax");
     const hasIr = irTone || downloadable.some((model) => modelIsIr(tone, model));
+    const remaining = Math.max(0, progress.total - progress.current);
     return (
         <div className="dialog-backdrop" onClick={onClose}>
             <div className="dialog t3k-dialog" onClick={(event) => event.stopPropagation()}>
@@ -789,9 +845,14 @@ function ToneDownloadDialog({
                     <button type="button" className="btn" onClick={onClose} disabled={downloading}>CLOSE</button>
                 </div>
                 <div className="row t3k-dialog-folders">
-                    {(hasNam || !hasIr) && (
+                    {(hasNam || (!hasIr && !hasAidax)) && (
                         <button type="button" className="btn" onClick={() => onPickFolder("model")}>
                             NAM: {modelDir || "models"}
+                        </button>
+                    )}
+                    {hasAidax && (
+                        <button type="button" className="btn" onClick={() => onPickFolder("aidax")}>
+                            AIDA-X: {aidaxDir || "aidax"}
                         </button>
                     )}
                     {hasIr && (
@@ -801,10 +862,24 @@ function ToneDownloadDialog({
                     )}
                 </div>
                 <div className="muted">
-                    Download all models for this {irTone ? "IR" : "NAM"}, or save one file at a time.
-                    Files go into the folder chosen above. NAMs and IRs never share a directory.
+                    Choose a save folder, then download. NAM, AIDA-X, and IR files stay in separate libraries.
                 </div>
                 {status && <div className="muted">{status}</div>}
+                {downloading && progress.total > 0 && (
+                    <div className="download-progress">
+                        <div>
+                            {progress.current} of {progress.total}
+                            {progress.name ? ` · ${progress.name}` : ""}
+                            {remaining > 0 ? ` · ${remaining} left` : ""}
+                        </div>
+                        <div className="download-progress-bar">
+                            <div
+                                className="download-progress-fill"
+                                style={{ width: `${Math.round((progress.current / progress.total) * 100)}%` }}
+                            />
+                        </div>
+                    </div>
+                )}
                 {error && <div className="danger">{error}</div>}
                 <button
                     type="button"
@@ -824,7 +899,7 @@ function ToneDownloadDialog({
                                 <div className="muted">
                                     {str(model.size)}
                                     {jsonId(model.architecture_version) ? ` · A${jsonId(model.architecture_version)}` : ""}
-                                    {modelIsIr(tone, model) ? " · IR" : " · NAM"}
+                                    {downloadKind(tone, model) === "ir" ? " · IR" : downloadKind(tone, model) === "aidax" ? " · AIDA-X" : " · NAM"}
                                 </div>
                             </div>
                             <button

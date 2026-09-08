@@ -34,7 +34,7 @@ namespace {
 
 constexpr const char* kHelperSocket = "/run/pimfx/plugin-helper.sock";
 constexpr const char* kPatchstorageBase = "https://patchstorage.com/api/beta";
-constexpr int64_t kPatchstorageCacheTtlSeconds = 12 * 60 * 60;
+constexpr int64_t kPatchstorageCacheTtlSeconds = 24 * 60 * 60;
 const char* kSuggested[] = {
     "calf-plugins",
     "x42-plugins",

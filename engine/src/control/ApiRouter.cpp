@@ -390,6 +390,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
+    if (command == "library/tree") {
+        const Json result = engine_.libraryTree(payload["kind"].asString("model"), error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "library/mkdir") {
         ok = engine_.libraryMkdir(payload["kind"].asString("model"),
                                   payload["directory"].asString(), error);

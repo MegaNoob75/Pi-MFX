@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { str, objects, arr } from "../json";
+import { str, objects, arr, num } from "../json";
 import type { JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
+
+export function isChainPlugin(plugin: JsonObject): boolean {
+    return num(plugin.audioInputs) >= 1 && num(plugin.audioOutputs) >= 1;
+}
 
 export function PluginBrowser({
     open,
@@ -18,7 +22,7 @@ export function PluginBrowser({
     onCancel: () => void;
     onChoose: (uri: string) => void;
 }) {
-    const plugins = objects(catalog.plugins);
+    const plugins = objects(catalog.plugins).filter(isChainPlugin);
     const [query, setQuery] = useState("");
     const [category, setCategory] = useState("All");
     const [selected, setSelected] = useState("");

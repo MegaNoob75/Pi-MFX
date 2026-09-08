@@ -31,6 +31,75 @@ std::string sanitizeRelDir(const std::string& text) {
     return out.generic_string();
 }
 
+const std::string& libraryRootForKind(const Paths& paths, const std::string& kind) {
+    if (kind == "ir") {
+        return paths.irsDir;
+    }
+    if (kind == "aidax") {
+        return paths.aidaxDir;
+    }
+    if (kind == "plugin") {
+        return paths.lv2Dir;
+    }
+    return paths.modelsDir;
+}
+
+std::string libraryKindName(const std::string& kind) {
+    if (kind == "ir" || kind == "aidax" || kind == "plugin") {
+        return kind;
+    }
+    return "model";
+}
+
+bool isLibraryRootPath(const Paths& paths, const std::string& path) {
+    std::error_code pathEc;
+    const auto candidate = std::filesystem::weakly_canonical(std::filesystem::path(path), pathEc);
+    if (pathEc) {
+        return false;
+    }
+    for (const std::string& root : {paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir}) {
+        std::error_code rootEc;
+        const auto base = std::filesystem::weakly_canonical(std::filesystem::path(root), rootEc);
+        if (!rootEc && candidate == base) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hiddenLibraryName(const std::string& name) {
+    return name.empty() || name[0] == '.';
+}
+
+Json libraryDirNode(const std::string& abs, const std::string& rel) {
+    Json node = Json::object();
+    node.set("name", rel.empty() ? std::string() : fileName(abs));
+    node.set("relative", rel);
+    node.set("path", abs);
+    Json children = Json::array();
+    std::error_code ec;
+    std::vector<std::filesystem::directory_entry> entries;
+    for (const auto& entry : std::filesystem::directory_iterator(abs, ec)) {
+        if (ec) {
+            break;
+        }
+        entries.push_back(entry);
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.path().filename().string() < b.path().filename().string();
+    });
+    for (const auto& entry : entries) {
+        const std::string name = entry.path().filename().string();
+        if (hiddenLibraryName(name) || !entry.is_directory(ec)) {
+            continue;
+        }
+        const std::string childRel = rel.empty() ? name : rel + "/" + name;
+        children.push(libraryDirNode(entry.path().string(), childRel));
+    }
+    node.set("children", children);
+    return node;
+}
+
 /// Performance stores switch → preset as { bankId: { controlId: presetId } }.
 /// MIDI selectPreset used to ignore that map and only read binding.presetId,
 /// which Learn never fills, so learned footswitches did nothing.
@@ -2170,8 +2239,7 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
 bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
                               const std::string& contents, const std::string& directory,
                               std::string& storedPath, std::string& error) {
-    const bool isModel = kind == "model";
-    const std::string root = isModel ? storage_.paths().modelsDir : storage_.paths().irsDir;
+    const std::string root = libraryRootForKind(storage_.paths(), kind);
 
     const std::string safeName = sanitizeFileName(name);
     if (safeName.empty()) {
@@ -2207,13 +2275,7 @@ bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
         error = "that file is not in the Pi-MFX library";
         return false;
     }
-    std::error_code pathEc;
-    const auto candidate = std::filesystem::weakly_canonical(std::filesystem::path(path), pathEc);
-    std::error_code modelsEc;
-    std::error_code irsEc;
-    const auto modelsRoot = std::filesystem::weakly_canonical(std::filesystem::path(storage_.paths().modelsDir), modelsEc);
-    const auto irsRoot = std::filesystem::weakly_canonical(std::filesystem::path(storage_.paths().irsDir), irsEc);
-    if (!pathEc && ((!modelsEc && candidate == modelsRoot) || (!irsEc && candidate == irsRoot))) {
+    if (isLibraryRootPath(storage_.paths(), path)) {
         error = "cannot delete the library root";
         return false;
     }
@@ -2236,7 +2298,7 @@ bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
 }
 
 Json Engine::libraryList(const std::string& kind, const std::string& directory, std::string& error) {
-    const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+    const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string dir = rel.empty() ? root : joinPath(root, rel);
     if (!storage_.isPathInLibrary(dir) && dir != root) {
@@ -2255,8 +2317,11 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
         if (ec) {
             break;
         }
-        Json item = Json::object();
         const std::string name = entry.path().filename().string();
+        if (hiddenLibraryName(name)) {
+            continue;
+        }
+        Json item = Json::object();
         const std::string childRel = rel.empty() ? name : rel + "/" + name;
         item.set("name", name);
         item.set("path", entry.path().string());
@@ -2272,16 +2337,33 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
     }
 
     Json json = Json::object();
-    json.set("kind", kind == "ir" ? "ir" : "model");
+    json.set("kind", libraryKindName(kind));
     json.set("directory", rel);
+    json.set("root", root);
     json.set("folders", folders);
     json.set("files", files);
     error.clear();
     return json;
 }
 
+Json Engine::libraryTree(const std::string& kind, std::string& error) {
+    const std::string root = libraryRootForKind(storage_.paths(), kind);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(root, ec)) {
+        if (!makeDirectories(root)) {
+            error = "that library folder does not exist";
+            return Json();
+        }
+    }
+    Json json = Json::object();
+    json.set("kind", libraryKindName(kind));
+    json.set("root", libraryDirNode(root, std::string()));
+    error.clear();
+    return json;
+}
+
 bool Engine::libraryMkdir(const std::string& kind, const std::string& directory, std::string& error) {
-    const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+    const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     if (rel.empty()) {
         error = "give the folder a name";
@@ -2327,7 +2409,7 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         error = "that path is not in the library";
         return false;
     }
-    const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+    const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string destDir = rel.empty() ? root : joinPath(root, rel);
     if (!makeDirectories(destDir) || !storage_.isPathInLibrary(destDir)) {
@@ -2687,6 +2769,7 @@ Json Engine::libraryState() const {
     };
 
     json.set("models", describe(storage_.listModels()));
+    json.set("aidax", describe(storage_.listAidax()));
     json.set("impulseResponses", describe(storage_.listImpulseResponses()));
     return json;
 }

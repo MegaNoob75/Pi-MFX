@@ -38,9 +38,10 @@ public:
     };
 
     std::vector<LibraryEntry> listModels() const;
+    std::vector<LibraryEntry> listAidax() const;
     std::vector<LibraryEntry> listImpulseResponses() const;
 
-    /// Rejects any path outside the model and IR directories. Presets can name
+    /// Rejects any path outside the model, AIDA-X, IR, and user LV2 directories. Presets can name
     /// files, and a preset can arrive from someone else, so the path in one is
     /// never trusted.
     bool isPathInLibrary(const std::string& path) const;

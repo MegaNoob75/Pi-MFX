@@ -42,6 +42,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
 
     paths.dataRoot = root;
     paths.modelsDir = joinPath(root, "models");
+    paths.aidaxDir = joinPath(root, "aidax");
     paths.irsDir = joinPath(root, "irs");
     paths.downloadsDir = joinPath(root, "downloads");
     paths.lv2Dir = joinPath(root, "lv2");
@@ -57,8 +58,10 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.banksDir());
     makeDirectories(paths.themesDir());
     makeDirectories(paths.modelsDir);
+    makeDirectories(paths.aidaxDir);
     makeDirectories(paths.irsDir);
     makeDirectories(joinPath(paths.modelsDir, "TONE3000"));
+    makeDirectories(joinPath(paths.aidaxDir, "TONE3000"));
     makeDirectories(joinPath(paths.irsDir, "TONE3000"));
     makeDirectories(paths.downloadsDir);
     makeDirectories(paths.lv2Dir);

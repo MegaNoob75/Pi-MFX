@@ -55,6 +55,7 @@ export function EditorView({
     const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control" && bool(port.input, true));
     const properties = objects(plugin.properties);
     const models = objects(library.models);
+    const aidax = objects(library.aidax);
     const irs = objects(library.impulseResponses);
     const controller = obj(state.controller);
     const controls = objects(controller.controls);
@@ -489,6 +490,7 @@ export function EditorView({
                                 properties={properties}
                                 plugin={plugin}
                                 models={models}
+                                aidax={aidax}
                                 irs={irs}
                                 run={run}
                                 client={client}
@@ -787,6 +789,7 @@ export function EffectControls({
     properties,
     plugin,
     models,
+    aidax = [],
     irs,
     run,
     client,
@@ -799,6 +802,7 @@ export function EffectControls({
     properties: JsonObject[];
     plugin: JsonObject;
     models: JsonObject[];
+    aidax?: JsonObject[];
     irs: JsonObject[];
     run: (work: () => Promise<unknown>) => Promise<void>;
     client: import("../api").EngineClient;
@@ -952,7 +956,16 @@ export function EffectControls({
             </div>
 
             {properties.filter((property) => bool(property.isPath)).map((property) => {
-                const files = bool(plugin.takesImpulseResponse) ? irs : models;
+                const types = arr(property.fileTypes).map((item) => String(item).toLowerCase());
+                const wantsIr = bool(plugin.takesImpulseResponse) || types.some((type) => /wav|flac|aiff/.test(type));
+                const wantsAidax = types.some((type) => type.includes("aidax"));
+                const wantsNam = !wantsIr && (types.length === 0 || types.some((type) => /nam|json/.test(type)) || bool(plugin.takesNamModel));
+                const files = wantsIr
+                    ? irs
+                    : [
+                        ...(wantsNam || (!wantsAidax && bool(plugin.takesNamModel)) ? models : []),
+                        ...(wantsAidax || bool(plugin.takesNamModel) ? aidax : [])
+                    ];
                 const current = str(obj(obj(selected.state).properties)[str(property.uri)]);
                 return (
                     <label key={str(property.uri)} className="field">

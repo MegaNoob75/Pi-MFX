@@ -14,6 +14,7 @@ struct Paths {
     std::string dataRoot;     ///< settings.json, banks/, snapshots/
     std::string webRoot;      ///< built UI served over HTTP
     std::string modelsDir;    ///< NAM captures
+    std::string aidaxDir;     ///< AIDA-X captures
     std::string irsDir;       ///< impulse responses
     std::string downloadsDir; ///< partial TONE3000 downloads
     std::string lv2Dir;       ///< user-installed LV2 bundles (PatchStorage, copies)

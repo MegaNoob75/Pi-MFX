@@ -133,7 +133,11 @@ std::vector<Storage::LibraryEntry> Storage::listLibrary(
 }
 
 std::vector<Storage::LibraryEntry> Storage::listModels() const {
-    return listLibrary(paths_.modelsDir, {".nam", ".json", ".aidax"});
+    return listLibrary(paths_.modelsDir, {".nam", ".json"});
+}
+
+std::vector<Storage::LibraryEntry> Storage::listAidax() const {
+    return listLibrary(paths_.aidaxDir, {".aidax"});
 }
 
 std::vector<Storage::LibraryEntry> Storage::listImpulseResponses() const {
@@ -146,7 +150,7 @@ bool Storage::isPathInLibrary(const std::string& path) const {
     if (ec) {
         return false;
     }
-    for (const std::string& root : {paths_.modelsDir, paths_.irsDir}) {
+    for (const std::string& root : {paths_.modelsDir, paths_.aidaxDir, paths_.irsDir, paths_.lv2Dir}) {
         const fs::path base = fs::weakly_canonical(fs::path(root), ec);
         if (ec) {
             continue;
