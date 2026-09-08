@@ -573,7 +573,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::string& error) {
     auto chain = std::make_unique<Chain>();
     const unsigned channels = std::max(1u, std::min(settings_.audio.outputChannels, 2u));
-    const unsigned frames = std::max(64u, maxFrames_.load(std::memory_order_acquire));
+    const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
 
     chain->channels = channels;
     chain->bufferA.assign(channels, std::vector<float>(frames, 0.0f));

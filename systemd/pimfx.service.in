@@ -5,6 +5,8 @@ Documentation=https://github.com/MegaNoob75/Pi-MFX
 # them. Without this the service races the driver on a cold boot.
 After=sound.target network.target pimfx-plugin-helper.service
 Wants=sound.target pimfx-plugin-helper.service
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
@@ -33,8 +35,6 @@ CPUSchedulingPolicy=other
 # on a stage. The rate limit stops a crash loop from thrashing the card.
 Restart=always
 RestartSec=2
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 # The service needs the sound devices, its own data directory, and the network.
 # It needs nothing else, so it gets nothing else.
