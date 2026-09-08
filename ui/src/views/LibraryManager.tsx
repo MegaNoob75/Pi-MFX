@@ -110,6 +110,28 @@ function LibraryConfirm({
     );
 }
 
+export function FilesView({
+    engine,
+    run
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+}) {
+    return (
+        <div className="mfx-screen">
+            <div className="mfx-screen-intro">
+                <div className="mfx-screen-intro-title">FILES</div>
+                <div className="mfx-screen-intro-sub">
+                    NAM, AIDA-X, impulse responses and user LV2 bundles
+                </div>
+            </div>
+            <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
+                <LibraryFileManager engine={engine} run={run} />
+            </div>
+        </div>
+    );
+}
+
 export function LibraryFileManager({
     engine,
     run
@@ -120,10 +142,9 @@ export function LibraryFileManager({
     const [kind, setKind] = useState<LibraryKind>("model");
     return (
         <div className="panel stack">
-            <h2>LIBRARY</h2>
             <div className="muted">
                 NAM files live in models. AIDA-X files live in aidax. Impulse responses live in irs.
-                Drag between the two panes, or long-press a row for more actions.
+                User LV2 bundles live in lv2. Drag between the two panes, or long-press a row for more actions.
             </div>
             <div className="row explorer-kind-tabs">
                 <button type="button" className={`btn ${kind === "model" ? "btn-active" : ""}`} onClick={() => setKind("model")}>
@@ -134,6 +155,9 @@ export function LibraryFileManager({
                 </button>
                 <button type="button" className={`btn ${kind === "ir" ? "btn-active" : ""}`} onClick={() => setKind("ir")}>
                     IRs
+                </button>
+                <button type="button" className={`btn ${kind === "plugin" ? "btn-active" : ""}`} onClick={() => setKind("plugin")}>
+                    LV2
                 </button>
             </div>
             <LibraryBrowser engine={engine} run={run} kind={kind} />

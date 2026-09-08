@@ -533,7 +533,7 @@ export function EditorView({
                 }}
             />
             {plugins.length === 0 && page === "chain" && (
-                <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Settings → Plugins.</div>
+                <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Plugins.</div>
             )}
             </div>
             {pickerOpen && !lockChain && createPortal(

@@ -194,10 +194,14 @@ function buildListPayload(
 
 export function Tone3000View({
     engine,
-    run
+    run,
+    pane = "catalog",
+    onOpenSettings
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    pane?: "settings" | "catalog";
+    onOpenSettings?: () => void;
 }) {
     const [status, setStatus] = useState<JsonObject>({});
     const [query, setQuery] = useState("");
@@ -512,9 +516,8 @@ export function Tone3000View({
     };
 
     const signedInAs = str(obj(status.user).username);
-
-    return (
-        <div className="panel stack">
+    const settingsForm = (
+        <>
             <h2>TONE3000</h2>
             <div className="muted">
                 Use the <strong>publishable</strong> key from tone3000.com → Settings → API Keys
@@ -593,7 +596,33 @@ export function Tone3000View({
                     }}>COMPLETE</button>
                 </div>
             )}
-            {bool(status.connected) && (
+        </>
+    );
+
+    if (pane === "settings") {
+        return <div className="panel stack">{settingsForm}</div>;
+    }
+
+    return (
+        <div className="mfx-screen">
+            <div className="mfx-screen-intro">
+                <div className="mfx-screen-intro-title">LIBRARY</div>
+                <div className="mfx-screen-intro-sub">Download NAM, AIDA-X and IR files from TONE3000</div>
+            </div>
+            <div className="page-scroll stack" style={{ flex: 1, minHeight: 0 }}>
+                {!bool(status.connected) && (
+                    <div className="panel stack">
+                        <div className="muted">
+                            Sign in to TONE3000 from Settings → Library, then come back here to browse.
+                        </div>
+                        {onOpenSettings && (
+                            <button type="button" className="btn btn-accent" onClick={onOpenSettings}>
+                                TONE3000 SETTINGS
+                            </button>
+                        )}
+                    </div>
+                )}
+                {bool(status.connected) && (
                 <div className="t3k-catalog">
                     <div className="t3k-status-row">
                         <div className="muted">
@@ -607,17 +636,6 @@ export function Tone3000View({
                             onClick={() => void fetchTones({ refresh: true })}
                         >
                             REFRESH
-                        </button>
-                    </div>
-                    <div className="t3k-folders">
-                        <button type="button" className="btn" onClick={() => setFolderPicker("model")}>
-                            NAM: {modelDir || "models"}
-                        </button>
-                        <button type="button" className="btn" onClick={() => setFolderPicker("aidax")}>
-                            AIDA-X: {aidaxDir || "aidax"}
-                        </button>
-                        <button type="button" className="btn" onClick={() => setFolderPicker("ir")}>
-                            IR: {irDir || "irs"}
                         </button>
                     </div>
                     <div className="t3k-tabs">
@@ -748,9 +766,6 @@ export function Tone3000View({
                             status={downloadStatus}
                             error={downloadError}
                             progress={downloadProgress}
-                            modelDir={modelDir}
-                            irDir={irDir}
-                            aidaxDir={aidaxDir}
                             onClose={() => {
                                 if (!downloading) {
                                     setSelectedTone(null);
@@ -759,7 +774,6 @@ export function Tone3000View({
                                     setDownloadProgress({ current: 0, total: 0, name: "" });
                                 }
                             }}
-                            onPickFolder={setFolderPicker}
                             onDownloadAll={() => {
                                 const models = modelsByTone[toneKey(selectedTone)] ?? [];
                                 queueDownload(selectedTone, models);
@@ -790,7 +804,8 @@ export function Tone3000View({
                         />
                     )}
                 </div>
-            )}
+                )}
+            </div>
         </div>
     );
 }
@@ -803,11 +818,7 @@ function ToneDownloadDialog({
     status,
     error,
     progress,
-    modelDir,
-    irDir,
-    aidaxDir,
     onClose,
-    onPickFolder,
     onDownloadAll,
     onDownloadOne
 }: {
@@ -818,20 +829,12 @@ function ToneDownloadDialog({
     status: string;
     error: string;
     progress: { current: number; total: number; name: string };
-    modelDir: string;
-    irDir: string;
-    aidaxDir: string;
     onClose: () => void;
-    onPickFolder: (kind: LibraryKind) => void;
     onDownloadAll: () => void;
     onDownloadOne: (model: JsonObject) => void;
 }) {
     const name = toneName(tone);
-    const irTone = modelIsIr(tone, {});
     const downloadable = models.filter((model) => modelUrl(model) || jsonId(model.id));
-    const hasNam = downloadable.some((model) => downloadKind(tone, model) === "model");
-    const hasAidax = downloadable.some((model) => downloadKind(tone, model) === "aidax");
-    const hasIr = irTone || downloadable.some((model) => modelIsIr(tone, model));
     const remaining = Math.max(0, progress.total - progress.current);
     return (
         <div className="dialog-backdrop" onClick={onClose}>
@@ -844,25 +847,8 @@ function ToneDownloadDialog({
                     </div>
                     <button type="button" className="btn" onClick={onClose} disabled={downloading}>CLOSE</button>
                 </div>
-                <div className="row t3k-dialog-folders">
-                    {(hasNam || (!hasIr && !hasAidax)) && (
-                        <button type="button" className="btn" onClick={() => onPickFolder("model")}>
-                            NAM: {modelDir || "models"}
-                        </button>
-                    )}
-                    {hasAidax && (
-                        <button type="button" className="btn" onClick={() => onPickFolder("aidax")}>
-                            AIDA-X: {aidaxDir || "aidax"}
-                        </button>
-                    )}
-                    {hasIr && (
-                        <button type="button" className="btn" onClick={() => onPickFolder("ir")}>
-                            IR: {irDir || "irs"}
-                        </button>
-                    )}
-                </div>
                 <div className="muted">
-                    Choose a save folder, then download. NAM, AIDA-X, and IR files stay in separate libraries.
+                    Download asks where to save. NAM, AIDA-X, and IR files stay in separate folders.
                 </div>
                 {status && <div className="muted">{status}</div>}
                 {downloading && progress.total > 0 && (

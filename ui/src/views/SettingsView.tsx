@@ -4,10 +4,8 @@ import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { snapshotLayoutSlots } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { Tone3000View } from "./Tone3000View";
-import { LibraryFileManager } from "./LibraryManager";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
-import { PluginsView } from "./PluginsView";
 import { HotspotView } from "./HotspotView";
 import { MarqueeText } from "./MarqueeText";
 
@@ -15,13 +13,12 @@ export type SettingsPage =
     | "audio"
     | "controller"
     | "ui"
-    | "library"
+    | "tone3000"
     | "system"
     | "theme"
     | "layout"
     | "keyboard"
     | "backup"
-    | "plugins"
     | "hotspot";
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
@@ -36,8 +33,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
-                <HubCard title="LIBRARY" subtitle="NAM, AIDA-X, IRs and TONE3000 downloads" onClick={() => onOpen("library")} />
-                <HubCard title="PLUGINS" subtitle="Apt repos, install, remove and PatchStorage" onClick={() => onOpen("plugins")} />
+                <HubCard title="LIBRARY" subtitle="TONE3000 API key and sign-in" onClick={() => onOpen("tone3000")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
         </div>
@@ -181,11 +177,8 @@ export function SettingsPage({
     if (page === "ui" || page === "backup") {
         return <UiSettings engine={engine} run={run} />;
     }
-    if (page === "library") {
+    if (page === "tone3000") {
         return <LibrarySettings engine={engine} run={run} />;
-    }
-    if (page === "plugins") {
-        return <PluginsView engine={engine} run={run} />;
     }
     if (page === "hotspot") {
         return <HotspotView engine={engine} run={run} />;
@@ -805,8 +798,7 @@ function LibrarySettings({
 }) {
     return (
         <div className="page-scroll stack">
-            <LibraryFileManager engine={engine} run={run} />
-            <Tone3000View engine={engine} run={run} />
+            <Tone3000View engine={engine} run={run} pane="settings" />
         </div>
     );
 }

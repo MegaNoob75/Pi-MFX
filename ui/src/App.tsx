@@ -11,6 +11,9 @@ import ThemeManagerView from "./views/ThemeManagerView";
 import { LayoutEditorView } from "./views/LayoutEditorView";
 import { SnapshotManagerView } from "./views/SnapshotManagerView";
 import { SnapshotEditView } from "./views/SnapshotEditView";
+import { PluginsView } from "./views/PluginsView";
+import { Tone3000View } from "./views/Tone3000View";
+import { FilesView } from "./views/LibraryManager";
 import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
 import { loadCustomMultiFXThemes, themeLedColors } from "./theme/theme";
 import { MarqueeText } from "./views/MarqueeText";
@@ -23,6 +26,9 @@ export type View =
     | "snapshots"
     | "snapshotEdit"
     | "settings"
+    | "library"
+    | "plugins"
+    | "files"
     | SettingsPage
     | "about";
 
@@ -35,14 +41,16 @@ const titles: Record<string, string> = {
     snapshots: "SNAPSHOTS",
     snapshotEdit: "SNAPSHOT EDITOR",
     settings: "SETTINGS",
+    library: "LIBRARY",
+    plugins: "PLUGINS",
+    files: "FILES",
     audio: "AUDIO",
     controller: "CONTROLLER",
     layout: "LAYOUT",
     theme: "THEME",
     keyboard: "KEYBOARD",
     ui: "PI-MFX UI",
-    library: "LIBRARY",
-    plugins: "PLUGINS",
+    tone3000: "LIBRARY",
     backup: "BACKUP",
     system: "SYSTEM",
     hotspot: "WIFI / HOTSPOT",
@@ -67,7 +75,7 @@ export function App() {
     useEffect(() => installResponsiveSizing(), []);
 
     const settingsPages: SettingsPage[] = [
-        "audio", "controller", "layout", "theme", "keyboard", "ui", "library", "plugins", "backup", "system", "hotspot"
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
     const snapshotMode = bool(engine.state.snapshotMode);
@@ -310,6 +318,16 @@ export function App() {
                         }}
                     />
                 )}
+                {view === "library" && (
+                    <Tone3000View
+                        engine={engine}
+                        run={run}
+                        pane="catalog"
+                        onOpenSettings={() => goTo("tone3000")}
+                    />
+                )}
+                {view === "plugins" && <PluginsView engine={engine} run={run} />}
+                {view === "files" && <FilesView engine={engine} run={run} />}
                 {view === "settings" && (
                     <SettingsHub onOpen={(page) => goTo(page)} />
                 )}
@@ -325,7 +343,7 @@ export function App() {
                 )}
                 {view === "layout" && <LayoutEditorView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
-                    || view === "library" || view === "plugins" || view === "system" || view === "backup"
+                    || view === "tone3000" || view === "system" || view === "backup"
                     || view === "hotspot") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
@@ -355,6 +373,13 @@ export function App() {
                                 setEditEffectTitle(undefined);
                                 goTo("edit");
                             }} />
+                        <div className="menu-divider" />
+                        <MenuButton label="LIBRARY" subtitle="TONE3000 NAM, AIDA-X and IR downloads"
+                            active={view === "library"} onClick={() => goTo("library")} />
+                        <MenuButton label="PLUGINS" subtitle="Apt, PatchStorage and installed LV2 effects"
+                            active={view === "plugins"} onClick={() => goTo("plugins")} />
+                        <MenuButton label="FILES" subtitle="Browse NAM, AIDA-X, IRs and user LV2 folders"
+                            active={view === "files"} onClick={() => goTo("files")} />
                         <div className="menu-divider" />
                         <MenuButton label="SETTINGS" subtitle="Controller, theme, PI-MFX UI and system"
                             active={settingsActive} onClick={() => goTo("settings")} />
