@@ -3,6 +3,7 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -69,6 +70,84 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
 
 bool hiddenLibraryName(const std::string& name) {
     return name.empty() || name[0] == '.';
+}
+
+std::string lowerCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+bool propertyLooksLikeIr(const std::string& uri) {
+    const std::string hay = lowerCopy(uri);
+    return hay.find("impulse") != std::string::npos
+        || hay.find("convolution") != std::string::npos
+        || hay.find("cabir") != std::string::npos
+        || hay.find("#ir") != std::string::npos
+        || hay.find("/ir") != std::string::npos;
+}
+
+bool propertyLooksLikeNam(const std::string& uri) {
+    if (propertyLooksLikeIr(uri)) {
+        return false;
+    }
+    const std::string hay = lowerCopy(uri);
+    return hay.find("nam") != std::string::npos
+        || hay.find("model") != std::string::npos
+        || hay.find("neural") != std::string::npos
+        || hay.find("capture") != std::string::npos
+        || hay.find("profile") != std::string::npos
+        || hay.find("aidax") != std::string::npos;
+}
+
+std::string resolvePluginFilePath(Storage& storage, const std::string& propertyUri,
+                                  const std::string& path, std::string& error) {
+    if (path.empty()) {
+        return path;
+    }
+    const std::string resolved = storage.resolveLibraryFile(path);
+    if (resolved.empty() || !fileExists(resolved) || !storage.isPathInLibrary(resolved)) {
+        error = "can't find that file in the library (" + fileName(path) + ")";
+        logError("plugin file missing: " + propertyUri + " " + path);
+        return std::string();
+    }
+    if (propertyLooksLikeNam(propertyUri)) {
+        const std::string why = namModelRejectReason(resolved);
+        if (!why.empty()) {
+            error = why;
+            logError("plugin file rejected: " + resolved + " (" + why + ")");
+            return std::string();
+        }
+    }
+    const std::string described = describeModelFile(resolved);
+    logInfo("plugin file: " + propertyUri + " -> " + resolved + " (" + described + ")");
+    if (described.find("(A2)") != std::string::npos) {
+        logWarn("that NAM is A2; TooB must be a PiPedal 2.x build that supports A2 models");
+    }
+    return resolved;
+}
+
+Json rewritePluginStateFiles(Storage& storage, const Json& state) {
+    if (!state.isObject() || !state["properties"].isObject()) {
+        return state;
+    }
+    Json properties = Json::object();
+    for (const Json::Member& member : state["properties"].members()) {
+        const std::string incoming = member.second.asString();
+        if (incoming.empty()) {
+            properties.set(member.first, Json(""));
+            continue;
+        }
+        std::string error;
+        const std::string resolved = resolvePluginFilePath(storage, member.first, incoming, error);
+        if (resolved.empty()) {
+            continue;
+        }
+        properties.set(member.first, Json(resolved));
+    }
+    Json out = state;
+    out.set("properties", properties);
+    return out;
 }
 
 Json libraryDirNode(const std::string& abs, const std::string& rel) {
@@ -598,7 +677,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             failures += (failures.empty() ? "" : "; ") + slotError;
             continue;
         }
-        plugin->loadState(slot.state);
+        plugin->loadState(rewritePluginStateFiles(storage_, slot.state));
 
         auto chainSlot = std::make_unique<ChainSlot>();
         chainSlot->id = slot.id;
@@ -1339,11 +1418,12 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
 
 bool Engine::setEffectProperty(const std::string& slotId, const std::string& propertyUri,
                                const std::string& path, std::string& error) {
-    // Paths in presets can come from anywhere, including a bank someone else
-    // wrote, so only files inside the library are ever handed to a plugin.
-    if (!path.empty() && !storage_.isPathInLibrary(path)) {
-        error = "that file is not in the Pi-MFX library";
-        return false;
+    std::string resolved = path;
+    if (!path.empty()) {
+        resolved = resolvePluginFilePath(storage_, propertyUri, path, error);
+        if (resolved.empty()) {
+            return false;
+        }
     }
 
     Chain* chain = activeChain_.load(std::memory_order_acquire);
@@ -1355,14 +1435,14 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
         if (slot->id != slotId || !slot->plugin) {
             continue;
         }
-        if (!slot->plugin->setProperty(propertyUri, path, error)) {
+        if (!slot->plugin->setProperty(propertyUri, resolved, error)) {
             return false;
         }
         if (Preset* preset = activePreset()) {
             if (EffectSlot* stored = preset->findSlot(slotId)) {
                 Json properties = stored->state["properties"].isObject()
                                 ? stored->state["properties"] : Json::object();
-                properties.set(propertyUri, Json(path));
+                properties.set(propertyUri, Json(resolved));
                 Json state = stored->state.isObject() ? stored->state : Json::object();
                 state.set("properties", properties);
                 stored->state = state;
@@ -1453,7 +1533,7 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
         if (!stored) {
             continue;
         }
-        slot->plugin->loadState(stored->state);
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, stored->state));
         slot->enabled.store(stored->enabled, std::memory_order_relaxed);
     }
     preset.activeSnapshot = -1;
@@ -1533,7 +1613,7 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
             continue;
         }
         const Json& state = snapshot.slots[slot->id];
-        slot->plugin->loadState(state);
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, state));
         slot->enabled.store(state["enabled"].asBool(true), std::memory_order_relaxed);
     }
 }

@@ -171,6 +171,45 @@ bool Storage::isPathInLibrary(const std::string& path) const {
     return false;
 }
 
+std::string Storage::resolveLibraryFile(const std::string& path) const {
+    if (path.empty()) {
+        return std::string();
+    }
+    std::error_code ec;
+    if (fs::is_regular_file(path, ec) && isPathInLibrary(path)) {
+        const fs::path canonical = fs::weakly_canonical(fs::path(path), ec);
+        return ec ? path : canonical.string();
+    }
+
+    const std::string wantedName = fs::path(path).filename().string();
+    const std::string wantedStem = fs::path(path).stem().string();
+    auto search = [&](const std::vector<LibraryEntry>& entries) -> std::string {
+        for (const LibraryEntry& entry : entries) {
+            if (fs::path(entry.path).filename().string() == wantedName) {
+                return entry.path;
+            }
+        }
+        if (wantedStem.empty()) {
+            return std::string();
+        }
+        for (const LibraryEntry& entry : entries) {
+            if (entry.name == wantedStem) {
+                return entry.path;
+            }
+        }
+        return std::string();
+    };
+
+    std::string hit = search(listModels());
+    if (hit.empty()) {
+        hit = search(listAidax());
+    }
+    if (hit.empty()) {
+        hit = search(listImpulseResponses());
+    }
+    return hit;
+}
+
 Bank makeStarterBank() {
     Bank bank;
     bank.id = "default";

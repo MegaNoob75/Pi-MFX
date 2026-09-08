@@ -783,6 +783,40 @@ function ChainPluginCard({
     );
 }
 
+function filesForPathProperty(
+    property: JsonObject,
+    plugin: JsonObject,
+    models: JsonObject[],
+    aidax: JsonObject[],
+    irs: JsonObject[]
+): JsonObject[] {
+    const types = arr(property.fileTypes).map((item) => String(item).toLowerCase());
+    const typeText = types.join(",");
+    const hay = `${str(property.uri)} ${str(property.label)} ${typeText}`.toLowerCase();
+    const wantsIr = /\.(wav|flac|aiff|aif)\b|\bir\b|impulse|cabsim|convolution/.test(`${typeText} ${hay}`);
+    const wantsAidax = /aidax|aida/.test(`${typeText} ${hay}`);
+    const wantsNam = /\.nam\b|nammodel|\bnam\b|neural|modelfile|capture|profile/.test(`${typeText} ${hay}`)
+        || bool(plugin.takesNamModel);
+    const namProperty = /\.nam\b|nammodel|\bnam\b|modelfile|neural/.test(`${typeText} ${hay}`);
+    if (wantsIr && !namProperty) {
+        return irs;
+    }
+    const files: JsonObject[] = [];
+    if (wantsNam || namProperty || (bool(plugin.takesNamModel) && !wantsIr)) {
+        files.push(...models);
+    }
+    if (wantsAidax || types.some((type) => type.includes("aidax"))) {
+        files.push(...aidax);
+    }
+    if (files.length > 0) {
+        return files;
+    }
+    if (wantsIr || bool(plugin.takesImpulseResponse)) {
+        return irs;
+    }
+    return models;
+}
+
 export function EffectControls({
     selected,
     ports,
@@ -956,16 +990,7 @@ export function EffectControls({
             </div>
 
             {properties.filter((property) => bool(property.isPath)).map((property) => {
-                const types = arr(property.fileTypes).map((item) => String(item).toLowerCase());
-                const wantsIr = bool(plugin.takesImpulseResponse) || types.some((type) => /wav|flac|aiff/.test(type));
-                const wantsAidax = types.some((type) => type.includes("aidax"));
-                const wantsNam = !wantsIr && (types.length === 0 || types.some((type) => /nam|json/.test(type)) || bool(plugin.takesNamModel));
-                const files = wantsIr
-                    ? irs
-                    : [
-                        ...(wantsNam || (!wantsAidax && bool(plugin.takesNamModel)) ? models : []),
-                        ...(wantsAidax || bool(plugin.takesNamModel) ? aidax : [])
-                    ];
+                const files = filesForPathProperty(property, plugin, models, aidax, irs);
                 const current = str(obj(obj(selected.state).properties)[str(property.uri)]);
                 return (
                     <label key={str(property.uri)} className="field">

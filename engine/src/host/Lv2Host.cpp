@@ -124,6 +124,49 @@ bool mentions(const std::string& haystack, std::initializer_list<const char*> ne
     return false;
 }
 
+void addFileType(std::vector<std::string>& types, const std::string& extension) {
+    if (extension.empty()) {
+        return;
+    }
+    if (std::find(types.begin(), types.end(), extension) == types.end()) {
+        types.push_back(extension);
+    }
+}
+
+void addModFileTypes(std::vector<std::string>& types, const std::string& csv) {
+    std::string token;
+    for (size_t i = 0; i <= csv.size(); ++i) {
+        const char c = i < csv.size() ? csv[i] : ',';
+        if (c == ',' || c == ' ' || c == '\t') {
+            if (!token.empty()) {
+                const std::string lower = toLower(token);
+                if (lower == "nam" || lower == "nammodel") {
+                    addFileType(types, ".nam");
+                    addFileType(types, ".aidax");
+                } else if (lower == "json" || lower == "mlmodel" || lower == "mlmodels") {
+                    addFileType(types, ".json");
+                } else if (lower == "aidadspmodel" || lower == "aidax") {
+                    addFileType(types, ".aidax");
+                    addFileType(types, ".json");
+                } else if (lower == "ir" || lower == "cabsim" || lower == "audio") {
+                    addFileType(types, ".wav");
+                    addFileType(types, ".flac");
+                    addFileType(types, ".aiff");
+                } else if (lower == "wav") {
+                    addFileType(types, ".wav");
+                } else if (lower == "flac") {
+                    addFileType(types, ".flac");
+                } else if (!lower.empty() && lower[0] == '.') {
+                    addFileType(types, lower);
+                }
+                token.clear();
+            }
+        } else {
+            token.push_back(c);
+        }
+    }
+}
+
 } // namespace
 
 #if defined(PIMFX_HAVE_LILV)
@@ -200,7 +243,7 @@ private:
 /// never allocates.
 struct PropertyMessage {
     char property[256];
-    char value[512];
+    char value[1024];
 };
 
 struct MidiMessage {
@@ -233,12 +276,13 @@ struct Lv2Catalog::Impl {
     LilvNode* atomSupports = nullptr;
     LilvNode* midiEvent = nullptr;
     LilvNode* fileTypeProperty = nullptr;
+    LilvNode* modFileTypes = nullptr;
 
     ~Impl() {
         LilvNode* nodes[] = {audioPort, controlPort, atomPort, cvPort, inputPort, outputPort,
                              toggled, integer, enumeration, logarithmic, patchWritable,
                              rdfsLabel, rdfsRange, rdfsComment, atomPath, atomSupports,
-                             midiEvent, fileTypeProperty};
+                             midiEvent, fileTypeProperty, modFileTypes};
         for (LilvNode* node : nodes) {
             if (node) {
                 lilv_node_free(node);
@@ -311,6 +355,7 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.atomSupports = lilv_new_uri(impl.world, LV2_ATOM__supports);
         impl.midiEvent = lilv_new_uri(impl.world, LV2_MIDI__MidiEvent);
         impl.fileTypeProperty = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/patch#fileType");
+        impl.modFileTypes = lilv_new_uri(impl.world, "http://moddevices.com/ns/mod#fileTypes");
     }
 
     lilv_world_load_all(impl.world);
@@ -428,10 +473,14 @@ bool Lv2Catalog::rescan(std::string& error) {
                 if (LilvNodes* types = lilv_world_find_nodes(impl.world, propertyNode,
                                                              impl.fileTypeProperty, nullptr)) {
                     LILV_FOREACH(nodes, typeIterator, types) {
-                        property.fileTypes.push_back(
-                            lilv_node_as_string(lilv_nodes_get(types, typeIterator)));
+                        addFileType(property.fileTypes,
+                                    toLower(lilv_node_as_string(lilv_nodes_get(types, typeIterator))));
                     }
                     lilv_nodes_free(types);
+                }
+                if (LilvNode* modTypes = lilv_world_get(impl.world, propertyNode, impl.modFileTypes, nullptr)) {
+                    addModFileTypes(property.fileTypes, lilv_node_as_string(modTypes));
+                    lilv_node_free(modTypes);
                 }
 
                 if (property.label.empty()) {
@@ -541,6 +590,7 @@ struct PluginInstance::Impl {
         LV2_URID bufNominalBlockLength = 0;
         LV2_URID bufSequenceSize = 0;
         LV2_URID paramSampleRate = 0;
+        LV2_URID unitsFrame = 0;
     } urids;
 
     float sampleRateValue = 48000.0f;
@@ -662,6 +712,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.urids.bufNominalBlockLength = urids.map(LV2_BUF_SIZE__nominalBlockLength);
     impl.urids.bufSequenceSize = urids.map(LV2_BUF_SIZE__sequenceSize);
     impl.urids.paramSampleRate = urids.map(LV2_PARAMETERS__sampleRate);
+    impl.urids.unitsFrame = urids.map("http://lv2plug.in/ns/extensions/units#frame");
 
     impl.uridMap.handle = &urids;
     impl.uridMap.map = uridMapCallback;
@@ -903,7 +954,7 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
     if (impl.atomInputPort >= 0) {
         lv2_atom_forge_set_buffer(&impl.forge, impl.atomInput.data(), impl.atomInput.size());
         LV2_Atom_Forge_Frame sequenceFrame;
-        lv2_atom_forge_sequence_head(&impl.forge, &sequenceFrame, 0);
+        lv2_atom_forge_sequence_head(&impl.forge, &sequenceFrame, impl.urids.unitsFrame);
 
         MidiMessage midi;
         while (impl.midiQueue.pop(midi)) {

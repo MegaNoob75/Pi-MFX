@@ -46,6 +46,11 @@ public:
     /// never trusted.
     bool isPathInLibrary(const std::string& path) const;
 
+    /// If `path` still exists in the library, returns it. If the file moved
+    /// (TONE3000 subfolder, rename), returns another library file with the
+    /// same file name. Empty if nothing matches.
+    std::string resolveLibraryFile(const std::string& path) const;
+
 private:
     std::string bankFile(const std::string& bankId) const;
     std::vector<LibraryEntry> listLibrary(const std::string& root,

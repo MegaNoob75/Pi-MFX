@@ -3,7 +3,11 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -222,6 +226,202 @@ std::string sanitizeFileName(const std::string& text) {
         out.resize(120);
     }
     return out;
+}
+
+namespace {
+
+std::string lowerCopy(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+const char* skipUtf8BomAndSpace(const char* data, size_t size, size_t& remaining) {
+    const char* p = data;
+    remaining = size;
+    if (remaining >= 3 && static_cast<unsigned char>(p[0]) == 0xEF
+        && static_cast<unsigned char>(p[1]) == 0xBB
+        && static_cast<unsigned char>(p[2]) == 0xBF) {
+        p += 3;
+        remaining -= 3;
+    }
+    while (remaining > 0 && std::isspace(static_cast<unsigned char>(*p))) {
+        ++p;
+        --remaining;
+    }
+    return p;
+}
+
+std::string jsonStringField(const std::string& text, const char* key) {
+    const std::string needle = std::string("\"") + key + "\"";
+    const auto pos = text.find(needle);
+    if (pos == std::string::npos) {
+        return std::string();
+    }
+    auto colon = text.find(':', pos + needle.size());
+    if (colon == std::string::npos) {
+        return std::string();
+    }
+    ++colon;
+    while (colon < text.size() && std::isspace(static_cast<unsigned char>(text[colon]))) {
+        ++colon;
+    }
+    if (colon >= text.size() || text[colon] != '"') {
+        return std::string();
+    }
+    ++colon;
+    std::string value;
+    while (colon < text.size() && text[colon] != '"') {
+        if (text[colon] == '\\' && colon + 1 < text.size()) {
+            value.push_back(text[colon + 1]);
+            colon += 2;
+            continue;
+        }
+        value.push_back(text[colon]);
+        ++colon;
+    }
+    return value;
+}
+
+bool namVersionIsA2(const std::string& version) {
+    int major = 0;
+    int minor = 0;
+    int patch = 0;
+    if (std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch) < 2) {
+        return false;
+    }
+    return major > 0 || minor > 5 || (minor == 5 && patch > 4);
+}
+
+std::string readPrefix(const std::string& path, size_t maxBytes) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        return std::string();
+    }
+    std::string out(maxBytes, '\0');
+    stream.read(out.data(), static_cast<std::streamsize>(maxBytes));
+    out.resize(static_cast<size_t>(stream.gcount()));
+    return out;
+}
+
+} // namespace
+
+SniffedFile sniffBytes(const void* data, size_t size) {
+    if (!data || size == 0) {
+        return SniffedFile::Empty;
+    }
+    const auto* raw = static_cast<const unsigned char*>(data);
+    if (size >= 4 && std::memcmp(raw, "RIFF", 4) == 0) {
+        return SniffedFile::Impulse;
+    }
+    if (size >= 4 && std::memcmp(raw, "fLaC", 4) == 0) {
+        return SniffedFile::Impulse;
+    }
+    if (size >= 4 && std::memcmp(raw, "FORM", 4) == 0) {
+        return SniffedFile::Impulse;
+    }
+    if (size >= 2 && raw[0] == 0x1f && raw[1] == 0x8b) {
+        return SniffedFile::Gzip;
+    }
+    if (size >= 4 && raw[0] == 'P' && raw[1] == 'K' && raw[2] == 3 && raw[3] == 4) {
+        return SniffedFile::Zip;
+    }
+
+    size_t remaining = size;
+    const char* text = skipUtf8BomAndSpace(reinterpret_cast<const char*>(data), size, remaining);
+    if (remaining == 0) {
+        return SniffedFile::Empty;
+    }
+    if (text[0] == '<' || (remaining >= 5 && lowerCopy(std::string(text, text + 5)) == "<!doc")) {
+        return SniffedFile::Html;
+    }
+    if (text[0] != '{') {
+        return SniffedFile::Other;
+    }
+
+    const size_t sample = remaining < 4096 ? remaining : 4096;
+    const std::string head(text, text + sample);
+    const std::string architecture = jsonStringField(head, "architecture");
+    if (!architecture.empty()) {
+        return SniffedFile::Nam;
+    }
+    if (head.find("\"layers\"") != std::string::npos
+        && (head.find("lstm") != std::string::npos || head.find("gru") != std::string::npos
+            || head.find("dense") != std::string::npos || head.find("conv1d") != std::string::npos)) {
+        return SniffedFile::Aidax;
+    }
+    return SniffedFile::Nam;
+}
+
+SniffedFile sniffFile(const std::string& path) {
+    if (!fileExists(path)) {
+        return SniffedFile::Missing;
+    }
+    const std::string prefix = readPrefix(path, 4096);
+    return sniffBytes(prefix.data(), prefix.size());
+}
+
+std::string sniffedFileLabel(SniffedFile kind) {
+    switch (kind) {
+    case SniffedFile::Missing: return "missing";
+    case SniffedFile::Empty: return "empty";
+    case SniffedFile::Nam: return "NAM";
+    case SniffedFile::Aidax: return "AIDA-X";
+    case SniffedFile::Impulse: return "IR";
+    case SniffedFile::Html: return "HTML";
+    case SniffedFile::Gzip: return "gzip";
+    case SniffedFile::Zip: return "zip";
+    case SniffedFile::Other: return "unknown";
+    }
+    return "unknown";
+}
+
+std::string describeModelFile(const std::string& path) {
+    std::error_code ec;
+    const uintmax_t bytes = fs::file_size(path, ec);
+    const SniffedFile kind = sniffFile(path);
+    std::string line = sniffedFileLabel(kind);
+    if (!ec) {
+        line += ", " + std::to_string(bytes) + " bytes";
+    }
+    if (kind == SniffedFile::Nam || kind == SniffedFile::Aidax) {
+        const std::string head = readPrefix(path, 4096);
+        const std::string architecture = jsonStringField(head, "architecture");
+        const std::string version = jsonStringField(head, "version");
+        if (!architecture.empty()) {
+            line += ", " + architecture;
+        }
+        if (!version.empty()) {
+            line += " v" + version;
+            if (namVersionIsA2(version)) {
+                line += " (A2)";
+            }
+        }
+    }
+    return line;
+}
+
+std::string namModelRejectReason(const std::string& path) {
+    switch (sniffFile(path)) {
+    case SniffedFile::Missing:
+        return "that NAM file is not on disk: " + path;
+    case SniffedFile::Empty:
+        return "that file is empty, so TooB NAM cannot load it";
+    case SniffedFile::Impulse:
+        return "that's a cabinet IR (WAV/FLAC), not a NAM. Load it in TooB Cab IR.";
+    case SniffedFile::Html:
+        return "that file is a web page, not a NAM (the download did not land a model)";
+    case SniffedFile::Gzip:
+        return "that file is gzip-compressed, not a NAM. Re-download it.";
+    case SniffedFile::Zip:
+        return "that file is a zip archive, not a NAM";
+    case SniffedFile::Other:
+        return "TooB NAM cannot read that file (it is not NAM JSON)";
+    case SniffedFile::Nam:
+    case SniffedFile::Aidax:
+        return std::string();
+    }
+    return std::string();
 }
 
 } // namespace pimfx

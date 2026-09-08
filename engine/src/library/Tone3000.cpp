@@ -2,8 +2,10 @@
 
 #include "core/Crypto.h"
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <algorithm>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <limits>
@@ -77,6 +79,9 @@ bool request(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSeconds);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Pi-MFX/" PIMFX_VERSION);
+    // Empty string: send Accept-Encoding and decode gzip/deflate so a NAM is
+    // never saved as compressed bytes that TooB cannot parse.
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     // Certificate verification stays on. A guitar pedal on a hotel network is
     // exactly where you do not want to be trusting any certificate offered.
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -579,11 +584,73 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return false;
     }
 
-    const bool isIr = kind == "ir";
-    const bool isAidax = kind == "aidax";
+    const SniffedFile sniffed = sniffBytes(body.data(), body.size());
+    if (sniffed == SniffedFile::Html) {
+        error = "TONE3000 sent a web page instead of a file (sign-in expired, or the download link died)";
+        return false;
+    }
+    if (sniffed == SniffedFile::Gzip) {
+        error = "that download is still gzip-compressed, not a NAM/IR";
+        return false;
+    }
+    if (sniffed == SniffedFile::Zip) {
+        error = "that download is a zip archive, not a NAM/IR file";
+        return false;
+    }
+    if (sniffed == SniffedFile::Empty) {
+        error = "the download was empty";
+        return false;
+    }
+
+    // Amp-cab tones list NAMs and cab IRs together. Trust the bytes, not the
+    // catalog label — a WAV saved as .nam is exactly "Can't load model".
+    bool isIr = kind == "ir" || sniffed == SniffedFile::Impulse;
+    bool isAidax = kind == "aidax" || sniffed == SniffedFile::Aidax;
+    if (sniffed == SniffedFile::Nam) {
+        isIr = false;
+        isAidax = false;
+    } else if (sniffed == SniffedFile::Impulse) {
+        isAidax = false;
+    } else if (sniffed == SniffedFile::Aidax) {
+        isIr = false;
+    }
+
+    auto withExtension = [](std::string fileName, const char* extension) {
+        const std::string lower = [&fileName]() {
+            std::string out = fileName;
+            std::transform(out.begin(), out.end(), out.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return out;
+        }();
+        const std::string ext(extension);
+        if (lower.size() >= ext.size()
+            && lower.compare(lower.size() - ext.size(), ext.size(), ext) == 0) {
+            return fileName;
+        }
+        const auto dot = fileName.find_last_of('.');
+        if (dot != std::string::npos && fileName.find_first_of("/\\", dot) == std::string::npos) {
+            fileName.resize(dot);
+        }
+        return fileName + extension;
+    };
+
     std::string name = sanitizeFileName(suggestedName.empty() ? "tone3000-download" : suggestedName);
-    if (name.find('.') == std::string::npos) {
-        name += isIr ? ".wav" : (isAidax ? ".aidax" : ".nam");
+    if (isIr) {
+        if (body.size() >= 4 && std::memcmp(body.data(), "fLaC", 4) == 0) {
+            name = withExtension(name, ".flac");
+        } else if (body.size() >= 4 && std::memcmp(body.data(), "FORM", 4) == 0) {
+            name = withExtension(name, ".aiff");
+        } else {
+            name = withExtension(name, ".wav");
+        }
+    } else if (isAidax) {
+        name = withExtension(name, ".aidax");
+    } else {
+        name = withExtension(name, ".nam");
+    }
+
+    if (sniffed == SniffedFile::Impulse && kind != "ir") {
+        logInfo("tone3000: " + name + " is a cab IR, saving under irs/ not models/");
     }
 
     std::filesystem::path rel;
@@ -611,7 +678,7 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return false;
     }
 
-    logInfo("tone3000: saved " + storedPath);
+    logInfo("tone3000: saved " + storedPath + " (" + sniffedFileLabel(sniffed) + ")");
     return true;
 #else
     (void)url; (void)suggestedName; (void)kind; (void)relativeDir; (void)storedPath;

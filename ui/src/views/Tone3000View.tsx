@@ -132,8 +132,8 @@ function modelIsIr(tone: JsonObject, model: JsonObject): boolean {
     if (str(tone.format) === "ir" || toneGear(tone) === "ir") {
         return true;
     }
-    const text = `${str(model.kind)} ${str(model.format)} ${str(model.name)}`;
-    return /(?:^|\b)ir(?:\b|$)|impulse/i.test(text);
+    const text = `${str(model.kind)} ${str(model.format)} ${str(model.name)} ${str(model.filename)}`;
+    return /(?:^|\b)ir(?:\b|$)|impulse|sm57|sm58|sm7|\.wav\b|4x12|2x12|1x12|\bcab\b/i.test(text);
 }
 
 function modelIsAidax(tone: JsonObject, model: JsonObject): boolean {

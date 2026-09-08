@@ -57,4 +57,30 @@ std::string parentPath(const std::string& path);
 /// Turns arbitrary user text into something safe to use as a file name.
 std::string sanitizeFileName(const std::string& text);
 
+/// What a library file actually is, from its first bytes — not from the
+/// extension. TONE3000 amp-cab tones ship NAMs and cab IRs in the same list,
+/// and a .nam suffix on a WAV is how TooB ends up printing "Can't load model".
+enum class SniffedFile {
+    Missing,
+    Empty,
+    Nam,
+    Aidax,
+    Impulse,
+    Html,
+    Gzip,
+    Zip,
+    Other
+};
+
+SniffedFile sniffBytes(const void* data, size_t size);
+SniffedFile sniffFile(const std::string& path);
+std::string sniffedFileLabel(SniffedFile kind);
+
+/// One-line description for the journal: kind, size, NAM architecture/version.
+std::string describeModelFile(const std::string& path);
+
+/// Empty if TooB NAM / NeuralAudio can reasonably open this path. Otherwise a
+/// sentence suitable for the UI and the journal.
+std::string namModelRejectReason(const std::string& path);
+
 } // namespace pimfx
