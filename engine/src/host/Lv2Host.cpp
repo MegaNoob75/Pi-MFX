@@ -531,6 +531,14 @@ struct PluginInstance::Impl {
 
     unsigned sampleRate = 48000;
     unsigned maxFrames = 64;
+    unsigned hostPeriod = 64;
+    unsigned pluginPeriod = 64;
+    unsigned stageInFill = 0;
+    unsigned stageOutRead = 0;
+    std::vector<std::vector<float>> stageIn;
+    std::vector<std::vector<float>> stageOut;
+    std::vector<const float*> stageInPtrs;
+    std::vector<float*> stageOutPtrs;
     bool active = false;
 
     // Control ports. `staged` is written by whoever moves a knob and read by
@@ -637,6 +645,10 @@ struct PluginInstance::Impl {
             ? LV2_WORKER_SUCCESS
             : LV2_WORKER_ERR_NO_SPACE;
     }
+
+    void runCycle(const float* const* inputs, unsigned inputCount,
+                  float* const* outputs, unsigned outputCount,
+                  unsigned frames);
 };
 
 namespace {
@@ -691,9 +703,22 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.catalog = &catalog;
     impl.plugin = plugin;
     impl.sampleRate = sampleRate;
-    impl.maxFrames = maxFrames;
+    impl.hostPeriod = maxFrames;
+    impl.pluginPeriod = maxFrames;
+    // NeuralAudio's default max buffer is 128. TooB NAM also packs periods
+    // ≤32 into 64 for its threaded path. Advertising the Scarlett's 32-frame
+    // period as min=max made A1 models load and A2 (v0.7) CreateFromFile fail.
+    // Run NAM in the smallest multiple of the host period that is at least 64.
+    if (info->takesNamModel && maxFrames < 64u) {
+        unsigned block = maxFrames;
+        while (block < 64u) {
+            block += maxFrames;
+        }
+        impl.pluginPeriod = block;
+    }
+    impl.maxFrames = impl.pluginPeriod;
     impl.sampleRateValue = static_cast<float>(sampleRate);
-    impl.maxBlockLength = static_cast<int32_t>(maxFrames);
+    impl.maxBlockLength = static_cast<int32_t>(impl.pluginPeriod);
     impl.minBlockLength = impl.maxBlockLength;
 
     UridMap& urids = catalog.urids();
@@ -786,15 +811,30 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
         } else if (port.cv) {
             // CV ports are connected to a silent buffer so the plugin has
             // valid memory even though Pi-MFX does not route CV.
-            impl.spareOutputs.emplace_back(maxFrames, 0.0f);
+            impl.spareOutputs.emplace_back(impl.maxFrames, 0.0f);
             lilv_instance_connect_port(impl.instance, port.index, impl.spareOutputs.back().data());
         }
     }
 
-    impl.silentInputs.assign(impl.audioInputPorts.size(), std::vector<float>(maxFrames, 0.0f));
+    impl.silentInputs.assign(impl.audioInputPorts.size(), std::vector<float>(impl.maxFrames, 0.0f));
     impl.spareOutputs.reserve(impl.spareOutputs.size() + impl.audioOutputPorts.size());
     for (size_t i = 0; i < impl.audioOutputPorts.size(); ++i) {
-        impl.spareOutputs.emplace_back(maxFrames, 0.0f);
+        impl.spareOutputs.emplace_back(impl.maxFrames, 0.0f);
+    }
+
+    if (impl.pluginPeriod != impl.hostPeriod) {
+        impl.stageIn.assign(impl.audioInputPorts.size(), std::vector<float>(impl.pluginPeriod, 0.0f));
+        impl.stageOut.assign(impl.audioOutputPorts.size(), std::vector<float>(impl.pluginPeriod, 0.0f));
+        impl.stageInPtrs.resize(impl.stageIn.size());
+        impl.stageOutPtrs.resize(impl.stageOut.size());
+        for (size_t i = 0; i < impl.stageIn.size(); ++i) {
+            impl.stageInPtrs[i] = impl.stageIn[i].data();
+        }
+        for (size_t i = 0; i < impl.stageOut.size(); ++i) {
+            impl.stageOutPtrs[i] = impl.stageOut[i].data();
+        }
+        logInfo("lv2: " + info->name + " runs " + std::to_string(impl.pluginPeriod)
+                + "-frame blocks (host period " + std::to_string(impl.hostPeriod) + ")");
     }
 
     if (impl.atomInputPort >= 0) {
@@ -927,6 +967,70 @@ std::string PluginInstance::property(const std::string& propertyUri) const {
     return std::string();
 }
 
+void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
+                                    float* const* outputs, unsigned outputCount,
+                                    unsigned frames) {
+    for (size_t i = 0; i < audioInputPorts.size(); ++i) {
+        const float* source = i < inputCount ? inputs[i] : silentInputs[i].data();
+        lilv_instance_connect_port(instance, audioInputPorts[i], const_cast<float*>(source));
+    }
+    for (size_t i = 0; i < audioOutputPorts.size(); ++i) {
+        float* destination = i < outputCount ? outputs[i] : spareOutputs[i].data();
+        lilv_instance_connect_port(instance, audioOutputPorts[i], destination);
+    }
+
+    if (atomInputPort >= 0) {
+        lv2_atom_forge_set_buffer(&forge, atomInput.data(), atomInput.size());
+        LV2_Atom_Forge_Frame sequenceFrame;
+        lv2_atom_forge_sequence_head(&forge, &sequenceFrame, urids.unitsFrame);
+
+        MidiMessage midi;
+        while (midiQueue.pop(midi)) {
+            lv2_atom_forge_frame_time(&forge, static_cast<int64_t>(midi.frame));
+            lv2_atom_forge_atom(&forge, midi.size, urids.midiEvent);
+            lv2_atom_forge_write(&forge, midi.data, midi.size);
+        }
+
+        PropertyMessage property;
+        while (propertyQueue.pop(property)) {
+            const LV2_URID propertyUrid = uridMap.map(uridMap.handle, property.property);
+            LV2_Atom_Forge_Frame objectFrame;
+            lv2_atom_forge_frame_time(&forge, 0);
+            lv2_atom_forge_object(&forge, &objectFrame, 0, urids.patchSet);
+            lv2_atom_forge_key(&forge, urids.patchProperty);
+            lv2_atom_forge_urid(&forge, propertyUrid);
+            lv2_atom_forge_key(&forge, urids.patchValue);
+            lv2_atom_forge_path(&forge, property.value,
+                                static_cast<uint32_t>(std::strlen(property.value) + 1));
+            lv2_atom_forge_pop(&forge, &objectFrame);
+        }
+
+        lv2_atom_forge_pop(&forge, &sequenceFrame);
+    }
+
+    if (atomOutputPort >= 0) {
+        LV2_Atom_Sequence* sequence = reinterpret_cast<LV2_Atom_Sequence*>(atomOutput.data());
+        sequence->atom.size = static_cast<uint32_t>(atomOutput.size() - sizeof(LV2_Atom));
+        sequence->atom.type = urids.atomSequence;
+    }
+
+    lilv_instance_run(instance, frames);
+
+    if (workerInterface) {
+        std::vector<uint8_t> response;
+        while (workResponses.read(response)) {
+            if (workerInterface->work_response) {
+                workerInterface->work_response(lilv_instance_get_handle(instance),
+                                               static_cast<uint32_t>(response.size()),
+                                               response.data());
+            }
+        }
+        if (workerInterface->end_run) {
+            workerInterface->end_run(lilv_instance_get_handle(instance));
+        }
+    }
+}
+
 void PluginInstance::process(const float* const* inputs, unsigned inputCount,
                              float* const* outputs, unsigned outputCount,
                              unsigned frames) {
@@ -941,65 +1045,31 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
         }
     }
 
-    for (size_t i = 0; i < impl.audioInputPorts.size(); ++i) {
-        const float* source = i < inputCount ? inputs[i] : impl.silentInputs[i].data();
-        lilv_instance_connect_port(impl.instance, impl.audioInputPorts[i],
-                                   const_cast<float*>(source));
+    if (impl.pluginPeriod == impl.hostPeriod || frames == impl.pluginPeriod) {
+        impl.runCycle(inputs, inputCount, outputs, outputCount, frames);
+        return;
     }
+
+    const unsigned n = std::min(frames, impl.hostPeriod);
     for (size_t i = 0; i < impl.audioOutputPorts.size(); ++i) {
         float* destination = i < outputCount ? outputs[i] : impl.spareOutputs[i].data();
-        lilv_instance_connect_port(impl.instance, impl.audioOutputPorts[i], destination);
+        const float* source = impl.stageOut[i].data() + impl.stageOutRead;
+        std::memcpy(destination, source, n * sizeof(float));
     }
+    impl.stageOutRead += n;
 
-    if (impl.atomInputPort >= 0) {
-        lv2_atom_forge_set_buffer(&impl.forge, impl.atomInput.data(), impl.atomInput.size());
-        LV2_Atom_Forge_Frame sequenceFrame;
-        lv2_atom_forge_sequence_head(&impl.forge, &sequenceFrame, impl.urids.unitsFrame);
-
-        MidiMessage midi;
-        while (impl.midiQueue.pop(midi)) {
-            lv2_atom_forge_frame_time(&impl.forge, static_cast<int64_t>(midi.frame));
-            lv2_atom_forge_atom(&impl.forge, midi.size, impl.urids.midiEvent);
-            lv2_atom_forge_write(&impl.forge, midi.data, midi.size);
-        }
-
-        PropertyMessage property;
-        while (impl.propertyQueue.pop(property)) {
-            const LV2_URID propertyUrid = impl.uridMap.map(impl.uridMap.handle, property.property);
-            LV2_Atom_Forge_Frame objectFrame;
-            lv2_atom_forge_frame_time(&impl.forge, 0);
-            lv2_atom_forge_object(&impl.forge, &objectFrame, 0, impl.urids.patchSet);
-            lv2_atom_forge_key(&impl.forge, impl.urids.patchProperty);
-            lv2_atom_forge_urid(&impl.forge, propertyUrid);
-            lv2_atom_forge_key(&impl.forge, impl.urids.patchValue);
-            lv2_atom_forge_path(&impl.forge, property.value,
-                                static_cast<uint32_t>(std::strlen(property.value) + 1));
-            lv2_atom_forge_pop(&impl.forge, &objectFrame);
-        }
-
-        lv2_atom_forge_pop(&impl.forge, &sequenceFrame);
+    for (size_t i = 0; i < impl.audioInputPorts.size(); ++i) {
+        const float* source = i < inputCount ? inputs[i] : impl.silentInputs[i].data();
+        std::memcpy(impl.stageIn[i].data() + impl.stageInFill, source, n * sizeof(float));
     }
+    impl.stageInFill += n;
 
-    if (impl.atomOutputPort >= 0) {
-        LV2_Atom_Sequence* sequence = reinterpret_cast<LV2_Atom_Sequence*>(impl.atomOutput.data());
-        sequence->atom.size = static_cast<uint32_t>(impl.atomOutput.size() - sizeof(LV2_Atom));
-        sequence->atom.type = impl.urids.atomSequence;
-    }
-
-    lilv_instance_run(impl.instance, frames);
-
-    if (impl.workerInterface) {
-        std::vector<uint8_t> response;
-        while (impl.workResponses.read(response)) {
-            if (impl.workerInterface->work_response) {
-                impl.workerInterface->work_response(lilv_instance_get_handle(impl.instance),
-                                                    static_cast<uint32_t>(response.size()),
-                                                    response.data());
-            }
-        }
-        if (impl.workerInterface->end_run) {
-            impl.workerInterface->end_run(lilv_instance_get_handle(impl.instance));
-        }
+    if (impl.stageInFill >= impl.pluginPeriod) {
+        impl.runCycle(impl.stageInPtrs.data(), static_cast<unsigned>(impl.stageInPtrs.size()),
+                      impl.stageOutPtrs.data(), static_cast<unsigned>(impl.stageOutPtrs.size()),
+                      impl.pluginPeriod);
+        impl.stageInFill = 0;
+        impl.stageOutRead = 0;
     }
 }
 

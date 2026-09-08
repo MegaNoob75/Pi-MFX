@@ -385,7 +385,7 @@ std::string describeModelFile(const std::string& path) {
         line += ", " + std::to_string(bytes) + " bytes";
     }
     if (kind == SniffedFile::Nam || kind == SniffedFile::Aidax) {
-        const std::string head = readPrefix(path, 4096);
+        const std::string head = readPrefix(path, 65536);
         const std::string architecture = jsonStringField(head, "architecture");
         const std::string version = jsonStringField(head, "version");
         if (!architecture.empty()) {

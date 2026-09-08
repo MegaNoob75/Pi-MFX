@@ -122,7 +122,7 @@ std::string resolvePluginFilePath(Storage& storage, const std::string& propertyU
     const std::string described = describeModelFile(resolved);
     logInfo("plugin file: " + propertyUri + " -> " + resolved + " (" + described + ")");
     if (described.find("(A2)") != std::string::npos) {
-        logWarn("that NAM is A2; TooB must be a PiPedal 2.x build that supports A2 models");
+        logInfo("NAM A2 (" + described + "); running TooB in ≥64-frame blocks");
     }
     return resolved;
 }
