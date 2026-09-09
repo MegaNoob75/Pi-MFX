@@ -55,6 +55,7 @@ public:
     /// the returned payload came from disk.
     Json listTones(const std::string& source, const Json& query, std::string& error,
                    bool* cached = nullptr);
+    Json listUsers(const Json& query, std::string& error);
     Json tone(const std::string& toneId, std::string& error);
     Json model(const std::string& modelId, std::string& error);
     Json models(const std::string& toneId, const Json& query, std::string& error);

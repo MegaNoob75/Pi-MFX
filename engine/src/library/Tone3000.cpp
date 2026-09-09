@@ -36,6 +36,16 @@ std::string urlEncode(const std::string& text) {
     return out;
 }
 
+std::string queryValue(const Json& value) {
+    if (value.isBool()) {
+        return value.asBool() ? "true" : std::string();
+    }
+    if (value.isNumber()) {
+        return std::to_string(value.asInt());
+    }
+    return value.asString();
+}
+
 #if defined(PIMFX_HAVE_CURL)
 
 size_t writeToString(void* data, size_t size, size_t count, void* userData) {
@@ -461,9 +471,9 @@ Json Tone3000Client::listTones(const std::string& source, const Json& query, std
 
     std::string separator = "?";
     for (const char* key : {"query", "page", "page_size", "sort", "gears", "sizes",
-                            "tags", "makes", "creators", "format", "architecture", "gear"}) {
-        const Json& value = query[key];
-        std::string text = value.isNumber() ? std::to_string(value.asInt()) : value.asString();
+                            "tags", "makes", "creators", "format", "architecture", "gear",
+                            "calibrated", "verified"}) {
+        const std::string text = queryValue(query[key]);
         if (text.empty()) {
             continue;
         }
@@ -488,6 +498,24 @@ Json Tone3000Client::listTones(const std::string& source, const Json& query, std
         rememberList(path, result);
     }
     return result;
+}
+
+Json Tone3000Client::listUsers(const Json& query, std::string& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string path = "/users";
+    std::string separator = "?";
+    for (const char* key : {"query", "page", "page_size", "sort"}) {
+        std::string text = queryValue(query[key]);
+        if (text.empty()) {
+            continue;
+        }
+        if (std::string(key) == "page_size" && query[key].asInt(10) > 10) {
+            text = "10";
+        }
+        path += separator + key + "=" + urlEncode(text);
+        separator = "&";
+    }
+    return authorizedGet(path, error);
 }
 
 Json Tone3000Client::tone(const std::string& toneId, std::string& error) {
@@ -523,8 +551,7 @@ Json Tone3000Client::models(const std::string& toneId, const Json& query, std::s
     }
     std::string path = "/models?tone_id=" + urlEncode(toneId);
     for (const char* key : {"page", "page_size", "architecture"}) {
-        const Json& value = query[key];
-        const std::string text = value.isNumber() ? std::to_string(value.asInt()) : value.asString();
+        const std::string text = queryValue(query[key]);
         if (!text.empty()) {
             path += std::string("&") + key + "=" + urlEncode(text);
         }

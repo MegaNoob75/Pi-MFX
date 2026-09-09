@@ -2171,10 +2171,30 @@ button.list-item {
 
 .t3k-tabs,
 .t3k-gears,
-.t3k-sorts {
+.t3k-sorts,
+.t3k-filters,
+.t3k-creators {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+}
+
+.t3k-creator-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: min(36vh, 320px);
+    overflow: auto;
+}
+
+.t3k-creator-row {
+    align-items: center;
+}
+
+.t3k-creator-star {
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 0.78rem;
 }
 
 .t3k-status-row {

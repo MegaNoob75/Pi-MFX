@@ -497,6 +497,13 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         wrapper.set("cached", cached);
         return wrapper;
     }
+    if (command == "users") {
+        const Json result = tone3000_.listUsers(payload, error);
+        ok = error.empty();
+        Json wrapper = Json::object();
+        wrapper.set("result", result);
+        return wrapper;
+    }
     if (command == "tone") {
         const Json result = tone3000_.tone(payload["toneId"].asString(), error);
         ok = error.empty();
