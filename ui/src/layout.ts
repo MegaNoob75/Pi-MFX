@@ -8,7 +8,9 @@ export const STATUS_WIDGET_IDS = [
     "audioStatus",
     "chainBypassStatus",
     "snapshotModeStatus",
-    "tuner"
+    "tuner",
+    "inputMeter",
+    "outputMeter"
 ] as const;
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
@@ -21,8 +23,14 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     audioStatus: "Audio",
     chainBypassStatus: "Bypass",
     snapshotModeStatus: "Snapshots",
-    tuner: "Tuner"
+    tuner: "Tuner",
+    inputMeter: "Input Gain",
+    outputMeter: "Output Gain"
 };
+
+export function isMeterWidget(id: string): boolean {
+    return id === "inputMeter" || id === "outputMeter";
+}
 
 export interface LayoutRect {
     x: number;
@@ -56,12 +64,19 @@ export function defaultStatusWidgets(): Record<string, StatusWidget> {
             id,
             visible: index < 4,
             showLabel: true,
-            rect: clampRect({
-                x: 0.02 + (index % 4) * 0.24,
-                y: 0.02,
-                width: 0.22,
-                height: 0.12
-            })
+            rect: clampRect(isMeterWidget(id)
+                ? {
+                    x: id === "inputMeter" ? 0.02 : 0.86,
+                    y: 0.20,
+                    width: 0.12,
+                    height: 0.58
+                }
+                : {
+                    x: 0.02 + (index % 4) * 0.24,
+                    y: 0.02,
+                    width: 0.22,
+                    height: 0.12
+                })
         };
     });
     return widgets;

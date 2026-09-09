@@ -11,11 +11,13 @@ import {
     analogMinSize,
     clampRect,
     gridCellRect,
+    isMeterWidget,
     readSnapshotWidgets,
     readStatusWidgets,
     snapshotAtSlot,
     unplacedIds
 } from "../layout";
+import { GainMeter } from "./GainMeter";
 import {
     analogFeedback,
     PerformanceControl,
@@ -913,10 +915,19 @@ export function PerformanceView({
                 {useFreeform && STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                     const widget = widgets[id];
                     return (
-                        <div key={id} className="status-widget" style={rectStyle(widget.rect)}>
+                        <div
+                            key={id}
+                            className={`status-widget${isMeterWidget(id) ? " is-meter" : ""}`}
+                            style={rectStyle(widget.rect)}
+                        >
                             {id === "currentBank" ? bankPicker
                                 : id === "activePreset" ? presetPicker
-                                    : (
+                                    : isMeterWidget(id) ? (
+                                        <GainMeter
+                                            label={STATUS_WIDGET_LABELS[id]}
+                                            peak={id === "inputMeter" ? num(meters.inputPeak) : num(meters.outputPeak)}
+                                        />
+                                    ) : (
                                         <>
                                             {widget.showLabel && (
                                                 <div className="field-label mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>

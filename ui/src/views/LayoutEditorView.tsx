@@ -8,6 +8,7 @@ import {
     analogMinSize,
     clampRect,
     gridCellRect,
+    isMeterWidget,
     layoutGroupsToJson,
     newLayoutGroupId,
     readLayoutGroups,
@@ -25,6 +26,7 @@ import {
     type LayoutGroup,
     type LayoutRect
 } from "../layout";
+import { GainMeter } from "./GainMeter";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
 const SNAP_PIXELS_KEY = "pimfx-layout-snap-pixels";
 const SNAP_ENABLED_KEY = "pimfx-layout-snap-enabled";
@@ -318,7 +320,19 @@ export function LayoutEditorView({
         setActiveGroupId(id);
         setGroupName("");
         setGroupMode(true);
-        setMessage(`Group “${name}” added. Tap widgets to add them.`);
+        setMessage(`Group “${name}” added. Tap widgets or controls to include them.`);
+    };
+
+    const renameActiveGroup = () => {
+        const name = groupName.trim();
+        if (!activeGroup || !name) {
+            return;
+        }
+        setGroups((current) => current.map((group) => (
+            group.id === activeGroup.id ? { ...group, name } : group
+        )));
+        setGroupName("");
+        setMessage(`Renamed to “${name}”.`);
     };
 
     const deleteActiveGroup = () => {
@@ -591,7 +605,7 @@ export function LayoutEditorView({
     };
 
     const itemClassName = (kind: "switch" | "status", id: string) => (
-        `layout-item ${kind}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}${swapTargetId === id ? " swap-target" : ""}`
+        `layout-item ${kind}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}${groupMode && !grouped.has(id) ? " group-dim" : ""}${swapTargetId === id ? " swap-target" : ""}`
     );
 
     const resizeHandles = (id: string, rect: LayoutRect) => (
@@ -635,8 +649,8 @@ export function LayoutEditorView({
                     </div>
                     <div className="muted">
                         {stage === "snapshots"
-                            ? "Add, remove and arrange snapshot tiles. Hardware Setup assigns which switch recalls each slot."
-                            : "Arrange switches, pots and status panels. Layout does not change what a switch does."}
+                            ? "Add, remove and arrange snapshot tiles. Hardware Setup assigns which control recalls each slot."
+                            : "Arrange widgets and controls. Layout does not change what a control does."}
                     </div>
                 </div>
                 <div className="row">
@@ -697,63 +711,26 @@ export function LayoutEditorView({
                     <button type="button" className="btn" onClick={exportLayout}>EXPORT</button>
                     <button type="button" className="btn btn-accent" onClick={saveLayout}>SAVE LAYOUT</button>
                 </div>
-                {canArrange && (
-                    <div className="row layout-group-toolbar">
-                        <button
-                            type="button"
-                            className={`btn ${groupMode ? "btn-active" : ""}`}
-                            onClick={() => {
-                                if (!groupMode) {
-                                    ensureActiveGroup();
-                                }
-                                setGroupMode((value) => !value);
-                                setMessage(groupMode
-                                    ? (activeGroup?.memberIds.length
-                                        ? `${activeGroup.memberIds.length} in “${activeGroup.name}”. MATCH SIZE or SPACE EVENLY.`
-                                        : "")
-                                    : "GROUP on. Tap widgets to add or remove them.");
-                            }}
-                        >
-                            GROUP
-                        </button>
+                {canArrange && groupMode && activeGroup && (
+                    <div className="layout-group-banner">
+                        <span>
+                            Grouping <strong>{activeGroup.name}</strong>
+                            {" · "}
+                            {activeGroup.memberIds.length} item{activeGroup.memberIds.length === 1 ? "" : "s"}
+                            {" · tap the stage to add or remove"}
+                        </span>
                         <button
                             type="button"
                             className="btn"
                             onClick={() => {
-                                const groupId = ensureActiveGroup();
-                                setGroups((current) => current.map((group) => (
-                                    group.id === groupId
-                                        ? { ...group, memberIds: [...visibleIds] }
-                                        : { ...group, memberIds: group.memberIds.filter((id) => !visibleIds.includes(id)) }
-                                )));
                                 setGroupMode(false);
-                                setMessage(`Grouped all ${visibleIds.length} widgets.`);
+                                setMessage(activeGroup.memberIds.length
+                                    ? `${activeGroup.memberIds.length} in “${activeGroup.name}”.`
+                                    : "");
                             }}
                         >
-                            GROUP ALL
+                            DONE
                         </button>
-                        <button
-                            type="button"
-                            className="btn btn-accent"
-                            disabled={(activeGroup?.memberIds.length ?? 0) < 2}
-                            onClick={matchActiveGroupSize}
-                        >
-                            MATCH SIZE
-                        </button>
-                        <button
-                            type="button"
-                            className="btn"
-                            disabled={(activeGroup?.memberIds.length ?? 0) < 2}
-                            onClick={spaceActiveGroup}
-                        >
-                            SPACE EVENLY
-                        </button>
-                        {activeGroup && (
-                            <div className="muted">
-                                {activeGroup.name}: {activeGroup.memberIds.length} widget{activeGroup.memberIds.length === 1 ? "" : "s"}
-                                {groupMode ? " · tap to add or remove" : ""}
-                            </div>
-                        )}
                     </div>
                 )}
                 {mode === "grid" && stage === "performance" && (
@@ -775,51 +752,103 @@ export function LayoutEditorView({
             <div className="layout-editor-body">
                 <aside className="layout-editor-inspector">
                     {canArrange && (
-                        <>
+                        <div className="layout-palette">
                             <div className="field-label">GROUPS</div>
                             <div className="row" style={{ gap: 6 }}>
                                 <label className="field" style={{ flex: 1, minWidth: 0 }}>
-                                    <span>Name</span>
+                                    <span>{activeGroup ? "Rename" : "New group"}</span>
                                     <input
                                         value={groupName}
-                                        placeholder="Switches"
+                                        placeholder={activeGroup ? activeGroup.name : "Footswitches"}
                                         onChange={(event) => setGroupName(event.target.value)}
                                         onKeyDown={(event) => {
-                                            if (event.key === "Enter") {
-                                                addGroup();
+                                            if (event.key !== "Enter") {
+                                                return;
                                             }
+                                            if (activeGroup && groupName.trim()) {
+                                                renameActiveGroup();
+                                                return;
+                                            }
+                                            addGroup();
                                         }}
                                     />
                                 </label>
-                                <button type="button" className="btn btn-accent" onClick={addGroup}>ADD</button>
+                                {activeGroup && groupName.trim() ? (
+                                    <button type="button" className="btn" onClick={renameActiveGroup}>RENAME</button>
+                                ) : (
+                                    <button type="button" className="btn btn-accent" onClick={addGroup}>ADD</button>
+                                )}
                             </div>
-                            {groups.map((group) => (
-                                <button
-                                    key={group.id}
-                                    type="button"
-                                    className={`btn ${activeGroupId === group.id ? "btn-active" : ""}`}
-                                    onClick={() => {
-                                        setActiveGroupId(group.id);
-                                        setGroupMode(true);
-                                        setMessage(`Editing “${group.name}”. Tap widgets to add or remove them.`);
-                                    }}
-                                >
-                                    {group.name} ({group.memberIds.length})
-                                </button>
-                            ))}
+                            <div className="layout-group-list">
+                                {groups.map((group) => (
+                                    <button
+                                        key={group.id}
+                                        type="button"
+                                        className={`layout-group-chip${activeGroupId === group.id ? " is-active" : ""}`}
+                                        onClick={() => {
+                                            const same = activeGroupId === group.id && groupMode;
+                                            setActiveGroupId(group.id);
+                                            setGroupMode(!same);
+                                            setGroupName("");
+                                            setMessage(same
+                                                ? `${group.memberIds.length} in “${group.name}”.`
+                                                : `Editing “${group.name}”. Tap widgets or controls to add or remove them.`);
+                                        }}
+                                    >
+                                        <span>{group.name}</span>
+                                        <small>{group.memberIds.length}</small>
+                                    </button>
+                                ))}
+                            </div>
                             {activeGroup && (
-                                <button type="button" className="btn btn-danger" onClick={deleteActiveGroup}>
-                                    DELETE GROUP
-                                </button>
+                                <div className="layout-group-actions">
+                                    <button
+                                        type="button"
+                                        className="btn btn-accent"
+                                        disabled={activeGroup.memberIds.length < 2}
+                                        onClick={matchActiveGroupSize}
+                                    >
+                                        MATCH SIZE
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        disabled={activeGroup.memberIds.length < 2}
+                                        onClick={spaceActiveGroup}
+                                    >
+                                        SPACE EVENLY
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={() => {
+                                            const groupId = ensureActiveGroup();
+                                            setGroups((current) => current.map((group) => (
+                                                group.id === groupId
+                                                    ? { ...group, memberIds: [...visibleIds] }
+                                                    : { ...group, memberIds: group.memberIds.filter((id) => !visibleIds.includes(id)) }
+                                            )));
+                                            setGroupMode(true);
+                                            setMessage(`Added all ${visibleIds.length} items to “${activeGroup.name}”.`);
+                                        }}
+                                    >
+                                        ADD ALL ON STAGE
+                                    </button>
+                                    <button type="button" className="btn btn-danger" onClick={deleteActiveGroup}>
+                                        DELETE
+                                    </button>
+                                </div>
                             )}
                             {groups.length === 0 && (
-                                <div className="muted">Name a group, then tap widgets to add them. Groups are saved with SAVE LAYOUT.</div>
+                                <div className="muted">
+                                    Add a group, then tap widgets and controls on the stage. Saved with SAVE LAYOUT.
+                                </div>
                             )}
-                        </>
+                        </div>
                     )}
                     {stage === "snapshots" ? (
-                        <>
-                            <div className="field-label" style={{ marginTop: canArrange ? 12 : 0 }}>SNAPSHOTS</div>
+                        <div className="layout-palette">
+                            <div className="field-label">SNAPSHOTS</div>
                             <button type="button" className="btn btn-accent" onClick={addSnapshotWidget}>ADD SNAPSHOT</button>
                             {snapshotWidgets.map((widget) => (
                                 <div key={widget.id} className="row" style={{ gap: 6 }}>
@@ -841,10 +870,11 @@ export function LayoutEditorView({
                                     </button>
                                 </div>
                             ))}
-                        </>
+                        </div>
                     ) : (
                         <>
-                    <div className="field-label" style={{ marginTop: canArrange ? 12 : 0 }}>ELEMENTS</div>
+                    <div className="layout-palette">
+                    <div className="field-label">WIDGETS</div>
                     {STATUS_WIDGET_IDS.map((id) => (
                         <button
                             key={id}
@@ -852,10 +882,13 @@ export function LayoutEditorView({
                             className={`btn ${widgets[id].visible ? "btn-active" : ""}`}
                             onClick={() => toggleWidget(id)}
                         >
+                            {widgets[id].visible ? "✓ " : "+ "}
                             {STATUS_WIDGET_LABELS[id]}
                         </button>
                     ))}
-                    <div className="field-label" style={{ marginTop: 12 }}>SWITCHES</div>
+                    </div>
+                    <div className="layout-palette">
+                    <div className="field-label">CONTROLS</div>
                     {controls.map((control) => (
                         <button
                             key={str(control.id)}
@@ -863,10 +896,12 @@ export function LayoutEditorView({
                             className={`btn ${hidden.has(str(control.id)) ? "" : "btn-active"}`}
                             onClick={() => toggleHidden(str(control.id))}
                         >
+                            {hidden.has(str(control.id)) ? "+ " : "✓ "}
                             {str(control.label, str(control.id))}
                         </button>
                     ))}
                     {controls.length === 0 && <div className="muted">Add controls in Hardware Setup.</div>}
+                    </div>
                         </>
                     )}
                 </aside>
@@ -915,11 +950,17 @@ export function LayoutEditorView({
                                 style={rectStyle(widget.rect, selectedId === id ? 3 : grouped.has(id) ? 2 : 1)}
                                 onPointerDown={(event) => onPointerDown(id, widget.rect, event)}
                             >
-                                <div className="layout-item-preview layout-item-preview--status">
-                                    {widget.showLabel && (
-                                        <div className="mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
+                                <div className={`layout-item-preview layout-item-preview--status${isMeterWidget(id) ? " is-meter" : ""}`}>
+                                    {isMeterWidget(id) ? (
+                                        <GainMeter label={STATUS_WIDGET_LABELS[id]} peak={0.28} preview />
+                                    ) : (
+                                        <>
+                                            {widget.showLabel && (
+                                                <div className="mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
+                                            )}
+                                            <strong className="mfx-performance-ui-value">{STATUS_WIDGET_LABELS[id]}</strong>
+                                        </>
                                     )}
-                                    <strong className="mfx-performance-ui-value">{STATUS_WIDGET_LABELS[id]}</strong>
                                 </div>
                                 {resizeHandles(id, widget.rect)}
                             </div>

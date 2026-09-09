@@ -382,7 +382,7 @@ function ControllerHub({
                 />
                 <HubCard
                     title="PERFORMANCE LAYOUT"
-                    subtitle={`${str(controller.layoutMode, "grid").toUpperCase()} · arrange switches, pots and status panels on the touchscreen`}
+                    subtitle={`${str(controller.layoutMode, "grid").toUpperCase()} · arrange widgets and controls on the touchscreen`}
                     onClick={() => onOpenLayout?.()}
                 />
                 <HubCard

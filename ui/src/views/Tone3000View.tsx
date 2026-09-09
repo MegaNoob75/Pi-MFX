@@ -3,15 +3,14 @@ import type { EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type Json, type JsonObject } from "../json";
 import { LibraryFolderPicker, libraryRootLabel, loadTone3000Dir, saveTone3000Dir, type LibraryKind } from "./LibraryManager";
 
-type CatalogSource = "trending" | "latest" | "search" | "downloaded" | "favorited" | "created";
+type CatalogSource = "trending" | "latest" | "search" | "downloads" | "favorited";
 
 const SOURCES: { id: CatalogSource; label: string }[] = [
     { id: "trending", label: "TRENDING" },
     { id: "latest", label: "LATEST" },
     { id: "search", label: "SEARCH" },
-    { id: "downloaded", label: "DOWNLOADED" },
-    { id: "favorited", label: "FAVORITES" },
-    { id: "created", label: "CREATED" }
+    { id: "downloads", label: "DOWNLOADS" },
+    { id: "favorited", label: "FAVORITES" }
 ];
 
 const GEARS: { id: string; label: string }[] = [
@@ -331,8 +330,66 @@ function downloadKindForModels(tone: JsonObject, models: JsonObject[]): LibraryK
     return "model";
 }
 
+function fileStem(name: string): string {
+    const leaf = name.replace(/\\/g, "/").split("/").pop() ?? name;
+    return leaf.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function libraryFileStems(library: JsonObject): Set<string> {
+    const stems = new Set<string>();
+    for (const key of ["models", "aidax", "impulseResponses"] as const) {
+        for (const item of objects(library[key])) {
+            const stem = fileStem(str(item.name, str(item.path)));
+            if (stem) {
+                stems.add(stem);
+            }
+        }
+    }
+    return stems;
+}
+
+function modelOnDevice(model: JsonObject, stems: Set<string>): boolean {
+    const candidates = [str(model.name), str(model.filename), modelFileHint(model)];
+    return candidates.some((name) => {
+        const stem = fileStem(name);
+        return stem.length > 1 && stems.has(stem);
+    });
+}
+
+function toneNameOnDevice(tone: JsonObject, stems: Set<string>): boolean {
+    const stem = fileStem(toneName(tone));
+    if (stem.length < 4) {
+        return false;
+    }
+    for (const local of stems) {
+        if (local === stem || (local.length >= 4 && (local.includes(stem) || stem.includes(local)))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function toneOnDeviceState(
+    tone: JsonObject,
+    models: JsonObject[] | undefined,
+    stems: Set<string>
+): "none" | "some" | "all" {
+    if (models && models.length > 0) {
+        const downloadable = models.filter((model) => modelUrl(model) || jsonId(model.id));
+        if (downloadable.length === 0) {
+            return "none";
+        }
+        const saved = downloadable.filter((model) => modelOnDevice(model, stems)).length;
+        if (saved === 0) {
+            return "none";
+        }
+        return saved === downloadable.length ? "all" : "some";
+    }
+    return toneNameOnDevice(tone, stems) ? "some" : "none";
+}
+
 function pageSizeFor(source: CatalogSource): number {
-    if (source === "downloaded" || source === "favorited" || source === "created") {
+    if (source === "favorited") {
         return 50;
     }
     return 25;
@@ -340,18 +397,25 @@ function pageSizeFor(source: CatalogSource): number {
 
 function buildListPayload(catalog: CatalogQuery, page: number, refresh: boolean): JsonObject {
     const ir = catalog.gear === "ir";
-    if (catalog.source === "downloaded" || catalog.source === "favorited" || catalog.source === "created") {
+    if (catalog.source === "favorited") {
         return { refresh, source: catalog.source, page, page_size: pageSizeFor(catalog.source) };
     }
 
     // Trending / latest homepage feeds are only 10 items. Search is paginated,
     // so those tabs keep loading through /tones/search as the user scrolls.
+    // DOWNLOADS is Tone3000's most-downloaded catalog, not the user's history.
     const body: JsonObject = {
         refresh,
         source: "search",
         page,
         page_size: pageSizeFor("search"),
-        sort: catalog.source === "latest" ? "newest" : catalog.source === "trending" ? "trending" : catalog.sort
+        sort: catalog.source === "latest"
+            ? "newest"
+            : catalog.source === "trending"
+                ? "trending"
+                : catalog.source === "downloads"
+                    ? "downloads-all-time"
+                    : catalog.sort
     };
     if (catalog.source === "search" && catalog.query.trim()) {
         body.query = catalog.query.trim();
@@ -485,8 +549,7 @@ export function Tone3000View({
                 return;
             }
             const list = extractList(result.result);
-            const filtered = catalog.source === "downloaded" || catalog.source === "favorited"
-                || catalog.source === "created"
+            const filtered = catalog.source === "favorited"
                 ? list.filter((tone) => matchesCatalog(tone, catalog))
                 : list;
             setTones((current) => {
@@ -730,7 +793,7 @@ export function Tone3000View({
     const browseCreators = (usernames: string[]) => {
         setSelectedCreators(usernames);
         setSelectedTone(null);
-        if (source === "downloaded" || source === "favorited" || source === "created") {
+        if (source === "favorited") {
             setSource("trending");
         }
     };
@@ -742,6 +805,11 @@ export function Tone3000View({
         ));
 
     const signedInAs = str(obj(status.user).username);
+    const libraryStems = libraryFileStems(engine.library);
+
+    useEffect(() => {
+        void engine.client.request("library").catch(() => undefined);
+    }, [engine.client]);
     const settingsForm = (
         <>
             <h2>TONE3000</h2>
@@ -1042,12 +1110,13 @@ export function Tone3000View({
                             const image = toneImage(tone);
                             const username = creatorUsername(tone);
                             const savedCreator = isFavoriteCreator(username);
+                            const onDevice = toneOnDeviceState(tone, modelsByTone[id], libraryStems);
                             return (
                                 <div
                                     key={id}
                                     role="button"
                                     tabIndex={0}
-                                    className={`t3k-card${selectedTone && toneKey(selectedTone) === id ? " expanded" : ""}`}
+                                    className={`t3k-card${selectedTone && toneKey(selectedTone) === id ? " expanded" : ""}${onDevice !== "none" ? " is-on-device" : ""}${onDevice === "all" ? " is-complete" : ""}`}
                                     onClick={() => openTone(tone)}
                                     onKeyDown={(event) => {
                                         if (event.key === "Enter" || event.key === " ") {
@@ -1056,11 +1125,18 @@ export function Tone3000View({
                                         }
                                     }}
                                 >
-                                    {image ? (
-                                        <img className="t3k-card-image" src={image} alt="" />
-                                    ) : (
-                                        <div className="t3k-card-image-fallback">{gearLabel(toneGear(tone) || "NAM")}</div>
-                                    )}
+                                    <div className="t3k-card-media">
+                                        {image ? (
+                                            <img className="t3k-card-image" src={image} alt="" />
+                                        ) : (
+                                            <div className="t3k-card-image-fallback">{gearLabel(toneGear(tone) || "NAM")}</div>
+                                        )}
+                                        {onDevice !== "none" && (
+                                            <div className="t3k-on-device-badge">
+                                                {onDevice === "all" ? "ON DEVICE" : "SOME ON DEVICE"}
+                                            </div>
+                                        )}
+                                    </div>
                                     <div className="t3k-card-body">
                                         <div className="t3k-card-gear">{gearLabel(toneGear(tone))}</div>
                                         <div className="t3k-card-title">{name}</div>
@@ -1101,6 +1177,7 @@ export function Tone3000View({
                         <ToneDownloadDialog
                             tone={selectedTone}
                             models={modelsByTone[toneKey(selectedTone)] ?? []}
+                            libraryStems={libraryStems}
                             loadingModels={!(toneKey(selectedTone) in modelsByTone) && !downloadError}
                             downloading={downloading}
                             status={downloadStatus}
@@ -1114,8 +1191,7 @@ export function Tone3000View({
                                     setDownloadProgress({ current: 0, total: 0, name: "" });
                                 }
                             }}
-                            onDownloadAll={() => {
-                                const models = modelsByTone[toneKey(selectedTone)] ?? [];
+                            onDownloadAll={(models) => {
                                 queueDownload(selectedTone, models);
                             }}
                             onDownloadOne={(model) => {
@@ -1179,6 +1255,7 @@ export function Tone3000View({
 function ToneDownloadDialog({
     tone,
     models,
+    libraryStems,
     loadingModels,
     downloading,
     status,
@@ -1192,6 +1269,7 @@ function ToneDownloadDialog({
 }: {
     tone: JsonObject;
     models: JsonObject[];
+    libraryStems: Set<string>;
     loadingModels: boolean;
     downloading: boolean;
     status: string;
@@ -1199,13 +1277,14 @@ function ToneDownloadDialog({
     progress: { current: number; total: number; name: string };
     creatorSaved: boolean;
     onClose: () => void;
-    onDownloadAll: () => void;
+    onDownloadAll: (models: JsonObject[]) => void;
     onDownloadOne: (model: JsonObject) => void;
     onToggleCreator: () => void;
 }) {
     const name = toneName(tone);
     const username = creatorUsername(tone);
     const downloadable = models.filter((model) => modelUrl(model) || jsonId(model.id));
+    const remainingModels = downloadable.filter((model) => !modelOnDevice(model, libraryStems));
     const remaining = Math.max(0, progress.total - progress.current);
     const arch = (model: JsonObject) => architectureLabel(model);
     return (
@@ -1250,35 +1329,45 @@ function ToneDownloadDialog({
                 {error && <div className="danger">{error}</div>}
                 <button
                     type="button"
-                    className="btn btn-accent"
-                    disabled={downloading || loadingModels || downloadable.length === 0}
-                    onClick={onDownloadAll}
+                    className={`btn ${remainingModels.length ? "btn-accent" : ""}`}
+                    disabled={downloading || loadingModels || remainingModels.length === 0}
+                    onClick={() => onDownloadAll(remainingModels)}
                 >
-                    {downloading ? "DOWNLOADING…" : `DOWNLOAD ALL${downloadable.length ? ` (${downloadable.length})` : ""}`}
+                    {downloading
+                        ? "DOWNLOADING…"
+                        : remainingModels.length === 0 && downloadable.length > 0
+                            ? "ALL ON DEVICE"
+                            : remainingModels.length < downloadable.length
+                                ? `DOWNLOAD REMAINING (${remainingModels.length})`
+                                : `DOWNLOAD ALL${downloadable.length ? ` (${downloadable.length})` : ""}`}
                 </button>
                 <div className="t3k-models">
                     {loadingModels && <div className="muted">Loading models…</div>}
                     {!loadingModels && downloadable.length === 0 && <div className="muted">No models listed.</div>}
-                    {downloadable.map((model, modelIndex) => (
-                        <div key={jsonId(model.id, String(modelIndex))} className="row">
+                    {downloadable.map((model, modelIndex) => {
+                        const saved = modelOnDevice(model, libraryStems);
+                        return (
+                        <div key={jsonId(model.id, String(modelIndex))} className={`row t3k-model-row${saved ? " is-on-device" : ""}`}>
                             <div style={{ flex: 1, minWidth: 0 }}>
-                                <div>{str(model.name, name)}</div>
+                                <div className={`t3k-model-name${saved ? " is-on-device" : ""}`}>{str(model.name, name)}</div>
                                 <div className="muted">
                                     {str(model.size)}
                                     {arch(model) ? ` · ${arch(model)}` : ""}
                                     {downloadKind(tone, model) === "ir" ? " · IR" : downloadKind(tone, model) === "aidax" ? " · AIDA-X" : " · NAM"}
+                                    {saved ? " · on device" : ""}
                                 </div>
                             </div>
                             <button
                                 type="button"
-                                className="btn btn-accent"
-                                disabled={downloading}
+                                className={`btn ${saved ? "is-on-device" : "btn-accent"}`}
+                                disabled={downloading || saved}
                                 onClick={() => onDownloadOne(model)}
                             >
-                                DOWNLOAD
+                                {saved ? "ON DEVICE" : "DOWNLOAD"}
                             </button>
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
             </div>
         </div>

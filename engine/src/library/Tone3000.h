@@ -48,9 +48,9 @@ public:
 
     Json status() const;
 
-    /// `source` is "search", "created", "favorited", "downloaded", "trending",
+    /// `source` is "search", "favorited", "downloaded", "trending",
     /// or "latest". Results are cached on the Pi so tabbing Trending /
-    /// Downloaded / gear sections does not hammer TONE3000. Pass
+    /// Downloads / gear sections does not hammer TONE3000. Pass
     /// `refresh: true` in `query` to bypass the cache. `cached` is set when
     /// the returned payload came from disk.
     Json listTones(const std::string& source, const Json& query, std::string& error,

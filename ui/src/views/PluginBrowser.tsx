@@ -78,7 +78,7 @@ export function PluginBrowser({
             <div className="plugin-browser-header">
                 <div className="mfx-screen-intro-title">{title}</div>
                 <div className="mfx-screen-intro-sub">
-                    Choose the plugin yourself. Nothing is added until you press {actionLabel}.
+                    Double-click a plugin to add it, or press {actionLabel}.
                 </div>
             </div>
             <div className="plugin-browser-filters">
@@ -103,7 +103,12 @@ export function PluginBrowser({
                             type="button"
                             className={`plugin-tile${selected === str(item.uri) ? " selected" : ""}`}
                             onClick={() => setSelected(str(item.uri))}
-                            onDoubleClick={() => setSelected(str(item.uri))}
+                            onDoubleClick={() => {
+                                const uri = str(item.uri);
+                                if (uri) {
+                                    onChoose(uri);
+                                }
+                            }}
                         >
                             <strong>
                                 <MarqueeText text={str(item.name)} align="left" fontWeight={800} />
