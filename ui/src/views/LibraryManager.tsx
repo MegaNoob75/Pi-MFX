@@ -165,6 +165,12 @@ export function LibraryFileManager({
     );
 }
 
+const PICKER_KINDS: { id: Exclude<LibraryKind, "plugin">; label: string }[] = [
+    { id: "model", label: "NAM" },
+    { id: "aidax", label: "AIDA-X" },
+    { id: "ir", label: "IRs" }
+];
+
 export function LibraryFolderPicker({
     engine,
     run,
@@ -177,22 +183,38 @@ export function LibraryFolderPicker({
     run: (work: () => Promise<unknown>) => Promise<void>;
     kind: LibraryKind;
     value: string;
-    onPick: (directory: string) => void;
+    onPick: (directory: string, kind: LibraryKind) => void;
     onClose: () => void;
 }) {
+    const [activeKind, setActiveKind] = useState<LibraryKind>(kind === "plugin" ? "model" : kind);
     const [directory, setDirectory] = useState(value || "TONE3000");
-    const title = kind === "ir" ? "IR FOLDER" : kind === "aidax" ? "AIDA-X FOLDER" : "NAM FOLDER";
+    const title = activeKind === "ir" ? "IR FOLDER" : activeKind === "aidax" ? "AIDA-X FOLDER" : "NAM FOLDER";
     return (
         <div className="dialog-backdrop" onClick={onClose}>
             <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
                 <h2>{title}</h2>
                 <div className="muted">
-                    Choose the folder under {libraryRootLabel(kind)}/ where files should be saved.
+                    Choose the folder under {libraryRootLabel(activeKind)}/ where files should be saved.
+                </div>
+                <div className="row explorer-kind-tabs">
+                    {PICKER_KINDS.map((item) => (
+                        <button
+                            key={item.id}
+                            type="button"
+                            className={`btn ${activeKind === item.id ? "btn-active" : ""}`}
+                            onClick={() => {
+                                setActiveKind(item.id);
+                                setDirectory(loadTone3000Dir(item.id));
+                            }}
+                        >
+                            {item.label}
+                        </button>
+                    ))}
                 </div>
                 <LibraryBrowser
                     engine={engine}
                     run={run}
-                    kind={kind}
+                    kind={activeKind}
                     picker
                     directory={directory}
                     onDirectoryChange={setDirectory}
@@ -203,7 +225,7 @@ export function LibraryFolderPicker({
                         type="button"
                         className="btn btn-accent"
                         onClick={() => {
-                            onPick(directory);
+                            onPick(directory, activeKind);
                             onClose();
                         }}
                     >

@@ -260,25 +260,73 @@ function modelUrl(model: JsonObject): string {
     return str(model.model_url, str(model.url, str(model.downloadUrl, str(model.download_url))));
 }
 
-function modelIsIr(tone: JsonObject, model: JsonObject): boolean {
-    if (str(tone.format) === "ir" || toneGear(tone) === "ir") {
-        return true;
-    }
-    const text = `${str(model.kind)} ${str(model.format)} ${str(model.name)} ${str(model.filename)}`;
-    return /(?:^|\b)ir(?:\b|$)|impulse|sm57|sm58|sm7|\.wav\b|4x12|2x12|1x12|\bcab\b/i.test(text);
+function modelFileHint(model: JsonObject): string {
+    const url = modelUrl(model).split("?")[0] ?? "";
+    return str(model.filename, str(model.name, url)).toLowerCase();
+}
+
+function modelExtension(model: JsonObject): string {
+    const match = /\.([a-z0-9]+)$/i.exec(modelFileHint(model));
+    return match ? match[1].toLowerCase() : "";
+}
+
+function modelArchitecture(model: JsonObject): string {
+    return str(model.architecture_version, jsonId(model.architecture_version)).toLowerCase();
 }
 
 function modelIsAidax(tone: JsonObject, model: JsonObject): boolean {
-    const text = `${str(tone.format)} ${str(model.format)} ${str(model.kind)} ${str(model.name)} ${str(model.architecture)}`;
-    return /aida/i.test(text) || /\.aidax$/i.test(text);
+    if (modelExtension(model) === "aidax") {
+        return true;
+    }
+    const text = `${str(tone.format)} ${str(model.format)} ${str(model.kind)} ${str(model.architecture)}`;
+    return /aida/i.test(text);
+}
+
+function modelIsIr(tone: JsonObject, model: JsonObject): boolean {
+    if (modelIsAidax(tone, model)) {
+        return false;
+    }
+    const ext = modelExtension(model);
+    if (ext === "nam") {
+        return false;
+    }
+    if (ext === "wav" || ext === "flac" || ext === "aiff" || ext === "aif") {
+        return true;
+    }
+    const architecture = modelArchitecture(model);
+    if (architecture === "1" || architecture === "2" || architecture === "custom" || architecture.startsWith("a")) {
+        return false;
+    }
+    const format = str(model.format, str(model.kind)).toLowerCase();
+    if (format === "nam") {
+        return false;
+    }
+    if (format === "ir" || format === "wav" || format === "impulse") {
+        return true;
+    }
+    return str(tone.format) === "ir" || toneGear(tone) === "ir";
 }
 
 function downloadKind(tone: JsonObject, model: JsonObject): LibraryKind {
+    if (modelIsAidax(tone, model)) {
+        return "aidax";
+    }
     if (modelIsIr(tone, model)) {
         return "ir";
     }
-    if (modelIsAidax(tone, model)) {
+    return "model";
+}
+
+function downloadKindForModels(tone: JsonObject, models: JsonObject[]): LibraryKind {
+    const kinds = models.map((model) => downloadKind(tone, model));
+    if (kinds.includes("model")) {
+        return "model";
+    }
+    if (kinds.includes("aidax")) {
         return "aidax";
+    }
+    if (kinds.includes("ir")) {
+        return "ir";
     }
     return "model";
 }
@@ -640,10 +688,8 @@ export function Tone3000View({
     };
 
     const queueDownload = (tone: JsonObject, models: JsonObject[]) => {
-        const first = models[0];
-        const kind = first ? downloadKind(tone, first) : "model";
         setPendingDownload({ tone, models });
-        setFolderPicker(kind);
+        setFolderPicker(downloadKindForModels(tone, models));
     };
 
     const openTone = (tone: JsonObject) => {
@@ -1109,8 +1155,8 @@ export function Tone3000View({
                             run={run}
                             kind={folderPicker}
                             value={dirForKind(folderPicker)}
-                            onPick={(directory) => {
-                                saveDir(folderPicker, directory);
+                            onPick={(directory, kind) => {
+                                saveDir(kind, directory);
                                 const pending = pendingDownload;
                                 setPendingDownload(null);
                                 if (pending) {
