@@ -2571,10 +2571,43 @@ button.list-item {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    align-items: center;
+}
+
+.explorer-toolbar {
+    flex-wrap: nowrap;
+}
+
+.explorer-toolbar-main {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.explorer-split-btn {
+    margin-left: auto;
+    flex: 0 0 auto;
 }
 
 .explorer-toolbar .btn {
     min-height: 44px;
+}
+
+.explorer-check {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    flex: 0 0 22px;
+    color: var(--mfx-muted);
+    font-size: 1.05rem;
+    line-height: 1;
+}
+
+.explorer-check.is-on,
+.explorer-row.is-checked .explorer-row-name {
+    color: var(--mfx-cyan);
 }
 
 .explorer-panes {
@@ -2758,6 +2791,14 @@ button.list-item {
     padding: 6px 8px;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.04);
+}
+
+.plugin-install-card {
+    align-items: flex-start;
+}
+
+.plugin-install-plugins {
+    margin-top: 4px;
 }
 
 @media (max-width: 900px) {

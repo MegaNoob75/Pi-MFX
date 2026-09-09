@@ -60,6 +60,7 @@ fi
 log "Stopping services"
 systemctl disable --now pimfx.service          >/dev/null 2>&1 || true
 systemctl disable --now pimfx-plugin-helper.service >/dev/null 2>&1 || true
+systemctl disable --now pimfx-mdns.service     >/dev/null 2>&1 || true
 systemctl disable --now pimfx-hotspot.service  >/dev/null 2>&1 || true
 systemctl disable --now pimfx-governor.service >/dev/null 2>&1 || true
 systemctl disable --now pimfx-wifi-powersave.service >/dev/null 2>&1 || true
@@ -83,6 +84,7 @@ fi
 log "Removing files"
 rm -f /etc/systemd/system/pimfx.service
 rm -f /etc/systemd/system/pimfx-plugin-helper.service
+rm -f /etc/systemd/system/pimfx-mdns.service
 rm -f /etc/systemd/system/pimfx-hotspot.service
 rm -f /etc/systemd/system/pimfx-governor.service
 rm -f /etc/systemd/system/pimfx-wifi-powersave.service
@@ -94,6 +96,7 @@ rm -f /etc/modprobe.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
 rm -f "$PREFIX/libexec/pimfx/plugin-helper.py"
 rm -f "$PREFIX/libexec/pimfx/hotspot.py"
+rm -f "$PREFIX/libexec/pimfx/mdns.py"
 rmdir "$PREFIX/libexec/pimfx" >/dev/null 2>&1 || true
 rm -rf /usr/share/pimfx
 rm -rf /var/lib/pimfx-boot

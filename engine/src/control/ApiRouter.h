@@ -33,6 +33,7 @@ private:
 
     Json tone3000Command(const std::string& command, const Json& payload, bool& ok, std::string& error);
     Json pluginsCommand(const std::string& command, const Json& payload, bool& ok, std::string& error);
+    Json visibleCatalog(bool includePorts) const;
     void publishCatalog();
 
     Engine& engine_;

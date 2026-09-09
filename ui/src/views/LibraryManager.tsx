@@ -122,7 +122,7 @@ export function FilesView({
             <div className="mfx-screen-intro">
                 <div className="mfx-screen-intro-title">FILES</div>
                 <div className="mfx-screen-intro-sub">
-                    NAM, AIDA-X, impulse responses and user LV2 bundles
+                    NAM, AIDA-X and impulse responses
                 </div>
             </div>
             <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
@@ -144,7 +144,7 @@ export function LibraryFileManager({
         <div className="panel stack">
             <div className="muted">
                 NAM files live in models. AIDA-X files live in aidax. Impulse responses live in irs.
-                User LV2 bundles live in lv2. Drag between the two panes, or long-press a row for more actions.
+                Drag between the two panes, or long-press a row for more actions.
             </div>
             <div className="row explorer-kind-tabs">
                 <button type="button" className={`btn ${kind === "model" ? "btn-active" : ""}`} onClick={() => setKind("model")}>
@@ -155,9 +155,6 @@ export function LibraryFileManager({
                 </button>
                 <button type="button" className={`btn ${kind === "ir" ? "btn-active" : ""}`} onClick={() => setKind("ir")}>
                     IRs
-                </button>
-                <button type="button" className={`btn ${kind === "plugin" ? "btn-active" : ""}`} onClick={() => setKind("plugin")}>
-                    LV2
                 </button>
             </div>
             <LibraryBrowser engine={engine} run={run} kind={kind} />
@@ -273,7 +270,10 @@ export function LibraryBrowser({
     const [rightFiles, setRightFiles] = useState<LibraryItem[]>([]);
     const [activePane, setActivePane] = useState<"left" | "right">("left");
     const [selected, setSelected] = useState<LibraryItem | null>(null);
+    const [multiSelect, setMultiSelect] = useState(false);
+    const [checkedPaths, setCheckedPaths] = useState<string[]>([]);
     const [moving, setMoving] = useState<LibraryItem | null>(null);
+    const [movingItems, setMovingItems] = useState<LibraryItem[]>([]);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [menu, setMenu] = useState<{ x: number; y: number; item: LibraryItem | null } | null>(null);
@@ -362,35 +362,69 @@ export function LibraryBrowser({
         });
     };
 
-    const deleteItem = (item: LibraryItem) => {
-        const label = str(item.name);
-        const folder = str(item.type) === "dir";
+    const paneItems = (pane: "left" | "right") => (
+        pane === "right" ? [...rightFolders, ...rightFiles] : [...leftFolders, ...leftFiles]
+    );
+    const visibleItems = dual ? [...paneItems("left"), ...paneItems("right")] : paneItems("left");
+    const checkedItems = visibleItems.filter((item) => checkedPaths.includes(str(item.path)));
+    const targets = multiSelect ? checkedItems : (selected ? [selected] : []);
+
+    const toggleChecked = (item: LibraryItem) => {
+        const path = str(item.path);
+        setCheckedPaths((current) => (
+            current.includes(path) ? current.filter((value) => value !== path) : [...current, path]
+        ));
+        setSelected(item);
+    };
+
+    const deleteItems = (items: LibraryItem[]) => {
+        if (!items.length) {
+            return;
+        }
+        const folders = items.filter((item) => str(item.type) === "dir").length;
+        const label = items.length === 1
+            ? `“${str(items[0].name)}”`
+            : `${items.length} items`;
         setConfirm({
-            title: folder ? "DELETE FOLDER" : "DELETE FILE",
-            body: folder
-                ? `Delete folder “${label}” and everything inside it? This cannot be undone.`
-                : `Delete “${label}”? This cannot be undone.`,
+            title: items.length === 1 && folders ? "DELETE FOLDER" : "DELETE",
+            body: folders
+                ? `Delete ${label}${folders ? " and any folders inside" : ""}? This cannot be undone.`
+                : `Delete ${label}? This cannot be undone.`,
             run: () => {
                 work(async () => {
-                    await engine.client.request("library/delete", { path: str(item.path) });
-                    if (str(selected?.path) === str(item.path)) {
-                        setSelected(null);
+                    for (const item of items) {
+                        await engine.client.request("library/delete", { path: str(item.path) });
                     }
+                    setSelected(null);
+                    setCheckedPaths([]);
                 });
             }
         });
     };
 
-    const moveItemTo = (item: LibraryItem, destDir: string) => {
+    const moveItemsTo = (items: LibraryItem[], destDir: string) => {
+        if (!items.length) {
+            return;
+        }
         work(async () => {
-            await engine.client.request("library/move", {
-                path: str(item.path),
-                kind,
-                directory: destDir
-            });
+            for (const item of items) {
+                const relative = str(item.relative);
+                if (relative === destDir || destDir.startsWith(relative + "/")) {
+                    continue;
+                }
+                await engine.client.request("library/move", {
+                    path: str(item.path),
+                    kind,
+                    directory: destDir
+                });
+            }
             setMoving(null);
+            setMovingItems([]);
+            setCheckedPaths([]);
         });
     };
+
+    const moveItemTo = (item: LibraryItem, destDir: string) => moveItemsTo([item], destDir);
 
     const uploadFiles = (files: FileList | File[], destDir: string) => {
         const list = Array.from(files);
@@ -440,53 +474,84 @@ export function LibraryBrowser({
     return (
         <div className={`explorer ${dual && !picker ? "explorer-dual" : ""}`}>
             <div className="explorer-toolbar">
-                <button type="button" className="btn" onClick={() => void createFolder()}>NEW FOLDER</button>
-                {!picker && (
-                    <>
+                <div className="explorer-toolbar-main">
+                    {!picker && (
                         <button
                             type="button"
-                            className="btn btn-danger"
-                            disabled={!selected}
-                            onClick={() => selected && deleteItem(selected)}
-                        >
-                            DELETE
-                        </button>
-                        <button
-                            type="button"
-                            className="btn"
-                            disabled={!selected}
-                            onClick={() => selected && setMoving(selected)}
-                        >
-                            MOVE
-                        </button>
-                        <button type="button" className={`btn ${dual ? "btn-active" : ""}`} onClick={() => setDual((value) => !value)}>
-                            SIDE BY SIDE
-                        </button>
-                        <button type="button" className="btn" onClick={() => uploadRef.current?.click()}>UPLOAD</button>
-                        <input
-                            ref={uploadRef}
-                            type="file"
-                            hidden
-                            multiple
-                            onChange={(event) => {
-                                if (event.target.files) {
-                                    uploadFiles(event.target.files, activeDirectory);
-                                }
-                                event.target.value = "";
+                            className={`btn ${multiSelect ? "btn-active" : ""}`}
+                            onClick={() => {
+                                setMultiSelect((value) => !value);
+                                setCheckedPaths([]);
                             }}
-                        />
-                    </>
+                        >
+                            SELECT
+                        </button>
+                    )}
+                    <button type="button" className="btn" onClick={() => void createFolder()}>NEW FOLDER</button>
+                    {!picker && (
+                        <>
+                            {multiSelect && (
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => {
+                                        const paths = visibleItems.map((item) => str(item.path)).filter(Boolean);
+                                        setCheckedPaths(checkedPaths.length === paths.length ? [] : paths);
+                                    }}
+                                >
+                                    {checkedPaths.length && checkedPaths.length === visibleItems.length ? "CLEAR" : "SELECT ALL"}
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                className="btn btn-danger"
+                                disabled={!targets.length}
+                                onClick={() => deleteItems(targets)}
+                            >
+                                DELETE{targets.length > 1 ? ` (${targets.length})` : ""}
+                            </button>
+                            <button
+                                type="button"
+                                className="btn"
+                                disabled={!targets.length}
+                                onClick={() => {
+                                    setMoving(targets[0] ?? null);
+                                    setMovingItems(targets);
+                                }}
+                            >
+                                MOVE{targets.length > 1 ? ` (${targets.length})` : ""}
+                            </button>
+                            <button type="button" className="btn" onClick={() => uploadRef.current?.click()}>UPLOAD</button>
+                            <input
+                                ref={uploadRef}
+                                type="file"
+                                hidden
+                                multiple
+                                onChange={(event) => {
+                                    if (event.target.files) {
+                                        uploadFiles(event.target.files, activeDirectory);
+                                    }
+                                    event.target.value = "";
+                                }}
+                            />
+                        </>
+                    )}
+                </div>
+                {!picker && (
+                    <button type="button" className={`btn explorer-split-btn ${dual ? "btn-active" : ""}`} onClick={() => setDual((value) => !value)}>
+                        SPLIT VIEW
+                    </button>
                 )}
             </div>
-            {moving && (
+            {(moving || movingItems.length > 0) && (
                 <div className="row explorer-move-bar">
                     <div className="muted" style={{ flex: 1 }}>
-                        Move {str(moving.name)} into the highlighted pane, or drop it on a folder.
+                        Move {movingItems.length > 1 ? `${movingItems.length} items` : str((movingItems[0] ?? moving)?.name)} into the highlighted pane, or drop on a folder.
                     </div>
-                    <button type="button" className="btn btn-accent" onClick={() => moveItemTo(moving, activeDirectory)}>
+                    <button type="button" className="btn btn-accent" onClick={() => moveItemsTo(movingItems.length ? movingItems : (moving ? [moving] : []), activeDirectory)}>
                         MOVE HERE
                     </button>
-                    <button type="button" className="btn" onClick={() => setMoving(null)}>CANCEL</button>
+                    <button type="button" className="btn" onClick={() => { setMoving(null); setMovingItems([]); }}>CANCEL</button>
                 </div>
             )}
             {error && (
@@ -515,10 +580,13 @@ export function LibraryBrowser({
                     files={picker ? [] : leftFiles}
                     picker={picker}
                     selectedPath={str(selected?.path)}
+                    checkedPaths={checkedPaths}
+                    multiSelect={multiSelect}
                     active={activePane === "left"}
                     onActivate={() => setActivePane("left")}
                     onDirectory={setDirectory}
                     onSelect={setSelected}
+                    onToggleChecked={toggleChecked}
                     onOpenFolder={setDirectory}
                     onMenu={openMenu}
                     onDropDirectory={dropOnDirectory}
@@ -532,10 +600,13 @@ export function LibraryBrowser({
                         files={rightFiles}
                         picker={false}
                         selectedPath={str(selected?.path)}
+                        checkedPaths={checkedPaths}
+                        multiSelect={multiSelect}
                         active={activePane === "right"}
                         onActivate={() => setActivePane("right")}
                         onDirectory={setRightDir}
                         onSelect={setSelected}
+                        onToggleChecked={toggleChecked}
                         onOpenFolder={setRightDir}
                         onMenu={openMenu}
                         onDropDirectory={dropOnDirectory}
@@ -543,7 +614,9 @@ export function LibraryBrowser({
                 )}
             </div>
             <div className="muted explorer-status">
-                {libraryRootLabel(kind)}/{activeDirectory || ""} · {selectedLabel}
+                {libraryRootLabel(kind)}/{activeDirectory || ""} · {multiSelect
+                    ? `${checkedPaths.length} selected`
+                    : selectedLabel}
             </div>
             {menu && (
                 <div className="explorer-menu-dismiss" onClick={() => setMenu(null)}>
@@ -559,10 +632,36 @@ export function LibraryBrowser({
                             <button type="button" onClick={() => { void renameItem(menu.item!); setMenu(null); }}>RENAME</button>
                         )}
                         {menu.item && !picker && (
-                            <button type="button" onClick={() => { setMoving(menu.item); setMenu(null); }}>MOVE</button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const items = multiSelect && checkedItems.some((item) => str(item.path) === str(menu.item!.path))
+                                        ? checkedItems
+                                        : [menu.item!];
+                                    setMoving(items[0] ?? null);
+                                    setMovingItems(items);
+                                    setMenu(null);
+                                }}
+                            >
+                                MOVE{multiSelect && checkedItems.length > 1 && checkedItems.some((item) => str(item.path) === str(menu.item!.path))
+                                    ? ` (${checkedItems.length})`
+                                    : ""}
+                            </button>
                         )}
                         {menu.item && !picker && (
-                            <button type="button" className="danger" onClick={() => { deleteItem(menu.item!); setMenu(null); }}>DELETE</button>
+                            <button
+                                type="button"
+                                className="danger"
+                                onClick={() => {
+                                    const items = multiSelect && checkedItems.some((item) => str(item.path) === str(menu.item!.path))
+                                        ? checkedItems
+                                        : [menu.item!];
+                                    deleteItems(items);
+                                    setMenu(null);
+                                }}
+                            >
+                                DELETE
+                            </button>
                         )}
                         <button type="button" onClick={() => { void createFolder(); setMenu(null); }}>NEW FOLDER</button>
                     </div>
@@ -592,10 +691,13 @@ function ExplorerPane({
     files,
     picker,
     selectedPath,
+    checkedPaths,
+    multiSelect,
     active,
     onActivate,
     onDirectory,
     onSelect,
+    onToggleChecked,
     onOpenFolder,
     onMenu,
     onDropDirectory
@@ -607,10 +709,13 @@ function ExplorerPane({
     files: LibraryItem[];
     picker: boolean;
     selectedPath: string;
+    checkedPaths: string[];
+    multiSelect: boolean;
     active: boolean;
     onActivate: () => void;
     onDirectory: (directory: string) => void;
     onSelect: (item: LibraryItem) => void;
+    onToggleChecked: (item: LibraryItem) => void;
     onOpenFolder: (directory: string) => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem | null) => void;
     onDropDirectory: (destDir: string, event: DragEvent) => void;
@@ -664,8 +769,11 @@ function ExplorerPane({
                             key={str(folder.path, str(folder.relative))}
                             item={folder}
                             selected={selectedPath === str(folder.path)}
+                            checked={checkedPaths.includes(str(folder.path))}
+                            multiSelect={multiSelect}
                             folder
-                            onSelect={() => onSelect(folder)}
+                            onSelect={() => (multiSelect ? onToggleChecked(folder) : onSelect(folder))}
+                            onToggleChecked={() => onToggleChecked(folder)}
                             onOpen={() => onOpenFolder(str(folder.relative))}
                             onMenu={onMenu}
                             onDrop={(event) => onDropDirectory(str(folder.relative), event)}
@@ -676,7 +784,10 @@ function ExplorerPane({
                             key={str(file.path, str(file.relative))}
                             item={file}
                             selected={selectedPath === str(file.path)}
-                            onSelect={() => onSelect(file)}
+                            checked={checkedPaths.includes(str(file.path))}
+                            multiSelect={multiSelect}
+                            onSelect={() => (multiSelect ? onToggleChecked(file) : onSelect(file))}
+                            onToggleChecked={() => onToggleChecked(file)}
                             onMenu={onMenu}
                         />
                     ))}
@@ -748,16 +859,22 @@ function TreeRows({
 function ExplorerRow({
     item,
     selected,
+    checked = false,
+    multiSelect = false,
     folder = false,
     onSelect,
+    onToggleChecked,
     onOpen,
     onMenu,
     onDrop
 }: {
     item: LibraryItem;
     selected: boolean;
+    checked?: boolean;
+    multiSelect?: boolean;
     folder?: boolean;
     onSelect: () => void;
+    onToggleChecked?: () => void;
     onOpen?: () => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem) => void;
     onDrop?: (event: DragEvent) => void;
@@ -768,7 +885,7 @@ function ExplorerRow({
     return (
         <button
             type="button"
-            className={`explorer-row ${selected ? "selected" : ""}`}
+            className={`explorer-row ${selected ? "selected" : ""}${checked ? " is-checked" : ""}`}
             draggable
             onDragStart={(event) => {
                 event.dataTransfer.setData("application/x-pimfx-path", str(item.path));
@@ -784,7 +901,7 @@ function ExplorerRow({
                     longPress.current = false;
                     return;
                 }
-                if (folder && selected) {
+                if (folder && selected && !multiSelect) {
                     onOpen?.();
                     return;
                 }
@@ -814,6 +931,18 @@ function ExplorerRow({
             onPointerUp={() => window.clearTimeout(timer.current)}
             onPointerCancel={() => window.clearTimeout(timer.current)}
         >
+            {multiSelect && (
+                <span
+                    className={`explorer-check${checked ? " is-on" : ""}`}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleChecked?.();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                >
+                    {checked ? "☑" : "☐"}
+                </span>
+            )}
             <span className="explorer-row-icon">{folder ? "📁" : "📄"}</span>
             <span className="explorer-row-name">
                 <strong>{str(item.name)}</strong>

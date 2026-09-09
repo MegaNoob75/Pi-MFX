@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi-MFX mDNS name (pimfx.local)
+Documentation=https://github.com/MegaNoob75/Pi-MFX
+After=avahi-daemon.service network-online.target
+Wants=avahi-daemon.service
+
+[Service]
+Type=simple
+Environment=PIMFX_PORT=@PORT@
+Environment=PIMFX_MDNS_NAME=pimfx.local
+ExecStart=/usr/bin/python3 @PREFIX@/libexec/pimfx/mdns.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

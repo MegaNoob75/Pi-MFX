@@ -3,6 +3,9 @@
 #include "core/Crypto.h"
 #include "core/Log.h"
 
+#include <set>
+#include <unordered_set>
+
 namespace pimfx {
 namespace {
 
@@ -79,7 +82,7 @@ void ApiRouter::handleSocketOpen(uint64_t clientId) {
     // A new client gets everything it needs to render, in one burst, rather
     // than making five requests before it can draw anything.
     server_.sendTo(clientId, engine_.fullState().dump());
-    server_.sendTo(clientId, engine_.catalogState(false).dump());
+    server_.sendTo(clientId, visibleCatalog(false).dump());
     server_.sendTo(clientId, engine_.libraryState().dump());
     server_.sendTo(clientId, engine_.meterState().dump());
 }
@@ -117,7 +120,7 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return engine_.fullState();
     }
     if (command == "catalog") {
-        return engine_.catalogState(payload["ports"].asBool(false));
+        return visibleCatalog(payload["ports"].asBool(false));
     }
     if (command == "audio/devices") {
         return engine_.audioDevicesState();
@@ -566,11 +569,45 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
     return Json::object();
 }
 
+Json ApiRouter::visibleCatalog(bool includePorts) const {
+    Json json = engine_.catalogState(includePorts);
+    std::unordered_set<std::string> hidden;
+    for (const Json& item : plugins_.hiddenPlugins().items()) {
+        const std::string uri = item["uri"].asString().empty() ? item.asString() : item["uri"].asString();
+        if (!uri.empty()) {
+            hidden.insert(uri);
+        }
+    }
+    if (hidden.empty()) {
+        return json;
+    }
+
+    Json filtered = Json::array();
+    std::set<std::string> categories;
+    for (const Json& plugin : json["plugins"].items()) {
+        if (hidden.count(plugin["uri"].asString())) {
+            continue;
+        }
+        filtered.push(plugin);
+        const std::string category = plugin["category"].asString();
+        if (!category.empty()) {
+            categories.insert(category);
+        }
+    }
+    json.set("plugins", filtered);
+    Json categoryArray = Json::array();
+    for (const std::string& category : categories) {
+        categoryArray.push(Json(category));
+    }
+    json.set("categories", categoryArray);
+    return json;
+}
+
 void ApiRouter::publishCatalog() {
     std::string rescanError;
     engine_.catalog().rescan(rescanError);
     engine_.publishState();
-    server_.broadcast(engine_.catalogState(false).dump());
+    server_.broadcast(visibleCatalog(false).dump());
 }
 
 Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
@@ -586,8 +623,8 @@ Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
         ok = engine_.catalog().rescan(rescanError);
         error = rescanError;
         engine_.publishState();
-        server_.broadcast(engine_.catalogState(false).dump());
-        return engine_.catalogState(false);
+        server_.broadcast(visibleCatalog(false).dump());
+        return visibleCatalog(false);
     }
     if (command == "apt/search") {
         const Json result = plugins_.aptSearch(payload["query"].asString(), error);
@@ -687,6 +724,32 @@ Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
         }
         Json result = Json::object();
         result.set("bundles", plugins_.installedBundles());
+        return result;
+    }
+    if (command == "hide") {
+        const std::string uri = payload["uri"].asString();
+        std::string name = payload["name"].asString();
+        if (name.empty()) {
+            const auto* info = engine_.catalog().find(uri);
+            if (info) {
+                name = info->name;
+            }
+        }
+        ok = plugins_.hidePlugin(uri, name, error);
+        if (ok) {
+            server_.broadcast(visibleCatalog(false).dump());
+        }
+        Json result = Json::object();
+        result.set("hidden", plugins_.hiddenPlugins());
+        return result;
+    }
+    if (command == "unhide") {
+        ok = plugins_.unhidePlugin(payload["uri"].asString(), error);
+        if (ok) {
+            server_.broadcast(visibleCatalog(false).dump());
+        }
+        Json result = Json::object();
+        result.set("hidden", plugins_.hiddenPlugins());
         return result;
     }
 

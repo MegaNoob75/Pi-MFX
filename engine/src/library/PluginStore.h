@@ -39,6 +39,11 @@ public:
     Json installedBundles() const;
     bool bundleRemove(const std::string& directory, std::string& error);
 
+    /// Hide a plugin from Add Effect without touching apt-owned files.
+    Json hiddenPlugins() const;
+    bool hidePlugin(const std::string& uri, const std::string& name, std::string& error);
+    bool unhidePlugin(const std::string& uri, std::string& error);
+
     Json hotspotStatus(std::string& error);
     Json hotspotConfig(std::string& error);
     Json applyHotspot(const Json& payload, std::string& error);

@@ -376,9 +376,9 @@ export function App() {
                         <div className="menu-divider" />
                         <MenuButton label="LIBRARY" subtitle="TONE3000 NAM, AIDA-X and IR downloads"
                             active={view === "library"} onClick={() => goTo("library")} />
-                        <MenuButton label="PLUGINS" subtitle="Apt, PatchStorage and installed LV2 effects"
+                        <MenuButton label="PLUGINS" subtitle="Installed effects and Raspberry Pi OS / PatchStorage installs"
                             active={view === "plugins"} onClick={() => goTo("plugins")} />
-                        <MenuButton label="FILES" subtitle="Browse NAM, AIDA-X, IRs and user LV2 folders"
+                        <MenuButton label="FILES" subtitle="Browse NAM, AIDA-X and IR folders"
                             active={view === "files"} onClick={() => goTo("files")} />
                         <div className="menu-divider" />
                         <MenuButton label="SETTINGS" subtitle="Controller, theme, PI-MFX UI and system"

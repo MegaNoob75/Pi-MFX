@@ -78,7 +78,7 @@ do_skip_wait() {
             ""|NetworkManager-wait-online.service|network-online.target|\
             cloud-init-local.service|cloud-init-main.service|\
             cloud-init-network.service|cloud-config.service|cloud-final.service|\
-            pimfx.service|pimfx-plugin-helper.service|pimfx-hotspot.service)
+            pimfx.service|pimfx-plugin-helper.service|pimfx-mdns.service|pimfx-hotspot.service)
                 ;;
             *)
                 warn "${dependency} wants network-online; leaving the wait service enabled"

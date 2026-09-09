@@ -67,8 +67,7 @@ sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
 ```
 
 Pi-MFX ships no effects. After the engine is running, open
-**Settings → Plugins** to install LV2 packages from Raspberry Pi OS, add extra
-apt repos, or download Raspberry Pi builds from PatchStorage. See
+**Plugins** to install LV2 packages from Raspberry Pi OS or PatchStorage. See
 [PLUGIN_LICENSES.md](PLUGIN_LICENSES.md).
 
 Reboot afterwards to pick up the `threadirqs` kernel option.
@@ -78,11 +77,13 @@ Reboot afterwards to pick up the `threadirqs` kernel option.
 From any browser on the same network:
 
 ```
+http://pimfx.local:8080
 http://<pi-address>:8080
 ```
 
-or `http://raspberrypi.local:8080` if mDNS is working. Phones, tablets, and
-laptops are all first-class; the UI adapts to the screen.
+`pimfx.local` is published by Avahi after install, the same way PiPedal uses
+`pipedal.local`. Phones, tablets, and laptops are all first-class; the UI
+adapts to the screen.
 
 ## 5. Set up audio
 

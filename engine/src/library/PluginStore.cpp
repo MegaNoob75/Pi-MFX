@@ -619,6 +619,7 @@ Json PluginStore::status() {
     json.set("suggestedPackages", suggested);
     json.set("recommended", recommendedUnlocked(false));
     json.set("bundles", installedBundles());
+    json.set("hidden", loadRegistry()["hidden"]);
     return json;
 }
 
@@ -1453,7 +1454,62 @@ Json PluginStore::loadRegistry() const {
     if (!json["bundles"].isArray()) {
         json.set("bundles", Json::array());
     }
+    if (!json["hidden"].isArray()) {
+        json.set("hidden", Json::array());
+    }
     return json;
+}
+
+Json PluginStore::hiddenPlugins() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return loadRegistry()["hidden"];
+}
+
+bool PluginStore::hidePlugin(const std::string& uri, const std::string& name, std::string& error) {
+    if (uri.empty() || uri.size() > 400 || uri.find('\n') != std::string::npos) {
+        error = "that plugin URI is not allowed";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    Json registry = loadRegistry();
+    Json hidden = registry["hidden"].isArray() ? registry["hidden"] : Json::array();
+    for (const Json& item : hidden.items()) {
+        if (item["uri"].asString() == uri || item.asString() == uri) {
+            return true;
+        }
+    }
+    Json record = Json::object();
+    record.set("uri", uri);
+    record.set("name", name);
+    hidden.push(record);
+    registry.set("hidden", hidden);
+    if (!saveRegistry(registry)) {
+        error = "could not save the hidden-plugin list";
+        return false;
+    }
+    return true;
+}
+
+bool PluginStore::unhidePlugin(const std::string& uri, std::string& error) {
+    if (uri.empty()) {
+        error = "no plugin URI";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    Json registry = loadRegistry();
+    Json remaining = Json::array();
+    for (const Json& item : registry["hidden"].items()) {
+        const std::string stored = item["uri"].asString().empty() ? item.asString() : item["uri"].asString();
+        if (stored != uri) {
+            remaining.push(item);
+        }
+    }
+    registry.set("hidden", remaining);
+    if (!saveRegistry(registry)) {
+        error = "could not save the hidden-plugin list";
+        return false;
+    }
+    return true;
 }
 
 bool PluginStore::saveRegistry(const Json& registry) const {

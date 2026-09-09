@@ -37,7 +37,7 @@ Or run the menu instead:  sudo bash ./scripts/pimfx.sh
   --user <name>       Service account to create and run as (default pimfx)
   -h, --help          This text
 
-LV2 plugins are installed later from Settings -> Plugins, not by this script.
+LV2 plugins are installed later from Plugins, not by this script.
 See docs/PLUGIN_LICENSES.md.
 EOF
 }
@@ -45,7 +45,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --with-plugins|--no-plugins)
-            warn "plugin packages are installed from Settings -> Plugins, not the installer"
+            warn "plugin packages are installed from Plugins, not the installer"
             shift ;;
         --no-tuning)    SKIP_TUNING="yes"; shift ;;
         --port)         PIMFX_PORT="$2"; shift 2 ;;
@@ -91,7 +91,8 @@ apt-get install -y --no-install-recommends \
     libasound2-dev liblilv-dev lv2-dev \
     libcurl4-openssl-dev libsndfile1-dev libsamplerate0-dev \
     nodejs npm python3 xz-utils unzip gnupg ca-certificates \
-    network-manager dnsmasq-base iw
+    network-manager dnsmasq-base iw \
+    avahi-daemon avahi-utils
 
 # ---------------------------------------------------------------------------
 # 3. Build
@@ -274,6 +275,18 @@ systemctl restart pimfx-plugin-helper.service \
 PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" \
     bash "$REPO_DIR/scripts/install-hotspot.sh"
 
+log "Publishing pimfx.local"
+install -Dm644 "$REPO_DIR/scripts/mdns.py" "$PREFIX/libexec/pimfx/mdns.py"
+sed -e "s|@PREFIX@|$PREFIX|g" \
+    -e "s|@PORT@|$PIMFX_PORT|g" \
+    "$REPO_DIR/systemd/pimfx-mdns.service.in" > /etc/systemd/system/pimfx-mdns.service
+systemctl daemon-reload
+systemctl enable avahi-daemon.service >/dev/null 2>&1 || true
+systemctl restart avahi-daemon.service >/dev/null 2>&1 || warn "avahi-daemon did not start; pimfx.local will be unavailable"
+systemctl enable pimfx-mdns.service >/dev/null
+systemctl restart pimfx-mdns.service \
+    || warn "pimfx-mdns did not start; open the UI by IP until Avahi is running"
+
 systemctl enable pimfx.service >/dev/null
 systemctl restart pimfx.service
 
@@ -289,7 +302,8 @@ cat <<EOF
 
 Pi-MFX is installed and running.
 
-  Open        http://${ADDRESS:-<this-pi>}:$PIMFX_PORT
+  Open        http://pimfx.local:$PIMFX_PORT
+              http://${ADDRESS:-<this-pi>}:$PIMFX_PORT
   Service     systemctl status pimfx
   Logs        journalctl -u pimfx -f
   Data        $DATA_ROOT
@@ -302,7 +316,7 @@ First steps:
   2. Settings -> Controller: if you built a floorboard, connect it and use
      Learn to assign each switch. You do not need one; the browser is a
      complete control surface on its own.
-  3. Settings -> Plugins: install LV2 effects from apt or PatchStorage, then
+  3. Plugins: install LV2 effects from apt or PatchStorage, then
      add them to a chain. Pi-MFX ships none.
   4. Settings -> System -> Hotspot: AUTO starts a Wi-Fi access point when this
      Pi has no other network, so a tablet can open the UI at a gig.

@@ -93,7 +93,26 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     fi
     PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" \
         bash "$REPO_DIR/scripts/install-hotspot.sh"
+    if [[ -f "$REPO_DIR/scripts/mdns.py" ]]; then
+        log "Refreshing pimfx.local"
+        if ! command -v avahi-publish >/dev/null 2>&1; then
+            apt-get install -y --no-install-recommends avahi-daemon avahi-utils >/dev/null \
+                || warn "could not install Avahi; pimfx.local will be unavailable"
+        fi
+        install -Dm644 "$REPO_DIR/scripts/mdns.py" "$PREFIX/libexec/pimfx/mdns.py"
+        if [[ -f "$REPO_DIR/systemd/pimfx-mdns.service.in" ]]; then
+            sed -e "s|@PREFIX@|$PREFIX|g" \
+                -e "s|@PORT@|$PIMFX_PORT|g" \
+                "$REPO_DIR/systemd/pimfx-mdns.service.in" > /etc/systemd/system/pimfx-mdns.service
+        fi
+    fi
     systemctl daemon-reload
+    if [[ -f /etc/systemd/system/pimfx-mdns.service ]]; then
+        systemctl enable avahi-daemon.service >/dev/null 2>&1 || true
+        systemctl enable pimfx-mdns.service >/dev/null 2>&1 || true
+        systemctl restart pimfx-mdns.service >/dev/null 2>&1 \
+            || warn "pimfx-mdns did not start; open the UI by IP until Avahi is running"
+    fi
     if [[ -f /etc/systemd/system/pimfx-plugin-helper.service ]]; then
         systemctl enable pimfx-plugin-helper.service >/dev/null 2>&1 || true
         systemctl restart pimfx-plugin-helper.service \
