@@ -656,6 +656,15 @@ Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
         result.set("id", payload["id"].asString());
         return result;
     }
+    if (command == "github/remove") {
+        ok = plugins_.githubRemove(payload["id"].asString(), error);
+        if (ok) {
+            publishCatalog();
+        }
+        Json result = Json::object();
+        result.set("id", payload["id"].asString());
+        return result;
+    }
     if (command == "patchstorage/search") {
         const Json result = plugins_.patchstorageSearch(payload, error);
         ok = error.empty();

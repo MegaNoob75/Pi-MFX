@@ -34,6 +34,7 @@ public:
 
     Json recommended(bool fetchLatest, std::string& error);
     bool githubInstall(const std::string& id, std::string& error);
+    bool githubRemove(const std::string& id, std::string& error);
 
     Json installedBundles() const;
     bool bundleRemove(const std::string& directory, std::string& error);
@@ -54,6 +55,7 @@ private:
     Json httpsGet(const std::string& url, std::string& error, int timeoutSeconds = 30);
     bool httpsDownload(const std::string& url, const std::string& destPath, std::string& error);
     bool extractArchive(const std::string& archive, const std::string& dest, std::string& error);
+    bool installToobAmpFromPipedalDeb(std::string& error);
     Json loadRegistry() const;
     bool saveRegistry(const Json& registry) const;
     Json recommendedUnlocked(bool fetchLatest);

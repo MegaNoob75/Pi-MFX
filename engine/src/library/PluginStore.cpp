@@ -69,11 +69,26 @@ const RecommendedPack kRecommended[] = {
         "ToobAmp",
         "rerdavies/ToobAmp",
         "https://github.com/rerdavies/ToobAmp",
-        "Raspberry Pi guitar LV2 pack: NAM, cab IR, delay, reverb, EQ, modulation. Installs the project's arm64 .deb."
+        "Raspberry Pi guitar LV2 pack: NAM A2, cab IR, delay, reverb, EQ, modulation. "
+        "Prefers the ToobAmp `dev` arm64 .deb (v1.3.85). That file is not on GitHub yet, "
+        "so INSTALL copies TooB from the latest PiPedal arm64 package without installing PiPedal."
     }
 };
 
 namespace fs = std::filesystem;
+
+constexpr const char* kToobAmpDevReadme =
+    "https://raw.githubusercontent.com/rerdavies/ToobAmp/dev/README.md";
+constexpr const char* kToobAmpNamA2DebUrl =
+    "https://github.com/rerdavies/ToobAmp/releases/download/v1.3.85/toobamp_1.3.85_arm64.deb";
+constexpr const char* kPipedalRepo = "rerdavies/pipedal";
+constexpr int kToobAmpNamA2MinRank = 1 * 1000000 + 3 * 1000 + 78;
+
+struct ToobAmpDeb {
+    std::string url;
+    std::string name;
+    std::string tag;
+};
 
 std::string urlEncode(const std::string& text) {
     static const char* hex = "0123456789ABCDEF";
@@ -195,6 +210,98 @@ std::string toLower(std::string text) {
     return text;
 }
 
+Json pickArm64Deb(const Json& release) {
+    for (const Json& asset : release["assets"].items()) {
+        const std::string name = toLower(asset["name"].asString());
+        if (endsWith(name, ".deb.asc") || endsWith(name, ".asc")) {
+            continue;
+        }
+        if (endsWith(name, "_arm64.deb") || endsWith(name, "_aarch64.deb")) {
+            return asset;
+        }
+    }
+    return Json();
+}
+
+int versionRank(const std::string& tag) {
+    size_t i = 0;
+    if (i < tag.size() && (tag[i] == 'v' || tag[i] == 'V')) {
+        ++i;
+    }
+    int parts[3] = {0, 0, 0};
+    int index = 0;
+    int value = 0;
+    for (; index < 3 && i <= tag.size(); ++i) {
+        const char c = i < tag.size() ? tag[i] : '.';
+        if (c >= '0' && c <= '9') {
+            value = value * 10 + (c - '0');
+            continue;
+        }
+        parts[index++] = value;
+        value = 0;
+        if (c != '.') {
+            break;
+        }
+    }
+    return parts[0] * 1000000 + parts[1] * 1000 + parts[2];
+}
+
+ToobAmpDeb parseToobAmpArm64FromReadme(const std::string& text) {
+    const std::string prefix = "https://github.com/rerdavies/ToobAmp/releases/download/";
+    size_t pos = 0;
+    while ((pos = text.find(prefix, pos)) != std::string::npos) {
+        size_t end = pos;
+        while (end < text.size()) {
+            const unsigned char c = static_cast<unsigned char>(text[end]);
+            if (c <= 32 || c == '"' || c == ')' || c == ']' || c == '>') {
+                break;
+            }
+            ++end;
+        }
+        const std::string url = text.substr(pos, end - pos);
+        const std::string lower = toLower(url);
+        if (endsWith(lower, "_arm64.deb") || endsWith(lower, "_aarch64.deb")) {
+            ToobAmpDeb deb;
+            deb.url = url;
+            deb.name = fileName(url);
+            const size_t tagStart = pos + prefix.size();
+            const size_t tagEnd = text.find('/', tagStart);
+            if (tagEnd != std::string::npos && tagEnd < end) {
+                deb.tag = text.substr(tagStart, tagEnd - tagStart);
+            }
+            return deb;
+        }
+        pos = end;
+    }
+    return {};
+}
+
+ToobAmpDeb pickNewestNamA2Arm64(const Json& releases) {
+    ToobAmpDeb best;
+    int bestRank = -1;
+    if (!releases.isArray()) {
+        return best;
+    }
+    for (const Json& release : releases.items()) {
+        const std::string tag = release["tag_name"].asString();
+        const int rank = versionRank(tag);
+        if (rank < kToobAmpNamA2MinRank) {
+            continue;
+        }
+        const Json asset = pickArm64Deb(release);
+        if (!asset.isObject() || asset["browser_download_url"].asString().empty()) {
+            continue;
+        }
+        if (rank > bestRank) {
+            bestRank = rank;
+            best.url = asset["browser_download_url"].asString();
+            best.name = asset["name"].asString();
+            best.tag = tag;
+        }
+    }
+    return best;
+}
+
 bool archivePathSafe(const std::string& member) {
     if (member.empty() || member[0] == '/' || member[0] == '\\') {
         return false;
@@ -230,6 +337,88 @@ bool curlPerform(CURL* curl, std::string& error) {
         return false;
     }
     return true;
+}
+
+std::string httpsGetBody(const std::string& url, std::string& error, int timeoutSeconds) {
+    if (url.rfind("https://", 0) != 0) {
+        error = "that URL is not HTTPS";
+        return {};
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        error = "could not start an HTTPS request";
+        return {};
+    }
+
+    std::string body;
+    long status = 0;
+    curl_slist* headers = curl_slist_append(nullptr, "Accept: application/vnd.github+json, text/plain, */*");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeoutSeconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Pi-MFX/" PIMFX_VERSION);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+    const bool ok = curlPerform(curl, error);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (!ok) {
+        return {};
+    }
+    if (status < 200 || status >= 300) {
+        error = "GitHub request failed (HTTP " + std::to_string(status) + ")";
+        return {};
+    }
+    return body;
+}
+
+ToobAmpDeb resolveToobAmpArm64Deb(std::string& error) {
+    error.clear();
+    std::string readmeError;
+    const std::string readme = httpsGetBody(kToobAmpDevReadme, readmeError, 20);
+    if (readmeError.empty()) {
+        const ToobAmpDeb fromReadme = parseToobAmpArm64FromReadme(readme);
+        if (!fromReadme.url.empty()) {
+            return fromReadme;
+        }
+    }
+
+    std::string apiError;
+    const std::string body = httpsGetBody(
+        "https://api.github.com/repos/rerdavies/ToobAmp/releases?per_page=50",
+        apiError,
+        30);
+    if (apiError.empty()) {
+        std::string parseError;
+        const Json releases = Json::parse(body, &parseError);
+        if (parseError.empty()) {
+            const ToobAmpDeb newest = pickNewestNamA2Arm64(releases);
+            if (!newest.url.empty()) {
+                return newest;
+            }
+        }
+    }
+
+    ToobAmpDeb fallback;
+    fallback.url = kToobAmpNamA2DebUrl;
+    fallback.name = "toobamp_1.3.85_arm64.deb";
+    fallback.tag = "v1.3.85";
+    return fallback;
+}
+
+#else
+
+ToobAmpDeb resolveToobAmpArm64Deb(std::string& error) {
+    error = "this build has no HTTPS support";
+    return {};
 }
 
 #endif
@@ -596,20 +785,133 @@ Json PluginStore::recommendedUnlocked(bool fetchLatest) {
         Json args = Json::object();
         args.set("package", pack.package);
         const Json status = helperCall("package-status", args, statusError, 10);
-        item.set("installed", statusError.empty() && status["installed"].asBool(false));
+        const bool aptInstalled = statusError.empty() && status["installed"].asBool(false);
+        bool bundleInstalled = false;
+        if (std::string(pack.id) == "toobamp") {
+            std::error_code ec;
+            bundleInstalled = fs::is_directory(fs::path(paths_.lv2Dir) / "ToobAmp.lv2", ec);
+            item.set("branch", "dev");
+        }
+        item.set("installed", aptInstalled || bundleInstalled);
 
         if (fetchLatest) {
             std::string latestError;
-            const std::string url = std::string("https://api.github.com/repos/") + pack.repo + "/releases/latest";
-            const Json release = httpsGet(url, latestError, 20);
-            if (latestError.empty() && release.isObject()) {
-                item.set("latestVersion", release["tag_name"].asString());
-                item.set("latestName", release["name"].asString());
+            if (std::string(pack.id) == "toobamp") {
+                const ToobAmpDeb deb = resolveToobAmpArm64Deb(latestError);
+                if (!deb.tag.empty()) {
+                    item.set("latestVersion", deb.tag);
+                    item.set("latestName", deb.name);
+                }
+            } else {
+                const std::string url = std::string("https://api.github.com/repos/") + pack.repo + "/releases/latest";
+                const Json release = httpsGet(url, latestError, 20);
+                if (latestError.empty() && release.isObject()) {
+                    item.set("latestVersion", release["tag_name"].asString());
+                    item.set("latestName", release["name"].asString());
+                }
             }
         }
         list.push(item);
     }
     return list;
+}
+
+bool PluginStore::installToobAmpFromPipedalDeb(std::string& error) {
+#if defined(_WIN32)
+    error = "ToobAmp can only be installed on the Pi";
+    return false;
+#else
+    const Json release = httpsGet(std::string("https://api.github.com/repos/") + kPipedalRepo
+                                      + "/releases/latest",
+                                  error, 30);
+    if (!error.empty()) {
+        return false;
+    }
+    const Json chosen = pickArm64Deb(release);
+    if (!chosen.isObject() || chosen["browser_download_url"].asString().empty()) {
+        error = "the latest PiPedal release has no Raspberry Pi arm64 .deb";
+        return false;
+    }
+
+    const std::string filename = sanitizeFileName(chosen["name"].asString());
+    const std::string dest = joinPath(joinPath(paths_.downloadsDir, "github"), filename);
+    if (!httpsDownload(chosen["browser_download_url"].asString(), dest, error)) {
+        return false;
+    }
+
+    const std::string extractDir = joinPath(joinPath(paths_.downloadsDir, "github"), "toobamp-from-pipedal");
+    std::error_code ec;
+    fs::remove_all(extractDir, ec);
+    if (!makeDirectories(extractDir)) {
+        removeFile(dest);
+        error = "could not create the extract folder";
+        return false;
+    }
+
+    std::string output;
+    int exitCode = 0;
+    if (!runProcess({"dpkg-deb", "-x", dest, extractDir}, output, exitCode, error)) {
+        fs::remove_all(extractDir, ec);
+        removeFile(dest);
+        return false;
+    }
+    if (exitCode != 0) {
+        error = output.empty() ? "could not unpack that PiPedal package" : output;
+        fs::remove_all(extractDir, ec);
+        removeFile(dest);
+        return false;
+    }
+
+    fs::path source = fs::path(extractDir) / "usr" / "lib" / "lv2" / "ToobAmp.lv2";
+    if (!fs::is_directory(source, ec)) {
+        source = fs::path(extractDir) / "usr" / "local" / "lib" / "lv2" / "ToobAmp.lv2";
+    }
+    if (!fs::is_directory(source, ec)) {
+        error = "that PiPedal package did not contain ToobAmp.lv2";
+        fs::remove_all(extractDir, ec);
+        removeFile(dest);
+        return false;
+    }
+
+    const fs::path bundle = fs::path(paths_.lv2Dir) / "ToobAmp.lv2";
+    fs::remove_all(bundle, ec);
+    fs::copy(source, bundle, fs::copy_options::recursive, ec);
+    fs::remove_all(extractDir, ec);
+    removeFile(dest);
+    if (ec) {
+        error = "could not install ToobAmp.lv2";
+        return false;
+    }
+
+    Json registry = loadRegistry();
+    Json remaining = Json::array();
+    for (const Json& existing : registry["bundles"].items()) {
+        bool keep = true;
+        for (const Json& dir : existing["directories"].items()) {
+            if (dir.asString() == "ToobAmp.lv2") {
+                keep = false;
+                break;
+            }
+        }
+        if (keep && existing["directory"].asString() != "ToobAmp.lv2") {
+            remaining.push(existing);
+        }
+    }
+    Json record = Json::object();
+    record.set("source", "toobamp-dev");
+    record.set("title", "ToobAmp");
+    record.set("url", "https://github.com/rerdavies/ToobAmp");
+    record.set("directory", "ToobAmp.lv2");
+    Json directories = Json::array();
+    directories.push(Json("ToobAmp.lv2"));
+    record.set("directories", directories);
+    remaining.push(record);
+    registry.set("bundles", remaining);
+    saveRegistry(registry);
+    logInfo("plugins: installed ToobAmp from PiPedal " + release["tag_name"].asString()
+            + " (TooB bundle only; PiPedal was not installed)");
+    return true;
+#endif
 }
 
 bool PluginStore::githubInstall(const std::string& id, std::string& error) {
@@ -626,6 +928,75 @@ bool PluginStore::githubInstall(const std::string& id, std::string& error) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (std::string(pack->id) == "toobamp") {
+#if defined(_WIN32)
+        error = "ToobAmp can only be installed on the Pi";
+        return false;
+#else
+        Json pipedalArgs = Json::object();
+        pipedalArgs.set("package", "pipedal");
+        std::string pipedalError;
+        const Json pipedal = helperCall("package-status", pipedalArgs, pipedalError, 10);
+        if (pipedalError.empty() && pipedal["installed"].asBool(false)) {
+            error = "the pipedal package is already installed. TooB ships inside that package; "
+                    "do not install the separate toobamp .deb over it.";
+            return false;
+        }
+
+        const ToobAmpDeb deb = resolveToobAmpArm64Deb(error);
+        if (deb.url.empty()) {
+            if (error.empty()) {
+                error = "could not find a ToobAmp NAM A2 arm64 .deb";
+            }
+            return false;
+        }
+        error.clear();
+
+        std::string ignore;
+        Json removeArgs = Json::object();
+        removeArgs.set("package", "toobamp");
+        helperCall("apt-remove", removeArgs, ignore, 120);
+
+        std::error_code ec;
+        fs::remove_all(fs::path(paths_.lv2Dir) / "ToobAmp.lv2", ec);
+        Json registry = loadRegistry();
+        Json remaining = Json::array();
+        for (const Json& existing : registry["bundles"].items()) {
+            bool keep = true;
+            for (const Json& dir : existing["directories"].items()) {
+                if (dir.asString() == "ToobAmp.lv2") {
+                    keep = false;
+                    break;
+                }
+            }
+            if (keep && existing["directory"].asString() != "ToobAmp.lv2") {
+                remaining.push(existing);
+            }
+        }
+        registry.set("bundles", remaining);
+        saveRegistry(registry);
+
+        const std::string filename = sanitizeFileName(deb.name.empty() ? fileName(deb.url) : deb.name);
+        const std::string dest = joinPath(joinPath(paths_.downloadsDir, "github"), filename);
+        if (httpsDownload(deb.url, dest, error)) {
+            Json args = Json::object();
+            args.set("path", dest);
+            const Json reply = helperCall("deb-install", args, error, 300);
+            removeFile(dest);
+            if (!error.empty()) {
+                return false;
+            }
+            logInfo("plugins: installed ToobAmp " + deb.tag + " from ToobAmp dev");
+            return reply["ok"].asBool(true);
+        }
+
+        logWarn("plugins: ToobAmp standalone .deb is not published (" + error
+                + "); copying TooB from the latest PiPedal arm64 package");
+        error.clear();
+        return installToobAmpFromPipedalDeb(error);
+#endif
+    }
+
     const std::string url = std::string("https://api.github.com/repos/") + pack->repo + "/releases/latest";
     const Json release = httpsGet(url, error, 30);
     if (!error.empty()) {
@@ -664,6 +1035,30 @@ bool PluginStore::githubInstall(const std::string& id, std::string& error) {
     }
     logInfo(std::string("plugins: installed ") + pack->title + " from GitHub");
     return reply["ok"].asBool(true);
+}
+
+bool PluginStore::githubRemove(const std::string& id, std::string& error) {
+    const RecommendedPack* pack = nullptr;
+    for (const RecommendedPack& item : kRecommended) {
+        if (id == item.id || id == item.package) {
+            pack = &item;
+            break;
+        }
+    }
+    if (!pack) {
+        error = "that GitHub plugin pack is not on the recommended list";
+        return false;
+    }
+
+    if (std::string(pack->id) == "toobamp") {
+        std::string ignore;
+        Json args = Json::object();
+        args.set("package", "toobamp");
+        helperCall("apt-remove", args, ignore, 120);
+        return bundleRemove("ToobAmp.lv2", error);
+    }
+
+    return aptRemove(pack->package, error);
 }
 
 Json PluginStore::httpsGet(const std::string& url, std::string& error, int timeoutSeconds) {

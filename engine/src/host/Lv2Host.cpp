@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -294,6 +295,32 @@ struct Lv2Catalog::Impl {
     }
 };
 
+void applyLv2SearchPath(const std::string& userDir) {
+#if !defined(_WIN32)
+    std::string path;
+    const auto append = [&](const std::string& dir) {
+        if (dir.empty()) {
+            return;
+        }
+        if (!path.empty()) {
+            path += ':';
+        }
+        path += dir;
+    };
+    append(userDir);
+    if (const char* home = std::getenv("HOME")) {
+        append(std::string(home) + "/.lv2");
+    }
+    append("/usr/local/lib/lv2");
+    append("/usr/local/lib/aarch64-linux-gnu/lv2");
+    append("/usr/lib/lv2");
+    append("/usr/lib/aarch64-linux-gnu/lv2");
+    setenv("LV2_PATH", path.c_str(), 1);
+#else
+    (void)userDir;
+#endif
+}
+
 void loadUserBundles(LilvWorld* world, const std::string& directory) {
     if (!world || directory.empty()) {
         return;
@@ -358,6 +385,7 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.modFileTypes = lilv_new_uri(impl.world, "http://moddevices.com/ns/mod#fileTypes");
     }
 
+    applyLv2SearchPath(userBundleDirectory_);
     lilv_world_load_all(impl.world);
     loadUserBundles(impl.world, userBundleDirectory_);
     impl.plugins = lilv_world_get_all_plugins(impl.world);
@@ -531,14 +559,6 @@ struct PluginInstance::Impl {
 
     unsigned sampleRate = 48000;
     unsigned maxFrames = 64;
-    unsigned hostPeriod = 64;
-    unsigned pluginPeriod = 64;
-    unsigned stageInFill = 0;
-    unsigned stageOutRead = 0;
-    std::vector<std::vector<float>> stageIn;
-    std::vector<std::vector<float>> stageOut;
-    std::vector<const float*> stageInPtrs;
-    std::vector<float*> stageOutPtrs;
     bool active = false;
 
     // Control ports. `staged` is written by whoever moves a knob and read by
@@ -703,22 +723,9 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.catalog = &catalog;
     impl.plugin = plugin;
     impl.sampleRate = sampleRate;
-    impl.hostPeriod = maxFrames;
-    impl.pluginPeriod = maxFrames;
-    // NeuralAudio's default max buffer is 128. TooB NAM also packs periods
-    // ≤32 into 64 for its threaded path. Advertising the Scarlett's 32-frame
-    // period as min=max made A1 models load and A2 (v0.7) CreateFromFile fail.
-    // Run NAM in the smallest multiple of the host period that is at least 64.
-    if (info->takesNamModel && maxFrames < 64u) {
-        unsigned block = maxFrames;
-        while (block < 64u) {
-            block += maxFrames;
-        }
-        impl.pluginPeriod = block;
-    }
-    impl.maxFrames = impl.pluginPeriod;
+    impl.maxFrames = maxFrames;
     impl.sampleRateValue = static_cast<float>(sampleRate);
-    impl.maxBlockLength = static_cast<int32_t>(impl.pluginPeriod);
+    impl.maxBlockLength = static_cast<int32_t>(maxFrames);
     impl.minBlockLength = impl.maxBlockLength;
 
     UridMap& urids = catalog.urids();
@@ -820,21 +827,6 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.spareOutputs.reserve(impl.spareOutputs.size() + impl.audioOutputPorts.size());
     for (size_t i = 0; i < impl.audioOutputPorts.size(); ++i) {
         impl.spareOutputs.emplace_back(impl.maxFrames, 0.0f);
-    }
-
-    if (impl.pluginPeriod != impl.hostPeriod) {
-        impl.stageIn.assign(impl.audioInputPorts.size(), std::vector<float>(impl.pluginPeriod, 0.0f));
-        impl.stageOut.assign(impl.audioOutputPorts.size(), std::vector<float>(impl.pluginPeriod, 0.0f));
-        impl.stageInPtrs.resize(impl.stageIn.size());
-        impl.stageOutPtrs.resize(impl.stageOut.size());
-        for (size_t i = 0; i < impl.stageIn.size(); ++i) {
-            impl.stageInPtrs[i] = impl.stageIn[i].data();
-        }
-        for (size_t i = 0; i < impl.stageOut.size(); ++i) {
-            impl.stageOutPtrs[i] = impl.stageOut[i].data();
-        }
-        logInfo("lv2: " + info->name + " runs " + std::to_string(impl.pluginPeriod)
-                + "-frame blocks (host period " + std::to_string(impl.hostPeriod) + ")");
     }
 
     if (impl.atomInputPort >= 0) {
@@ -1045,32 +1037,7 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
         }
     }
 
-    if (impl.pluginPeriod == impl.hostPeriod || frames == impl.pluginPeriod) {
-        impl.runCycle(inputs, inputCount, outputs, outputCount, frames);
-        return;
-    }
-
-    const unsigned n = std::min(frames, impl.hostPeriod);
-    for (size_t i = 0; i < impl.audioOutputPorts.size(); ++i) {
-        float* destination = i < outputCount ? outputs[i] : impl.spareOutputs[i].data();
-        const float* source = impl.stageOut[i].data() + impl.stageOutRead;
-        std::memcpy(destination, source, n * sizeof(float));
-    }
-    impl.stageOutRead += n;
-
-    for (size_t i = 0; i < impl.audioInputPorts.size(); ++i) {
-        const float* source = i < inputCount ? inputs[i] : impl.silentInputs[i].data();
-        std::memcpy(impl.stageIn[i].data() + impl.stageInFill, source, n * sizeof(float));
-    }
-    impl.stageInFill += n;
-
-    if (impl.stageInFill >= impl.pluginPeriod) {
-        impl.runCycle(impl.stageInPtrs.data(), static_cast<unsigned>(impl.stageInPtrs.size()),
-                      impl.stageOutPtrs.data(), static_cast<unsigned>(impl.stageOutPtrs.size()),
-                      impl.pluginPeriod);
-        impl.stageInFill = 0;
-        impl.stageOutRead = 0;
-    }
+    impl.runCycle(inputs, inputCount, outputs, outputCount, frames);
 }
 
 Json PluginInstance::saveState() const {

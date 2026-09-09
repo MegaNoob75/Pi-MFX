@@ -278,7 +278,7 @@ export function PluginsView({
                             package: "toobamp",
                             title: "ToobAmp",
                             url: "https://github.com/rerdavies/ToobAmp",
-                            description: "Raspberry Pi guitar LV2 pack: NAM, cab IR, delay, reverb, EQ, modulation."
+                            description: "Raspberry Pi guitar LV2 pack with NAM A2 from ToobAmp dev. Copies TooB from PiPedal's arm64 package until GitHub publishes the standalone .deb."
                         }]}
                         suggested={suggestedPackages}
                         query={aptQuery}
@@ -314,6 +314,16 @@ export function PluginsView({
                             setRecommended((list) => list.map((item) => (
                                 str(item.id) === id || str(item.package) === id
                                     ? { ...item, installed: true }
+                                    : item
+                            )));
+                        })}
+                        onRemoveGithub={(id, title) => work(`Removing ${title}…`, async () => {
+                            await engine.client.request("plugins/github/remove", { id });
+                            await refreshAptInstalled();
+                            await refreshStatus();
+                            setRecommended((list) => list.map((item) => (
+                                str(item.id) === id || str(item.package) === id
+                                    ? { ...item, installed: false }
                                     : item
                             )));
                         })}
@@ -489,7 +499,8 @@ function AptTab({
     onSearch,
     onInstall,
     onRemove,
-    onInstallGithub
+    onInstallGithub,
+    onRemoveGithub
 }: {
     helper: boolean;
     https: boolean;
@@ -502,6 +513,7 @@ function AptTab({
     onInstall: (name: string) => void;
     onRemove: (name: string) => void;
     onInstallGithub: (id: string, title: string) => void;
+    onRemoveGithub: (id: string, title: string) => void;
 }) {
     return (
         <>
@@ -517,12 +529,13 @@ function AptTab({
                             <strong>{str(pack.title, str(pack.package))}</strong>
                             <div className="muted">
                                 {str(pack.repo, str(pack.url))}
+                                {str(pack.branch) ? ` · ${str(pack.branch)}` : ""}
                                 {str(pack.latestVersion) ? ` · ${str(pack.latestVersion)}` : ""}
                             </div>
                             {str(pack.description) && <div className="muted">{str(pack.description)}</div>}
                         </div>
                         {bool(pack.installed) ? (
-                            <button type="button" className="btn btn-danger" onClick={() => onRemove(str(pack.package))}>
+                            <button type="button" className="btn btn-danger" onClick={() => onRemoveGithub(str(pack.id, str(pack.package)), str(pack.title, str(pack.package)))}>
                                 REMOVE
                             </button>
                         ) : (
