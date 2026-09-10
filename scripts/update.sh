@@ -5,6 +5,9 @@
 # Does not re-run OS tuning or apt. Use install.sh for a first-time setup.
 
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 
 PREFIX="${PREFIX:-/usr/local}"
 WEB_ROOT="/usr/share/pimfx/web"
@@ -65,13 +68,18 @@ if ! command -v cmake >/dev/null 2>&1; then
     die "cmake is not installed. This Pi has not been set up yet. Run:  sudo bash ./scripts/pimfx.sh"
 fi
 
+jobs="$(nproc)"
+if [[ "${PIMFX_UPDATE_FROM_HELPER:-0}" == "1" && "$jobs" -gt 1 ]]; then
+    # The engine, MIDI controller, and kiosk stay up until the service restart.
+    jobs=$((jobs - 1))
+fi
 log "Building the engine"
-as_clone_owner cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
-as_clone_owner cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
+as_clone_owner nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+as_clone_owner nice -n 10 cmake --build "$REPO_DIR/engine/build" -j "$jobs"
 
 if [[ -f "$REPO_DIR/ui/package.json" ]]; then
     log "Building the user interface"
-    as_clone_owner bash -c 'cd "$1" && (npm ci --silent 2>/dev/null || npm install --silent) && npm run build --silent' bash "$REPO_DIR/ui"
+    as_clone_owner nice -n 10 bash -c 'cd "$1" && (npm ci --silent 2>/dev/null || npm install --silent) && npm run build --silent' bash "$REPO_DIR/ui"
 fi
 
 log "Installing files"

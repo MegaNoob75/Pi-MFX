@@ -1694,15 +1694,15 @@ void copyLiveNetwork(Json& json, const Json& live) {
 
 Json PluginStore::updateStatus(const Json& payload, std::string& error) {
     Json args = Json::object();
-    args.set("fetch", payload["fetch"].asBool(true));
+    args.set("fetch", payload["fetch"].asBool(false));
     args.set("branch", payload["branch"].asString());
-    return helperCall("update-status", args, error, 60);
+    return helperCall("update-status", args, error, 15);
 }
 
 Json PluginStore::updateInstall(const Json& payload, std::string& error) {
     Json args = Json::object();
     args.set("branch", payload["branch"].asString());
-    return helperCall("update-install", args, error, 1800);
+    return helperCall("update-install", args, error, 15);
 }
 
 Json PluginStore::hotspotStatus(std::string& error) {

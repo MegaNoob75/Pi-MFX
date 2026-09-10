@@ -266,17 +266,22 @@ restart_touchscreen_browser() {
     uid="$(id -u "$user" 2>/dev/null || true)"
     [[ -n "$uid" ]] || return 0
     runtime="/run/user/$uid"
-    pkill -u "$user" -x chromium >/dev/null 2>&1 || true
-    pkill -u "$user" -f '/usr/bin/chromium' >/dev/null 2>&1 || true
-    sleep 0.4
-    if [[ -d "$runtime" ]]; then
-        log "Restarting the touchscreen browser"
-        setsid sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
-            /etc/xdg/labwc/autostart >/dev/null 2>&1 &
-        disown || true
-    else
-        log "Reboot to reload the touchscreen browser (no graphical session yet)"
-    fi
+    # Never wait on Chromium: yesterday's `&` still left `setsid` attached to
+    # this script, so the kiosk restart froze updates and the controller UI.
+    log "Restarting the touchscreen browser"
+    (
+        pkill -KILL -u "$user" -x chromium >/dev/null 2>&1 || true
+        pkill -KILL -u "$user" -f '/usr/bin/chromium' >/dev/null 2>&1 || true
+        sleep 0.3
+        [[ -d "$runtime" ]] || exit 0
+        if command -v setsid >/dev/null 2>&1; then
+            setsid -f sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
+                /etc/xdg/labwc/autostart </dev/null >/dev/null 2>&1 || true
+        else
+            sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
+                /etc/xdg/labwc/autostart </dev/null >/dev/null 2>&1 &
+        fi
+    ) </dev/null >/dev/null 2>&1 &
 }
 
 refresh_touchscreen_session() {

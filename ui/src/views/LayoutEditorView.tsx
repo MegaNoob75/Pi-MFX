@@ -30,6 +30,7 @@ import {
 import { GainMeter } from "./GainMeter";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
 import { LibraryJsonPicker, utf8ToBase64 } from "./LibraryManager";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 function layoutNameFromPath(path: string, fallback = "default"): string {
     const leaf = path.replace(/\\/g, "/").split("/").pop() ?? fallback;
@@ -96,6 +97,7 @@ export function LayoutEditorView({
     const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
     const [dirty, setDirty] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
+    const [confirmDelete, setConfirmDelete] = useState(false);
     const [loadedLayoutName, setLoadedLayoutName] = useState(() => str(layout.layoutName));
     const [measurement, setMeasurement] = useState<{
         mode: string;
@@ -685,6 +687,23 @@ export function LayoutEditorView({
         });
     };
 
+    const deleteLayoutFile = () => {
+        const name = loadedLayoutName.trim() || "default";
+        setConfirmDelete(false);
+        void run(async () => {
+            const listed = obj(await engine.client.request("library/list", { kind: "layout", directory: "" }));
+            const file = objects(listed.files).find((item) => (
+                str(item.name).replace(/\.json$/i, "") === name
+            ));
+            if (!file || !str(file.path)) {
+                setMessage(`No saved file named “${name}”.`);
+                return;
+            }
+            await engine.client.request("library/delete", { path: str(file.path) });
+            setMessage(`Deleted “${name}”. Performance still uses the current arrangement until you save another.`);
+        });
+    };
+
     const addSnapshotWidget = () => {
         const slot = snapshotWidgets.reduce((max, item) => Math.max(max, item.slot), -1) + 1;
         const desired = gridCellRect(slot, 3, Math.max(2, Math.ceil((slot + 1) / 3)));
@@ -749,9 +768,20 @@ export function LayoutEditorView({
                         ))}
                     </div>
                     <div className="layout-editor-title">
-                        {stage === "snapshots" ? "SNAPSHOT LAYOUT" : "PERFORMANCE LAYOUT"}
-                        {" · "}
-                        {loadedLayoutName.trim() || "default"}
+                        <span>
+                            {stage === "snapshots" ? "SNAPSHOT LAYOUT" : "PERFORMANCE LAYOUT"}
+                            {" · "}
+                            {loadedLayoutName.trim() || "default"}
+                        </span>
+                        <button
+                            type="button"
+                            className="btn layout-name-delete"
+                            title={`Delete saved layout “${loadedLayoutName.trim() || "default"}”`}
+                            aria-label={`Delete saved layout ${loadedLayoutName.trim() || "default"}`}
+                            onClick={() => setConfirmDelete(true)}
+                        >
+                            🗑
+                        </button>
                     </div>
                     <div className="muted">
                         {stage === "snapshots"
@@ -1107,6 +1137,16 @@ export function LayoutEditorView({
                     ? "This layout is what the Performance screen shows."
                     : "Turn on mirror layout in Hardware Setup to show this on Performance."}
             </div>
+            {confirmDelete && (
+                <ConfirmDialog
+                    title={`DELETE “${(loadedLayoutName.trim() || "default").toUpperCase()}”?`}
+                    body="This removes the saved layout file. Performance keeps the current arrangement until you save another."
+                    confirmLabel="DELETE"
+                    danger
+                    onCancel={() => setConfirmDelete(false)}
+                    onConfirm={deleteLayoutFile}
+                />
+            )}
             {picker && (
                 <LibraryJsonPicker
                     engine={engine}

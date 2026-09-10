@@ -1757,8 +1757,21 @@ button.list-item {
 }
 
 .layout-editor-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
     font-weight: 900;
     letter-spacing: 0.06em;
+}
+
+.layout-name-delete {
+    width: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    font-size: 1.05rem;
+    line-height: 1;
 }
 
 .layout-editor-body {

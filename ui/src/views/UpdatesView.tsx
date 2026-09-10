@@ -41,6 +41,8 @@ export function UpdatesView({
         return next;
     };
 
+    const fetching = bool(status.fetching);
+
     const check = useCallback(async (fetchLatest = true) => {
         setChecking(true);
         setMessage("");
@@ -65,7 +67,7 @@ export function UpdatesView({
     }, [check]);
 
     useEffect(() => {
-        if (!installing) {
+        if (!installing && !fetching) {
             return;
         }
         let stopped = false;
@@ -86,7 +88,7 @@ export function UpdatesView({
             stopped = true;
             window.clearInterval(timer);
         };
-    }, [branch, engine.client, installing]);
+    }, [branch, engine.client, installing, fetching]);
 
     const installedCommit = str(status.installedCommit, gitSha);
     const latestCommit = str(status.latestCommit);
@@ -150,7 +152,7 @@ export function UpdatesView({
                                 key={item}
                                 type="button"
                                 className={`btn ${branch === item ? "btn-active" : ""}`}
-                                disabled={checking || installing}
+                                disabled={checking || installing || fetching}
                                 onClick={() => setBranch(item)}
                             >
                                 {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
@@ -161,37 +163,37 @@ export function UpdatesView({
                         Dev tracks day-to-day work. Main is the release branch.
                     </div>
                     <div className="updates-status">
-                        {checking && "Checking for updates…"}
-                        {!checking && installing && (str(status.message) || "Installing the update…")}
-                        {!checking && !installing && switching && `This Pi is on ${currentBranch}. Update to switch to ${branch}.`}
-                        {!checking && !installing && !switching && updateAvailable && `Commit ${latestCommit} is available on ${branch}.`}
-                        {!checking && !installing && upToDate && `Pi-MFX is up to date on ${branch}.`}
-                        {!checking && !installing && str(status.jobState) === "failed" && str(status.message)}
-                        {!checking && !installing && str(status.error) && str(status.error)}
-                        {!checking && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
+                        {(checking || fetching) && "Checking for updates…"}
+                        {!checking && !fetching && installing && (str(status.message) || "Installing the update…")}
+                        {!checking && !fetching && !installing && switching && `This Pi is on ${currentBranch}. Update to switch to ${branch}.`}
+                        {!checking && !fetching && !installing && !switching && updateAvailable && `Commit ${latestCommit} is available on ${branch}.`}
+                        {!checking && !fetching && !installing && upToDate && `Pi-MFX is up to date on ${branch}.`}
+                        {!checking && !fetching && !installing && str(status.jobState) === "failed" && str(status.message)}
+                        {!checking && !fetching && !installing && str(status.error) && str(status.error)}
+                        {!checking && !fetching && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
                             && (str(status.message) || "Could not determine update status.")}
                     </div>
                     {logLines.length > 0 && (
                         <pre className="updates-progress">{logLines.join("\n")}</pre>
                     )}
                     <div className="updates-warning">
-                        An update stops audio, rebuilds the engine and UI, and restarts the Pi-MFX service.
-                        The plugin helper stays up so this page can keep showing progress.
+                        An update rebuilds the engine and UI in the background so the controller stays live,
+                        then restarts the Pi-MFX service at the end. Audio drops only for that restart.
                     </div>
                     <div className="row" style={{ flexWrap: "wrap" }}>
                         <button
                             type="button"
                             className="btn"
-                            disabled={checking || installing}
+                            disabled={checking || installing || fetching}
                             onClick={() => void check(true)}
                         >
-                            {checking ? "CHECKING..." : "CHECK FOR UPDATES"}
+                            {checking || fetching ? "CHECKING..." : "CHECK FOR UPDATES"}
                         </button>
                         {(updateAvailable || switching) && (
                             <button
                                 type="button"
                                 className="btn btn-accent"
-                                disabled={checking || installing}
+                                disabled={checking || installing || fetching}
                                 onClick={() => setConfirmInstall(true)}
                             >
                                 {installing ? "UPDATING..." : `UPDATE ${branch.toUpperCase()}`}

@@ -16,6 +16,7 @@ import json
 import os
 import pwd
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -69,6 +70,11 @@ HEAVY_OPS = {
     "update-install",
 }
 HEAVY_LOCK = threading.Lock()
+STATUS_LOCK = threading.Lock()
+FETCH_LOCK = threading.Lock()
+INSTALL_LOCK = threading.Lock()
+_fetch_running = False
+_install_running = False
 
 
 def reply(conn: socket.socket, payload: dict) -> None:
@@ -535,16 +541,18 @@ def handle_connection(conn: socket.socket) -> None:
 def write_update_status(payload: dict) -> None:
     try:
         os.makedirs(os.path.dirname(UPDATE_STATUS_PATH), exist_ok=True)
-        with open(UPDATE_STATUS_PATH, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle)
+        with STATUS_LOCK:
+            with open(UPDATE_STATUS_PATH, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
     except OSError:
         pass
 
 
 def read_update_status() -> dict:
     try:
-        with open(UPDATE_STATUS_PATH, encoding="utf-8") as handle:
-            data = json.load(handle)
+        with STATUS_LOCK:
+            with open(UPDATE_STATUS_PATH, encoding="utf-8") as handle:
+                data = json.load(handle)
         if isinstance(data, dict):
             return data
     except (OSError, json.JSONDecodeError):
@@ -591,6 +599,57 @@ def git_in_repo(args: list[str], timeout: int = 30, repo: str = "") -> subproces
     return run(["git", "-C", root, *args], timeout=timeout)
 
 
+def install_in_progress() -> bool:
+    with INSTALL_LOCK:
+        return _install_running
+
+
+def fetch_in_progress() -> bool:
+    with FETCH_LOCK:
+        return _fetch_running
+
+
+def start_origin_fetch(repo: str) -> None:
+    global _fetch_running
+    with FETCH_LOCK:
+        if _fetch_running or install_in_progress():
+            return
+        _fetch_running = True
+
+    def work() -> None:
+        global _fetch_running
+        try:
+            git_in_repo(["fetch", "origin"], timeout=45, repo=repo)
+        except Exception:
+            pass
+        finally:
+            with FETCH_LOCK:
+                _fetch_running = False
+
+    threading.Thread(target=work, daemon=True, name="pimfx-git-fetch").start()
+
+
+def git_refs(repo: str, branch_wanted: str = "") -> dict:
+    current = git_in_repo(["rev-parse", "--abbrev-ref", "HEAD"], repo=repo).stdout.strip()
+    installed = git_in_repo(["rev-parse", "--short", "HEAD"], repo=repo).stdout.strip()
+    installed_full = git_in_repo(["rev-parse", "HEAD"], repo=repo).stdout.strip()
+    wanted = normalize_branch(branch_wanted) or normalize_branch(current) or "dev"
+    remote = f"origin/{wanted}"
+    latest_result = git_in_repo(["rev-parse", "--verify", "--quiet", "--short", remote], repo=repo)
+    latest = latest_result.stdout.strip() if latest_result.returncode == 0 else ""
+    switching = bool(current and current != wanted)
+    return {
+        "repo": repo,
+        "branch": current,
+        "requestedBranch": wanted,
+        "installedCommit": installed,
+        "installedCommitFull": installed_full,
+        "latestCommit": latest,
+        "updateAvailable": switching or bool(latest and latest != installed),
+        "message": "" if latest else f"origin/{wanted} was not found.",
+    }
+
+
 def git_update_status(fetch: bool, branch_wanted: str = "") -> dict:
     stored = read_update_status()
     repo = find_repo()
@@ -600,66 +659,127 @@ def git_update_status(fetch: bool, branch_wanted: str = "") -> dict:
             "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update --branch dev from the clone.",
             "jobState": stored.get("jobState") or "idle",
             "log": stored.get("log") or "",
+            "fetching": False,
         }
+    installing = install_in_progress()
+    job_state = stored.get("jobState") or "idle"
+    if job_state == "installing" and not installing:
+        job_state = "idle"
+    if fetch and not installing:
+        start_origin_fetch(repo)
+    payload = {
+        "ok": True,
+        "jobState": job_state,
+        "log": stored.get("log") or "",
+        "message": stored.get("message") or "",
+        "fetching": fetch_in_progress(),
+    }
     try:
-        current = git_in_repo(["rev-parse", "--abbrev-ref", "HEAD"], repo=repo).stdout.strip()
-        installed = git_in_repo(["rev-parse", "--short", "HEAD"], repo=repo).stdout.strip()
-        installed_full = git_in_repo(["rev-parse", "HEAD"], repo=repo).stdout.strip()
-        wanted = normalize_branch(branch_wanted) or normalize_branch(current) or "dev"
-        if fetch:
-            git_in_repo(["fetch", "origin"], timeout=45, repo=repo)
-        remote = f"origin/{wanted}"
-        latest_result = git_in_repo(["rev-parse", "--verify", "--quiet", "--short", remote], repo=repo)
-        latest = latest_result.stdout.strip() if latest_result.returncode == 0 else ""
-        switching = bool(current and current != wanted)
-        payload = {
-            "ok": True,
-            "repo": repo,
-            "branch": current,
-            "requestedBranch": wanted,
-            "installedCommit": installed,
-            "installedCommitFull": installed_full,
-            "latestCommit": latest,
-            "updateAvailable": switching or bool(latest and latest != installed),
-            "jobState": stored.get("jobState") or "idle",
-            "log": stored.get("log") or "",
-            "message": stored.get("message") or ("" if latest else f"origin/{wanted} was not found."),
-        }
-        return payload
+        payload.update(git_refs(repo, branch_wanted))
+        payload["jobState"] = job_state
+        payload["fetching"] = fetch_in_progress()
+        if job_state != "idle" and stored.get("message"):
+            payload["message"] = stored.get("message")
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc), "jobState": stored.get("jobState") or "idle"}
+        if installing:
+            payload["ok"] = True
+            payload["error"] = ""
+        else:
+            payload["ok"] = False
+            payload["error"] = str(exc)
+    return payload
 
 
 def git_update_install(timeout: int, branch: str = "") -> dict:
+    global _install_running
+    del timeout  # the job runs in the background; the HTTP thread must not wait
     repo = find_repo()
     if not repo_is_clone(repo):
         return {
             "ok": False,
             "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update --branch dev from the clone.",
         }
-    write_update_status({"jobState": "installing", "log": "Starting update...\n", "message": "Updating"})
+    with INSTALL_LOCK:
+        if _install_running:
+            stored = read_update_status()
+            stored["ok"] = True
+            stored["jobState"] = stored.get("jobState") or "installing"
+            stored["message"] = stored.get("message") or "Update already running"
+            return stored
+        _install_running = True
+    write_update_status({"ok": True, "jobState": "installing", "log": "Starting update...\n", "message": "Updating"})
     script = os.path.join(repo, "scripts", "update.sh")
-    env = {"PIMFX_UPDATE_FROM_HELPER": "1"}
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    env["PIMFX_UPDATE_FROM_HELPER"] = "1"
     wanted = normalize_branch(branch)
     if wanted:
         env["PIMFX_BRANCH"] = wanted
-    result = run(
-        ["/bin/bash", script],
-        timeout=timeout,
-        cwd=repo,
-        env=env,
-    )
-    log = ((result.stdout or "") + ("\n" + result.stderr if result.stderr else "")).strip()
-    payload = {
-        "ok": result.returncode == 0,
-        "jobState": "idle" if result.returncode == 0 else "failed",
-        "log": log,
-        "message": "Update finished" if result.returncode == 0 else (result.stderr or result.stdout or "update failed").strip(),
+
+    try:
+        proc = subprocess.Popen(
+            ["/bin/bash", script],
+            cwd=repo,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        with INSTALL_LOCK:
+            _install_running = False
+        payload = {"ok": False, "jobState": "failed", "error": str(exc), "message": str(exc), "log": ""}
+        write_update_status(payload)
+        return payload
+
+    def wait_for_update() -> None:
+        global _install_running
+        log_lines: list[str] = ["Starting update...\n"]
+        code = 1
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                log_lines.append(line)
+                if len(log_lines) > 400:
+                    del log_lines[:-300]
+                write_update_status({
+                    "ok": True,
+                    "jobState": "installing",
+                    "log": "".join(log_lines),
+                    "message": "Updating",
+                })
+            code = proc.wait(timeout=2400)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except OSError:
+                proc.kill()
+            code = 1
+            log_lines.append("\nUpdate timed out.\n")
+        except Exception as exc:  # noqa: BLE001
+            code = 1
+            log_lines.append(f"\n{exc}\n")
+        log = "".join(log_lines).strip()
+        payload = {
+            "ok": code == 0,
+            "jobState": "idle" if code == 0 else "failed",
+            "log": log,
+            "message": "Update finished" if code == 0 else "update failed",
+        }
+        if code != 0:
+            payload["error"] = payload["message"]
+        write_update_status(payload)
+        with INSTALL_LOCK:
+            _install_running = False
+
+    threading.Thread(target=wait_for_update, daemon=True, name="pimfx-update").start()
+    return {
+        "ok": True,
+        "jobState": "installing",
+        "log": "Starting update...\n",
+        "message": "Updating",
     }
-    if result.returncode != 0:
-        payload["error"] = payload["message"]
-    write_update_status(payload)
-    return payload
 
 
 if __name__ == "__main__":
