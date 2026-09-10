@@ -5,6 +5,7 @@ import { findBank, findPreset, isAnalogKind, isLatchingKind, normalizeControlKin
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
+import { NewPresetDialog } from "./NewPresetDialog";
 import {
     STATUS_WIDGET_IDS,
     STATUS_WIDGET_LABELS,
@@ -109,8 +110,7 @@ export function PerformanceView({
     const bypassAll = bool(state.bypassAll);
     const snapshotMode = bool(state.snapshotMode);
     const tuner = obj(meters.tuner);
-    const layoutMode = str(controller.layoutMode, "grid");
-    const useFreeform = layoutMode === "freeform" && !snapshotMode;
+    const useFreeform = true;
     const mirror = bool(controller.mirrorLayoutOnScreen, true);
     const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
@@ -123,6 +123,8 @@ export function PerformanceView({
     const [bankMenuOpen, setBankMenuOpen] = useState(false);
     const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menu, setMenu] = useState<TileMenu | null>(null);
+    const [newPreset, setNewPreset] = useState<{ controlId: string; canAssign: boolean } | null>(null);
+    const [pendingSnapshotDelete, setPendingSnapshotDelete] = useState<{ id: string; index: number; name: string } | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [toast, setToast] = useState("");
     const [pressedId, setPressedId] = useState("");
@@ -615,9 +617,7 @@ export function PerformanceView({
                 };
             });
 
-    const stageTiles = snapshotMode || useFreeform
-        ? tiles
-        : tiles.filter((tile) => !tile.analog);
+    const stageTiles = tiles;
 
     const presetOptions = (current: PresetMenu) => {
         if (!current.presetId) {
@@ -680,6 +680,10 @@ export function PerformanceView({
                 if (warnSnapshotWrite("Saving the preset")) {
                     return;
                 }
+                if (bool(ui.confirmPresetOverwrite, true)
+                    && !window.confirm(`Overwrite saved preset “${str(obj(preset).name, "this preset")}”?`)) {
+                    return;
+                }
                 closeMenu();
                 void run(() => client.request("preset/save")).then(() => {
                     rememberPresetBaseline(str(state.activePresetId), signatureForChain(chain), true);
@@ -698,19 +702,8 @@ export function PerformanceView({
                 if (warnSnapshotWrite("Creating a preset")) {
                     return;
                 }
-                void askText("New preset name", str(obj(preset).name, "Preset")).then((name) => {
-                    if (!name?.trim()) {
-                        return;
-                    }
-                    closeMenu();
-                    void run(async () => {
-                        const result = await client.request("preset/create", { name: name.trim() });
-                        const newId = str(result.presetId, str(client.snapshot.state.activePresetId));
-                        if (current.canAssign && newId) {
-                            await saveAssignments({ ...bankMap(), [current.controlId]: newId });
-                        }
-                    });
-                });
+                setNewPreset({ controlId: current.controlId, canAssign: current.canAssign });
+                closeMenu();
                 break;
             case "Delete Preset":
                 if (item) {
@@ -784,7 +777,9 @@ export function PerformanceView({
                 bankId: id,
                 presetId: str(first.id)
             }));
+            return;
         }
+        showToast(`“${str(obj(item).name, "This bank")}” has no presets`);
     };
 
     const selectPresetId = (id: string) => {
@@ -902,17 +897,8 @@ export function PerformanceView({
 
     return (
         <div className="performance">
-            {!useFreeform && (
-                <div className="performance-header">
-                    {bankPicker}
-                    <div className="performance-header-split">
-                        {presetPicker}
-                    </div>
-                </div>
-            )}
-
-            <div className={`performance-stage ${useFreeform || snapshotMode ? "freeform" : "grid"}`}>
-                {useFreeform && STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
+            <div className="performance-stage freeform">
+                {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                     const widget = widgets[id];
                     return (
                         <div
@@ -939,25 +925,11 @@ export function PerformanceView({
                     );
                 })}
 
-                {useFreeform || snapshotMode
-                    ? stageTiles.map((tile) => (
-                        <div key={tile.id} className="freeform-slot" style={tile.rect ? rectStyle(tile.rect) : undefined}>
-                            <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
-                        </div>
-                    ))
-                    : (
-                        <div
-                            className="switch-grid"
-                            style={{
-                                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-                                gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`
-                            }}
-                        >
-                            {stageTiles.map((tile) => (
-                                <PerformanceControl key={tile.id} tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
-                            ))}
-                        </div>
-                    )}
+                {stageTiles.map((tile) => (
+                    <div key={tile.id} className="freeform-slot" style={tile.rect ? rectStyle(tile.rect) : undefined}>
+                        <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
+                    </div>
+                ))}
             </div>
 
             {toast && createPortal(
@@ -1125,14 +1097,54 @@ export function PerformanceView({
                             type="button"
                             className="mfx-overlay-option danger"
                             onClick={() => {
+                                setPendingSnapshotDelete({
+                                    id: menu.snapshotId,
+                                    index: menu.index,
+                                    name: str(obj(snapshots.find((item) => str(item.id) === menu.snapshotId)).name, `Snapshot ${menu.index + 1}`)
+                                });
                                 closeMenu();
-                                void run(() => client.request("snapshot/delete", { snapshotId: menu.snapshotId }))
-                                    .then(() => showToast(`SNAPSHOT ${menu.index + 1} DELETED`));
                             }}
                         >
                             DELETE SNAPSHOT
                         </button>
                         <button type="button" className="mfx-overlay-option" onClick={closeMenu}>CANCEL</button>
+                    </div>
+                </div>,
+                document.body
+            )}
+            {newPreset && (
+                <NewPresetDialog
+                    banks={banks}
+                    defaultBankId={str(obj(bank).id)}
+                    defaultName={str(obj(preset).name, "Preset")}
+                    onCancel={() => setNewPreset(null)}
+                    onCreate={(name, bankId) => {
+                        const assignTo = newPreset;
+                        setNewPreset(null);
+                        void run(async () => {
+                            const result = await client.request("preset/create", { name, bankId });
+                            const newId = str(result.presetId, str(client.snapshot.state.activePresetId));
+                            if (assignTo.canAssign && newId) {
+                                await saveAssignments({ ...bankMap(), [assignTo.controlId]: newId });
+                            }
+                        });
+                    }}
+                />
+            )}
+            {pendingSnapshotDelete && createPortal(
+                <div className="mfx-overlay">
+                    <div className="mfx-overlay-card">
+                        <div className="mfx-overlay-title danger">DELETE SNAPSHOT?</div>
+                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{pendingSnapshotDelete.name}</div>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <button type="button" className="btn" onClick={() => setPendingSnapshotDelete(null)}>CANCEL</button>
+                            <button type="button" className="btn btn-danger" onClick={() => {
+                                const pending = pendingSnapshotDelete;
+                                setPendingSnapshotDelete(null);
+                                void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
+                                    .then(() => showToast(`SNAPSHOT ${pending.index + 1} DELETED`));
+                            }}>DELETE</button>
+                        </div>
                     </div>
                 </div>,
                 document.body

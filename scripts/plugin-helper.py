@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Root helper for Pi-MFX plugin apt, extra-repo, and Wi-Fi hotspot operations.
+"""Root helper for Pi-MFX plugin apt, extra-repo, updates, and Wi-Fi hotspot operations.
 
 The audio engine runs as an unprivileged user with NoNewPrivileges, so it
 cannot call apt or nmcli. This process listens on a UNIX socket owned by that
 user, accepts one JSON command per connection, and replies with one JSON object.
 
-It only installs packages whose names look like Debian packages and that look
-like LV2 plugins (name, description, or the suggested set). Repo lines must be
-HTTPS. Hotspot and Wi-Fi commands only run the installed hotspot.py helper. It
-never runs a shell with user text.
+It only installs packages on the curated list. Repo lines must be HTTPS and
+include a signing key. Hotspot and Wi-Fi commands only run the installed
+hotspot.py helper. It never runs a shell with user text.
 """
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import urllib.request
 
 SOCK_PATH = sys.argv[1] if len(sys.argv) > 1 else "/run/pimfx/plugin-helper.sock"
@@ -27,6 +27,8 @@ PIMFX_USER = os.environ.get("PIMFX_USER", "pimfx")
 DATA_ROOT = os.environ.get("PIMFX_DATA_ROOT", "/var/lib/pimfx")
 PREFIX = os.environ.get("PIMFX_PREFIX", "/usr/local")
 HOTSPOT_SCRIPT = os.path.join(PREFIX, "libexec/pimfx/hotspot.py")
+REPO_DIR = os.environ.get("PIMFX_REPO", "")
+UPDATE_STATUS_PATH = "/run/pimfx/update-status.json"
 SOURCES_DIR = "/etc/apt/sources.list.d"
 KEYRING_DIR = "/usr/share/keyrings"
 
@@ -56,6 +58,16 @@ SUGGESTED = {
 
 PLUGIN_NAME_HINTS = ("lv2", "guitarix", "gxplugin", "calf", "zam-plugin", "x42", "toobamp")
 DEB_PACKAGES = {"toobamp"}
+HEAVY_OPS = {
+    "apt-install",
+    "apt-remove",
+    "apt-update",
+    "deb-install",
+    "repo-add",
+    "repo-remove",
+    "update-install",
+}
+HEAVY_LOCK = threading.Lock()
 
 
 def reply(conn: socket.socket, payload: dict) -> None:
@@ -81,6 +93,7 @@ def run(
     timeout: int,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
     merged["DEBIAN_FRONTEND"] = "noninteractive"
@@ -94,6 +107,7 @@ def run(
         timeout=timeout,
         env=merged,
         cwd=cwd,
+        input=input_text,
     )
 
 
@@ -113,10 +127,7 @@ def valid_https(url: str) -> bool:
 
 
 def is_plugin_package(name: str, description: str = "") -> bool:
-    lower = f"{name} {description}".lower()
-    if name in SUGGESTED:
-        return True
-    return any(hint in lower for hint in PLUGIN_NAME_HINTS)
+    return name in SUGGESTED or name in DEB_PACKAGES
 
 
 def apt_show_description(name: str) -> str:
@@ -132,12 +143,9 @@ def apt_show_description(name: str) -> str:
 def allow_package(name: str) -> tuple[bool, str]:
     if not PACKAGE_RE.match(name):
         return False, "that is not a valid package name"
-    if is_plugin_package(name):
+    if name in SUGGESTED or name in DEB_PACKAGES:
         return True, ""
-    description = apt_show_description(name)
-    if is_plugin_package(name, description):
-        return True, ""
-    return False, "that package does not look like an LV2 plugin"
+    return False, "that package is not on the Pi-MFX install list"
 
 
 def allow_deb_path(path: str) -> tuple[bool, str]:
@@ -232,7 +240,8 @@ def download_key(repo_id: str, key_url: str, timeout: int) -> str:
 def handle(request: dict) -> dict:
     op = request.get("op") or ""
     timeout = int(request.get("timeout") or 60)
-    timeout = max(10, min(timeout, 300))
+    max_timeout = 1800 if op == "update-install" else 300
+    timeout = max(10, min(timeout, max_timeout))
 
     if op == "ping":
         return {"ok": True, "version": 1}
@@ -314,9 +323,13 @@ def handle(request: dict) -> dict:
         allowed, message = allow_package(name)
         if not allowed:
             return {"ok": False, "error": message}
+        update = apt_get(["update"], timeout=min(timeout, 90))
         result = apt_get(["install", "-y", "--no-install-recommends", name], timeout=timeout)
         if result.returncode != 0:
-            return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt-get install failed"}
+            detail = (result.stderr or result.stdout).strip() or "apt-get install failed"
+            if update.returncode != 0:
+                detail = ((update.stderr or update.stdout).strip() + "\n" + detail).strip()
+            return {"ok": False, "error": detail}
         return {"ok": True, "package": name, "installed": True}
 
     if op == "apt-remove":
@@ -361,7 +374,7 @@ def handle(request: dict) -> dict:
                 return {"ok": False, "error": str(exc)}
             options += f" signed-by={key}"
         else:
-            options += " trusted=yes"
+            return {"ok": False, "error": "a signing key URL is required"}
         line = f"deb [{options}] {uri} {suite} {' '.join(parts)}\n"
         path = repo_path(repo_id)
         with open(path, "w", encoding="utf-8") as handle:
@@ -407,9 +420,27 @@ def handle(request: dict) -> dict:
                 return {"ok": False, "error": "the network name must be 1 to 32 printable characters"}
             if password and not re.match(r"^[\x20-\x7e]{8,63}$", password):
                 return {"ok": False, "error": "the Wi-Fi password must be 8 to 63 printable characters"}
-            cmd.append(ssid)
-            if password:
-                cmd.append(password)
+            result = run(
+                cmd,
+                timeout=timeout,
+                input_text=json.dumps({"ssid": ssid, "password": password}),
+            )
+            raw = (result.stdout or "").strip()
+            if not raw:
+                return {
+                    "ok": False,
+                    "error": (result.stderr or "").strip() or "the hotspot helper returned no status",
+                }
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                return {"ok": False, "error": "the hotspot helper returned invalid JSON"}
+            if not isinstance(payload, dict):
+                return {"ok": False, "error": "the hotspot helper returned invalid JSON"}
+            payload.setdefault("ok", True)
+            if payload.get("error"):
+                payload["ok"] = False
+            return payload
         result = run(cmd, timeout=timeout)
         raw = (result.stdout or "").strip()
         if not raw:
@@ -427,6 +458,12 @@ def handle(request: dict) -> dict:
         if op in {"hotspot-apply", "wifi-connect", "wifi-disconnect"} and payload.get("error"):
             payload["ok"] = False
         return payload
+
+    if op == "update-status":
+        return git_update_status(bool(request.get("fetch")))
+
+    if op == "update-install":
+        return git_update_install(timeout)
 
     return {"ok": False, "error": f"unknown helper op: {op}"}
 
@@ -468,20 +505,120 @@ def serve() -> None:
         os.chown(SOCK_PATH, pw.pw_uid, pw.pw_gid)
     except KeyError:
         pass
-    sock.listen(4)
+    sock.listen(8)
 
     while True:
         conn, _unused = sock.accept()
+        thread = threading.Thread(target=handle_connection, args=(conn,), daemon=True)
+        thread.start()
+
+
+def handle_connection(conn: socket.socket) -> None:
+    try:
         try:
-            try:
-                request = read_request(conn)
+            request = read_request(conn)
+            op = str(request.get("op") or "")
+            if op in HEAVY_OPS:
+                with HEAVY_LOCK:
+                    reply(conn, handle(request))
+            else:
                 reply(conn, handle(request))
-            except subprocess.TimeoutExpired:
-                fail(conn, "that apt command timed out")
-            except Exception as exc:  # noqa: BLE001 — never crash the helper
-                fail(conn, str(exc))
-        finally:
-            conn.close()
+        except subprocess.TimeoutExpired:
+            fail(conn, "that apt command timed out")
+        except Exception as exc:  # noqa: BLE001 — never crash the helper
+            fail(conn, str(exc))
+    finally:
+        conn.close()
+
+
+def write_update_status(payload: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(UPDATE_STATUS_PATH), exist_ok=True)
+        with open(UPDATE_STATUS_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+    except OSError:
+        pass
+
+
+def read_update_status() -> dict:
+    try:
+        with open(UPDATE_STATUS_PATH, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def git_in_repo(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    if not REPO_DIR or not os.path.isdir(os.path.join(REPO_DIR, ".git")):
+        raise ValueError("Pi-MFX source clone is not configured")
+    return run(["git", "-C", REPO_DIR, *args], timeout=timeout)
+
+
+def git_update_status(fetch: bool) -> dict:
+    stored = read_update_status()
+    if not REPO_DIR or not os.path.isdir(os.path.join(REPO_DIR, ".git")):
+        return {
+            "ok": False,
+            "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update from the clone.",
+            "jobState": stored.get("jobState") or "idle",
+            "log": stored.get("log") or "",
+        }
+    try:
+        branch = git_in_repo(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+        installed = git_in_repo(["rev-parse", "--short", "HEAD"]).stdout.strip()
+        installedFull = git_in_repo(["rev-parse", "HEAD"]).stdout.strip()
+        latest = installed
+        if fetch:
+            git_in_repo(["fetch", "origin"], timeout=45)
+        remote = f"origin/{branch}" if branch and branch != "HEAD" else "origin/HEAD"
+        latest_result = git_in_repo(["rev-parse", "--short", remote])
+        if latest_result.returncode == 0:
+            latest = latest_result.stdout.strip()
+        payload = {
+            "ok": True,
+            "repo": REPO_DIR,
+            "branch": branch,
+            "installedCommit": installed,
+            "installedCommitFull": installedFull,
+            "latestCommit": latest,
+            "updateAvailable": bool(latest and latest != installed),
+            "jobState": stored.get("jobState") or "idle",
+            "log": stored.get("log") or "",
+            "message": stored.get("message") or "",
+        }
+        return payload
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc), "jobState": stored.get("jobState") or "idle"}
+
+
+def git_update_install(timeout: int) -> dict:
+    if not REPO_DIR or not os.path.isfile(os.path.join(REPO_DIR, "scripts", "update.sh")):
+        return {
+            "ok": False,
+            "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update from the clone.",
+        }
+    write_update_status({"jobState": "installing", "log": "Starting update...\n", "message": "Updating"})
+    script = os.path.join(REPO_DIR, "scripts", "update.sh")
+    result = run(
+        ["/bin/bash", script],
+        timeout=timeout,
+        cwd=REPO_DIR,
+        env={"PIMFX_UPDATE_FROM_HELPER": "1"},
+    )
+    log = ((result.stdout or "") + ("\n" + result.stderr if result.stderr else "")).strip()
+    payload = {
+        "ok": result.returncode == 0,
+        "jobState": "idle" if result.returncode == 0 else "failed",
+        "log": log,
+        "message": "Update finished" if result.returncode == 0 else (result.stderr or result.stdout or "update failed").strip(),
+    }
+    if result.returncode != 0:
+        payload["error"] = payload["message"]
+    write_update_status(payload)
+    return payload
 
 
 if __name__ == "__main__":

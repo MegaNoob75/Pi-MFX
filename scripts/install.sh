@@ -265,6 +265,7 @@ install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugi
 sed -e "s|@USER@|$PIMFX_USER|g" \
     -e "s|@PREFIX@|$PREFIX|g" \
     -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
+    -e "s|@REPO@|$REPO_DIR|g" \
     "$REPO_DIR/systemd/pimfx-plugin-helper.service.in" > /etc/systemd/system/pimfx-plugin-helper.service
 
 systemctl daemon-reload
@@ -279,6 +280,7 @@ log "Publishing pimfx.local"
 install -Dm644 "$REPO_DIR/scripts/mdns.py" "$PREFIX/libexec/pimfx/mdns.py"
 sed -e "s|@PREFIX@|$PREFIX|g" \
     -e "s|@PORT@|$PIMFX_PORT|g" \
+    -e "s|@USER@|$PIMFX_USER|g" \
     "$REPO_DIR/systemd/pimfx-mdns.service.in" > /etc/systemd/system/pimfx-mdns.service
 systemctl daemon-reload
 systemctl enable avahi-daemon.service >/dev/null 2>&1 || true

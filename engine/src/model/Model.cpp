@@ -376,7 +376,7 @@ ControllerConfig ControllerConfig::fromJson(const Json& json) {
     ControllerConfig config;
     config.enabled = json["enabled"].asBool(false);
     config.name = json["name"].asString("My Controller");
-    config.layoutMode = json["layoutMode"].asString("grid");
+    config.layoutMode = json["layoutMode"].asString("freeform");
     config.gridRows = std::max(1, json["gridRows"].asInt(2));
     config.gridColumns = std::max(1, json["gridColumns"].asInt(4));
     config.midiPort = json["midiPort"].asString();

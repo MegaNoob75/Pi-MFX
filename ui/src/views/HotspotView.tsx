@@ -29,7 +29,7 @@ export function HotspotView({
     const applyStatus = (next: JsonObject) => {
         setStatus(next);
         setSsid(str(next.ssid, "PI-MFX"));
-        if (Object.prototype.hasOwnProperty.call(next, "password")) {
+        if (str(next.password)) {
             setPassword(str(next.password));
         }
         setMode(asMode(str(next.mode, "off")));

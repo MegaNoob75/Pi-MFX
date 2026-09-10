@@ -417,17 +417,31 @@ export function PluginsView({
                             await engine.client.request("catalog");
                             await refreshStatus();
                         })}
-                        onRemoveApt={(name) => work(`Removing ${name}…`, async () => {
+                        onRemoveApt={(name) => {
+                            if (!window.confirm(`Remove package ${name}?`)) {
+                                return;
+                            }
+                            work(`Removing ${name}…`, async () => {
                             await engine.client.request("plugins/apt/remove", { package: name });
                             await refreshAptInstalled();
                             await refreshStatus();
-                        })}
-                        onRemoveGithub={(id, title) => work(`Removing ${title}…`, async () => {
+                        });
+                        }}
+                        onRemoveGithub={(id, title) => {
+                            if (!window.confirm(`Remove ${title}?`)) {
+                                return;
+                            }
+                            work(`Removing ${title}…`, async () => {
                             await engine.client.request("plugins/github/remove", { id });
                             await refreshAptInstalled();
                             await refreshStatus();
-                        })}
-                        onRemoveBundle={(directory) => work(`Removing ${directory}…`, async () => {
+                        });
+                        }}
+                        onRemoveBundle={(directory) => {
+                            if (!window.confirm(`Remove ${directory}?`)) {
+                                return;
+                            }
+                            work(`Removing ${directory}…`, async () => {
                             const bundle = objects(status.bundles).find((item) => (
                                 str(item.directory) === directory
                                 || arr(item.directories).map((value) => String(value)).includes(directory)
@@ -440,7 +454,8 @@ export function PluginsView({
                                     str(item.title).toLowerCase() === title ? { ...item, installed: false } : item
                                 )));
                             }
-                        })}
+                        });
+                        }}
                     />
                 )}
                 {tab === "install" && (

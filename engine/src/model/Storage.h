@@ -27,6 +27,7 @@ public:
     std::vector<Bank> loadBanks();
     bool saveBank(const Bank& bank);
     bool deleteBank(const std::string& bankId);
+    const std::vector<std::string>& brokenBankFiles() const { return brokenBankFiles_; }
 
     /// Files the user can pick in the model and IR browsers.
     struct LibraryEntry {
@@ -46,17 +47,20 @@ public:
     /// never trusted.
     bool isPathInLibrary(const std::string& path) const;
 
-    /// If `path` still exists in the library, returns it. If the file moved
-    /// (TONE3000 subfolder, rename), returns another library file with the
-    /// same file name. Empty if nothing matches.
+    /// If `path` still exists in the library, returns it. Prefers a relative
+    /// path under the matching library tree, then a unique file name. Empty
+    /// if nothing matches or two files share the name.
     std::string resolveLibraryFile(const std::string& path) const;
+    std::string resolveLibraryFile(const std::string& path, std::string& error) const;
 
 private:
     std::string bankFile(const std::string& bankId) const;
+    std::string bankFileStem(const std::string& bankId) const;
     std::vector<LibraryEntry> listLibrary(const std::string& root,
                                           const std::vector<std::string>& extensions) const;
 
     Paths paths_;
+    std::vector<std::string> brokenBankFiles_;
 };
 
 /// The bank a fresh install starts with: one clean preset, no plugins assumed

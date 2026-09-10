@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { findPreset, isAnalogKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
@@ -29,6 +29,7 @@ import {
 } from "../layout";
 import { GainMeter } from "./GainMeter";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
+import { LibraryJsonPicker } from "./LibraryManager";
 const SNAP_PIXELS_KEY = "pimfx-layout-snap-pixels";
 const SNAP_ENABLED_KEY = "pimfx-layout-snap-enabled";
 
@@ -58,10 +59,12 @@ function loadSnapEnabled(): boolean {
 
 export function LayoutEditorView({
     engine,
-    run
+    run,
+    onDirtyChange
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    onDirtyChange?: (dirty: boolean) => void;
 }) {
     const controller = obj(engine.state.controller);
     const controls = objects(controller.controls);
@@ -69,11 +72,6 @@ export function LayoutEditorView({
     const chain = objects(engine.state.chain);
     const parameterBindings = objects(obj(findPreset(engine.state)).parameterBindings);
     const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
-    const [mode, setMode] = useState<"grid" | "freeform">(
-        str(controller.layoutMode, "grid") === "freeform" ? "freeform" : "grid"
-    );
-    const [rows, setRows] = useState(() => Math.max(1, num(controller.gridRows, 2)));
-    const [columns, setColumns] = useState(() => Math.max(1, num(controller.gridColumns, 4)));
     const [widgets, setWidgets] = useState(() => readStatusWidgets(layout));
     const [snapshotWidgets, setSnapshotWidgets] = useState(() => readSnapshotWidgets(layout));
     const [stage, setStage] = useState<"performance" | "snapshots">("performance");
@@ -81,13 +79,16 @@ export function LayoutEditorView({
     const [draftRects, setDraftRects] = useState<Record<string, LayoutRect>>({});
     const [selectedId, setSelectedId] = useState("");
     const [groups, setGroups] = useState(() => readLayoutGroups(layout));
-    const [activeGroupId, setActiveGroupId] = useState(() => readLayoutGroups(layout)[0]?.id ?? "");
+    const [snapshotGroups, setSnapshotGroups] = useState(() => readLayoutGroups({ groups: layout.snapshotGroups } as JsonObject));
+    const [activeGroupId, setActiveGroupId] = useState("");
     const [groupMode, setGroupMode] = useState(false);
     const [groupName, setGroupName] = useState("");
     const [snapEnabled, setSnapEnabled] = useState(loadSnapEnabled);
     const [snapPixels, setSnapPixels] = useState(loadSnapPixels);
     const [message, setMessage] = useState("");
     const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
+    const [dirty, setDirty] = useState(false);
+    const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [measurement, setMeasurement] = useState<{
         mode: string;
         clientX: number;
@@ -95,8 +96,10 @@ export function LayoutEditorView({
         rect: LayoutRect;
     } | null>(null);
     const stageRef = useRef<HTMLDivElement>(null);
-    const groupsRef = useRef(groups);
-    groupsRef.current = groups;
+    const stageGroups = stage === "snapshots" ? snapshotGroups : groups;
+    const setStageGroups = stage === "snapshots" ? setSnapshotGroups : setGroups;
+    const groupsRef = useRef(stageGroups);
+    groupsRef.current = stageGroups;
     const swapTargetRef = useRef<string | null>(null);
     const drag = useRef<{
         id: string;
@@ -106,19 +109,28 @@ export function LayoutEditorView({
         rect: LayoutRect;
         last: LayoutRect;
         lastValid: Record<string, LayoutRect>;
+        startedOverlapping: Set<string>;
     } | null>(null);
 
     const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
-    const activeGroup = groups.find((group) => group.id === activeGroupId);
+    const activeGroup = stageGroups.find((group) => group.id === activeGroupId);
     const grouped = useMemo(() => new Set(activeGroup?.memberIds ?? []), [activeGroup]);
-    const canArrange = stage === "snapshots" || mode === "freeform";
+    const canArrange = true;
+    const markDirty = () => {
+        setDirty(true);
+        onDirtyChange?.(true);
+    };
 
-    const applySnap = (rect: LayoutRect) => {
+    useEffect(() => {
+        onDirtyChange?.(dirty);
+    }, [dirty, onDirtyChange]);
+
+    const applySnap = (rect: LayoutRect, min?: { width: number; height: number }) => {
         const box = stageRef.current?.getBoundingClientRect();
         if (!snapEnabled || !box) {
-            return clampRect(rect);
+            return clampRect(rect, min);
         }
-        return snapRectToPixels(rect, box.width, box.height, snapPixels);
+        return snapRectToPixels(rect, box.width, box.height, snapPixels, min);
     };
 
     const controlRect = (control: JsonObject, index: number): LayoutRect => {
@@ -127,14 +139,12 @@ export function LayoutEditorView({
             return draftRects[id];
         }
         const min = analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
-        return mode === "freeform"
-            ? clampRect({
-                x: num(control.x, gridCellRect(index, columns, rows).x),
-                y: num(control.y, gridCellRect(index, columns, rows).y),
-                width: Math.max(min.width, num(control.width, 0.18)),
-                height: Math.max(min.height, num(control.height, 0.2))
-            })
-            : gridCellRect(index, columns, rows);
+        return clampRect({
+            x: num(control.x, gridCellRect(index, 4, 2).x),
+            y: num(control.y, gridCellRect(index, 4, 2).y),
+            width: Math.max(min.width, num(control.width, 0.18)),
+            height: Math.max(min.height, num(control.height, 0.2))
+        }, min);
     };
 
     const placedControls = useMemo(
@@ -223,18 +233,37 @@ export function LayoutEditorView({
                 return next;
             });
         }
+        markDirty();
     };
 
-    const wouldCollide = (updates: Record<string, LayoutRect>, ignore: Set<string>) => {
+    const wouldCreateOverlap = (
+        updates: Record<string, LayoutRect>,
+        ignore: Set<string>,
+        startedOverlapping: Set<string>
+    ) => {
         const nextById = new Map(placedEntries().map((item) => [item.id, item.rect]));
         for (const [id, rect] of Object.entries(updates)) {
             nextById.set(id, rect);
         }
-        return Object.entries(updates).some(([id, rect]) => (
-            [...nextById.entries()].some(([otherId, otherRect]) => (
+        return Object.entries(updates).some(([id, rect]) => {
+            const hits = [...nextById.entries()].filter(([otherId, otherRect]) => (
                 otherId !== id && !ignore.has(otherId) && rectsOverlap(rect, otherRect)
-            ))
-        ));
+            ));
+            if (hits.length === 0) {
+                return false;
+            }
+            if (startedOverlapping.has(id)) {
+                const current = placedEntries().find((item) => item.id === id)?.rect;
+                if (!current) {
+                    return true;
+                }
+                const currentHits = placedEntries().filter((item) => (
+                    item.id !== id && !ignore.has(item.id) && rectsOverlap(current, item.rect)
+                )).length;
+                return hits.length > currentHits;
+            }
+            return true;
+        });
     };
 
     const groupForId = (id: string) => groupsRef.current.find((group) => group.memberIds.includes(id));
@@ -255,6 +284,9 @@ export function LayoutEditorView({
         }
         if (Object.keys(updates).length > 0) {
             patchRects(updates);
+        }
+        if (Object.keys(updates).length < memberIds.length) {
+            setMessage("Some grouped widgets were skipped so they would not overlap others.");
         }
         return updates;
     };
@@ -309,19 +341,21 @@ export function LayoutEditorView({
         }
         const id = newLayoutGroupId(groupsRef.current);
         const group: LayoutGroup = { id, name: `Group ${groupsRef.current.length + 1}`, memberIds: [] };
-        setGroups((current) => [...current, group]);
+        setStageGroups((current) => [...current, group]);
         setActiveGroupId(id);
+        markDirty();
         return id;
     };
 
     const addGroup = () => {
-        const name = groupName.trim() || `Group ${groups.length + 1}`;
-        const id = newLayoutGroupId(groups);
-        setGroups((current) => [...current, { id, name, memberIds: [] }]);
+        const name = groupName.trim() || `Group ${stageGroups.length + 1}`;
+        const id = newLayoutGroupId(stageGroups);
+        setStageGroups((current) => [...current, { id, name, memberIds: [] }]);
         setActiveGroupId(id);
         setGroupName("");
         setGroupMode(true);
-        setMessage(`Group “${name}” added. Tap widgets or controls to include them.`);
+        markDirty();
+        setMessage(`Group “${name}” added. Select widgets, then ADD TO GROUP.`);
     };
 
     const renameActiveGroup = () => {
@@ -329,10 +363,11 @@ export function LayoutEditorView({
         if (!activeGroup || !name) {
             return;
         }
-        setGroups((current) => current.map((group) => (
+        setStageGroups((current) => current.map((group) => (
             group.id === activeGroup.id ? { ...group, name } : group
         )));
         setGroupName("");
+        markDirty();
         setMessage(`Renamed to “${name}”.`);
     };
 
@@ -340,15 +375,16 @@ export function LayoutEditorView({
         if (!activeGroup) {
             return;
         }
-        setGroups((current) => current.filter((group) => group.id !== activeGroup.id));
+        setStageGroups((current) => current.filter((group) => group.id !== activeGroup.id));
         setActiveGroupId("");
         setGroupMode(false);
+        markDirty();
         setMessage(`Deleted group “${activeGroup.name}”.`);
     };
 
     const toggleGroupMember = (id: string) => {
         const groupId = ensureActiveGroup();
-        setGroups((current) => current.map((group) => {
+        setStageGroups((current) => current.map((group) => {
             if (group.id === groupId) {
                 const memberIds = group.memberIds.includes(id)
                     ? group.memberIds.filter((item) => item !== id)
@@ -360,7 +396,7 @@ export function LayoutEditorView({
                 memberIds: group.memberIds.filter((item) => item !== id)
             };
         }));
-        setSelectedId(id);
+        markDirty();
         setMessage("");
     };
 
@@ -370,17 +406,14 @@ export function LayoutEditorView({
         event: ReactPointerEvent,
         gesture: "move" | "resize-se" | "resize-nw" = "move"
     ) => {
-        if (!canArrange) {
-            setSelectedId(id);
-            return;
-        }
         event.preventDefault();
         event.stopPropagation();
-        if (groupMode && gesture === "move") {
-            toggleGroupMember(id);
-            return;
-        }
         stageRef.current?.setPointerCapture(event.pointerId);
+        const started = new Set<string>();
+        const others = placedEntries().filter((item) => item.id !== id);
+        if (others.some((item) => rectsOverlap(rect, item.rect))) {
+            started.add(id);
+        }
         drag.current = {
             id,
             mode: gesture,
@@ -388,7 +421,8 @@ export function LayoutEditorView({
             startY: event.clientY,
             rect,
             last: rect,
-            lastValid: { [id]: rect }
+            lastValid: { [id]: rect },
+            startedOverlapping: started
         };
         swapTargetRef.current = null;
         setSwapTargetId(null);
@@ -411,16 +445,18 @@ export function LayoutEditorView({
         const base = drag.current.rect;
         const id = drag.current.id;
         const min = minSizeForId(id);
-        const next = drag.current.mode === "move"
-            ? applySnap({ ...base, x: base.x + dx, y: base.y + dy })
-            : applySnap(resizeRect(base, dx, dy, drag.current.mode === "resize-nw" ? "nw" : "se", min));
+        const raw = drag.current.mode === "move"
+            ? { ...base, x: base.x + dx, y: base.y + dy }
+            : resizeRect(base, dx, dy, drag.current.mode === "resize-nw" ? "nw" : "se", min);
 
         let swapId: string | null = null;
         if (drag.current.mode === "move") {
-            const centerX = next.x + next.width / 2;
-            const centerY = next.y + next.height / 2;
+            const centerX = raw.x + raw.width / 2;
+            const centerY = raw.y + raw.height / 2;
+            const group = groupForId(id);
+            const skip = new Set(group && drag.current.mode === "move" ? group.memberIds : [id]);
             const hit = placedEntries().find((item) => (
-                item.id !== id && rectContainsPoint(item.rect, centerX, centerY)
+                !skip.has(item.id) && rectContainsPoint(item.rect, centerX, centerY)
             ));
             swapId = hit?.id ?? null;
         }
@@ -430,8 +466,8 @@ export function LayoutEditorView({
         }
 
         const ignore = new Set<string>(swapId ? [swapId] : []);
-        const updates: Record<string, LayoutRect> = { [id]: next };
-        if (drag.current.mode !== "move") {
+        const updates: Record<string, LayoutRect> = { [id]: applySnap(raw, min) };
+        if (drag.current.mode === "move") {
             const group = groupForId(id);
             if (group && group.memberIds.length > 1) {
                 for (const other of group.memberIds) {
@@ -440,23 +476,40 @@ export function LayoutEditorView({
                     }
                     const current = rectForId(other);
                     if (current) {
-                        updates[other] = sizedRect(other, current, { width: next.width, height: next.height });
+                        updates[other] = applySnap({
+                            ...current,
+                            x: current.x + dx,
+                            y: current.y + dy
+                        }, minSizeForId(other));
+                    }
+                }
+            }
+        } else {
+            const group = groupForId(id);
+            if (group && group.memberIds.length > 1) {
+                for (const other of group.memberIds) {
+                    if (other === id) {
+                        continue;
+                    }
+                    const current = rectForId(other);
+                    if (current) {
+                        updates[other] = sizedRect(other, current, { width: updates[id].width, height: updates[id].height });
                     }
                 }
             }
         }
 
-        const blocked = wouldCollide(updates, ignore);
+        const blocked = wouldCreateOverlap(updates, ignore, drag.current.startedOverlapping);
         setMeasurement({
             mode: drag.current.mode === "move" ? "MOVE" : "RESIZE",
             clientX: event.clientX,
             clientY: event.clientY,
-            rect: next
+            rect: updates[id]
         });
         if (blocked && !swapId) {
             return;
         }
-        drag.current.last = next;
+        drag.current.last = updates[id];
         drag.current.lastValid = updates;
         patchRects(updates);
         setMessage("");
@@ -540,26 +593,83 @@ export function LayoutEditorView({
         setMessage("");
     };
 
-    const layoutPayload = (): JsonObject => {
+    const pruneGroups = (items: LayoutGroup[], allowed: Set<string>) => (
+        items.map((group) => ({
+            ...group,
+            memberIds: group.memberIds.filter((id) => allowed.has(id))
+        })).filter((group) => group.id)
+    );
+
+    const visualLayout = (): JsonObject => {
+        const performanceIds = new Set([
+            ...STATUS_WIDGET_IDS,
+            ...placedControls.map((control) => str(control.id))
+        ]);
+        const snapshotIds = new Set(snapshotWidgets.map((item) => item.id));
         const nextControls = controls.map((control, index) => {
             const id = str(control.id);
             const rect = draftRects[id] ?? controlRect(control, index);
-            return mode === "freeform"
-                ? { ...control, x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+            return { id, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        });
+        return {
+            format: "pimfx-layout",
+            version: 1,
+            performanceLayout: {
+                elements: statusWidgetsToJson(widgets),
+                snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
+                unplacedControlIds: hiddenIds,
+                groups: layoutGroupsToJson(pruneGroups(groups, performanceIds)),
+                snapshotGroups: layoutGroupsToJson(pruneGroups(snapshotGroups, snapshotIds))
+            },
+            controls: nextControls
+        };
+    };
+
+    const applyVisualLayout = (parsed: JsonObject) => {
+        if (str(parsed.format) !== "pimfx-layout") {
+            throw new Error("that is not a Pi-MFX layout file");
+        }
+        const importedLayout = obj(parsed.performanceLayout);
+        const imported = objects(parsed.controls);
+        const importedGroups = readLayoutGroups(importedLayout);
+        const importedSnapGroups = readLayoutGroups({ groups: importedLayout.snapshotGroups } as JsonObject);
+        setWidgets(readStatusWidgets(importedLayout));
+        setSnapshotWidgets(readSnapshotWidgets(importedLayout));
+        setHiddenIds(unplacedIds(importedLayout));
+        setGroups(importedGroups);
+        setSnapshotGroups(importedSnapGroups);
+        setActiveGroupId((stage === "snapshots" ? importedSnapGroups : importedGroups)[0]?.id ?? "");
+        const nextRects: Record<string, LayoutRect> = {};
+        for (const item of imported) {
+            const id = str(item.id);
+            if (id) {
+                nextRects[id] = clampRect({
+                    x: num(item.x),
+                    y: num(item.y),
+                    width: num(item.width, 0.18),
+                    height: num(item.height, 0.2)
+                }, minSizeForId(id));
+            }
+        }
+        setDraftRects(nextRects);
+        setGroupMode(false);
+        markDirty();
+        setMessage("Layout loaded. Choose SAVE LAYOUT to apply it.");
+    };
+
+    const layoutPayload = (): JsonObject => {
+        const visual = visualLayout();
+        const rects = new Map(objects(visual.controls).map((item) => [str(item.id), item]));
+        const nextControls = controls.map((control) => {
+            const rect = obj(rects.get(str(control.id)));
+            return rect.id
+                ? { ...control, x: num(rect.x), y: num(rect.y), width: num(rect.width), height: num(rect.height) }
                 : control;
         });
         return {
             ...controller,
-            layoutMode: mode,
-            gridRows: rows,
-            gridColumns: columns,
-            performanceLayout: {
-                ...layout,
-                elements: statusWidgetsToJson(widgets),
-                snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
-                unplacedControlIds: hiddenIds,
-                groups: layoutGroupsToJson(groups)
-            },
+            layoutMode: "freeform",
+            performanceLayout: visual.performanceLayout,
             controls: nextControls
         };
     };
@@ -567,59 +677,9 @@ export function LayoutEditorView({
     const saveLayout = () => {
         void run(async () => {
             await engine.client.request("controller/config", layoutPayload());
+            setDirty(false);
+            onDirtyChange?.(false);
             setMessage("Layout saved. Performance uses this arrangement.");
-        });
-    };
-
-    const exportLayout = () => {
-        const payload = {
-            format: "pimfx-layout",
-            version: 1,
-            ...layoutPayload()
-        };
-        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "pimfx-layout.json";
-        link.click();
-        URL.revokeObjectURL(url);
-    };
-
-    const importLayout = (file: File) => {
-        void file.text().then((text) => {
-            const parsed = JSON.parse(text) as JsonObject;
-            if (str(parsed.format) !== "pimfx-layout") {
-                throw new Error("that is not a Pi-MFX layout file");
-            }
-            const importedLayout = obj(parsed.performanceLayout);
-            const imported = objects(parsed.controls);
-            const importedGroups = readLayoutGroups(importedLayout);
-            setMode(str(parsed.layoutMode, mode) === "freeform" ? "freeform" : "grid");
-            setRows(Math.max(1, num(parsed.gridRows, rows)));
-            setColumns(Math.max(1, num(parsed.gridColumns, columns)));
-            setWidgets(readStatusWidgets(importedLayout));
-            setSnapshotWidgets(readSnapshotWidgets(importedLayout));
-            setHiddenIds(unplacedIds(importedLayout));
-            setGroups(importedGroups);
-            setActiveGroupId(importedGroups[0]?.id ?? "");
-            const nextRects: Record<string, LayoutRect> = {};
-            for (const item of imported) {
-                const id = str(item.id);
-                if (id) {
-                    nextRects[id] = clampRect({
-                        x: num(item.x),
-                        y: num(item.y),
-                        width: num(item.width, 0.18),
-                        height: num(item.height, 0.2)
-                    });
-                }
-            }
-            setDraftRects(nextRects);
-            setGroupMode(false);
-            setMessage("Layout imported. Choose SAVE LAYOUT to apply it.");
-        }).catch((error: unknown) => {
-            window.alert(error instanceof Error ? error.message : String(error));
         });
     };
 
@@ -653,18 +713,16 @@ export function LayoutEditorView({
     );
 
     const resizeHandles = (id: string, rect: LayoutRect) => (
-        canArrange && (stage === "snapshots" || mode === "freeform") ? (
-            <>
-                <span
-                    className="layout-resize layout-resize-nw"
-                    onPointerDown={(event) => onPointerDown(id, rect, event, "resize-nw")}
-                />
-                <span
-                    className="layout-resize"
-                    onPointerDown={(event) => onPointerDown(id, rect, event, "resize-se")}
-                />
-            </>
-        ) : null
+        <>
+            <span
+                className="layout-resize layout-resize-nw"
+                onPointerDown={(event) => onPointerDown(id, rect, event, "resize-nw")}
+            />
+            <span
+                className="layout-resize"
+                onPointerDown={(event) => onPointerDown(id, rect, event, "resize-se")}
+            />
+        </>
     );
 
     return (
@@ -698,22 +756,6 @@ export function LayoutEditorView({
                     </div>
                 </div>
                 <div className="row">
-                    {(["grid", "freeform"] as const).map((item) => (
-                        <button
-                            key={item}
-                            type="button"
-                            className={`btn ${mode === item ? "btn-active" : ""}`}
-                            onClick={() => {
-                                setMode(item);
-                                if (item === "grid") {
-                                    setGroupMode(false);
-                                }
-                                setMessage("");
-                            }}
-                        >
-                            {item.toUpperCase()}
-                        </button>
-                    ))}
                     <button
                         type="button"
                         className={`btn ${snapEnabled ? "btn-active" : ""}`}
@@ -742,26 +784,17 @@ export function LayoutEditorView({
                             }}
                         />
                     </label>
-                    <label className="btn">
-                        IMPORT
-                        <input type="file" accept="application/json" hidden onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            if (file) {
-                                importLayout(file);
-                            }
-                            event.target.value = "";
-                        }} />
-                    </label>
-                    <button type="button" className="btn" onClick={exportLayout}>EXPORT</button>
+                    <button type="button" className="btn" onClick={() => setPicker("load")}>LOAD</button>
+                    <button type="button" className="btn" onClick={() => setPicker("save")}>SAVE AS</button>
                     <button type="button" className="btn btn-accent" onClick={saveLayout}>SAVE LAYOUT</button>
                 </div>
-                {canArrange && groupMode && activeGroup && (
+                {groupMode && activeGroup && (
                     <div className="layout-group-banner">
                         <span>
                             Grouping <strong>{activeGroup.name}</strong>
                             {" · "}
                             {activeGroup.memberIds.length} item{activeGroup.memberIds.length === 1 ? "" : "s"}
-                            {" · tap the stage to add or remove"}
+                            {" · select a widget, then ADD TO GROUP"}
                         </span>
                         <button
                             type="button"
@@ -775,20 +808,6 @@ export function LayoutEditorView({
                         >
                             DONE
                         </button>
-                    </div>
-                )}
-                {mode === "grid" && stage === "performance" && (
-                    <div className="row">
-                        <label className="field">
-                            <span>Rows</span>
-                            <input type="number" min={1} max={8} value={rows}
-                                onChange={(event) => setRows(Math.max(1, Number(event.target.value)))} />
-                        </label>
-                        <label className="field">
-                            <span>Columns</span>
-                            <input type="number" min={1} max={12} value={columns}
-                                onChange={(event) => setColumns(Math.max(1, Number(event.target.value)))} />
-                        </label>
                     </div>
                 )}
                 {message && <div className="muted">{message}</div>}
@@ -864,15 +883,28 @@ export function LayoutEditorView({
                                     </button>
                                     <button
                                         type="button"
+                                        className="btn btn-accent"
+                                        disabled={!selectedId}
+                                        onClick={() => {
+                                            if (selectedId) {
+                                                toggleGroupMember(selectedId);
+                                            }
+                                        }}
+                                    >
+                                        {grouped.has(selectedId) ? "REMOVE FROM GROUP" : "ADD TO GROUP"}
+                                    </button>
+                                    <button
+                                        type="button"
                                         className="btn"
                                         onClick={() => {
                                             const groupId = ensureActiveGroup();
-                                            setGroups((current) => current.map((group) => (
+                                            setStageGroups((current) => current.map((group) => (
                                                 group.id === groupId
                                                     ? { ...group, memberIds: [...visibleIds] }
                                                     : { ...group, memberIds: group.memberIds.filter((id) => !visibleIds.includes(id)) }
                                             )));
                                             setGroupMode(true);
+                                            markDirty();
                                             setMessage(`Added all ${visibleIds.length} items to “${activeGroup.name}”.`);
                                         }}
                                     >
@@ -1066,6 +1098,20 @@ export function LayoutEditorView({
                     ? "This layout is what the Performance screen shows."
                     : "Turn on mirror layout in Hardware Setup to show this on Performance."}
             </div>
+            {picker && (
+                <LibraryJsonPicker
+                    engine={engine}
+                    run={run}
+                    kind="layout"
+                    mode={picker}
+                    title={picker === "save" ? "SAVE LAYOUT FILE" : "LOAD LAYOUT"}
+                    defaultName="layout"
+                    contents={picker === "save" ? JSON.stringify(visualLayout(), null, 2) : undefined}
+                    onClose={() => setPicker(null)}
+                    onLoad={(parsed) => applyVisualLayout(parsed)}
+                    onSaved={() => setMessage("Layout file saved on the Pi.")}
+                />
+            )}
         </div>
     );
 }

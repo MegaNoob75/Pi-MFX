@@ -124,7 +124,7 @@ npm run dev
 | `update.sh` says not installed | First time: `sudo bash ./scripts/pimfx.sh` and pick Install |
 | `git pull` refused | On the Pi you have local edits. `git status`. Do not fight it — stash or reset only if you meant those files to come from the PC. |
 | No sound card in the UI | `arecord -l` on the Pi. If empty, the OS cannot see the hardware. |
-| Empty plugin list | `lv2ls`. If empty, open **Settings → Plugins** and install from apt or PatchStorage |
+| Empty plugin list | `lv2ls`. If empty, open **Plugins** and install from apt or PatchStorage |
 | Clicks / xruns | [LOW_LATENCY.md](LOW_LATENCY.md). Raise frames or periods. |
 
 ---

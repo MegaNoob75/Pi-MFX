@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
+#include <sstream>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -37,12 +39,28 @@ bool Storage::saveSettings(const Settings& settings) {
     return writeFileAtomic(paths_.settingsFile(), settings.toJson().dump(2));
 }
 
+std::string Storage::bankFileStem(const std::string& bankId) const {
+    const std::string safe = sanitizeFileName(bankId);
+    if (safe == bankId) {
+        return safe;
+    }
+    std::uint32_t hash = 2166136261u;
+    for (unsigned char c : bankId) {
+        hash ^= c;
+        hash *= 16777619u;
+    }
+    std::ostringstream out;
+    out << safe << "-" << std::hex << hash;
+    return out.str();
+}
+
 std::string Storage::bankFile(const std::string& bankId) const {
-    return joinPath(paths_.banksDir(), sanitizeFileName(bankId) + ".json");
+    return joinPath(paths_.banksDir(), bankFileStem(bankId) + ".json");
 }
 
 std::vector<Bank> Storage::loadBanks() {
     std::vector<Bank> banks;
+    brokenBankFiles_.clear();
 
     for (const std::string& file : listDirectory(paths_.banksDir(), ".json")) {
         std::string contents;
@@ -52,7 +70,12 @@ std::vector<Bank> Storage::loadBanks() {
         std::string error;
         const Json json = Json::parse(contents, &error);
         if (!error.empty()) {
-            logError("banks: skipping " + fileName(file) + " (" + error + ")");
+            const std::string broken = file + ".broken";
+            std::error_code ec;
+            fs::rename(file, broken, ec);
+            brokenBankFiles_.push_back(fileName(file));
+            logError("banks: moved corrupt " + fileName(file) + " to " + fileName(broken)
+                     + " (" + error + ")");
             continue;
         }
         banks.push_back(Bank::fromJson(json));
@@ -81,7 +104,21 @@ bool Storage::saveBank(const Bank& bank) {
     if (bank.id.empty()) {
         return false;
     }
-    return writeFileAtomic(bankFile(bank.id), bank.toJson().dump(2));
+    const std::string path = bankFile(bank.id);
+    if (fileExists(path)) {
+        std::string contents;
+        std::string parseError;
+        if (readFile(path, contents)) {
+            const Json json = Json::parse(contents, &parseError);
+            const std::string existingId = json["id"].asString();
+            if (parseError.empty() && !existingId.empty() && existingId != bank.id) {
+                logError("banks: refusing to overwrite " + fileName(path)
+                         + " (id " + existingId + ") with bank " + bank.id);
+                return false;
+            }
+        }
+    }
+    return writeFileAtomic(path, bank.toJson().dump(2));
 }
 
 bool Storage::deleteBank(const std::string& bankId) {
@@ -150,7 +187,9 @@ bool Storage::isPathInLibrary(const std::string& path) const {
     if (ec) {
         return false;
     }
-    for (const std::string& root : {paths_.modelsDir, paths_.aidaxDir, paths_.irsDir, paths_.lv2Dir}) {
+    for (const std::string& root : {
+             paths_.modelsDir, paths_.aidaxDir, paths_.irsDir, paths_.lv2Dir,
+             paths_.layoutsDir, paths_.backupsDir, paths_.bankExportsDir, paths_.themesDir()}) {
         const fs::path base = fs::weakly_canonical(fs::path(root), ec);
         if (ec) {
             continue;
@@ -172,6 +211,12 @@ bool Storage::isPathInLibrary(const std::string& path) const {
 }
 
 std::string Storage::resolveLibraryFile(const std::string& path) const {
+    std::string error;
+    return resolveLibraryFile(path, error);
+}
+
+std::string Storage::resolveLibraryFile(const std::string& path, std::string& error) const {
+    error.clear();
     if (path.empty()) {
         return std::string();
     }
@@ -181,31 +226,67 @@ std::string Storage::resolveLibraryFile(const std::string& path) const {
         return ec ? path : canonical.string();
     }
 
-    const std::string wantedName = fs::path(path).filename().string();
-    const std::string wantedStem = fs::path(path).stem().string();
-    auto search = [&](const std::vector<LibraryEntry>& entries) -> std::string {
-        for (const LibraryEntry& entry : entries) {
-            if (fs::path(entry.path).filename().string() == wantedName) {
-                return entry.path;
+    const fs::path incoming(path);
+    const std::string wantedName = incoming.filename().string();
+    const std::string wantedStem = incoming.stem().string();
+    std::vector<std::string> parts;
+    for (const auto& part : incoming) {
+        const std::string raw = part.string();
+        if (raw.empty() || raw == "." || raw == ".." || raw == incoming.root_name().string()
+            || (raw.size() == 1 && (raw[0] == '/' || raw[0] == '\\'))) {
+            continue;
+        }
+        parts.push_back(raw);
+    }
+
+    const std::vector<std::string> roots = {paths_.modelsDir, paths_.aidaxDir, paths_.irsDir};
+
+    for (const std::string& root : roots) {
+        for (size_t start = 0; start < parts.size(); ++start) {
+            fs::path candidate = fs::path(root);
+            for (size_t i = start; i < parts.size(); ++i) {
+                candidate /= parts[i];
+            }
+            if (fs::is_regular_file(candidate, ec) && isPathInLibrary(candidate.string())) {
+                const fs::path canonical = fs::weakly_canonical(candidate, ec);
+                return ec ? candidate.string() : canonical.string();
             }
         }
-        if (wantedStem.empty()) {
+    }
+
+    std::vector<std::string> nameHits;
+    std::vector<std::string> stemHits;
+    auto collect = [&](const std::vector<LibraryEntry>& entries) {
+        for (const LibraryEntry& entry : entries) {
+            if (!wantedName.empty() && fs::path(entry.path).filename().string() == wantedName) {
+                nameHits.push_back(entry.path);
+            } else if (!wantedStem.empty() && entry.name == wantedStem) {
+                stemHits.push_back(entry.path);
+            }
+        }
+    };
+    collect(listModels());
+    collect(listAidax());
+    collect(listImpulseResponses());
+
+    auto uniqueHit = [&](const std::vector<std::string>& hits, const std::string& label) -> std::string {
+        if (hits.size() == 1) {
+            return hits.front();
+        }
+        if (hits.size() > 1) {
+            error = "more than one library file is named " + label;
             return std::string();
-        }
-        for (const LibraryEntry& entry : entries) {
-            if (entry.name == wantedStem) {
-                return entry.path;
-            }
         }
         return std::string();
     };
 
-    std::string hit = search(listModels());
-    if (hit.empty()) {
-        hit = search(listAidax());
+    std::string hit = uniqueHit(nameHits, wantedName);
+    if (!hit.empty() || !error.empty()) {
+        return hit;
     }
-    if (hit.empty()) {
-        hit = search(listImpulseResponses());
+    hit = uniqueHit(stemHits, wantedStem);
+    if (hit.empty() && error.empty()) {
+        error = "can't find that file in the library (" + fileName(path) + ")";
     }
     return hit;
 }

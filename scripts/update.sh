@@ -89,6 +89,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         sed -e "s|@USER@|$PIMFX_USER|g" \
             -e "s|@PREFIX@|$PREFIX|g" \
             -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
+            -e "s|@REPO@|$REPO_DIR|g" \
             "$REPO_DIR/systemd/pimfx-plugin-helper.service.in" > /etc/systemd/system/pimfx-plugin-helper.service
     fi
     PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" \
@@ -103,6 +104,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         if [[ -f "$REPO_DIR/systemd/pimfx-mdns.service.in" ]]; then
             sed -e "s|@PREFIX@|$PREFIX|g" \
                 -e "s|@PORT@|$PIMFX_PORT|g" \
+                -e "s|@USER@|$PIMFX_USER|g" \
                 "$REPO_DIR/systemd/pimfx-mdns.service.in" > /etc/systemd/system/pimfx-mdns.service
         fi
     fi
@@ -115,8 +117,12 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     fi
     if [[ -f /etc/systemd/system/pimfx-plugin-helper.service ]]; then
         systemctl enable pimfx-plugin-helper.service >/dev/null 2>&1 || true
-        systemctl restart pimfx-plugin-helper.service \
-            || warn "plugin helper did not start; apt installs from the UI will be unavailable"
+        if [[ "${PIMFX_UPDATE_FROM_HELPER:-0}" == "1" ]]; then
+            log "Leaving the plugin helper running so Update progress can finish"
+        else
+            systemctl restart pimfx-plugin-helper.service \
+                || warn "plugin helper did not start; apt installs from the UI will be unavailable"
+        fi
     fi
     if [[ -f "$REPO_DIR/systemd/95-pimfx-audio.rules" ]]; then
         log "Refreshing audio udev rules"
@@ -149,4 +155,5 @@ if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
     log "Refreshing the touchscreen session (Pi-MFX keyboard, no system popup)"
     bash "$REPO_DIR/scripts/pimfx.sh" display-refresh
 fi
-log "Done. Open http://${ADDRESS:-<this-pi>}:8080"
+log "Done. Open http://pimfx.local:${PIMFX_PORT:-8080}"
+log "     or http://${ADDRESS:-<this-pi>}:${PIMFX_PORT:-8080}"

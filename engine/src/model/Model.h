@@ -197,9 +197,9 @@ struct ControllerConfig {
     bool enabled = false;
     std::string name = "My Controller";
 
-    /// "grid" arranges controls in rows and columns; "freeform" places them
-    /// exactly where the user dragged them.
-    std::string layoutMode = "grid";
+    /// Always freeform. Older controller.json may still say "grid"; the UI
+    /// ignores that and packs with rects.
+    std::string layoutMode = "freeform";
     int gridRows = 2;
     int gridColumns = 4;
 

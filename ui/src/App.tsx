@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEngine } from "./api";
-import { bool, obj } from "./json";
+import { bool, num, obj } from "./json";
 import { AboutView } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
 import { EditorView } from "./views/EditorView";
@@ -11,6 +11,7 @@ import ThemeManagerView from "./views/ThemeManagerView";
 import { LayoutEditorView } from "./views/LayoutEditorView";
 import { SnapshotManagerView } from "./views/SnapshotManagerView";
 import { SnapshotEditView } from "./views/SnapshotEditView";
+import { UpdatesView } from "./views/UpdatesView";
 import { PluginsView } from "./views/PluginsView";
 import { Tone3000View } from "./views/Tone3000View";
 import { FilesView } from "./views/LibraryManager";
@@ -54,6 +55,7 @@ const titles: Record<string, string> = {
     backup: "BACKUP",
     system: "SYSTEM",
     hotspot: "WIFI / HOTSPOT",
+    updates: "UPDATES",
     about: "ABOUT"
 };
 
@@ -70,19 +72,35 @@ export function App() {
     const [dismissedError, setDismissedError] = useState("");
     const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
+    const [layoutDirty, setLayoutDirty] = useState(false);
     const menuRef = useRef<HTMLElement | null>(null);
 
     useEffect(() => installResponsiveSizing(), []);
 
     const settingsPages: SettingsPage[] = [
-        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot"
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot", "updates"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
     const snapshotMode = bool(engine.state.snapshotMode);
+    const chainLocked = snapshotMode || num(engine.state.activeSnapshot, -1) >= 0;
+
+    const confirmLeaveLayout = (next: View) => {
+        if (view !== "layout" || !layoutDirty || next === "layout") {
+            return true;
+        }
+        if (window.confirm("Leave the layout editor? Unsaved arrangement will be lost.")) {
+            setLayoutDirty(false);
+            return true;
+        }
+        return false;
+    };
 
     const goTo = (next: View) => {
         setMenuOpen(false);
         if (next === view) {
+            return;
+        }
+        if (!confirmLeaveLayout(next)) {
             return;
         }
         if (next === "edit") {
@@ -114,6 +132,12 @@ export function App() {
         if (view === "edit" && editSubpage !== "chain") {
             setEditBackRequest((value) => value + 1);
             return;
+        }
+        if (view === "layout" && layoutDirty) {
+            if (!window.confirm("Leave the layout editor? Unsaved arrangement will be lost.")) {
+                return;
+            }
+            setLayoutDirty(false);
         }
         finishBack();
     };
@@ -287,6 +311,7 @@ export function App() {
                     <EditorView
                         engine={engine}
                         run={run}
+                        lockChain={chainLocked}
                         backRequest={editBackRequest}
                         onPageChange={(page, effectTitle) => {
                             setEditSubpage(page);
@@ -332,16 +357,23 @@ export function App() {
                     <SettingsHub onOpen={(page) => goTo(page)} />
                 )}
                 {view === "theme" && (
-                    <ThemeManagerView persistTheme={async (theme) => {
-                        await engine.client.request("ui/settings", persistThemeSettings(
-                            obj(engine.state.ui),
-                            theme.name,
-                            loadCustomMultiFXThemes(),
-                            themeLedColors(theme)
-                        ));
-                    }} />
+                    <ThemeManagerView
+                        engine={engine}
+                        run={run}
+                        persistTheme={async (theme) => {
+                            await engine.client.request("ui/settings", persistThemeSettings(
+                                obj(engine.state.ui),
+                                theme.name,
+                                loadCustomMultiFXThemes(),
+                                themeLedColors(theme)
+                            ));
+                        }}
+                    />
                 )}
-                {view === "layout" && <LayoutEditorView engine={engine} run={run} />}
+                {view === "layout" && (
+                    <LayoutEditorView engine={engine} run={run} onDirtyChange={setLayoutDirty} />
+                )}
+                {view === "updates" && <UpdatesView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
                     || view === "tone3000" || view === "system" || view === "backup"
                     || view === "hotspot") && (

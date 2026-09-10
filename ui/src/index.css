@@ -2576,6 +2576,69 @@ button.list-item {
     overflow: auto;
 }
 
+.library-picker-files {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: min(40vh, 320px);
+    overflow: auto;
+}
+
+.updates-page {
+    width: min(760px, 100%);
+    margin: 0 auto;
+}
+
+.updates-version-grid {
+    display: grid;
+    grid-template-columns: minmax(90px, auto) 1fr;
+    gap: 7px 14px;
+    align-items: center;
+}
+
+.updates-version-grid span {
+    color: var(--mfx-muted);
+    font-weight: 700;
+}
+
+.updates-status {
+    margin-top: 4px;
+    font-weight: 800;
+}
+
+.updates-warning {
+    color: var(--mfx-muted);
+    line-height: 1.5;
+    padding: 12px;
+    border: 1px solid var(--mfx-danger);
+    border-radius: 9px;
+}
+
+.updates-progress,
+.updates-command {
+    margin: 0;
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--mfx-panel-alt, #16161d);
+    color: var(--mfx-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    overflow-x: auto;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.about-legal a,
+.about-hero a {
+    color: var(--mfx-cyan);
+}
+
+.about-path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85em;
+}
+
 .explorer-kind-tabs {
     flex-wrap: wrap;
 }

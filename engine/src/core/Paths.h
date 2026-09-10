@@ -18,6 +18,9 @@ struct Paths {
     std::string irsDir;       ///< impulse responses
     std::string downloadsDir; ///< partial TONE3000 downloads
     std::string lv2Dir;       ///< user-installed LV2 bundles (PatchStorage, copies)
+    std::string layoutsDir;   ///< named Performance layout JSON
+    std::string backupsDir;   ///< UI backup JSON
+    std::string bankExportsDir; ///< exported bank JSON copies
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 

@@ -50,6 +50,9 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.irsDir = joinPath(root, "irs");
     paths.downloadsDir = joinPath(root, "downloads");
     paths.lv2Dir = joinPath(root, "lv2");
+    paths.layoutsDir = joinPath(root, "layouts");
+    paths.backupsDir = joinPath(root, "backups");
+    paths.bankExportsDir = joinPath(root, "bank-exports");
 
     paths.webRoot = environment("PIMFX_WEB_ROOT");
     if (paths.webRoot.empty()) {
@@ -69,6 +72,9 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(joinPath(paths.irsDir, "TONE3000"));
     makeDirectories(paths.downloadsDir);
     makeDirectories(paths.lv2Dir);
+    makeDirectories(paths.layoutsDir);
+    makeDirectories(paths.backupsDir);
+    makeDirectories(paths.bankExportsDir);
     return paths;
 }
 

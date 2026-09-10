@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { num, str, type JsonObject } from "../json";
 
+const MIT_URL = "https://opensource.org/licenses/MIT";
+const REPO_URL = "https://github.com/MegaNoob75/Pi-MFX";
+
 export function AboutView({ state }: { state: JsonObject }) {
     const [legalOpen, setLegalOpen] = useState(false);
+    const version = str(state.version, "0.1.0");
+    const gitSha = str(state.gitSha);
 
     if (legalOpen) {
         return (
@@ -15,25 +20,36 @@ export function AboutView({ state }: { state: JsonObject }) {
                 <div className="page-scroll about-legal">
                     <section className="panel stack">
                         <h2>Pi-MFX</h2>
-                        <InfoRow label="Version" value={str(state.version, "0.1.0")} />
+                        <InfoRow label="Version" value={version} />
+                        {gitSha && <InfoRow label="Commit" value={gitSha} />}
                         <InfoRow label="Engine" value={str(state.audioBackend, "unknown")} />
                         <InfoRow label="Plugins" value={`${num(state.pluginCount)} loaded`} />
                         <p>
                             Pi-MFX is an original Raspberry Pi 5 guitar multi-effects system.
-                            The audio engine, control protocol, preset format and ESP32 firmware
-                            are written from scratch for this project. MIT license.
+                            Copyright Ross Morgenstern. Released under the{" "}
+                            <a href={MIT_URL} target="_blank" rel="noopener noreferrer">MIT License</a>.
+                        </p>
+                        <p className="muted">
+                            Anyone on the same local network or hotspot can open this UI and
+                            control the Pi. There is no login on the LAN HTTP or WebSocket APIs.
                         </p>
                     </section>
                     <section className="panel stack">
                         <h2>Third-party components</h2>
                         <p className="muted">
-                            Linked, not pasted: LV2 / lilv (ISC), ALSA and libsndfile (LGPL),
-                            libsamplerate (BSD-2-Clause), libcurl, React / Vite / TypeScript (MIT),
-                            ESP-IDF (Apache-2.0), TinyUSB (MIT).
+                            Linked, not pasted. License texts live in licenses/ on the Pi.
                         </p>
+                        <LegalLink name="LV2 / lilv" href="https://lv2plug.in/" note="ISC" />
+                        <LegalLink name="ALSA" href="https://www.alsa-project.org/" note="LGPL-2.1-or-later" />
+                        <LegalLink name="libsndfile" href="https://libsndfile.github.io/libsndfile/" note="LGPL-2.1-or-later" />
+                        <LegalLink name="libsamplerate" href="http://libsndfile.github.io/libsamplerate/" note="BSD-2-Clause" />
+                        <LegalLink name="libcurl" href="https://curl.se/docs/copyright.html" note="curl / MIT-X" />
+                        <LegalLink name="React / Vite / TypeScript" href="https://opensource.org/licenses/MIT" note="MIT" />
+                        <LegalLink name="ESP-IDF" href="https://github.com/espressif/esp-idf" note="Apache-2.0" />
+                        <LegalLink name="TinyUSB" href="https://github.com/hathach/tinyusb" note="MIT" />
                         <p className="muted">
-                            Full texts live in licenses/ on the Pi. LV2 plugins users install keep
-                            their own licenses — see docs/PLUGIN_LICENSES.md.
+                            LV2 plugins you install keep their own licenses — see{" "}
+                            <span className="about-path">docs/PLUGIN_LICENSES.md</span>.
                         </p>
                     </section>
                     <section className="panel stack">
@@ -45,7 +61,11 @@ export function AboutView({ state }: { state: JsonObject }) {
                         </p>
                     </section>
                     <section className="panel stack">
-                        <h2>Notices</h2>
+                        <h2>Source and notices</h2>
+                        <p className="muted">
+                            Source:{" "}
+                            <a href={REPO_URL} target="_blank" rel="noopener noreferrer">{REPO_URL}</a>
+                        </p>
                         <p className="muted">
                             See NOTICE.md and docs/THIRD_PARTY.md in the Pi-MFX tree for the
                             complete attribution record.
@@ -66,7 +86,8 @@ export function AboutView({ state }: { state: JsonObject }) {
                         </svg>
                         <div>
                             <h2 style={{ margin: 0, fontSize: "1.7rem" }}>PI-MFX</h2>
-                            <div className="muted">version {str(state.version, "0.1.0")}</div>
+                            <div className="muted">version {version}</div>
+                            {gitSha && <div className="muted">{gitSha}</div>}
                         </div>
                     </div>
                     <div style={{ color: "var(--mfx-cyan)", fontWeight: 800 }}>
@@ -74,7 +95,7 @@ export function AboutView({ state }: { state: JsonObject }) {
                     </div>
                     <p>
                         Direct ALSA hardware I/O, in-process LV2, and a touchscreen control
-                        surface. Not a fork of PiPedal or MODEP.
+                        surface.
                     </p>
                     <InfoRow label="Engine" value={str(state.audioBackend, "unknown")} />
                     <InfoRow label="Plugins" value={`${num(state.pluginCount)} loaded`} />
@@ -84,8 +105,9 @@ export function AboutView({ state }: { state: JsonObject }) {
                         </button>
                     </div>
                     <div className="muted">
-                        Copyright Ross. MIT license. Third-party LV2 plugins keep their own
-                        licenses.
+                        Copyright Ross Morgenstern.{" "}
+                        <a href={MIT_URL} target="_blank" rel="noopener noreferrer">MIT license</a>.
+                        {" "}Third-party LV2 plugins keep their own licenses.
                     </div>
                 </div>
             </div>
@@ -98,6 +120,17 @@ function InfoRow({ label, value }: { label: string; value: string }) {
         <div className="about-info-row">
             <span>{label}</span>
             <strong>{value}</strong>
+        </div>
+    );
+}
+
+function LegalLink({ name, href, note }: { name: string; href: string; note: string }) {
+    return (
+        <div className="about-info-row">
+            <span>{name}</span>
+            <strong>
+                <a href={href} target="_blank" rel="noopener noreferrer">{note}</a>
+            </strong>
         </div>
     );
 }

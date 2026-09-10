@@ -6,6 +6,8 @@ Wants=avahi-daemon.service
 
 [Service]
 Type=simple
+User=@USER@
+Group=@USER@
 Environment=PIMFX_PORT=@PORT@
 Environment=PIMFX_MDNS_NAME=pimfx.local
 ExecStart=/usr/bin/python3 @PREFIX@/libexec/pimfx/mdns.py

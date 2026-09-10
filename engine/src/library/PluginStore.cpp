@@ -108,6 +108,15 @@ std::string urlEncode(const std::string& text) {
     return out;
 }
 
+bool suggestedPackage(const std::string& name) {
+    for (const char* item : kSuggested) {
+        if (name == item) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool validPackageName(const std::string& name) {
     if (name.empty() || name.size() > 80) {
         return false;
@@ -603,7 +612,6 @@ PluginStore::PluginStore(Paths paths) : paths_(std::move(paths)) {
 }
 
 Json PluginStore::status() {
-    std::lock_guard<std::mutex> lock(mutex_);
     Json json = Json::object();
     json.set("helperAvailable", helperPing());
     json.set("helperSocket", kHelperSocket);
@@ -618,9 +626,18 @@ Json PluginStore::status() {
         suggested.push(Json(name));
     }
     json.set("suggestedPackages", suggested);
-    json.set("recommended", recommendedUnlocked(false));
-    json.set("bundles", installedBundles());
-    json.set("hidden", loadRegistry()["hidden"]);
+    Json hidden;
+    Json bundles;
+    Json recommended;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        recommended = recommendedUnlocked(false);
+        bundles = installedBundles();
+        hidden = loadRegistry()["hidden"];
+    }
+    json.set("recommended", recommended);
+    json.set("bundles", bundles);
+    json.set("hidden", hidden);
     return json;
 }
 
@@ -714,8 +731,8 @@ Json PluginStore::aptList(std::string& error) {
 }
 
 bool PluginStore::aptInstall(const std::string& package, std::string& error) {
-    if (!validPackageName(package)) {
-        error = "that is not a valid package name";
+    if (!validPackageName(package) || !suggestedPackage(package)) {
+        error = "that package is not on the Pi-MFX install list";
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -726,8 +743,8 @@ bool PluginStore::aptInstall(const std::string& package, std::string& error) {
 }
 
 bool PluginStore::aptRemove(const std::string& package, std::string& error) {
-    if (!validPackageName(package)) {
-        error = "that is not a valid package name";
+    if (!validPackageName(package) || !suggestedPackage(package)) {
+        error = "that package is not on the Pi-MFX install list";
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -746,6 +763,10 @@ bool PluginStore::repoAdd(const Json& payload, std::string& error) {
     const std::string id = payload["id"].asString();
     if (!validRepoId(id)) {
         error = "repo id must be lowercase letters, digits, and dashes";
+        return false;
+    }
+    if (payload["keyUrl"].asString().empty()) {
+        error = "a signing key URL is required";
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1671,6 +1692,16 @@ void copyLiveNetwork(Json& json, const Json& live) {
     }
 }
 
+Json PluginStore::updateStatus(bool fetchLatest, std::string& error) {
+    Json args = Json::object();
+    args.set("fetch", fetchLatest);
+    return helperCall("update-status", args, error, 60);
+}
+
+Json PluginStore::updateInstall(std::string& error) {
+    return helperCall("update-install", Json::object(), error, 1800);
+}
+
 Json PluginStore::hotspotStatus(std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     Json stored = readHotspotFile(paths_);
@@ -1692,10 +1723,7 @@ Json PluginStore::hotspotStatus(std::string& error) {
 }
 
 Json PluginStore::hotspotConfig(std::string& error) {
-    Json json = hotspotStatus(error);
-    std::lock_guard<std::mutex> lock(mutex_);
-    json.set("password", readHotspotFile(paths_)["password"].asString());
-    return json;
+    return hotspotStatus(error);
 }
 
 Json PluginStore::applyHotspot(const Json& payload, std::string& error) {
@@ -1737,8 +1765,10 @@ Json PluginStore::applyHotspot(const Json& payload, std::string& error) {
     }
 
     Json json = publicHotspot(next);
-    json.set("password", password);
-    json.set("generatedPassword", generated);
+    if (generated) {
+        json.set("password", password);
+        json.set("generatedPassword", true);
+    }
     Json live = helperCall("hotspot-apply", Json::object(), error, 60);
     if (!error.empty()) {
         json.set("helperAvailable", false);

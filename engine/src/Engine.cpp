@@ -32,7 +32,7 @@ std::string sanitizeRelDir(const std::string& text) {
     return out.generic_string();
 }
 
-const std::string& libraryRootForKind(const Paths& paths, const std::string& kind) {
+std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
     if (kind == "ir") {
         return paths.irsDir;
     }
@@ -42,11 +42,24 @@ const std::string& libraryRootForKind(const Paths& paths, const std::string& kin
     if (kind == "plugin") {
         return paths.lv2Dir;
     }
+    if (kind == "layout") {
+        return paths.layoutsDir;
+    }
+    if (kind == "theme") {
+        return paths.themesDir();
+    }
+    if (kind == "backup") {
+        return paths.backupsDir;
+    }
+    if (kind == "bank") {
+        return paths.bankExportsDir;
+    }
     return paths.modelsDir;
 }
 
 std::string libraryKindName(const std::string& kind) {
-    if (kind == "ir" || kind == "aidax" || kind == "plugin") {
+    if (kind == "ir" || kind == "aidax" || kind == "plugin"
+        || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank") {
         return kind;
     }
     return "model";
@@ -58,7 +71,9 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
     if (pathEc) {
         return false;
     }
-    for (const std::string& root : {paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir}) {
+    for (const std::string& root : {
+             paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir,
+             paths.layoutsDir, paths.backupsDir, paths.bankExportsDir, paths.themesDir()}) {
         std::error_code rootEc;
         const auto base = std::filesystem::weakly_canonical(std::filesystem::path(root), rootEc);
         if (!rootEc && candidate == base) {
@@ -105,10 +120,12 @@ std::string resolvePluginFilePath(Storage& storage, const std::string& propertyU
     if (path.empty()) {
         return path;
     }
-    const std::string resolved = storage.resolveLibraryFile(path);
+    const std::string resolved = storage.resolveLibraryFile(path, error);
     if (resolved.empty() || !fileExists(resolved) || !storage.isPathInLibrary(resolved)) {
-        error = "can't find that file in the library (" + fileName(path) + ")";
-        logError("plugin file missing: " + propertyUri + " " + path);
+        if (error.empty()) {
+            error = "can't find that file in the library (" + fileName(path) + ")";
+        }
+        logError("plugin file missing: " + propertyUri + " " + path + " (" + error + ")");
         return std::string();
     }
     if (propertyLooksLikeNam(propertyUri)) {
@@ -124,7 +141,8 @@ std::string resolvePluginFilePath(Storage& storage, const std::string& propertyU
     return resolved;
 }
 
-Json rewritePluginStateFiles(Storage& storage, const Json& state) {
+Json rewritePluginStateFiles(Storage& storage, const Json& state,
+                             std::vector<std::string>* missing = nullptr) {
     if (!state.isObject() || !state["properties"].isObject()) {
         return state;
     }
@@ -138,6 +156,11 @@ Json rewritePluginStateFiles(Storage& storage, const Json& state) {
         std::string error;
         const std::string resolved = resolvePluginFilePath(storage, member.first, incoming, error);
         if (resolved.empty()) {
+            properties.set(member.first, Json(incoming));
+            if (missing) {
+                missing->push_back(fileName(incoming) + ": " + (error.empty()
+                    ? std::string("file is missing") : error));
+            }
             continue;
         }
         properties.set(member.first, Json(resolved));
@@ -303,6 +326,7 @@ void Engine::setStateListener(StateListener listener) {
 bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
     banks_ = storage_.loadBanks();
+    brokenBankFiles_ = storage_.brokenBankFiles();
 
     activeBankId_ = settings_.activeBankId;
     activePresetId_ = settings_.activePresetId;
@@ -338,7 +362,7 @@ bool Engine::start(std::string& error) {
 
     backend_ = createAudioBackend();
     backend_->setFailureHandler([this](const std::string& message) {
-        std::lock_guard<std::mutex> lock(stateMutex_);
+        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         audioError_ = message;
         notify();
     });
@@ -389,7 +413,7 @@ void Engine::stop() {
     }
 
     {
-        std::lock_guard<std::mutex> lock(stateMutex_);
+        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         persistActiveBankUnlocked();
     }
 
@@ -454,7 +478,7 @@ bool Engine::restartAudio(std::string& error) {
 }
 
 bool Engine::applyAudioSettings(const Json& json, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
 
     const AudioSettings previous = settings_.audio;
     settings_.audio = audioSettingsFromJson(json, settings_.audio);
@@ -487,7 +511,7 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
 }
 
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     settings_.system = SystemSettings::fromJson(json);
 
     if (settings_.system.holdCpuLatency && !latencyGuard_) {
@@ -662,6 +686,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     }
 
     std::string failures;
+    missingPluginFiles_.clear();
     for (const EffectSlot& slot : preset.chain) {
         std::string slotError;
         std::unique_ptr<PluginInstance> plugin = PluginInstance::create(
@@ -674,7 +699,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             failures += (failures.empty() ? "" : "; ") + slotError;
             continue;
         }
-        plugin->loadState(rewritePluginStateFiles(storage_, slot.state));
+        plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
 
         auto chainSlot = std::make_unique<ChainSlot>();
         chainSlot->id = slot.id;
@@ -725,6 +750,28 @@ Bank* Engine::findBank(const std::string& bankId) {
     return nullptr;
 }
 
+Bank* Engine::findBankForPreset(const std::string& presetId) {
+    for (Bank& bank : banks_) {
+        for (const Preset& preset : bank.presets) {
+            if (preset.id == presetId) {
+                return &bank;
+            }
+        }
+    }
+    return nullptr;
+}
+
+Preset* Engine::findPresetAnywhere(const std::string& presetId) {
+    for (Bank& bank : banks_) {
+        for (Preset& preset : bank.presets) {
+            if (preset.id == presetId) {
+                return &preset;
+            }
+        }
+    }
+    return nullptr;
+}
+
 Bank* Engine::activeBank() { return findBank(activeBankId_); }
 
 const Bank* Engine::activeBank() const {
@@ -769,23 +816,34 @@ void Engine::syncPresetFromChain() {
     }
 }
 
-void Engine::persistActiveBankUnlocked() {
-    Preset* preset = activePreset();
-    if (!preset || preset->activeSnapshot >= 0) {
-        bankPersistPending_.store(false, std::memory_order_relaxed);
-        return;
+void Engine::persistBankUnlocked(Bank* bank, bool syncFromChain) {
+    if (syncFromChain) {
+        Preset* preset = activePreset();
+        if (preset && preset->activeSnapshot < 0) {
+            syncPresetFromChain();
+        }
     }
-    syncPresetFromChain();
-    Bank* bank = activeBank();
     if (bank) {
         storage_.saveBank(*bank);
     }
     bankPersistPending_.store(false, std::memory_order_relaxed);
 }
 
-void Engine::requestBankPersist(bool immediate) {
+void Engine::persistActiveBankUnlocked() {
+    persistBankUnlocked(activeBank(), true);
+}
+
+void Engine::flushPendingBasePresetUnlocked() {
     Preset* preset = activePreset();
     if (!preset || preset->activeSnapshot >= 0) {
+        return;
+    }
+    persistActiveBankUnlocked();
+}
+
+void Engine::requestBankPersist(bool immediate) {
+    Preset* preset = activePreset();
+    if (!preset) {
         return;
     }
     if (immediate) {
@@ -807,7 +865,7 @@ void Engine::flushBankPersistIfDue() {
     if (now < bankPersistDueMs_.load(std::memory_order_relaxed)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (!bankPersistPending_.load(std::memory_order_relaxed)) {
         return;
     }
@@ -815,7 +873,7 @@ void Engine::flushBankPersistIfDue() {
 }
 
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
 
     Bank* bank = findBank(bankId.empty() ? activeBankId_ : bankId);
     if (!bank) {
@@ -904,8 +962,11 @@ bool Engine::stepBank(int delta, std::string& error) {
 }
 
 bool Engine::savePreset(std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    syncPresetFromChain();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (preset && preset->activeSnapshot < 0) {
+        syncPresetFromChain();
+    }
     Bank* bank = activeBank();
     if (!bank) {
         error = "no active bank";
@@ -920,7 +981,7 @@ bool Engine::savePreset(std::string& error) {
 }
 
 bool Engine::savePresetAs(const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     syncPresetFromChain();
 
     Bank* bank = activeBank();
@@ -947,10 +1008,14 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
 }
 
 bool Engine::createPreset(const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    return createPreset(name, std::string(), error);
+}
+
+bool Engine::createPreset(const std::string& name, const std::string& bankId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     persistActiveBankUnlocked();
 
-    Bank* bank = activeBank();
+    Bank* bank = bankId.empty() ? activeBank() : findBank(bankId);
     if (!bank) {
         error = "no active bank";
         return false;
@@ -976,10 +1041,10 @@ bool Engine::createPreset(const std::string& name, std::string& error) {
 }
 
 bool Engine::renamePreset(const std::string& presetId, const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    Bank* bank = activeBank();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Bank* bank = findBankForPreset(presetId);
     if (!bank) {
-        error = "no active bank";
+        error = "no such preset";
         return false;
     }
     for (Preset& preset : bank->presets) {
@@ -995,10 +1060,10 @@ bool Engine::renamePreset(const std::string& presetId, const std::string& name, 
 }
 
 bool Engine::deletePreset(const std::string& presetId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    Bank* bank = activeBank();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Bank* bank = findBankForPreset(presetId);
     if (!bank) {
-        error = "no active bank";
+        error = "no such preset";
         return false;
     }
     if (bank->presets.size() <= 1) {
@@ -1029,10 +1094,10 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
 }
 
 bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    Bank* bank = activeBank();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Bank* bank = findBankForPreset(presetId);
     if (!bank) {
-        error = "no active bank";
+        error = "no such preset";
         return false;
     }
     const auto found = std::find_if(bank->presets.begin(), bank->presets.end(),
@@ -1051,7 +1116,7 @@ bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::strin
 }
 
 bool Engine::movePresetToBank(const std::string& presetId, const std::string& targetBankId, int newIndex, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Bank* source = nullptr;
     auto found = std::vector<Preset>::iterator();
     for (Bank& bank : banks_) {
@@ -1105,6 +1170,8 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
     if (activePresetId_ == presetId) {
         activeBankId_ = target->id;
         settings_.activeBankId = activeBankId_;
+        std::string chainError;
+        publishChain(buildChain(target->presets[static_cast<size_t>(newIndex)], chainError));
     }
     storage_.saveBank(*source);
     storage_.saveBank(*target);
@@ -1114,7 +1181,7 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
 }
 
 bool Engine::createBank(const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Bank bank;
     bank.id = newId("bank");
     bank.name = name.empty() ? "New Bank" : name;
@@ -1134,7 +1201,7 @@ bool Engine::createBank(const std::string& name, std::string& error) {
 }
 
 bool Engine::renameBank(const std::string& bankId, const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Bank* bank = findBank(bankId);
     if (!bank) {
         error = "no such bank";
@@ -1147,7 +1214,7 @@ bool Engine::renameBank(const std::string& bankId, const std::string& name, std:
 }
 
 bool Engine::deleteBank(const std::string& bankId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (banks_.size() <= 1) {
         error = "at least one bank has to remain";
         return false;
@@ -1162,6 +1229,20 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
     storage_.deleteBank(bankId);
     const bool wasActive = bankId == activeBankId_;
     banks_.erase(found);
+
+    ControllerConfig config = controller_.config();
+    if (config.presetAssignments.isObject() && config.presetAssignments.has(bankId)) {
+        Json next = Json::object();
+        for (const Json::Member& member : config.presetAssignments.members()) {
+            if (member.first != bankId) {
+                next.set(member.first, member.second);
+            }
+        }
+        config.presetAssignments = next;
+        controller_.setConfig(config);
+        settings_.controller = config;
+        persistSettings();
+    }
 
     if (wasActive) {
         activeBankId_ = banks_.front().id;
@@ -1179,7 +1260,7 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
 }
 
 bool Engine::reorderBank(const std::string& bankId, int newIndex, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const auto found = std::find_if(banks_.begin(), banks_.end(),
                                     [&](const Bank& bank) { return bank.id == bankId; });
     if (found == banks_.end()) {
@@ -1215,7 +1296,7 @@ bool Engine::importBank(const Json& json, std::string& error) {
         error = "that file is not a Pi-MFX bank";
         return false;
     }
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
 
     Bank bank = Bank::fromJson(json);
     // Fresh identifiers, so importing a bank twice gives two banks rather than
@@ -1243,10 +1324,14 @@ bool Engine::importBank(const Json& json, std::string& error) {
 // ---------------------------------------------------------------------------
 
 bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
+        return false;
+    }
+    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+        error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
     const PluginInfo* info = catalog_.find(uri);
@@ -1279,11 +1364,83 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
     return true;
 }
 
-bool Engine::removeEffect(const std::string& slotId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
+        return false;
+    }
+    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+        error = "snapshot editing cannot add, remove or reorder effects";
+        return false;
+    }
+    const PluginInfo* info = catalog_.find(uri);
+    if (!info) {
+        error = "that plugin is not installed";
+        return false;
+    }
+    syncPresetFromChain();
+    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
+                                    [&](const EffectSlot& slot) { return slot.id == slotId; });
+    if (found == preset->chain.end()) {
+        error = "no such effect";
+        return false;
+    }
+    const int index = static_cast<int>(found - preset->chain.begin());
+    EffectSlot next;
+    next.id = newId("slot");
+    next.uri = uri;
+    next.name = info->name;
+    next.enabled = true;
+    preset->chain.insert(preset->chain.begin() + index, next);
+    newSlotId = next.id;
+
+    std::string chainError;
+    std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
+    if (!chain) {
+        error = chainError.empty() ? "could not load that plugin" : chainError;
+        preset->chain.erase(preset->chain.begin() + index);
+        return false;
+    }
+    bool loaded = false;
+    for (const auto& slot : chain->slots) {
+        if (slot->id == next.id && slot->plugin) {
+            loaded = true;
+            break;
+        }
+    }
+    if (!loaded) {
+        error = chainError.empty() ? "could not load that plugin" : chainError;
+        preset->chain.erase(preset->chain.begin() + index);
+        return false;
+    }
+
+    const auto old = std::find_if(preset->chain.begin(), preset->chain.end(),
+                                  [&](const EffectSlot& slot) { return slot.id == slotId; });
+    if (old != preset->chain.end()) {
+        preset->chain.erase(old);
+    }
+    preset->parameterBindings.erase(
+        std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
+                       [&](const ParameterBinding& binding) { return binding.slotId == slotId; }),
+        preset->parameterBindings.end());
+    chain = buildChain(*preset, chainError);
+    publishChain(std::move(chain));
+    persistActiveBankUnlocked();
+    notify();
+    return true;
+}
+
+bool Engine::removeEffect(const std::string& slotId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+        error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
     syncPresetFromChain();
@@ -1308,10 +1465,14 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
 }
 
 bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
+        return false;
+    }
+    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+        error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
     syncPresetFromChain();
@@ -1349,7 +1510,7 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
                 }
             }
             {
-                std::lock_guard<std::mutex> lock(stateMutex_);
+                std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 requestBankPersist(true);
             }
             refreshLeds();
@@ -1362,7 +1523,7 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
 }
 
 bool Engine::setEffectName(const std::string& slotId, const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1446,7 +1607,7 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
             }
         }
         {
-            std::lock_guard<std::mutex> lock(stateMutex_);
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             requestBankPersist(true);
         }
         notify();
@@ -1578,6 +1739,7 @@ bool Engine::applyRememberedSnapshotUnlocked(Preset& preset) {
         preset.activeSnapshot = -1;
         return true;
     }
+    flushPendingBasePresetUnlocked();
     applySnapshotToChain(*snapshot);
     preset.activeSnapshot = snapshot->slot;
     return true;
@@ -1594,6 +1756,7 @@ bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& er
         forgetRememberedSnapshot(preset);
         return true;
     }
+    flushPendingBasePresetUnlocked();
     applySnapshotToChain(*snapshot);
     preset.activeSnapshot = slot;
     rememberSnapshot(preset, slot, true);
@@ -1610,13 +1773,13 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
             continue;
         }
         const Json& state = snapshot.slots[slot->id];
-        slot->plugin->loadState(rewritePluginStateFiles(storage_, state));
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_));
         slot->enabled.store(state["enabled"].asBool(true), std::memory_order_relaxed);
     }
 }
 
 bool Engine::captureSnapshot(const std::string& name, int slot, std::string& snapshotId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1652,7 +1815,7 @@ bool Engine::captureSnapshot(const std::string& name, int slot, std::string& sna
 }
 
 bool Engine::selectSnapshot(const std::string& snapshotId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1676,7 +1839,7 @@ bool Engine::selectSnapshot(const std::string& snapshotId, std::string& error) {
 }
 
 bool Engine::updateSnapshot(const std::string& snapshotId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1699,7 +1862,7 @@ bool Engine::updateSnapshot(const std::string& snapshotId, std::string& error) {
 }
 
 bool Engine::renameSnapshot(const std::string& snapshotId, const std::string& name, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1719,7 +1882,7 @@ bool Engine::renameSnapshot(const std::string& snapshotId, const std::string& na
 }
 
 bool Engine::colorSnapshot(const std::string& snapshotId, const std::string& color, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1746,7 +1909,7 @@ bool Engine::setSnapshotMode(bool enabled) {
 }
 
 bool Engine::restoreLiveFromStoredPreset(std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!preset || !chain) {
@@ -1761,7 +1924,7 @@ bool Engine::restoreLiveFromStoredPreset(std::string& error) {
 }
 
 bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -1777,6 +1940,8 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
         forgetRememberedSnapshot(*preset);
     }
     if (preset->activeSnapshot == found->slot) {
+        restoreStoredPresetToChainUnlocked(*preset);
+        forgetRememberedSnapshot(*preset);
         preset->activeSnapshot = -1;
     }
     preset->snapshots.erase(found);
@@ -1792,7 +1957,7 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
 // ---------------------------------------------------------------------------
 
 bool Engine::applyControllerConfig(const Json& json, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const std::string previousPort = settings_.controller.midiPort;
     const bool wasEnabled = settings_.controller.enabled;
     settings_.controller = ControllerConfig::fromJson(json);
@@ -1806,12 +1971,16 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
             std::string midiError;
             if (!midi_.start(settings_.controller.midiPort, midiError)) {
                 controllerError_ = midiError;
-            } else {
-                controllerError_.clear();
-                settings_.controller.midiPort = midi_.activePort();
-                controller_.setConfig(settings_.controller);
-                midi_.send(ControllerRuntime::encodeIdentityRequest());
+                persistSettings();
+                refreshLeds();
+                notify();
+                error = midiError;
+                return false;
             }
+            controllerError_.clear();
+            settings_.controller.midiPort = midi_.activePort();
+            controller_.setConfig(settings_.controller);
+            midi_.send(ControllerRuntime::encodeIdentityRequest());
         }
     } else if (midi_.isRunning()) {
         midi_.stop();
@@ -1825,7 +1994,7 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
 }
 
 bool Engine::connectController(const std::string& port, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (!midi_.start(port, error)) {
         controllerError_ = error;
         notify();
@@ -1844,7 +2013,7 @@ bool Engine::connectController(const std::string& port, std::string& error) {
 }
 
 void Engine::disconnectController() {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     midi_.stop();
     settings_.controller.enabled = false;
     persistSettings();
@@ -1862,7 +2031,7 @@ void Engine::cancelControlLearn() {
 }
 
 void Engine::overlayPresetBind(ActionRequest& request) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const Preset* preset = activePreset();
     if (!preset) {
         return;
@@ -1934,7 +2103,7 @@ void Engine::migrateHardwareParameterBinds() {
 }
 
 bool Engine::bindPresetControl(const Json& json, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
@@ -2099,7 +2268,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "bypassAll" && request.action != "tapTempo"
         && request.action != "tuner" && request.action != "toggleEffect") {
         if (binding.snapshotSlot >= 0) {
-            std::lock_guard<std::mutex> lock(stateMutex_);
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             Preset* preset = activePreset();
             if (preset) {
                 pressSnapshotSlotUnlocked(*preset, binding.snapshotSlot, error);
@@ -2134,7 +2303,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         }
         if (!presetId.empty() && presetId == activePresetId_
             && (bankId.empty() || bankId == activeBankId_)) {
-            std::lock_guard<std::mutex> lock(stateMutex_);
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             Preset* preset = activePreset();
             if (preset) {
                 toggleRememberedSnapshotUnlocked(*preset, error);
@@ -2290,7 +2459,7 @@ void Engine::refreshLeds() {
 // ---------------------------------------------------------------------------
 
 bool Engine::applyUiSettings(const Json& json, std::string& error) {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Json merged = settings_.ui.toJson();
     if (json.isObject()) {
         for (const auto& member : json.members()) {
@@ -2345,6 +2514,24 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
     }
     notify();
     return true;
+}
+
+Json Engine::readLibraryFile(const std::string& path, std::string& error) {
+    if (!storage_.isPathInLibrary(path)) {
+        error = "that path is not in the library";
+        return Json();
+    }
+    std::string contents;
+    if (!readFile(path, contents)) {
+        error = "could not read that file";
+        return Json();
+    }
+    Json json = Json::object();
+    json.set("path", path);
+    json.set("name", fileName(path));
+    json.set("contents", contents);
+    error.clear();
+    return json;
 }
 
 bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
@@ -2599,7 +2786,7 @@ void Engine::housekeepingThread() {
         // Retry every two seconds until a guitar card is there.
         if (ticks % 80 == 0 && backend_ && !backend_->isRunning()
             && !shuttingDown_.load()) {
-            std::lock_guard<std::mutex> lock(stateMutex_);
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             if (backend_ && !backend_->isRunning() && !shuttingDown_.load()) {
                 std::string err;
                 if (restartAudio(err)) {
@@ -2652,9 +2839,13 @@ void Engine::notifyPerformance() {
 }
 
 Json Engine::fullState() const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Json json = Json::object();
     json.set("type", "state");
     json.set("version", PIMFX_VERSION);
+#ifdef PIMFX_GIT_SHA
+    json.set("gitSha", PIMFX_GIT_SHA);
+#endif
 
     Json bankArray = Json::array();
     for (const Bank& bank : banks_) {
@@ -2705,6 +2896,17 @@ Json Engine::fullState() const {
         }
     }
     json.set("chain", chainArray);
+
+    Json missing = Json::array();
+    for (const std::string& item : missingPluginFiles_) {
+        missing.push(Json(item));
+    }
+    json.set("missingFiles", missing);
+    Json broken = Json::array();
+    for (const std::string& item : brokenBankFiles_) {
+        broken.push(Json(item));
+    }
+    json.set("brokenBanks", broken);
 
     Json positions = Json::object();
     for (const auto& entry : controller_.controlPositions()) {
@@ -2862,6 +3064,16 @@ Json Engine::diagnosticsState() const {
     }
     json.set("dataRoot", storage_.paths().dataRoot);
     json.set("webRoot", storage_.paths().webRoot);
+    Json broken = Json::array();
+    for (const std::string& item : brokenBankFiles_) {
+        broken.push(Json(item));
+    }
+    json.set("brokenBanks", broken);
+    Json missing = Json::array();
+    for (const std::string& item : missingPluginFiles_) {
+        missing.push(Json(item));
+    }
+    json.set("missingFiles", missing);
     return json;
 }
 

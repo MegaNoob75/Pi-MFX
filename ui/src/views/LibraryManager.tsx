@@ -3,7 +3,7 @@ import type { EngineSnapshot } from "../api";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 
-export type LibraryKind = "model" | "ir" | "aidax" | "plugin";
+export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank";
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -38,6 +38,18 @@ export function libraryRootLabel(kind: LibraryKind): string {
     }
     if (kind === "plugin") {
         return "lv2";
+    }
+    if (kind === "layout") {
+        return "layouts";
+    }
+    if (kind === "theme") {
+        return "themes";
+    }
+    if (kind === "backup") {
+        return "backups";
+    }
+    if (kind === "bank") {
+        return "bank-exports";
     }
     return "models";
 }
@@ -81,7 +93,7 @@ function parseTree(raw: JsonObject): TreeNode {
     };
 }
 
-function LibraryConfirm({
+export function LibraryConfirm({
     title,
     body,
     danger,
@@ -228,6 +240,130 @@ export function LibraryFolderPicker({
                     >
                         USE THIS FOLDER
                     </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function utf8ToBase64(text: string): string {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    bytes.forEach((value) => {
+        binary += String.fromCharCode(value);
+    });
+    return btoa(binary);
+}
+
+export function LibraryJsonPicker({
+    engine,
+    run,
+    kind,
+    mode,
+    title,
+    defaultName,
+    contents,
+    onClose,
+    onLoad,
+    onSaved
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    kind: LibraryKind;
+    mode: "load" | "save";
+    title: string;
+    defaultName?: string;
+    contents?: string;
+    onClose: () => void;
+    onLoad?: (parsed: JsonObject, path: string) => void;
+    onSaved?: (path: string) => void;
+}) {
+    const [name, setName] = useState(defaultName ?? "");
+    const [selectedPath, setSelectedPath] = useState("");
+    const [files, setFiles] = useState<JsonObject[]>([]);
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+        void engine.client.request("library/list", { kind, directory: "" }).then((result) => {
+            setFiles(objects(obj(result).files));
+        }).catch((item: unknown) => {
+            setError(item instanceof Error ? item.message : String(item));
+        });
+    }, [engine.client, kind]);
+
+    return (
+        <div className="dialog-backdrop" onClick={onClose}>
+            <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
+                <h2>{title}</h2>
+                <div className="muted">Files in {libraryRootLabel(kind)}/</div>
+                {mode === "save" && (
+                    <label className="field">
+                        <span>Name</span>
+                        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="My layout" />
+                    </label>
+                )}
+                <div className="library-picker-files">
+                    {files.length === 0 && <div className="muted">No files yet.</div>}
+                    {files.map((item) => (
+                        <button
+                            key={str(item.path)}
+                            type="button"
+                            className={`btn ${selectedPath === str(item.path) ? "btn-active" : ""}`}
+                            onClick={() => {
+                                setSelectedPath(str(item.path));
+                                if (mode === "save") {
+                                    setName(str(item.name).replace(/\.json$/i, ""));
+                                }
+                            }}
+                        >
+                            {str(item.name)}
+                        </button>
+                    ))}
+                </div>
+                {error && <div className="danger">{error}</div>}
+                <div className="row" style={{ justifyContent: "flex-end" }}>
+                    <button type="button" className="btn" onClick={onClose}>CANCEL</button>
+                    {mode === "load" ? (
+                        <button
+                            type="button"
+                            className="btn btn-accent"
+                            disabled={!selectedPath}
+                            onClick={() => {
+                                void run(async () => {
+                                    const result = obj(await engine.client.request("library/read", { path: selectedPath }));
+                                    const parsed = JSON.parse(str(result.contents)) as JsonObject;
+                                    onLoad?.(parsed, selectedPath);
+                                    onClose();
+                                });
+                            }}
+                        >
+                            LOAD
+                        </button>
+                    ) : (
+                        <button type="button" className="btn btn-accent" onClick={() => {
+                            const fileName = name.trim().replace(/\.json$/i, "");
+                            if (!fileName) {
+                                setError("Give the file a name.");
+                                return;
+                            }
+                            if (!contents) {
+                                setError("nothing to save");
+                                return;
+                            }
+                            void run(async () => {
+                                const stored = obj(await engine.client.request("library/upload", {
+                                    kind,
+                                    name: `${fileName}.json`,
+                                    data: utf8ToBase64(contents),
+                                    directory: ""
+                                }));
+                                onSaved?.(str(stored.path));
+                                onClose();
+                            });
+                        }}>
+                            SAVE
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

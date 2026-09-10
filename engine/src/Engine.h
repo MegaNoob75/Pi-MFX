@@ -75,6 +75,7 @@ public:
     bool savePreset(std::string& error);
     bool savePresetAs(const std::string& name, std::string& error);
     bool createPreset(const std::string& name, std::string& error);
+    bool createPreset(const std::string& name, const std::string& bankId, std::string& error);
     bool renamePreset(const std::string& presetId, const std::string& name, std::string& error);
     bool deletePreset(const std::string& presetId, std::string& error);
     bool reorderPreset(const std::string& presetId, int newIndex, std::string& error);
@@ -88,6 +89,7 @@ public:
 
     // --- chain -----------------------------------------------------------
     bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error);
+    bool replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error);
     bool removeEffect(const std::string& slotId, std::string& error);
     bool moveEffect(const std::string& slotId, int newIndex, std::string& error);
     bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error);
@@ -142,6 +144,7 @@ public:
     bool libraryRename(const std::string& path, const std::string& newName, std::string& error);
     bool libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                      std::string& error);
+    Json readLibraryFile(const std::string& path, std::string& error);
 
     Storage& storage() { return storage_; }
     Lv2Catalog& catalog() { return catalog_; }
@@ -210,8 +213,12 @@ private:
     Bank* activeBank();
     const Bank* activeBank() const;
     Bank* findBank(const std::string& bankId);
+    Bank* findBankForPreset(const std::string& presetId);
+    Preset* findPresetAnywhere(const std::string& presetId);
     void syncPresetFromChain();
     void persistActiveBankUnlocked();
+    void persistBankUnlocked(Bank* bank, bool syncFromChain);
+    void flushPendingBasePresetUnlocked();
     void requestBankPersist(bool immediate);
     void flushBankPersistIfDue();
     bool persistSettings();
@@ -258,6 +265,8 @@ private:
     ControllerRuntime controller_;
     std::string audioError_;
     std::string controllerError_;
+    std::vector<std::string> missingPluginFiles_;
+    std::vector<std::string> brokenBankFiles_;
 
     // Tuner: the audio thread copies a decimated mono signal into this ring
     // and a background thread does the analysis, so pitch detection can never
@@ -282,7 +291,7 @@ private:
 
     StateListener listener_;
     mutable std::mutex listenerMutex_;
-    mutable std::mutex stateMutex_;
+    mutable std::recursive_mutex stateMutex_;
 };
 
 } // namespace pimfx

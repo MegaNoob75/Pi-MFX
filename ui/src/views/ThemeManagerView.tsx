@@ -36,6 +36,8 @@ import {
     saveCustomMultiFXKeyboardTheme,
     validateMultiFXKeyboardTheme
 } from "../keyboard/keyboardTheme";
+import type { EngineSnapshot } from "../api";
+import { LibraryJsonPicker } from "./LibraryManager";
 
 type ThemeBrowseMode = "STYLE" | "COLOR";
 
@@ -106,9 +108,13 @@ const TERMINAL_NAMES = new Set([
 ]);
 
 export default function ThemeManagerView({
-    persistTheme
+    persistTheme,
+    engine,
+    run
 }: {
     persistTheme?: (theme: MultiFXThemeDefinition) => Promise<void>;
+    engine?: EngineSnapshot & { client: import("../api").EngineClient };
+    run?: (work: () => Promise<unknown>) => Promise<void>;
 }) {
     const originalRef = useRef<MultiFXThemeDefinition>(loadMultiFXTheme());
 
@@ -134,6 +140,7 @@ export default function ThemeManagerView({
     );
     const themeListRef = useRef<HTMLDivElement>(null);
     const [activeName, setActiveName] = useState(() => originalRef.current.name);
+    const [picker, setPicker] = useState<"load" | "save" | "saveAll" | null>(null);
 
     useEffect(() => {
         const list = themeListRef.current;
@@ -305,6 +312,9 @@ export default function ThemeManagerView({
     };
 
     const deleteCustom = (name: string) => {
+        if (!window.confirm(`Delete custom theme “${name}”?`)) {
+            return;
+        }
         const next = deleteCustomMultiFXTheme(name);
         setCustomThemes(next);
         setMessage(`Deleted custom theme "${name}".`);
@@ -322,43 +332,15 @@ export default function ThemeManagerView({
     };
 
     const exportAllThemes = () => {
-        const bundle = {
-            format: "pimfx-theme-backup",
-            version: 1,
-            createdAt: new Date().toISOString(),
-            activeUITheme: originalRef.current,
-            customUIThemes: customThemes,
-            customKeyboardThemes
-        };
-        const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = "pimfx-themes-backup.json";
-        anchor.click();
-        URL.revokeObjectURL(url);
-        setMessage("All UI and keyboard themes exported.");
+        setPicker("saveAll");
     };
 
     const exportTheme = () => {
-        const blob = new Blob(
-            [JSON.stringify(theme, null, 2)],
-            { type: "application/json" }
-        );
-
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `${safeName(theme.name)}.pimfx-theme.json`;
-        anchor.click();
-        URL.revokeObjectURL(url);
-        setMessage("Theme exported.");
+        setPicker("save");
     };
 
-    const importTheme = async (file: File) => {
+    const applyImportedTheme = (raw: unknown) => {
         try {
-            const text = await file.text();
-            const raw = JSON.parse(text) as unknown;
             if (raw && typeof raw === "object"
                 && (raw as { format?: unknown }).format === "pimfx-theme-backup") {
                 const bundle = raw as {
@@ -404,6 +386,14 @@ export default function ThemeManagerView({
             setMessage(
                 `Imported "${parsed.name}". Use SAVE CUSTOM to keep it or SET THEME to make it active.`
             );
+        } catch (error) {
+            setMessage(`Could not import theme: ${String(error)}`);
+        }
+    };
+
+    const importTheme = async (file: File) => {
+        try {
+            applyImportedTheme(JSON.parse(await file.text()));
         } catch (error) {
             setMessage(`Could not import theme: ${String(error)}`);
         }
@@ -512,32 +502,17 @@ export default function ThemeManagerView({
                                         "calc(7px * var(--mfx-ui-scale, 1))"
                                 }}
                             >
-                                <label
+                                <button
+                                    type="button"
+                                    onClick={() => setPicker("load")}
                                     style={{
                                         ...buttonStyle,
                                         width: "100%",
-                                        minWidth: 0,
-                                        boxSizing: "border-box"
+                                        minWidth: 0
                                     }}
                                 >
                                     IMPORT
-                                    <input
-                                        type="file"
-                                        accept="application/json,.json"
-                                        style={{ display: "none" }}
-                                        onChange={(event) => {
-                                            const file =
-                                                event.target.files?.[0];
-
-                                            if (file) {
-                                                void importTheme(file);
-                                            }
-
-                                            event.currentTarget.value = "";
-                                        }}
-                                    />
-                                </label>
-
+                                </button>
                                 <button
                                     type="button"
                                     onClick={exportTheme}
@@ -554,6 +529,29 @@ export default function ThemeManagerView({
                                     EXPORT ALL
                                 </button>
                             </div>
+                            <label
+                                style={{
+                                    ...buttonStyle,
+                                    width: "100%",
+                                    minWidth: 0,
+                                    boxSizing: "border-box",
+                                    marginTop: 7
+                                }}
+                            >
+                                UPLOAD
+                                <input
+                                    type="file"
+                                    accept="application/json,.json"
+                                    style={{ display: "none" }}
+                                    onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        if (file) {
+                                            void importTheme(file);
+                                        }
+                                        event.currentTarget.value = "";
+                                    }}
+                                />
+                            </label>
 
                             <div
                                 style={{
@@ -998,6 +996,9 @@ export default function ThemeManagerView({
                                 savedThemes={customKeyboardThemes}
                                 onLoad={(selected) => setKeyboardTheme(structuredClone(selected))}
                                 onDelete={(name) => {
+                                    if (!window.confirm(`Delete keyboard theme “${name}”?`)) {
+                                        return;
+                                    }
                                     setCustomKeyboardThemes(deleteCustomMultiFXKeyboardTheme(name));
                                     setMessage(`Deleted keyboard theme "${name}".`);
                                 }}
@@ -1006,6 +1007,33 @@ export default function ThemeManagerView({
                     </div>
                 </div>
             </div>
+            {picker && engine && run && (
+                <LibraryJsonPicker
+                    engine={engine}
+                    run={run}
+                    kind="theme"
+                    mode={picker === "load" ? "load" : "save"}
+                    title={picker === "load" ? "LOAD THEME" : picker === "saveAll" ? "SAVE ALL THEMES" : "SAVE THEME"}
+                    defaultName={picker === "saveAll" ? "pimfx-themes" : safeName(theme.name)}
+                    contents={picker === "save"
+                        ? JSON.stringify(theme, null, 2)
+                        : picker === "saveAll"
+                            ? JSON.stringify({
+                                format: "pimfx-theme-backup",
+                                version: 1,
+                                createdAt: new Date().toISOString(),
+                                activeUITheme: originalRef.current,
+                                customUIThemes: customThemes,
+                                customKeyboardThemes
+                            }, null, 2)
+                            : undefined}
+                    onClose={() => setPicker(null)}
+                    onLoad={(parsed) => applyImportedTheme(parsed)}
+                    onSaved={() => setMessage(picker === "saveAll"
+                        ? "All UI and keyboard themes saved on the Pi."
+                        : "Theme saved on the Pi.")}
+                />
+            )}
         </div>
     );
 }

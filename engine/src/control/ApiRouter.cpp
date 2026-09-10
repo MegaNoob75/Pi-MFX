@@ -147,6 +147,16 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.applySystemSettings(payload, error);
         return engine_.diagnosticsState();
     }
+    if (command == "system/update/status") {
+        const Json result = plugins_.updateStatus(payload["fetch"].asBool(true), error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "system/update/install") {
+        const Json result = plugins_.updateInstall(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "ui/settings") {
         ok = engine_.applyUiSettings(payload, error);
         return Json::object();
@@ -186,7 +196,7 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return result;
     }
     if (command == "preset/create") {
-        ok = engine_.createPreset(payload["name"].asString(), error);
+        ok = engine_.createPreset(payload["name"].asString(), payload["bankId"].asString(), error);
         Json result = Json::object();
         if (ok) {
             result.set("presetId", engine_.fullState()["activePresetId"].asString());
@@ -260,6 +270,13 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "chain/add") {
         std::string slotId;
         ok = engine_.addEffect(payload["uri"].asString(), payload["index"].asInt(-1), slotId, error);
+        Json result = Json::object();
+        result.set("slotId", slotId);
+        return result;
+    }
+    if (command == "chain/replace") {
+        std::string slotId;
+        ok = engine_.replaceEffect(payload["slotId"].asString(), payload["uri"].asString(), slotId, error);
         Json result = Json::object();
         result.set("slotId", slotId);
         return result;
@@ -382,6 +399,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         Json result = Json::object();
         result.set("path", storedPath);
         return result;
+    }
+    if (command == "library/read") {
+        const Json result = engine_.readLibraryFile(payload["path"].asString(), error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
     }
     if (command == "library/delete") {
         ok = engine_.deleteLibraryFile(payload["path"].asString(), error);

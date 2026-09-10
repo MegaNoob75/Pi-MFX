@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { obj, str, objects, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
+import { LibraryJsonPicker } from "./LibraryManager";
+import { NewPresetDialog } from "./NewPresetDialog";
 
 type EditState = {
     mode: "newBank" | "renameBank" | "renamePreset" | "cloneBank";
@@ -26,6 +28,10 @@ export function BanksView({
     const [edit, setEdit] = useState<EditState>(null);
     const [confirm, setConfirm] = useState<"bank" | "preset" | null>(null);
     const [busy, setBusy] = useState(false);
+    const [picker, setPicker] = useState<"load" | "save" | null>(null);
+    const [saveContents, setSaveContents] = useState("");
+    const [emptyBank, setEmptyBank] = useState<JsonObject | null>(null);
+    const [toast, setToast] = useState("");
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
@@ -86,7 +92,22 @@ export function BanksView({
                 bankId: id,
                 presetId: str(first.id)
             }));
+            return;
         }
+        setEmptyBank(obj(bank));
+        setToast(`“${str(obj(bank).name, "This bank")}” has no presets.`);
+        window.setTimeout(() => setToast(""), 2800);
+    };
+
+    const saveBankToPi = () => {
+        if (!activeBank) {
+            return;
+        }
+        mutate(async () => {
+            const result = await client.request("bank/export", { bankId });
+            setSaveContents(JSON.stringify(obj(result.bank), null, 2));
+            setPicker("save");
+        });
     };
 
     const defaultCloneName = () => {
@@ -112,8 +133,8 @@ export function BanksView({
             mutate(() => client.request("bank/create", { name }));
         } else if (edit.mode === "renameBank" && activeBank) {
             mutate(() => client.request("bank/rename", { bankId, name }));
-        } else if (edit.mode === "renamePreset" && activePreset) {
-            mutate(() => client.request("preset/rename", { presetId, name }));
+        } else if (edit.mode === "renamePreset" && selectedPresetId) {
+            mutate(() => client.request("preset/rename", { presetId: selectedPresetId, name }));
         } else if (edit.mode === "cloneBank" && activeBank) {
             mutate(async () => {
                 const exported = await client.request("bank/export", { bankId });
@@ -125,22 +146,6 @@ export function BanksView({
         setEdit(null);
     };
 
-    const downloadBank = () => {
-        if (!activeBank) {
-            return;
-        }
-        mutate(async () => {
-            const result = await client.request("bank/export", { bankId });
-            const blob = new Blob([JSON.stringify(result.bank, null, 2)], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = `${str(activeBank.name, "bank")}.pimfx-bank.json`;
-            link.click();
-            URL.revokeObjectURL(url);
-        });
-    };
-
     return (
         <div className="split-panes">
             <section className="split-pane" onPointerDown={() => setFocused("banks")}>
@@ -149,7 +154,8 @@ export function BanksView({
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={() => {
                         setEdit({ mode: "cloneBank", title: "Clone Bank", value: defaultCloneName() });
                     }}>CLONE</button>
-                    <button type="button" className="btn" disabled={!activeBank || busy} onClick={downloadBank}>DOWNLOAD</button>
+                    <button type="button" className="btn" disabled={!activeBank || busy} onClick={saveBankToPi}>SAVE</button>
+                    <button type="button" className="btn" disabled={busy} onClick={() => setPicker("load")}>LOAD</button>
                     <label className="btn btn-accent">
                         UPLOAD
                         <input
@@ -342,6 +348,33 @@ export function BanksView({
                     </div>
                 </div>
             )}
+            {emptyBank && (
+                <NewPresetDialog
+                    banks={[emptyBank, ...banks.filter((item) => str(item.id) !== str(emptyBank.id))]}
+                    defaultBankId={str(emptyBank.id)}
+                    onCancel={() => setEmptyBank(null)}
+                    onCreate={(name, createBankId) => {
+                        setEmptyBank(null);
+                        mutate(() => client.request("preset/create", { name, bankId: createBankId }));
+                    }}
+                />
+            )}
+            {picker && (
+                <LibraryJsonPicker
+                    engine={engine}
+                    run={run}
+                    kind="bank"
+                    mode={picker}
+                    title={picker === "save" ? "SAVE BANK" : "LOAD BANK"}
+                    defaultName={str(obj(activeBank).name, "bank")}
+                    contents={picker === "save" ? saveContents : undefined}
+                    onClose={() => setPicker(null)}
+                    onLoad={(parsed) => {
+                        mutate(() => client.request("bank/import", { bank: parsed }));
+                    }}
+                />
+            )}
+            {toast && <div className="toast toast-ok" role="status" onClick={() => setToast("")}>{toast}</div>}
         </div>
     );
 }

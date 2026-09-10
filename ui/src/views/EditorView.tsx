@@ -5,6 +5,7 @@ import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../js
 import { askText } from "../keyboard/ask";
 import { PluginBrowser } from "./PluginBrowser";
 import { MarqueeText } from "./MarqueeText";
+import { NewPresetDialog } from "./NewPresetDialog";
 
 type EditPage = "chain" | "controls" | "io";
 
@@ -40,6 +41,8 @@ export function EditorView({
     const [dropGap, setDropGap] = useState<number | null>(null);
     const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [pendingTrashId, setPendingTrashId] = useState("");
+    const [newPresetOpen, setNewPresetOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [bindTarget, setBindTarget] = useState<BindTarget | null>(null);
     const [dropBankId, setDropBankId] = useState("");
@@ -92,6 +95,13 @@ export function EditorView({
         previousBackRequestRef.current = backRequest;
         setPage("chain");
     }, [backRequest]);
+
+    useEffect(() => {
+        const ids = new Set(chain.map((slot) => str(slot.id)));
+        if (selectedId && !ids.has(selectedId)) {
+            setSelectedId("");
+        }
+    }, [str(state.activePresetId), chain.map((slot) => str(slot.id)).join("|")]);
 
     useEffect(() => {
         if (page !== "chain") {
@@ -221,7 +231,7 @@ export function EditorView({
             return;
         }
         if (isTrashAtPoint(event.clientX, event.clientY)) {
-            void run(() => client.request("chain/remove", { slotId: drag.id }));
+            setPendingTrashId(drag.id);
             return;
         }
         const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
@@ -240,13 +250,7 @@ export function EditorView({
                 <>
                     <div className="editor-toolbar editor-chain-bar">
                         {!lockChain ? (
-                            <button type="button" className="btn btn-accent" onClick={() => {
-                                void askText("New preset name", "Untitled").then((name) => {
-                                    if (name?.trim()) {
-                                        void run(() => client.request("preset/create", { name: name.trim() }));
-                                    }
-                                });
-                            }}>NEW</button>
+                            <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
                         ) : <div />}
                         <button
                             type="button"
@@ -524,8 +528,10 @@ export function EditorView({
                     }
                     void run(async () => {
                         if (target.mode === "replace" && selected) {
-                            await client.request("chain/remove", { slotId: str(selected.id) });
-                            await client.request("chain/add", { uri, index: target.index });
+                            await client.request("chain/replace", {
+                                slotId: str(selected.id),
+                                uri
+                            });
                         } else {
                             await client.request("chain/add", { uri, index: target.index });
                         }
@@ -615,6 +621,38 @@ export function EditorView({
                         </div>
                         <div className="row" style={{ justifyContent: "flex-end", marginTop: 12 }}>
                             <button type="button" className="btn" onClick={() => setPickerOpen(false)}>CLOSE</button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+            {newPresetOpen && (
+                <NewPresetDialog
+                    banks={banks}
+                    defaultBankId={str(obj(bank).id)}
+                    onCancel={() => setNewPresetOpen(false)}
+                    onCreate={(name, bankId) => {
+                        setNewPresetOpen(false);
+                        void run(() => client.request("preset/create", { name, bankId }));
+                    }}
+                />
+            )}
+            {pendingTrashId && createPortal(
+                <div className="mfx-overlay">
+                    <div className="mfx-overlay-card">
+                        <div className="mfx-overlay-title danger">REMOVE EFFECT?</div>
+                        <div style={{ margin: "12px 0", fontWeight: 900 }}>
+                            {str(obj(chain.find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
+                        </div>
+                        <div className="row">
+                            <button type="button" className="btn" onClick={() => setPendingTrashId("")}>CANCEL</button>
+                            <button type="button" className="btn btn-danger" onClick={() => {
+                                const slotId = pendingTrashId;
+                                setPendingTrashId("");
+                                void run(() => client.request("chain/remove", { slotId }));
+                            }}>
+                                REMOVE
+                            </button>
                         </div>
                     </div>
                 </div>,

@@ -13,8 +13,10 @@ echo
 echo 'audio cards (arecord -l)'
 arecord -l 2>/dev/null || echo '  none listed'
 echo
-echo 'open     http://pimfx.local:8080'
-echo '         http://'"$(hostname -I 2>/dev/null | awk '{print $1}')"':8080'
+PIMFX_PORT="${PIMFX_PORT:-$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/pimfx.service 2>/dev/null | head -1)}"
+PIMFX_PORT="${PIMFX_PORT:-8080}"
+echo "open     http://pimfx.local:${PIMFX_PORT}"
+echo "         http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PIMFX_PORT}"
 if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
     printf 'screen   configured for %s\n' "$(cat /var/lib/pimfx-touchscreen/configured-user)"
 else

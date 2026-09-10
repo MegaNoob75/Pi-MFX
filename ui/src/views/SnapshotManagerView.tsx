@@ -31,6 +31,7 @@ export function SnapshotManagerView({
     const [renameSlot, setRenameSlot] = useState<number | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [message, setMessage] = useState("");
+    const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string; slot: number } | null>(null);
 
     useEffect(() => {
         if (!message) {
@@ -156,8 +157,11 @@ export function SnapshotManagerView({
                                             setRenameValue(str(snapshot.name, `Snapshot ${slot + 1}`));
                                         }}>RENAME</button>
                                         <button type="button" className="btn btn-danger" onClick={() => {
-                                            void run(() => client.request("snapshot/delete", { snapshotId: str(snapshot.id) }))
-                                                .then(() => show(`SNAPSHOT ${slot + 1} DELETED`));
+                                            setPendingDelete({
+                                                id: str(snapshot.id),
+                                                name: str(snapshot.name, `Snapshot ${slot + 1}`),
+                                                slot
+                                            });
                                         }}>DELETE</button>
                                     </div>
                                 </>
@@ -189,6 +193,24 @@ export function SnapshotManagerView({
                     );
                 })}
             </div>
+            {pendingDelete && createPortal(
+                <div className="mfx-overlay">
+                    <div className="mfx-overlay-card">
+                        <div className="mfx-overlay-title danger">DELETE SNAPSHOT?</div>
+                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{pendingDelete.name}</div>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <button type="button" className="btn" onClick={() => setPendingDelete(null)}>CANCEL</button>
+                            <button type="button" className="btn btn-danger" onClick={() => {
+                                const pending = pendingDelete;
+                                setPendingDelete(null);
+                                void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
+                                    .then(() => show(`SNAPSHOT ${pending.slot + 1} DELETED`));
+                            }}>DELETE</button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
         </div>
     );
 }

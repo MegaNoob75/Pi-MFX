@@ -24,6 +24,8 @@ CONFIG_PATH = os.path.join(DATA_ROOT, "hotspot.json")
 LOCK_PATH = "/run/pimfx-hotspot.lock"
 STATUS_PATH = "/run/pimfx/hotspot-status.json"
 CONN_NAME = "pimfx-hotspot"
+WIFI_CONN_NAME = "pimfx-wifi"
+NM_CONNECTIONS = "/etc/NetworkManager/system-connections"
 SSID_RE = re.compile(r"^[\x20-\x7e]{1,32}$")
 PSK_RE = re.compile(r"^[\x20-\x7e]{8,63}$")
 
@@ -149,58 +151,83 @@ def down() -> str:
     return ""
 
 
+def write_keyfile(path: str, body: str) -> str:
+    directory = os.path.dirname(path)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        return str(exc)
+    loaded = nmcli("connection", "load", path, timeout=20)
+    if loaded.returncode != 0:
+        return (loaded.stderr or loaded.stdout).strip() or "could not load the NetworkManager connection"
+    return ""
+
+
+def hotspot_keyfile(device: str, ssid: str, password: str) -> str:
+    return (
+        "[connection]\n"
+        f"id={CONN_NAME}\n"
+        "type=wifi\n"
+        f"interface-name={device}\n"
+        "autoconnect=false\n"
+        "\n"
+        "[wifi]\n"
+        "mode=ap\n"
+        f"ssid={ssid}\n"
+        "band=bg\n"
+        "\n"
+        "[wifi-security]\n"
+        "key-mgmt=wpa-psk\n"
+        f"psk={password}\n"
+        "\n"
+        "[ipv4]\n"
+        "method=shared\n"
+        "address1=10.42.0.1/24\n"
+        "\n"
+        "[ipv6]\n"
+        "method=disabled\n"
+    )
+
+
+def wifi_keyfile(device: str, ssid: str, password: str) -> str:
+    security = ""
+    if password:
+        security = (
+            "\n[wifi-security]\n"
+            "key-mgmt=wpa-psk\n"
+            f"psk={password}\n"
+        )
+    return (
+        "[connection]\n"
+        f"id={WIFI_CONN_NAME}\n"
+        "type=wifi\n"
+        f"interface-name={device}\n"
+        "autoconnect=true\n"
+        "\n"
+        "[wifi]\n"
+        "mode=infrastructure\n"
+        f"ssid={ssid}\n"
+        f"{security}"
+        "\n"
+        "[ipv4]\n"
+        "method=auto\n"
+        "\n"
+        "[ipv6]\n"
+        "method=auto\n"
+    )
+
+
 def ensure_connection(device: str, ssid: str, password: str) -> str:
     if not SSID_RE.match(ssid):
         return "the hotspot name must be 1 to 32 printable characters"
     if not PSK_RE.match(password):
         return "the hotspot password must be 8 to 63 printable characters"
-    if not connection_exists():
-        added = nmcli(
-            "connection",
-            "add",
-            "type",
-            "wifi",
-            "ifname",
-            device,
-            "con-name",
-            CONN_NAME,
-            "ssid",
-            ssid,
-            "autoconnect",
-            "no",
-            timeout=30,
-        )
-        if added.returncode != 0:
-            return (added.stderr or added.stdout).strip() or "could not create the hotspot connection"
-    modified = nmcli(
-        "connection",
-        "modify",
-        CONN_NAME,
-        "connection.interface-name",
-        device,
-        "802-11-wireless.ssid",
-        ssid,
-        "802-11-wireless.mode",
-        "ap",
-        "802-11-wireless.band",
-        "bg",
-        "ipv4.method",
-        "shared",
-        "ipv4.addresses",
-        "10.42.0.1/24",
-        "ipv6.method",
-        "disabled",
-        "wifi-sec.key-mgmt",
-        "wpa-psk",
-        "wifi-sec.psk",
-        password,
-        "connection.autoconnect",
-        "no",
-        timeout=30,
-    )
-    if modified.returncode != 0:
-        return (modified.stderr or modified.stdout).strip() or "could not update the hotspot connection"
-    return ""
+    path = os.path.join(NM_CONNECTIONS, f"{CONN_NAME}.nmconnection")
+    return write_keyfile(path, hotspot_keyfile(device, ssid, password))
 
 
 def up(device: str, ssid: str, password: str) -> str:
@@ -351,10 +378,13 @@ def wifi_connect(ssid: str, password: str) -> dict:
         status = live_status()
         status["error"] = "no Wi-Fi device was found"
         return status
-    args = ["device", "wifi", "connect", ssid, "ifname", device]
-    if password:
-        args.extend(["password", password])
-    result = nmcli(*args, timeout=60)
+    path = os.path.join(NM_CONNECTIONS, f"{WIFI_CONN_NAME}.nmconnection")
+    error = write_keyfile(path, wifi_keyfile(device, ssid, password))
+    if error:
+        status = live_status()
+        status["error"] = error
+        return status
+    result = nmcli("connection", "up", WIFI_CONN_NAME, timeout=60)
     status = live_status()
     if result.returncode != 0:
         status["error"] = (result.stderr or result.stdout).strip() or "could not join that network"
@@ -452,8 +482,17 @@ def main() -> int:
     if action == "wifi-scan":
         return dump(wifi_scan())
     if action == "wifi-connect":
-        ssid = args[1] if len(args) > 1 else ""
-        password = args[2] if len(args) > 2 else ""
+        ssid = ""
+        password = ""
+        raw = sys.stdin.read().strip()
+        if raw:
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                body = {}
+            if isinstance(body, dict):
+                ssid = str(body.get("ssid") or "")
+                password = str(body.get("password") or "")
         return dump(wifi_connect(ssid, password))
     if action == "wifi-disconnect":
         return dump(wifi_disconnect())

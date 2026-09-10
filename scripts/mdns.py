@@ -65,11 +65,12 @@ def main() -> int:
                 proc.terminate()
             procs = []
             if ips:
-                procs.append(subprocess.Popen(
-                    ["avahi-publish", "-a", "-R", NAME, ips[0]],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                ))
+                for ip in ips:
+                    procs.append(subprocess.Popen(
+                        ["avahi-publish", "-a", "-R", NAME, ip],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    ))
                 procs.append(subprocess.Popen(
                     ["avahi-publish", "-s", "Pi-MFX", "_http._tcp", str(PORT), "path=/"],
                     stdout=subprocess.DEVNULL,

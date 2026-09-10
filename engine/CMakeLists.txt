@@ -95,6 +95,20 @@ if(WIN32)
     target_link_libraries(pimfx PRIVATE ws2_32)
 endif()
 
-target_compile_definitions(pimfx PRIVATE PIMFX_VERSION="${PROJECT_VERSION}")
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    OUTPUT_VARIABLE PIMFX_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT PIMFX_GIT_SHA)
+    set(PIMFX_GIT_SHA "unknown")
+endif()
+
+target_compile_definitions(pimfx PRIVATE
+    PIMFX_VERSION="${PROJECT_VERSION}"
+    PIMFX_GIT_SHA="${PIMFX_GIT_SHA}"
+)
 
 install(TARGETS pimfx RUNTIME DESTINATION bin)

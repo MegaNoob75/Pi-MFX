@@ -366,7 +366,13 @@ bool AlsaBackend::resyncAfterXrun(unsigned frames, unsigned periodCount) {
     }
 
     if (streamsLinked_) {
-        snd_pcm_link(capture_.pcm, playback_.pcm);
+        err = snd_pcm_link(capture_.pcm, playback_.pcm);
+        if (err < 0) {
+            reportFailure(std::string("cannot re-link capture and playback after xrun: ")
+                          + snd_strerror(err));
+            streamsLinked_ = false;
+            return false;
+        }
     }
 
     writeSilence(frames, periodCount);

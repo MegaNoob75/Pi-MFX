@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatMs, isAnalogKind, isLatchingKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
-import { snapshotLayoutSlots } from "../layout";
+import { analogMinSize, defaultSnapshotWidgets, defaultStatusWidgets, gridCellRect, snapshotLayoutSlots, snapshotWidgetsToJson, statusWidgetsToJson } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
@@ -19,7 +19,8 @@ export type SettingsPage =
     | "layout"
     | "keyboard"
     | "backup"
-    | "hotspot";
+    | "hotspot"
+    | "updates";
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
     return (
@@ -71,6 +72,7 @@ function SystemHub({
             <div className="mfx-hub-grid">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen?.("audio")} />
                 <HubCard title="WIFI / HOTSPOT" subtitle="Join a home network or host a tablet access point" onClick={() => onOpen?.("hotspot")} />
+                <HubCard title="UPDATES" subtitle="Check git and rebuild Pi-MFX on this Pi" onClick={() => onOpen?.("updates")} />
                 <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => setRealtime(true)} />
             </div>
         </div>
@@ -185,6 +187,9 @@ export function SettingsPage({
     }
     if (page === "system") {
         return <SystemHub engine={engine} run={run} onOpen={onOpen} />;
+    }
+    if (page === "updates") {
+        return null;
     }
     return <SystemSettings engine={engine} run={run} />;
 }
@@ -356,7 +361,7 @@ function ControllerHub({
                     <div className="list-item"><span>MIDI port</span><strong>{str(controller.activePort) || str(controller.midiPort) || "—"}</strong></div>
                     <div className="list-item"><span>Switches & pots</span><strong>{objects(controller.controls).length}</strong></div>
                     <div className="list-item"><span>LEDs</span><strong>{objects(controller.leds).length}</strong></div>
-                    <div className="list-item"><span>Layout</span><strong>{str(controller.layoutMode, "grid").toUpperCase()}</strong></div>
+                    <div className="list-item"><span>Layout</span><strong>FREEFORM</strong></div>
                     {str(engine.state.controllerError) && <div className="danger">{str(engine.state.controllerError)}</div>}
                 </div>
             </div>
@@ -382,7 +387,7 @@ function ControllerHub({
                 />
                 <HubCard
                     title="PERFORMANCE LAYOUT"
-                    subtitle={`${str(controller.layoutMode, "grid").toUpperCase()} · arrange widgets and controls on the touchscreen`}
+                    subtitle="Arrange widgets and controls on the touchscreen"
                     onClick={() => onOpenLayout?.()}
                 />
                 <HubCard
@@ -404,13 +409,25 @@ function ControllerHub({
                         }
                         void run(() => client.request("controller/config", {
                             ...controller,
-                            layoutMode: "grid",
-                            gridRows: 2,
-                            gridColumns: 4,
+                            layoutMode: "freeform",
                             performanceLayout: {
-                                ...obj(controller.performanceLayout),
-                                unplacedControlIds: []
-                            }
+                                elements: statusWidgetsToJson(defaultStatusWidgets()),
+                                snapshotElements: snapshotWidgetsToJson(defaultSnapshotWidgets()),
+                                unplacedControlIds: [],
+                                groups: [],
+                                snapshotGroups: []
+                            },
+                            controls: objects(controller.controls).map((control, index) => {
+                                const rect = gridCellRect(index, 4, 2);
+                                const min = analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
+                                return {
+                                    ...control,
+                                    x: rect.x,
+                                    y: rect.y,
+                                    width: Math.max(min.width, 0.18),
+                                    height: Math.max(min.height, 0.2)
+                                };
+                            })
                         }));
                     }}
                 >
@@ -592,6 +609,9 @@ function ControllerSettings({
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => {
+                                    if (!window.confirm(`Remove ${str(selected.label, str(selected.id))}?`)) {
+                                        return;
+                                    }
                                     const next = groupedControls(controls.filter((item) => str(item.id) !== str(selected.id)));
                                     controlsRef.current = next;
                                     setSelectedId(str(next[0]?.id));
@@ -847,6 +867,12 @@ function SystemSettings({
                     {str(diagnostics.tuning, "waiting…")}
                     {"\n"}backend {str(diagnostics.audioBackend)} · {str(diagnostics.cpuLatency)}
                     {"\n"}data {str(diagnostics.dataRoot)}
+                    {arr(diagnostics.brokenBanks).length > 0
+                        ? `\nbroken banks ${arr(diagnostics.brokenBanks).map((item) => String(item)).join(", ")}`
+                        : ""}
+                    {arr(diagnostics.missingFiles).length > 0
+                        ? `\nmissing files ${arr(diagnostics.missingFiles).map((item) => String(item)).join(", ")}`
+                        : ""}
                 </pre>
             </div>
         </div>

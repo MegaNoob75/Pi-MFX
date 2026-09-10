@@ -1,6 +1,7 @@
 # Pi-MFX notices and credits
 
-Pi-MFX is copyright (c) 2026 Ross and is released under the [MIT License](LICENSE).
+Pi-MFX is copyright (c) 2026 Ross Morgenstern and is released under the
+[MIT License](https://opensource.org/licenses/MIT) ([LICENSE](LICENSE)).
 
 This file records third-party credits for Pi-MFX. Full license texts live in
 [`licenses/`](licenses/). See [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) for
@@ -10,8 +11,10 @@ for the LV2 plugins users install themselves.
 ## Pi-MFX
 
 Pi-MFX is a headless guitar multi-effects system for the Raspberry Pi 5.
-The audio engine, control protocol, preset format, browser UI, and ESP32
-controller firmware are written for this project.
+Source: <https://github.com/MegaNoob75/Pi-MFX>
+
+Anyone on the same local network or hotspot can open the UI and control the Pi.
+There is no login on the LAN HTTP or WebSocket APIs.
 
 ## Third-party components (linked, not pasted)
 

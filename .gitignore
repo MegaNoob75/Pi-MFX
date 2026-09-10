@@ -23,6 +23,10 @@ firmware/**/build/
 Thumbs.db
 *.swp
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Runtime data that must never be committed
 *.nam
 *.aidax

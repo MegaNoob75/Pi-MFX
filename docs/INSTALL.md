@@ -99,7 +99,7 @@ The round-trip figure is measured from the driver, not calculated.
 ## 6. Build a chain
 
 **Editor** → add effects. If the picker is empty, install LV2 plugins from
-**Settings → Plugins**, then Rescan.
+**Plugins**, then Rescan.
 
 For amp captures and cabs you need a NAM-capable LV2 plugin and a convolution
 plugin. Once installed, effects that take a `.nam` file or an impulse response

@@ -46,9 +46,11 @@ export interface StatusWidget {
     showLabel: boolean;
 }
 
-export function clampRect(rect: LayoutRect): LayoutRect {
-    const width = Math.min(1, Math.max(0.08, rect.width));
-    const height = Math.min(1, Math.max(0.08, rect.height));
+export function clampRect(rect: LayoutRect, minSize?: { width: number; height: number }): LayoutRect {
+    const minW = Math.min(1, Math.max(0.08, minSize?.width ?? 0.08));
+    const minH = Math.min(1, Math.max(0.08, minSize?.height ?? 0.08));
+    const width = Math.min(1, Math.max(minW, rect.width));
+    const height = Math.min(1, Math.max(minH, rect.height));
     return {
         x: Math.min(1 - width, Math.max(0, rect.x)),
         y: Math.min(1 - height, Math.max(0, rect.y)),
@@ -145,10 +147,11 @@ export function snapRectToPixels(
     rect: LayoutRect,
     canvasWidth: number,
     canvasHeight: number,
-    snapPixels: number
+    snapPixels: number,
+    minSize?: { width: number; height: number }
 ): LayoutRect {
     if (snapPixels <= 0) {
-        return clampRect(rect);
+        return clampRect(rect, minSize);
     }
     const stepX = snapPixels / Math.max(1, canvasWidth);
     const stepY = snapPixels / Math.max(1, canvasHeight);
@@ -159,7 +162,7 @@ export function snapRectToPixels(
         y: quantizeY(rect.y),
         width: quantizeX(rect.width),
         height: quantizeY(rect.height)
-    });
+    }, minSize);
 }
 
 export function analogMinSize(kind: string): { width: number; height: number } {
