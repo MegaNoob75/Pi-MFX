@@ -29,7 +29,13 @@ import {
 } from "../layout";
 import { GainMeter } from "./GainMeter";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
-import { LibraryJsonPicker } from "./LibraryManager";
+import { LibraryJsonPicker, utf8ToBase64 } from "./LibraryManager";
+
+function layoutNameFromPath(path: string, fallback = "default"): string {
+    const leaf = path.replace(/\\/g, "/").split("/").pop() ?? fallback;
+    return leaf.replace(/\.json$/i, "") || fallback;
+}
+
 const SNAP_PIXELS_KEY = "pimfx-layout-snap-pixels";
 const SNAP_ENABLED_KEY = "pimfx-layout-snap-enabled";
 
@@ -89,6 +95,7 @@ export function LayoutEditorView({
     const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
     const [dirty, setDirty] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
+    const [loadedLayoutName, setLoadedLayoutName] = useState(() => str(layout.layoutName));
     const [measurement, setMeasurement] = useState<{
         mode: string;
         clientX: number;
@@ -553,8 +560,11 @@ export function LayoutEditorView({
             if (!control) {
                 return;
             }
-            const desired = controlRect(control, placedControls.length);
-            const fitted = fitRectInEmptySpace(desired, occupyExcept(id), minSizeForId(id));
+            const min = minSizeForId(id);
+            const compact = { x: 0.02, y: 0.18, width: min.width, height: min.height };
+            const occupied = occupyExcept(id);
+            const fitted = fitRectInEmptySpace(compact, occupied, min)
+                ?? fitRectInEmptySpace(compact, occupied, { width: 0.06, height: 0.08 });
             if (!fitted) {
                 setMessage("No empty space for that control. Make a gap first.");
                 return;
@@ -562,10 +572,12 @@ export function LayoutEditorView({
             setDraftRects((current) => ({ ...current, [id]: fitted }));
             setHiddenIds((current) => current.filter((item) => item !== id));
             setMessage("");
+            markDirty();
             return;
         }
         setHiddenIds((current) => [...current, id]);
         setMessage("");
+        markDirty();
     };
 
     const toggleWidget = (id: string) => {
@@ -579,9 +591,14 @@ export function LayoutEditorView({
                 [id]: { ...current[id], visible: false }
             }));
             setMessage("");
+            markDirty();
             return;
         }
-        const fitted = fitRectInEmptySpace(widget.rect, occupyExcept(id), minSizeForId(id));
+        const min = minSizeForId(id);
+        const compact = { x: 0.02, y: 0.02, width: min.width, height: min.height };
+        const occupied = occupyExcept(id);
+        const fitted = fitRectInEmptySpace(compact, occupied, min)
+            ?? fitRectInEmptySpace(compact, occupied, { width: 0.06, height: 0.08 });
         if (!fitted) {
             setMessage("No empty space for that widget. Make a gap first.");
             return;
@@ -591,6 +608,7 @@ export function LayoutEditorView({
             [id]: { ...current[id], visible: true, rect: fitted }
         }));
         setMessage("");
+        markDirty();
     };
 
     const pruneGroups = (items: LayoutGroup[], allowed: Set<string>) => (
@@ -600,7 +618,8 @@ export function LayoutEditorView({
         })).filter((group) => group.id)
     );
 
-    const visualLayout = (): JsonObject => {
+    const visualLayout = (name = loadedLayoutName): JsonObject => {
+        const layoutName = name.trim() || "default";
         const performanceIds = new Set([
             ...STATUS_WIDGET_IDS,
             ...placedControls.map((control) => str(control.id))
@@ -615,6 +634,7 @@ export function LayoutEditorView({
             format: "pimfx-layout",
             version: 1,
             performanceLayout: {
+                layoutName,
                 elements: statusWidgetsToJson(widgets),
                 snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
                 unplacedControlIds: hiddenIds,
@@ -625,7 +645,7 @@ export function LayoutEditorView({
         };
     };
 
-    const applyVisualLayout = (parsed: JsonObject) => {
+    const applyVisualLayout = (parsed: JsonObject, name: string) => {
         if (str(parsed.format) !== "pimfx-layout") {
             throw new Error("that is not a Pi-MFX layout file");
         }
@@ -653,12 +673,11 @@ export function LayoutEditorView({
         }
         setDraftRects(nextRects);
         setGroupMode(false);
-        markDirty();
-        setMessage("Layout loaded. Choose SAVE LAYOUT to apply it.");
+        setLoadedLayoutName(name);
     };
 
-    const layoutPayload = (): JsonObject => {
-        const visual = visualLayout();
+    const controllerFromVisual = (visual: JsonObject, name: string): JsonObject => {
+        const importedLayout = { ...obj(visual.performanceLayout), layoutName: name };
         const rects = new Map(objects(visual.controls).map((item) => [str(item.id), item]));
         const nextControls = controls.map((control) => {
             const rect = obj(rects.get(str(control.id)));
@@ -669,17 +688,33 @@ export function LayoutEditorView({
         return {
             ...controller,
             layoutMode: "freeform",
-            performanceLayout: visual.performanceLayout,
+            performanceLayout: importedLayout,
             controls: nextControls
         };
     };
 
+    const writeLayoutFile = async (name: string, visual: JsonObject) => {
+        await engine.client.request("library/upload", {
+            kind: "layout",
+            name: `${name}.json`,
+            data: utf8ToBase64(JSON.stringify(visual, null, 2)),
+            directory: ""
+        });
+    };
+
+    const syncLayout = async (name: string, visual: JsonObject) => {
+        await writeLayoutFile(name, visual);
+        await engine.client.request("controller/config", controllerFromVisual(visual, name));
+        setLoadedLayoutName(name);
+        setDirty(false);
+        onDirtyChange?.(false);
+    };
+
     const saveLayout = () => {
+        const name = loadedLayoutName.trim() || "default";
         void run(async () => {
-            await engine.client.request("controller/config", layoutPayload());
-            setDirty(false);
-            onDirtyChange?.(false);
-            setMessage("Layout saved. Performance uses this arrangement.");
+            await syncLayout(name, visualLayout(name));
+            setMessage(`Saved “${name}”. Performance and the controller use this arrangement.`);
         });
     };
 
@@ -748,6 +783,8 @@ export function LayoutEditorView({
                     </div>
                     <div className="layout-editor-title">
                         {stage === "snapshots" ? "SNAPSHOT LAYOUT" : "PERFORMANCE LAYOUT"}
+                        {" · "}
+                        {loadedLayoutName.trim() || "default"}
                     </div>
                     <div className="muted">
                         {stage === "snapshots"
@@ -917,7 +954,7 @@ export function LayoutEditorView({
                             )}
                             {groups.length === 0 && (
                                 <div className="muted">
-                                    Add a group, then tap widgets and controls on the stage. Saved with SAVE LAYOUT.
+                                    Add a group, then select widgets and ADD TO GROUP. Groups save with SAVE LAYOUT.
                                 </div>
                             )}
                         </div>
@@ -1104,12 +1141,30 @@ export function LayoutEditorView({
                     run={run}
                     kind="layout"
                     mode={picker}
-                    title={picker === "save" ? "SAVE LAYOUT FILE" : "LOAD LAYOUT"}
-                    defaultName="layout"
-                    contents={picker === "save" ? JSON.stringify(visualLayout(), null, 2) : undefined}
+                    title={picker === "save" ? "SAVE LAYOUT AS" : "LOAD LAYOUT"}
+                    defaultName={loadedLayoutName.trim() || "default"}
+                    contents={picker === "save" ? JSON.stringify(visualLayout(loadedLayoutName.trim() || "default"), null, 2) : undefined}
                     onClose={() => setPicker(null)}
-                    onLoad={(parsed) => applyVisualLayout(parsed)}
-                    onSaved={() => setMessage("Layout file saved on the Pi.")}
+                    onLoad={(parsed, path) => {
+                        const name = str(obj(parsed.performanceLayout).layoutName)
+                            || layoutNameFromPath(path, "default");
+                        const named = {
+                            ...parsed,
+                            performanceLayout: { ...obj(parsed.performanceLayout), layoutName: name }
+                        };
+                        applyVisualLayout(named, name);
+                        void run(async () => {
+                            await syncLayout(name, named);
+                            setMessage(`Loaded “${name}”. Performance and the controller use this arrangement.`);
+                        });
+                    }}
+                    onSaved={(path) => {
+                        const name = layoutNameFromPath(path, loadedLayoutName.trim() || "default");
+                        void run(async () => {
+                            await syncLayout(name, visualLayout(name));
+                            setMessage(`Saved “${name}”. Performance and the controller use this arrangement.`);
+                        });
+                    }}
                 />
             )}
         </div>

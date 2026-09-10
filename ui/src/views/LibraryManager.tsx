@@ -246,7 +246,7 @@ export function LibraryFolderPicker({
     );
 }
 
-function utf8ToBase64(text: string): string {
+export function utf8ToBase64(text: string): string {
     const bytes = new TextEncoder().encode(text);
     let binary = "";
     bytes.forEach((value) => {

@@ -34,12 +34,15 @@ On a first Pi pick **1) Complete setup** or **2) Install**.
 4. After reboot, from any browser on the same network:
 
 ```
+http://pimfx.local:8080
 http://<pi-address>:8080
 ```
 
+Anyone on that LAN or hotspot can control the Pi (no login).
+
 5. **Settings → Audio**: pick the card, start at **48000 / 64 / 3**, play and watch xruns.
 
-Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it.
+Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS is not available.
 
 ---
 
@@ -60,7 +63,7 @@ cd ~/Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
 
-Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update` **from `~/Pi-MFX`**. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone.
+Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update` **from `~/Pi-MFX`**. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone. The same job is **Settings → System → Updates** in the UI.
 
 If you copied files onto the Pi with MobaXterm, `git pull` can refuse to overwrite them. Either pick **4) Rebuild local files** (no pull), or throw the copies away and match GitHub:
 
@@ -73,7 +76,7 @@ sudo bash ./scripts/pimfx.sh update
 
 ### Test
 
-Open `http://<pi-address>:8080` (phone, tablet, or this PC). Hard-refresh the page (**Ctrl+Shift+R**) so the browser does not keep an old UI.
+Open `http://pimfx.local:8080` (phone, tablet, or this PC). Hard-refresh the page (**Ctrl+Shift+R**) so the browser does not keep an old UI.
 
 Quick check on the Pi:
 

@@ -83,7 +83,11 @@ http://<pi-address>:8080
 
 `pimfx.local` is published by Avahi after install, the same way PiPedal uses
 `pipedal.local`. Phones, tablets, and laptops are all first-class; the UI
-adapts to the screen.
+adapts to the screen. A 7" **1024×600** kiosk is the size the screenshots and
+layout editor assume.
+
+Anyone on the same LAN or hotspot can open that URL and control the Pi.
+There is no login on the HTTP or WebSocket APIs.
 
 ## 5. Set up audio
 
@@ -175,15 +179,15 @@ sudo bash ./scripts/pimfx.sh hotspot
 
 ## Updating
 
-After the first install, use the short update script (pull, rebuild, restart).
-It does not redo apt or OS tuning.
+After the first install, pull `dev`, rebuild, and restart without redoing apt or
+OS tuning. From the UI: **Settings → System → Updates**. From SSH:
 
 ```bash
 cd ~/Pi-MFX
 sudo bash ./scripts/pimfx.sh update
 ```
 
-Or open the menu and pick **Update**. Day-to-day PC + Pi steps are in
+Or open the setup menu and pick **Update**. Day-to-day PC + Pi steps are in
 [DEV_FLOW.md](DEV_FLOW.md).
 
 Your banks, settings, models, and IRs live in `/var/lib/pimfx` and are not

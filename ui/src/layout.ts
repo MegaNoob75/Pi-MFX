@@ -47,8 +47,8 @@ export interface StatusWidget {
 }
 
 export function clampRect(rect: LayoutRect, minSize?: { width: number; height: number }): LayoutRect {
-    const minW = Math.min(1, Math.max(0.08, minSize?.width ?? 0.08));
-    const minH = Math.min(1, Math.max(0.08, minSize?.height ?? 0.08));
+    const minW = Math.min(1, Math.max(0.04, minSize?.width ?? 0.08));
+    const minH = Math.min(1, Math.max(0.04, minSize?.height ?? 0.08));
     const width = Math.min(1, Math.max(minW, rect.width));
     const height = Math.min(1, Math.max(minH, rect.height));
     return {
@@ -167,12 +167,12 @@ export function snapRectToPixels(
 
 export function analogMinSize(kind: string): { width: number; height: number } {
     if (kind === "slider" || kind === "expression") {
-        return { width: 0.14, height: 0.34 };
+        return { width: 0.08, height: 0.22 };
     }
     if (kind === "pot" || kind === "encoder") {
-        return { width: 0.16, height: 0.26 };
+        return { width: 0.08, height: 0.14 };
     }
-    return { width: 0.12, height: 0.18 };
+    return { width: 0.10, height: 0.16 };
 }
 
 export const DEFAULT_SNAPSHOT_SLOT_COUNT = 6;
@@ -302,35 +302,38 @@ export function fitRectInEmptySpace(
     occupied: LayoutRect[],
     minSize = { width: 0.08, height: 0.08 }
 ): LayoutRect | null {
-    const minW = Math.max(0.06, Math.min(desired.width, minSize.width));
-    const minH = Math.max(0.06, Math.min(desired.height, minSize.height));
+    const floor = { width: 0.06, height: 0.08 };
+    const minW = Math.max(floor.width, Math.min(desired.width, minSize.width));
+    const minH = Math.max(floor.height, Math.min(desired.height, minSize.height));
     const sizes: Array<{ width: number; height: number }> = [];
-    for (const scale of [1, 0.85, 0.7, 0.55, 0.4]) {
+    for (const scale of [1, 0.85, 0.7, 0.55, 0.4, 0.3]) {
         const width = Math.max(minW, desired.width * scale);
         const height = Math.max(minH, desired.height * scale);
         if (!sizes.some((size) => Math.abs(size.width - width) < 0.002 && Math.abs(size.height - height) < 0.002)) {
             sizes.push({ width, height });
         }
     }
-    if (!sizes.some((size) => Math.abs(size.width - minW) < 0.002 && Math.abs(size.height - minH) < 0.002)) {
-        sizes.push({ width: minW, height: minH });
+    for (const extra of [ { width: minW, height: minH }, floor ]) {
+        if (!sizes.some((size) => Math.abs(size.width - extra.width) < 0.002 && Math.abs(size.height - extra.height) < 0.002)) {
+            sizes.push(extra);
+        }
     }
 
     const fits = (rect: LayoutRect) => !occupied.some((other) => rectsOverlap(rect, other, 0.008));
-    const preferred = clampRect(desired);
+    const preferred = clampRect(desired, minSize);
     if (fits(preferred)) {
         return preferred;
     }
 
-    const step = 0.025;
+    const step = 0.02;
     for (const size of sizes) {
-        const first = clampRect({ ...desired, width: size.width, height: size.height });
+        const first = clampRect({ ...desired, width: size.width, height: size.height }, size);
         if (fits(first)) {
             return first;
         }
         for (let y = 0; y <= 1 - size.height + 1e-6; y += step) {
             for (let x = 0; x <= 1 - size.width + 1e-6; x += step) {
-                const candidate = clampRect({ x, y, width: size.width, height: size.height });
+                const candidate = clampRect({ x, y, width: size.width, height: size.height }, size);
                 if (fits(candidate)) {
                     return candidate;
                 }

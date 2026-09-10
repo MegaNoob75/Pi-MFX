@@ -415,7 +415,8 @@ function ControllerHub({
                                 snapshotElements: snapshotWidgetsToJson(defaultSnapshotWidgets()),
                                 unplacedControlIds: [],
                                 groups: [],
-                                snapshotGroups: []
+                                snapshotGroups: [],
+                                layoutName: str(obj(controller.performanceLayout).layoutName, "default")
                             },
                             controls: objects(controller.controls).map((control, index) => {
                                 const rect = gridCellRect(index, 4, 2);
