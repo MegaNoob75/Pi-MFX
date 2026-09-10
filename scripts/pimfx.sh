@@ -6,6 +6,8 @@
 #
 #   sudo bash ./scripts/pimfx.sh
 #   sudo bash ./scripts/pimfx.sh update
+  sudo bash ./scripts/pimfx.sh update --branch dev
+  sudo bash ./scripts/pimfx.sh update --branch main
 #   sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
 
 set -euo pipefail
@@ -18,6 +20,7 @@ PIMFX_PORT="${PIMFX_PORT:-8080}"
 ACTION="menu"
 ASSUME_YES=0
 PURGE="no"
+UPDATE_BRANCH=""
 DISPLAY_USER_OVERRIDE=""
 REBOOT_NEEDED=0
 REBOOT_REASON=""
@@ -54,6 +57,7 @@ Actions:
 
 Options:
   --no-tuning            Install the service but leave the OS alone
+  --branch main|dev    Update from that GitHub branch (update only)
   --port <n>             Web UI port (default 8080)
   --display-user USER    Account that auto-logs in on the screen
   --purge                Also delete /var/lib/pimfx (remove only)
@@ -98,6 +102,14 @@ parse_args() {
                 [[ $# -ge 2 ]] || die "--port needs a number"
                 PIMFX_PORT="$2"
                 INSTALL_ARGS+=(--port "$2")
+                shift 2 ;;
+            --branch)
+                [[ $# -ge 2 ]] || die "--branch needs main or dev"
+                UPDATE_BRANCH="$2"
+                case "$UPDATE_BRANCH" in
+                    main|dev) ;;
+                    *) die "--branch must be main or dev" ;;
+                esac
                 shift 2 ;;
             --display-user)
                 [[ $# -ge 2 ]] || die "--display-user needs a username"
@@ -358,7 +370,11 @@ do_install() {
 }
 
 do_update() {
-    run_script update.sh
+    if [[ -n "$UPDATE_BRANCH" ]]; then
+        PIMFX_BRANCH="$UPDATE_BRANCH" run_script update.sh
+    else
+        run_script update.sh
+    fi
 }
 
 do_rebuild() {

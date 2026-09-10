@@ -18,6 +18,7 @@ import { FilesView } from "./views/LibraryManager";
 import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
 import { loadCustomMultiFXThemes, themeLedColors } from "./theme/theme";
 import { MarqueeText } from "./views/MarqueeText";
+import { ConfirmDialog } from "./views/ConfirmDialog";
 import { installResponsiveSizing } from "./responsive";
 
 export type View =
@@ -73,6 +74,7 @@ export function App() {
     const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
     const [layoutDirty, setLayoutDirty] = useState(false);
+    const [leaveLayout, setLeaveLayout] = useState<View | "back" | null>(null);
     const menuRef = useRef<HTMLElement | null>(null);
 
     useEffect(() => installResponsiveSizing(), []);
@@ -84,23 +86,9 @@ export function App() {
     const snapshotMode = bool(engine.state.snapshotMode);
     const chainLocked = snapshotMode || num(engine.state.activeSnapshot, -1) >= 0;
 
-    const confirmLeaveLayout = (next: View) => {
-        if (view !== "layout" || !layoutDirty || next === "layout") {
-            return true;
-        }
-        if (window.confirm("Leave the layout editor? Unsaved arrangement will be lost.")) {
-            setLayoutDirty(false);
-            return true;
-        }
-        return false;
-    };
-
-    const goTo = (next: View) => {
+    const navigateTo = (next: View) => {
         setMenuOpen(false);
         if (next === view) {
-            return;
-        }
-        if (!confirmLeaveLayout(next)) {
             return;
         }
         if (next === "edit") {
@@ -109,6 +97,18 @@ export function App() {
         }
         setHistory((stack) => [...stack, view]);
         setView(next);
+    };
+
+    const goTo = (next: View) => {
+        setMenuOpen(false);
+        if (next === view) {
+            return;
+        }
+        if (view === "layout" && layoutDirty && next !== "layout") {
+            setLeaveLayout(next);
+            return;
+        }
+        navigateTo(next);
     };
 
     const finishBack = () => {
@@ -134,10 +134,8 @@ export function App() {
             return;
         }
         if (view === "layout" && layoutDirty) {
-            if (!window.confirm("Leave the layout editor? Unsaved arrangement will be lost.")) {
-                return;
-            }
-            setLayoutDirty(false);
+            setLeaveLayout("back");
+            return;
         }
         finishBack();
     };
@@ -432,6 +430,25 @@ export function App() {
                 >
                     {visibleToast}
                 </div>
+            )}
+            {leaveLayout && (
+                <ConfirmDialog
+                    title="LEAVE LAYOUT?"
+                    body="Unsaved arrangement will be lost."
+                    confirmLabel="LEAVE"
+                    danger
+                    onCancel={() => setLeaveLayout(null)}
+                    onConfirm={() => {
+                        const pending = leaveLayout;
+                        setLeaveLayout(null);
+                        setLayoutDirty(false);
+                        if (pending === "back") {
+                            finishBack();
+                            return;
+                        }
+                        navigateTo(pending);
+                    }}
+                />
             )}
             <KeyboardProvider />
         </div>

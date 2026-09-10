@@ -88,6 +88,7 @@ export function LayoutEditorView({
     const [snapshotGroups, setSnapshotGroups] = useState(() => readLayoutGroups({ groups: layout.snapshotGroups } as JsonObject));
     const [activeGroupId, setActiveGroupId] = useState("");
     const [groupMode, setGroupMode] = useState(false);
+    const [matchSize, setMatchSize] = useState(false);
     const [groupName, setGroupName] = useState("");
     const [snapEnabled, setSnapEnabled] = useState(loadSnapEnabled);
     const [snapPixels, setSnapPixels] = useState(loadSnapPixels);
@@ -275,44 +276,6 @@ export function LayoutEditorView({
 
     const groupForId = (id: string) => groupsRef.current.find((group) => group.memberIds.includes(id));
 
-    const applySizeToMembers = (memberIds: string[], size: { width: number; height: number }) => {
-        const outsiders = placedEntries().filter((item) => !memberIds.includes(item.id));
-        const updates: Record<string, LayoutRect> = {};
-        for (const id of memberIds) {
-            const current = rectForId(id);
-            if (!current) {
-                continue;
-            }
-            const next = sizedRect(id, current, size);
-            if (outsiders.some((item) => rectsOverlap(next, item.rect))) {
-                continue;
-            }
-            updates[id] = next;
-        }
-        if (Object.keys(updates).length > 0) {
-            patchRects(updates);
-        }
-        if (Object.keys(updates).length < memberIds.length) {
-            setMessage("Some grouped widgets were skipped so they would not overlap others.");
-        }
-        return updates;
-    };
-
-    const matchActiveGroupSize = () => {
-        const members = activeGroup?.memberIds.filter((id) => visibleIds.includes(id)) ?? [];
-        if (members.length < 2) {
-            setMessage("Add at least two widgets to this group first.");
-            return;
-        }
-        const sourceId = members.includes(selectedId) ? selectedId : members[0];
-        const source = rectForId(sourceId);
-        if (!source) {
-            return;
-        }
-        applySizeToMembers(members, { width: source.width, height: source.height });
-        setMessage("Grouped widgets now match that size. Resize one to keep them in sync.");
-    };
-
     const spaceActiveGroup = () => {
         const members = activeGroup?.memberIds.filter((id) => visibleIds.includes(id)) ?? [];
         if (members.length < 2) {
@@ -461,7 +424,7 @@ export function LayoutEditorView({
             const centerX = raw.x + raw.width / 2;
             const centerY = raw.y + raw.height / 2;
             const group = groupForId(id);
-            const skip = new Set(group && drag.current.mode === "move" ? group.memberIds : [id]);
+            const skip = new Set(groupMode && group ? group.memberIds : [id]);
             const hit = placedEntries().find((item) => (
                 !skip.has(item.id) && rectContainsPoint(item.rect, centerX, centerY)
             ));
@@ -473,8 +436,12 @@ export function LayoutEditorView({
         }
 
         const ignore = new Set<string>(swapId ? [swapId] : []);
+        if (groupMode && drag.current.mode === "move") {
+            const group = groupForId(id);
+            group?.memberIds.forEach((member) => ignore.add(member));
+        }
         const updates: Record<string, LayoutRect> = { [id]: applySnap(raw, min) };
-        if (drag.current.mode === "move") {
+        if (groupMode && drag.current.mode === "move") {
             const group = groupForId(id);
             if (group && group.memberIds.length > 1) {
                 for (const other of group.memberIds) {
@@ -491,7 +458,7 @@ export function LayoutEditorView({
                     }
                 }
             }
-        } else {
+        } else if (matchSize && drag.current.mode !== "move") {
             const group = groupForId(id);
             if (group && group.memberIds.length > 1) {
                 for (const other of group.memberIds) {
@@ -880,19 +847,15 @@ export function LayoutEditorView({
                                 )}
                             </div>
                             <div className="layout-group-list">
-                                {groups.map((group) => (
+                                {stageGroups.map((group) => (
                                     <button
                                         key={group.id}
                                         type="button"
                                         className={`layout-group-chip${activeGroupId === group.id ? " is-active" : ""}`}
                                         onClick={() => {
-                                            const same = activeGroupId === group.id && groupMode;
                                             setActiveGroupId(group.id);
-                                            setGroupMode(!same);
                                             setGroupName("");
-                                            setMessage(same
-                                                ? `${group.memberIds.length} in “${group.name}”.`
-                                                : `Editing “${group.name}”. Tap widgets or controls to add or remove them.`);
+                                            setMessage(`Selected “${group.name}”. Turn on GROUP to move members together.`);
                                         }}
                                     >
                                         <span>{group.name}</span>
@@ -900,16 +863,42 @@ export function LayoutEditorView({
                                     </button>
                                 ))}
                             </div>
-                            {activeGroup && (
+                            {stageGroups.length > 0 && (
                                 <div className="layout-group-actions">
                                     <button
                                         type="button"
-                                        className="btn btn-accent"
-                                        disabled={activeGroup.memberIds.length < 2}
-                                        onClick={matchActiveGroupSize}
+                                        className={`btn ${groupMode ? "btn-active" : ""}`}
+                                        onClick={() => {
+                                            setGroupMode((on) => {
+                                                const next = !on;
+                                                setMessage(next
+                                                    ? "Group mode on. Drag one member to move the group."
+                                                    : "Group mode off. Drag items one at a time.");
+                                                return next;
+                                            });
+                                        }}
                                     >
-                                        MATCH SIZE
+                                        GROUP {groupMode ? "ON" : "OFF"}
                                     </button>
+                                    <button
+                                        type="button"
+                                        className={`btn ${matchSize ? "btn-active" : ""}`}
+                                        onClick={() => {
+                                            setMatchSize((on) => {
+                                                const next = !on;
+                                                setMessage(next
+                                                    ? "Match size on. Resize one member to size the group."
+                                                    : "Match size off. Resize items one at a time.");
+                                                return next;
+                                            });
+                                        }}
+                                    >
+                                        MATCH SIZE {matchSize ? "ON" : "OFF"}
+                                    </button>
+                                </div>
+                            )}
+                            {activeGroup && (
+                                <div className="layout-group-actions">
                                     <button
                                         type="button"
                                         className="btn"
@@ -928,33 +917,16 @@ export function LayoutEditorView({
                                             }
                                         }}
                                     >
-                                        {grouped.has(selectedId) ? "REMOVE FROM GROUP" : "ADD TO GROUP"}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        onClick={() => {
-                                            const groupId = ensureActiveGroup();
-                                            setStageGroups((current) => current.map((group) => (
-                                                group.id === groupId
-                                                    ? { ...group, memberIds: [...visibleIds] }
-                                                    : { ...group, memberIds: group.memberIds.filter((id) => !visibleIds.includes(id)) }
-                                            )));
-                                            setGroupMode(true);
-                                            markDirty();
-                                            setMessage(`Added all ${visibleIds.length} items to “${activeGroup.name}”.`);
-                                        }}
-                                    >
-                                        ADD ALL ON STAGE
+                                        {grouped.has(selectedId) ? "REMOVE" : "ADD"}
                                     </button>
                                     <button type="button" className="btn btn-danger" onClick={deleteActiveGroup}>
                                         DELETE
                                     </button>
                                 </div>
                             )}
-                            {groups.length === 0 && (
+                            {stageGroups.length === 0 && (
                                 <div className="muted">
-                                    Add a group, then select widgets and ADD TO GROUP. Groups save with SAVE LAYOUT.
+                                    Add a group, then ADD a selected widget. GROUP moves members together. MATCH SIZE resizes them together.
                                 </div>
                             )}
                         </div>

@@ -44,8 +44,8 @@ public:
     bool hidePlugin(const std::string& uri, const std::string& name, std::string& error);
     bool unhidePlugin(const std::string& uri, std::string& error);
 
-    Json updateStatus(bool fetchLatest, std::string& error);
-    Json updateInstall(std::string& error);
+    Json updateStatus(const Json& payload, std::string& error);
+    Json updateInstall(const Json& payload, std::string& error);
 
     Json hotspotStatus(std::string& error);
     Json hotspotConfig(std::string& error);

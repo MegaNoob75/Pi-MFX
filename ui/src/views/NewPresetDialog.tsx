@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { dismissOnScreenKeyboard } from "../keyboard/ask";
 import { str, objects, type JsonObject } from "../json";
 
 export function NewPresetDialog({
@@ -17,15 +18,19 @@ export function NewPresetDialog({
     const [name, setName] = useState(defaultName);
     const [bankId, setBankId] = useState(defaultBankId || str(objects(banks)[0]?.id));
 
+    const close = () => {
+        dismissOnScreenKeyboard();
+        onCancel();
+    };
+
     return (
-        <div className="mfx-overlay" onClick={onCancel}>
+        <div className="mfx-overlay" onClick={close}>
             <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
                 <div className="mfx-overlay-title">NEW PRESET</div>
                 <label className="field">
                     <span>Name</span>
                     <input
                         className="input"
-                        autoFocus
                         value={name}
                         onChange={(event) => setName(event.target.value)}
                         onKeyDown={(event) => {
@@ -33,7 +38,7 @@ export function NewPresetDialog({
                                 onCreate(name.trim(), bankId);
                             }
                             if (event.key === "Escape") {
-                                onCancel();
+                                close();
                             }
                         }}
                     />
@@ -52,7 +57,7 @@ export function NewPresetDialog({
                     </select>
                 </label>
                 <div className="row" style={{ justifyContent: "flex-end" }}>
-                    <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
+                    <button type="button" className="btn" onClick={close}>CANCEL</button>
                     <button
                         type="button"
                         className="btn btn-accent"

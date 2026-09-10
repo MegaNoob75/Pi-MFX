@@ -89,7 +89,6 @@ export function SnapshotManagerView({
                                         <div className="row" style={{ marginTop: 10 }}>
                                             <input
                                                 className="input"
-                                                autoFocus
                                                 value={renameValue}
                                                 onChange={(event) => setRenameValue(event.target.value)}
                                                 onKeyDown={(event) => {

@@ -1765,7 +1765,7 @@ button.list-item {
     flex: 1 1 auto;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(150px, 210px) minmax(0, 1fr);
+    grid-template-columns: minmax(168px, 232px) minmax(0, 1fr);
     gap: 10px;
     padding: 10px 12px;
 }
@@ -1785,6 +1785,51 @@ button.list-item {
 .layout-editor .layout-stage {
     min-height: 0;
     height: 100%;
+}
+
+.keyboard-settings {
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.keyboard-settings-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.keyboard-settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.keyboard-theme-panel {
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: 38%;
+}
+
+.keyboard-theme-scroller {
+    min-height: 72px;
+    max-height: 140px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-right: 4px;
+}
+
+.keyboard-theme-scroller .theme-pick {
+    min-height: 36px;
+    padding: 6px 10px;
 }
 
 .theme-pick-list {
@@ -2267,9 +2312,21 @@ button.list-item {
 }
 
 .layout-group-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+    display: flex;
+    flex-direction: column;
     gap: 6px;
+}
+
+.layout-group-actions .btn,
+.layout-palette .btn {
+    width: 100%;
+    min-height: 36px;
+    padding: 7px 8px;
+    font-size: 0.78rem;
+    line-height: 1.15;
+    white-space: normal;
+    overflow: visible;
+    text-align: center;
 }
 
 .gain-meter {

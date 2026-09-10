@@ -128,6 +128,7 @@ cp -r "$REPO_DIR/ui/dist/." "$WEB_ROOT/"
 install -d -o "$PIMFX_USER" -g "$PIMFX_USER" \
     "$DATA_ROOT" "$DATA_ROOT/banks" "$DATA_ROOT/models" "$DATA_ROOT/irs" \
     "$DATA_ROOT/themes" "$DATA_ROOT/downloads" "$DATA_ROOT/lv2"
+printf '%s\n' "$REPO_DIR" > "$DATA_ROOT/source-repo"
 
 # ---------------------------------------------------------------------------
 # 5. System tuning

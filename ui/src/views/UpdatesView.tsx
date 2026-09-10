@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { bool, obj, str } from "../json";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 const POLL_MS = 2000;
-const CLI_COMMAND = "sudo bash ./scripts/pimfx.sh update";
+const CLI_COMMAND = "sudo bash ./scripts/pimfx.sh update --branch dev";
+
+function normalizeBranch(value: string) {
+    return value === "main" ? "main" : "dev";
+}
 
 export function UpdatesView({
     engine,
@@ -15,8 +20,10 @@ export function UpdatesView({
     const version = str(engine.state.version, "0.1.0");
     const gitSha = str(engine.state.gitSha);
     const [status, setStatus] = useState(obj({}));
+    const [branch, setBranch] = useState("dev");
     const [checking, setChecking] = useState(false);
     const [installing, setInstalling] = useState(false);
+    const [confirmInstall, setConfirmInstall] = useState(false);
     const [message, setMessage] = useState("");
 
     const applyStatus = (next: ReturnType<typeof obj>) => {
@@ -38,7 +45,10 @@ export function UpdatesView({
         setChecking(true);
         setMessage("");
         try {
-            const next = obj(await engine.client.request("system/update/status", { fetch: fetchLatest }));
+            const next = obj(await engine.client.request("system/update/status", {
+                fetch: fetchLatest,
+                branch
+            }));
             applyStatus(next);
             if (str(next.error) && !bool(next.ok, true)) {
                 setMessage(str(next.error));
@@ -48,7 +58,7 @@ export function UpdatesView({
         } finally {
             setChecking(false);
         }
-    }, [engine.client]);
+    }, [branch, engine.client]);
 
     useEffect(() => {
         void check(true);
@@ -61,7 +71,7 @@ export function UpdatesView({
         let stopped = false;
         const poll = async () => {
             try {
-                const next = obj(await engine.client.request("system/update/status", { fetch: false }));
+                const next = obj(await engine.client.request("system/update/status", { fetch: false, branch }));
                 if (stopped) {
                     return;
                 }
@@ -76,36 +86,33 @@ export function UpdatesView({
             stopped = true;
             window.clearInterval(timer);
         };
-    }, [engine.client, installing]);
+    }, [branch, engine.client, installing]);
 
     const installedCommit = str(status.installedCommit, gitSha);
     const latestCommit = str(status.latestCommit);
     const updateAvailable = bool(status.updateAvailable);
     const helperMissing = str(status.error).includes("not configured")
         || str(message).includes("helper")
-        || str(status.error).toLowerCase().includes("helper");
+        || str(status.error).toLowerCase().includes("helper")
+        || str(message).includes("not configured");
     const logLines = str(status.log).split(/\r?\n/).filter(Boolean);
+    const currentBranch = str(status.branch);
+    const switching = Boolean(currentBranch) && currentBranch !== branch;
     const upToDate = bool(status.ok, true)
         && Boolean(installedCommit)
         && Boolean(latestCommit)
         && !updateAvailable
+        && !switching
         && str(status.jobState, "idle") === "idle"
         && !str(status.error);
 
     const install = () => {
-        const approved = window.confirm(
-            "Install the latest Pi-MFX commit now?\n\n"
-            + "Audio stops while the engine rebuilds. This takes several minutes and restarts the Pi-MFX service.\n\n"
-            + "update.sh runs git reset --hard on this Pi's clone, so local source edits there will be discarded."
-        );
-        if (!approved) {
-            return;
-        }
+        setConfirmInstall(false);
         setInstalling(true);
         setMessage("Starting update…");
         void run(async () => {
             try {
-                const next = obj(await engine.client.request("system/update/install"));
+                const next = obj(await engine.client.request("system/update/install", { branch }));
                 applyStatus(next);
                 setMessage(str(next.message) || str(next.error) || "Update started.");
             } catch (error) {
@@ -126,25 +133,42 @@ export function UpdatesView({
                         <strong>{installedCommit || "Unknown"}</strong>
                         {latestCommit && (
                             <>
-                                <span>Latest</span>
+                                <span>Latest on {branch}</span>
                                 <strong>{latestCommit}</strong>
                             </>
                         )}
-                        {str(status.branch) && (
+                        {currentBranch && (
                             <>
-                                <span>Branch</span>
-                                <strong>{str(status.branch)}</strong>
+                                <span>This Pi</span>
+                                <strong>{currentBranch}</strong>
                             </>
                         )}
+                    </div>
+                    <div className="row" style={{ flexWrap: "wrap" }}>
+                        {(["dev", "main"] as const).map((item) => (
+                            <button
+                                key={item}
+                                type="button"
+                                className={`btn ${branch === item ? "btn-active" : ""}`}
+                                disabled={checking || installing}
+                                onClick={() => setBranch(item)}
+                            >
+                                {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="muted">
+                        Dev tracks day-to-day work. Main is the release branch.
                     </div>
                     <div className="updates-status">
                         {checking && "Checking for updates…"}
                         {!checking && installing && (str(status.message) || "Installing the update…")}
-                        {!checking && !installing && updateAvailable && `Commit ${latestCommit} is available.`}
-                        {!checking && !installing && upToDate && "Pi-MFX is up to date."}
+                        {!checking && !installing && switching && `This Pi is on ${currentBranch}. Update to switch to ${branch}.`}
+                        {!checking && !installing && !switching && updateAvailable && `Commit ${latestCommit} is available on ${branch}.`}
+                        {!checking && !installing && upToDate && `Pi-MFX is up to date on ${branch}.`}
                         {!checking && !installing && str(status.jobState) === "failed" && str(status.message)}
                         {!checking && !installing && str(status.error) && str(status.error)}
-                        {!checking && !installing && !updateAvailable && !upToDate && !str(status.error)
+                        {!checking && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
                             && (str(status.message) || "Could not determine update status.")}
                     </div>
                     {logLines.length > 0 && (
@@ -163,14 +187,14 @@ export function UpdatesView({
                         >
                             {checking ? "CHECKING..." : "CHECK FOR UPDATES"}
                         </button>
-                        {updateAvailable && (
+                        {(updateAvailable || switching) && (
                             <button
                                 type="button"
                                 className="btn btn-accent"
                                 disabled={checking || installing}
-                                onClick={install}
+                                onClick={() => setConfirmInstall(true)}
                             >
-                                {installing ? "UPDATING..." : "UPDATE"}
+                                {installing ? "UPDATING..." : `UPDATE ${branch.toUpperCase()}`}
                             </button>
                         )}
                     </div>
@@ -180,12 +204,23 @@ export function UpdatesView({
                     <h2>COMMAND-LINE RECOVERY</h2>
                     <div className="muted">
                         {helperMissing
-                            ? "The plugin helper is not available, so updates cannot start from this screen. On the Pi, from the Pi-MFX clone, run:"
+                            ? "The updater cannot see the Pi-MFX clone yet. From the clone, run this once, then this page can update itself:"
                             : "If an update cannot be started from this screen, update from the Pi-MFX clone:"}
                     </div>
-                    <pre className="updates-command">{CLI_COMMAND}</pre>
+                    <pre className="updates-command">{`sudo bash ./scripts/pimfx.sh update --branch ${normalizeBranch(branch)}`}</pre>
+                    <div className="muted">{CLI_COMMAND.replace("dev", "main")} for release.</div>
                 </section>
             </div>
+            {confirmInstall && (
+                <ConfirmDialog
+                    title={`UPDATE ${branch.toUpperCase()}?`}
+                    body="Audio stops while the engine rebuilds. This takes several minutes, restarts the Pi-MFX service, and discards local source edits on this Pi. Banks stay in /var/lib/pimfx."
+                    confirmLabel="UPDATE"
+                    danger
+                    onCancel={() => setConfirmInstall(false)}
+                    onConfirm={install}
+                />
+            )}
         </div>
     );
 }

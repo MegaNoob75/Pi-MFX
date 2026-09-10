@@ -23,8 +23,10 @@ RestartSec=2
 # local .deb installs fail with "seteuid 42" / "Method file has died".
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectHome=yes
-ReadWritePaths=@DATA_ROOT@ @REPO@ /run/pimfx
+ProtectHome=no
+# The clone usually lives in a user home directory. ProtectHome would hide it
+# from git fetch/checkout during Settings → Updates.
+ReadWritePaths=@DATA_ROOT@ @REPO@ /run/pimfx /home
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictNamespaces=yes

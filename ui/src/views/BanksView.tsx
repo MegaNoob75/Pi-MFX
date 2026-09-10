@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
+import { dismissOnScreenKeyboard } from "../keyboard/ask";
 import { obj, str, objects, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
 import { LibraryJsonPicker } from "./LibraryManager";
@@ -294,7 +295,12 @@ export function BanksView({
             </section>
 
             {edit && (
-                <div className="mfx-overlay" onClick={() => !busy && setEdit(null)}>
+                <div className="mfx-overlay" onClick={() => {
+                    if (!busy) {
+                        dismissOnScreenKeyboard();
+                        setEdit(null);
+                    }
+                }}>
                     <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
                         <div className="mfx-overlay-title">{edit.title}</div>
                         {edit.mode === "cloneBank" && (
@@ -302,7 +308,6 @@ export function BanksView({
                         )}
                         <input
                             className="input"
-                            autoFocus
                             value={edit.value}
                             disabled={busy}
                             onChange={(event) => setEdit({ ...edit, value: event.target.value })}
@@ -311,12 +316,16 @@ export function BanksView({
                                     submitEdit();
                                 }
                                 if (event.key === "Escape") {
+                                    dismissOnScreenKeyboard();
                                     setEdit(null);
                                 }
                             }}
                         />
                         <div className="row" style={{ justifyContent: "flex-end" }}>
-                            <button type="button" className="btn" disabled={busy} onClick={() => setEdit(null)}>CANCEL</button>
+                            <button type="button" className="btn" disabled={busy} onClick={() => {
+                                dismissOnScreenKeyboard();
+                                setEdit(null);
+                            }}>CANCEL</button>
                             <button type="button" className="btn btn-accent" disabled={busy} onClick={submitEdit}>
                                 {edit.mode === "cloneBank" ? (busy ? "CLONING..." : "CLONE") : "SAVE"}
                             </button>

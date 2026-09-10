@@ -25,24 +25,37 @@ if [[ "${SKIP_PULL:-0}" == "1" ]]; then
     log "Skipping git pull (using the files already in this folder)"
 elif [[ -d .git ]]; then
     clone_owner
-    branch="$(as_clone_owner git rev-parse --abbrev-ref HEAD)"
-    log "Pulling ${branch}"
-
-    # A failed UI build can leave npm's lockfile untracked. Once that file is
-    # in the repo, git pull refuses to overwrite it.
-    if [[ -e ui/package-lock.json ]] && ! git ls-files --error-unmatch ui/package-lock.json >/dev/null 2>&1; then
-        log "  Removing leftover untracked ui/package-lock.json"
-        rm -f ui/package-lock.json
-    fi
-
-    as_clone_owner git fetch origin
-    # Copies from the PC (MobaXterm) dirty tracked files and block a merge.
-    # This clone is a deployment copy; origin wins. Banks live in /var/lib/pimfx.
-    if ! as_clone_owner git diff --quiet || ! as_clone_owner git diff --cached --quiet; then
-        log "Local files differ from git (often a copy from the PC). Matching origin/${branch}."
-        as_clone_owner git reset --hard "origin/${branch}"
+    requested="${PIMFX_BRANCH:-}"
+    if [[ -n "$requested" ]]; then
+        case "$requested" in
+            main|dev) ;;
+            *) die "branch must be main or dev" ;;
+        esac
+        log "Switching to ${requested}"
+        as_clone_owner git fetch origin
+        as_clone_owner git checkout "$requested"
+        as_clone_owner git reset --hard "origin/${requested}"
+        branch="$requested"
     else
-        as_clone_owner git merge --ff-only "origin/${branch}"
+        branch="$(as_clone_owner git rev-parse --abbrev-ref HEAD)"
+        log "Pulling ${branch}"
+
+        # A failed UI build can leave npm's lockfile untracked. Once that file is
+        # in the repo, git pull refuses to overwrite it.
+        if [[ -e ui/package-lock.json ]] && ! git ls-files --error-unmatch ui/package-lock.json >/dev/null 2>&1; then
+            log "  Removing leftover untracked ui/package-lock.json"
+            rm -f ui/package-lock.json
+        fi
+
+        as_clone_owner git fetch origin
+        # Copies from the PC (MobaXterm) dirty tracked files and block a merge.
+        # This clone is a deployment copy; origin wins. Banks live in /var/lib/pimfx.
+        if ! as_clone_owner git diff --quiet || ! as_clone_owner git diff --cached --quiet; then
+            log "Local files differ from git (often a copy from the PC). Matching origin/${branch}."
+            as_clone_owner git reset --hard "origin/${branch}"
+        else
+            as_clone_owner git merge --ff-only "origin/${branch}"
+        fi
     fi
 else
     die "this folder is not a git clone; clone the repo first (see docs/DEV_FLOW.md)"
@@ -73,6 +86,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     PIMFX_USER="${PIMFX_USER:-$(awk -F= '/^User=/{print $2; exit}' /etc/systemd/system/pimfx.service)}"
     PIMFX_USER="${PIMFX_USER:-pimfx}"
     DATA_ROOT="${DATA_ROOT:-/var/lib/pimfx}"
+    printf '%s\n' "$REPO_DIR" > "$DATA_ROOT/source-repo"
     EXISTING_PORT="$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/pimfx.service | head -1)"
     PIMFX_PORT="${PIMFX_PORT:-${EXISTING_PORT:-8080}}"
     log "Refreshing the pimfx service unit"

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ASK_EVENT, type AskRequest } from "./ask";
+import { ASK_EVENT, DISMISS_KEYBOARD_EVENT, type AskRequest } from "./ask";
 import { Keyboard, type KeyboardSession } from "./Keyboard";
 import { onKeyboardModeChange, shouldUseOnScreenKeyboard } from "./mode";
 import {
@@ -26,6 +26,8 @@ function hideSystemKeyboard(element: EditableElement): void {
 
 export function KeyboardProvider() {
     const [session, setSession] = useState<KeyboardSession | null>(null);
+    const [ask, setAsk] = useState<AskRequest | null>(null);
+    const [askValue, setAskValue] = useState("");
     const sessionRef = useRef<KeyboardSession | null>(null);
     const nextId = useRef(0);
     sessionRef.current = session;
@@ -35,6 +37,9 @@ export function KeyboardProvider() {
         current.resolve = undefined;
         if (value !== null && current.target) {
             commitValue(current.target, value);
+            if (ask) {
+                setAskValue(current.target.value);
+            }
         }
         if (current.target && document.activeElement === current.target) {
             current.target.blur();
@@ -42,7 +47,7 @@ export function KeyboardProvider() {
         sessionRef.current = null;
         setSession(null);
         resolve?.(value);
-    }, []);
+    }, [ask]);
 
     const open = useCallback((element: EditableElement) => {
         if (!shouldUseOnScreenKeyboard()) {
@@ -76,29 +81,29 @@ export function KeyboardProvider() {
         setSession(next);
     }, []);
 
-    const openPrompt = useCallback((request: AskRequest) => {
-        if (!shouldUseOnScreenKeyboard()) {
-            request.resolve(window.prompt(request.label, request.value));
-            return;
-        }
+    const closeAsk = useCallback((value: string | null) => {
         const current = sessionRef.current;
-        if (current?.resolve) {
-            current.resolve(null);
+        if (current) {
+            finish(current, null);
         }
-        const start = request.value.length;
-        const next: KeyboardSession = {
-            id: ++nextId.current,
-            target: null,
-            label: request.label,
-            layout: request.layout,
-            value: request.value,
-            selectionStart: start,
-            selectionEnd: start,
-            resolve: request.resolve
-        };
-        sessionRef.current = next;
-        setSession(next);
-    }, []);
+        setAsk((request) => {
+            request?.resolve(value);
+            return null;
+        });
+        setAskValue("");
+    }, [finish]);
+
+    const openPrompt = useCallback((request: AskRequest) => {
+        const current = sessionRef.current;
+        if (current) {
+            finish(current, null);
+        }
+        setAsk((previous) => {
+            previous?.resolve(null);
+            return request;
+        });
+        setAskValue(request.value);
+    }, [finish]);
 
     useEffect(() => {
         const armTree = (root: ParentNode = document) => {
@@ -138,6 +143,13 @@ export function KeyboardProvider() {
             }
         };
 
+        const onDismiss = () => {
+            const current = sessionRef.current;
+            if (current) {
+                finish(current, null);
+            }
+        };
+
         armTree();
         const active = editableFromTarget(document.activeElement);
         if (active) {
@@ -149,6 +161,7 @@ export function KeyboardProvider() {
         document.addEventListener("touchstart", intercept, { capture: true, passive: false });
         document.addEventListener("focusin", focusIn, true);
         window.addEventListener(ASK_EVENT, onAsk);
+        window.addEventListener(DISMISS_KEYBOARD_EVENT, onDismiss);
 
         const observer = new MutationObserver((records) => {
             for (const record of records) {
@@ -183,21 +196,54 @@ export function KeyboardProvider() {
             document.removeEventListener("touchstart", intercept, true);
             document.removeEventListener("focusin", focusIn, true);
             window.removeEventListener(ASK_EVENT, onAsk);
+            window.removeEventListener(DISMISS_KEYBOARD_EVENT, onDismiss);
             observer.disconnect();
             stopWatchingMode();
         };
     }, [finish, open, openPrompt]);
 
-    if (!session) {
-        return null;
-    }
-
     return (
-        <Keyboard
-            key={session.id}
-            session={session}
-            onCancel={() => finish(session, null)}
-            onDone={(value) => finish(session, value)}
-        />
+        <>
+            {ask && (
+                <div className="mfx-overlay" onClick={() => closeAsk(null)}>
+                    <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">{ask.label}</div>
+                        <input
+                            className="input"
+                            value={askValue}
+                            data-pimfx-keyboard-layout={ask.layout}
+                            onChange={(event) => setAskValue(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    closeAsk(askValue);
+                                }
+                                if (event.key === "Escape") {
+                                    closeAsk(null);
+                                }
+                            }}
+                        />
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <button type="button" className="btn" onClick={() => closeAsk(null)}>CANCEL</button>
+                            <button type="button" className="btn btn-accent" onClick={() => closeAsk(askValue)}>
+                                OK
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {session && (
+                <Keyboard
+                    key={session.id}
+                    session={session}
+                    onCancel={() => {
+                        finish(session, null);
+                        if (ask) {
+                            closeAsk(null);
+                        }
+                    }}
+                    onDone={(value) => finish(session, value)}
+                />
+            )}
+        </>
     );
 }

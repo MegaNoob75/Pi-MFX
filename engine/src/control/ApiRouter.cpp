@@ -148,12 +148,12 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return engine_.diagnosticsState();
     }
     if (command == "system/update/status") {
-        const Json result = plugins_.updateStatus(payload["fetch"].asBool(true), error);
+        const Json result = plugins_.updateStatus(payload, error);
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
     if (command == "system/update/install") {
-        const Json result = plugins_.updateInstall(error);
+        const Json result = plugins_.updateInstall(payload, error);
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }

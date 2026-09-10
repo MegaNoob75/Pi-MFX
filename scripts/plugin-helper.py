@@ -29,6 +29,7 @@ PREFIX = os.environ.get("PIMFX_PREFIX", "/usr/local")
 HOTSPOT_SCRIPT = os.path.join(PREFIX, "libexec/pimfx/hotspot.py")
 REPO_DIR = os.environ.get("PIMFX_REPO", "")
 UPDATE_STATUS_PATH = "/run/pimfx/update-status.json"
+SOURCE_REPO_PATH = os.path.join(DATA_ROOT, "source-repo")
 SOURCES_DIR = "/etc/apt/sources.list.d"
 KEYRING_DIR = "/usr/share/keyrings"
 
@@ -460,10 +461,10 @@ def handle(request: dict) -> dict:
         return payload
 
     if op == "update-status":
-        return git_update_status(bool(request.get("fetch")))
+        return git_update_status(bool(request.get("fetch")), str(request.get("branch") or ""))
 
     if op == "update-install":
-        return git_update_install(timeout)
+        return git_update_install(timeout, str(request.get("branch") or ""))
 
     return {"ok": False, "error": f"unknown helper op: {op}"}
 
@@ -551,62 +552,102 @@ def read_update_status() -> dict:
     return {}
 
 
-def git_in_repo(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    if not REPO_DIR or not os.path.isdir(os.path.join(REPO_DIR, ".git")):
+def repo_is_clone(path: str) -> bool:
+    return bool(path) and os.path.isdir(os.path.join(path, ".git")) and os.path.isfile(os.path.join(path, "scripts", "update.sh"))
+
+
+def find_repo() -> str:
+    candidates = [os.environ.get("PIMFX_REPO", ""), REPO_DIR]
+    try:
+        with open(SOURCE_REPO_PATH, encoding="utf-8") as handle:
+            candidates.append(handle.read().strip())
+    except OSError:
+        pass
+    candidates.extend(sorted(glob.glob("/home/*/Pi-MFX")))
+    candidates.append("/opt/Pi-MFX")
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if repo_is_clone(path):
+            return path
+    return ""
+
+
+def normalize_branch(value: str) -> str:
+    name = (value or "").strip()
+    if name == "master":
+        return "main"
+    if name in ("main", "dev"):
+        return name
+    return ""
+
+
+def git_in_repo(args: list[str], timeout: int = 30, repo: str = "") -> subprocess.CompletedProcess[str]:
+    root = repo or find_repo()
+    if not repo_is_clone(root):
         raise ValueError("Pi-MFX source clone is not configured")
-    return run(["git", "-C", REPO_DIR, *args], timeout=timeout)
+    return run(["git", "-C", root, *args], timeout=timeout)
 
 
-def git_update_status(fetch: bool) -> dict:
+def git_update_status(fetch: bool, branch_wanted: str = "") -> dict:
     stored = read_update_status()
-    if not REPO_DIR or not os.path.isdir(os.path.join(REPO_DIR, ".git")):
+    repo = find_repo()
+    if not repo_is_clone(repo):
         return {
             "ok": False,
-            "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update from the clone.",
+            "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update --branch dev from the clone.",
             "jobState": stored.get("jobState") or "idle",
             "log": stored.get("log") or "",
         }
     try:
-        branch = git_in_repo(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
-        installed = git_in_repo(["rev-parse", "--short", "HEAD"]).stdout.strip()
-        installedFull = git_in_repo(["rev-parse", "HEAD"]).stdout.strip()
-        latest = installed
+        current = git_in_repo(["rev-parse", "--abbrev-ref", "HEAD"], repo=repo).stdout.strip()
+        installed = git_in_repo(["rev-parse", "--short", "HEAD"], repo=repo).stdout.strip()
+        installed_full = git_in_repo(["rev-parse", "HEAD"], repo=repo).stdout.strip()
+        wanted = normalize_branch(branch_wanted) or normalize_branch(current) or "dev"
         if fetch:
-            git_in_repo(["fetch", "origin"], timeout=45)
-        remote = f"origin/{branch}" if branch and branch != "HEAD" else "origin/HEAD"
-        latest_result = git_in_repo(["rev-parse", "--short", remote])
-        if latest_result.returncode == 0:
-            latest = latest_result.stdout.strip()
+            git_in_repo(["fetch", "origin"], timeout=45, repo=repo)
+        remote = f"origin/{wanted}"
+        latest_result = git_in_repo(["rev-parse", "--verify", "--quiet", "--short", remote], repo=repo)
+        latest = latest_result.stdout.strip() if latest_result.returncode == 0 else ""
+        switching = bool(current and current != wanted)
         payload = {
             "ok": True,
-            "repo": REPO_DIR,
-            "branch": branch,
+            "repo": repo,
+            "branch": current,
+            "requestedBranch": wanted,
             "installedCommit": installed,
-            "installedCommitFull": installedFull,
+            "installedCommitFull": installed_full,
             "latestCommit": latest,
-            "updateAvailable": bool(latest and latest != installed),
+            "updateAvailable": switching or bool(latest and latest != installed),
             "jobState": stored.get("jobState") or "idle",
             "log": stored.get("log") or "",
-            "message": stored.get("message") or "",
+            "message": stored.get("message") or ("" if latest else f"origin/{wanted} was not found."),
         }
         return payload
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc), "jobState": stored.get("jobState") or "idle"}
 
 
-def git_update_install(timeout: int) -> dict:
-    if not REPO_DIR or not os.path.isfile(os.path.join(REPO_DIR, "scripts", "update.sh")):
+def git_update_install(timeout: int, branch: str = "") -> dict:
+    repo = find_repo()
+    if not repo_is_clone(repo):
         return {
             "ok": False,
-            "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update from the clone.",
+            "error": "Pi-MFX source clone is not configured. Run sudo bash ./scripts/pimfx.sh update --branch dev from the clone.",
         }
     write_update_status({"jobState": "installing", "log": "Starting update...\n", "message": "Updating"})
-    script = os.path.join(REPO_DIR, "scripts", "update.sh")
+    script = os.path.join(repo, "scripts", "update.sh")
+    env = {"PIMFX_UPDATE_FROM_HELPER": "1"}
+    wanted = normalize_branch(branch)
+    if wanted:
+        env["PIMFX_BRANCH"] = wanted
     result = run(
         ["/bin/bash", script],
         timeout=timeout,
-        cwd=REPO_DIR,
-        env={"PIMFX_UPDATE_FROM_HELPER": "1"},
+        cwd=repo,
+        env=env,
     )
     log = ((result.stdout or "") + ("\n" + result.stderr if result.stderr else "")).strip()
     payload = {
