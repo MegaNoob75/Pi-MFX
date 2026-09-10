@@ -40,6 +40,7 @@ const char* kSuggested[] = {
     "x42-plugins",
     "zam-plugins",
     "guitarix-lv2",
+    "gxplugins",
     "lsp-plugins-lv2",
     "eq10q",
     "dragonfly-reverb",

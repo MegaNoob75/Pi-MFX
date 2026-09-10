@@ -41,7 +41,7 @@ const titles: Record<string, string> = {
     snapshots: "SNAPSHOTS",
     snapshotEdit: "SNAPSHOT EDITOR",
     settings: "SETTINGS",
-    library: "LIBRARY",
+    library: "MODEL LIBRARY",
     plugins: "PLUGINS",
     files: "FILES",
     audio: "AUDIO",
@@ -50,7 +50,7 @@ const titles: Record<string, string> = {
     theme: "THEME",
     keyboard: "KEYBOARD",
     ui: "PI-MFX UI",
-    tone3000: "LIBRARY",
+    tone3000: "MODEL LIBRARY",
     backup: "BACKUP",
     system: "SYSTEM",
     hotspot: "WIFI / HOTSPOT",
@@ -374,7 +374,7 @@ export function App() {
                                 goTo("edit");
                             }} />
                         <div className="menu-divider" />
-                        <MenuButton label="LIBRARY" subtitle="TONE3000 NAM, AIDA-X and IR downloads"
+                        <MenuButton label="MODEL LIBRARY" subtitle="TONE3000 NAM, AIDA-X and IR downloads"
                             active={view === "library"} onClick={() => goTo("library")} />
                         <MenuButton label="PLUGINS" subtitle="Installed effects and Raspberry Pi OS / PatchStorage installs"
                             active={view === "plugins"} onClick={() => goTo("plugins")} />

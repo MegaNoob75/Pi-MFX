@@ -41,6 +41,17 @@ const INSTALL_PACKAGES: InstallPackage[] = [
         ]
     },
     {
+        id: "gxplugins",
+        package: "gxplugins",
+        source: "apt",
+        title: "GxPlugins",
+        description: "Extra standalone GxPlugins.lv2 effects (brummer10). Installs with apt when the gxplugins package is available.",
+        plugins: [
+            "GxSuperFuzz", "GxVoodooFuzz", "GxHotBox", "GxBottleRocket", "GxSVT",
+            "GxVintageOverdrive", "GxSlowGear", "GxMetalTone", "GxWah", "GxEcho"
+        ]
+    },
+    {
         id: "calf-plugins",
         package: "calf-plugins",
         source: "apt",
@@ -189,6 +200,7 @@ export function PluginsView({
     const [patchLoaded, setPatchLoaded] = useState(false);
     const [patchHasMore, setPatchHasMore] = useState(false);
     const [busy, setBusy] = useState("");
+    const [installingId, setInstallingId] = useState("");
     const prefetching = useRef(false);
     const listEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -344,26 +356,31 @@ export function PluginsView({
     }, [tab, patchHasMore, patches.length]);
 
     const needle = installQuery.trim().toLowerCase();
-    const visiblePackages = useMemo(
-        () => INSTALL_PACKAGES.filter((pack) => matchesNeedle(packageSearchText(pack), needle)),
-        [needle]
-    );
-    const visiblePatches = useMemo(() => {
-        const filtered = needle
-            ? patches.filter((patch) => {
-                const blob = `${str(patch.title)} ${str(patch.author)} ${str(patch.excerpt)} ${str(patch.license)}`.toLowerCase();
-                return blob.includes(needle);
-            })
-            : patches;
-        return sortPatches(filtered, patchSort);
-    }, [patches, needle, patchSort]);
-
     const bundles = objects(status.bundles);
     const hidden = objects(status.hidden);
     const installedNames = new Set([
         ...aptInstalled.filter((item) => bool(item.installed)).map((item) => str(item.name)),
         ...recommended.filter((item) => bool(item.installed)).map((item) => str(item.package, str(item.id)))
     ]);
+    const visiblePackages = useMemo(
+        () => INSTALL_PACKAGES.filter((pack) => {
+            const installed = installedNames.has(pack.package) || recommended.some((item) => (
+                bool(item.installed) && (str(item.id) === pack.id || str(item.package) === pack.package)
+            ));
+            return !installed && matchesNeedle(packageSearchText(pack), needle);
+        }),
+        [needle, installedNames, recommended]
+    );
+    const visiblePatches = useMemo(() => {
+        const available = patches.filter((patch) => !bool(patch.installed));
+        const filtered = needle
+            ? available.filter((patch) => {
+                const blob = `${str(patch.title)} ${str(patch.author)} ${str(patch.excerpt)} ${str(patch.license)}`.toLowerCase();
+                return blob.includes(needle);
+            })
+            : available;
+        return sortPatches(filtered, patchSort);
+    }, [patches, needle, patchSort]);
 
     return (
         <div className="mfx-screen">
@@ -392,10 +409,12 @@ export function PluginsView({
                         })}
                         onHide={(uri, name) => work(`Hiding ${name}…`, async () => {
                             await engine.client.request("plugins/hide", { uri, name });
+                            await engine.client.request("catalog");
                             await refreshStatus();
                         })}
                         onUnhide={(uri, name) => work(`Restoring ${name}…`, async () => {
                             await engine.client.request("plugins/unhide", { uri });
+                            await engine.client.request("catalog");
                             await refreshStatus();
                         })}
                         onRemoveApt={(name) => work(`Removing ${name}…`, async () => {
@@ -409,8 +428,18 @@ export function PluginsView({
                             await refreshStatus();
                         })}
                         onRemoveBundle={(directory) => work(`Removing ${directory}…`, async () => {
+                            const bundle = objects(status.bundles).find((item) => (
+                                str(item.directory) === directory
+                                || arr(item.directories).map((value) => String(value)).includes(directory)
+                            ));
                             await engine.client.request("plugins/bundle/remove", { directory });
                             await refreshStatus();
+                            const title = str(bundle?.title).toLowerCase();
+                            if (title) {
+                                setPatches((list) => list.map((item) => (
+                                    str(item.title).toLowerCase() === title ? { ...item, installed: false } : item
+                                )));
+                            }
                         })}
                     />
                 )}
@@ -420,57 +449,82 @@ export function PluginsView({
                         https={https}
                         query={installQuery}
                         packages={visiblePackages}
-                        installedNames={installedNames}
-                        recommended={recommended}
                         patches={visiblePatches}
                         patchTotal={patches.length}
                         patchHasMore={patchHasMore}
                         patchSort={patchSort}
+                        installingId={installingId}
                         listEndRef={listEndRef}
                         onQuery={setInstallQuery}
                         onSort={setPatchSort}
                         onReload={() => loadPatchStorage(true)}
                         onInstallApt={(name) => work(`Installing ${name}…`, async () => {
-                            await engine.client.request("plugins/apt/install", { package: name });
-                            await refreshAptInstalled();
-                            await refreshStatus();
-                        })}
-                        onRemoveApt={(name) => work(`Removing ${name}…`, async () => {
-                            await engine.client.request("plugins/apt/remove", { package: name });
-                            await refreshAptInstalled();
-                            await refreshStatus();
+                            setInstallingId(name);
+                            try {
+                                await engine.client.request("plugins/apt/install", { package: name });
+                                await refreshAptInstalled();
+                                await refreshStatus();
+                            } finally {
+                                setInstallingId("");
+                            }
                         })}
                         onInstallGithub={(id, title) => work(`Installing ${title}…`, async () => {
-                            await engine.client.request("plugins/github/install", { id });
-                            await refreshAptInstalled();
-                            await refreshStatus();
-                            setRecommended((list) => list.map((item) => (
-                                str(item.id) === id || str(item.package) === id
-                                    ? { ...item, installed: true }
-                                    : item
-                            )));
-                        })}
-                        onRemoveGithub={(id, title) => work(`Removing ${title}…`, async () => {
-                            await engine.client.request("plugins/github/remove", { id });
-                            await refreshAptInstalled();
-                            await refreshStatus();
-                            setRecommended((list) => list.map((item) => (
-                                str(item.id) === id || str(item.package) === id
-                                    ? { ...item, installed: false }
-                                    : item
-                            )));
+                            setInstallingId(id);
+                            try {
+                                await engine.client.request("plugins/github/install", { id });
+                                await refreshAptInstalled();
+                                await refreshStatus();
+                                setRecommended((list) => list.map((item) => (
+                                    str(item.id) === id || str(item.package) === id
+                                        ? { ...item, installed: true }
+                                        : item
+                                )));
+                            } finally {
+                                setInstallingId("");
+                            }
                         })}
                         onInstallPatch={(patchId, title) => work(`Installing ${title}…`, async () => {
-                            await engine.client.request("plugins/patchstorage/install", { patchId });
-                            await refreshStatus();
-                            setPatches((list) => list.map((item) => (
-                                num(item.id) === patchId ? { ...item, installed: true } : item
-                            )));
+                            setInstallingId(`patch-${patchId}`);
+                            try {
+                                await engine.client.request("plugins/patchstorage/install", { patchId });
+                                await refreshStatus();
+                                setPatches((list) => list.map((item) => (
+                                    num(item.id) === patchId ? { ...item, installed: true } : item
+                                )));
+                            } finally {
+                                setInstallingId("");
+                            }
                         })}
                     />
                 )}
             </div>
         </div>
+    );
+}
+
+function InstallAction({
+    busy,
+    disabled,
+    onClick
+}: {
+    busy: boolean;
+    disabled: boolean;
+    onClick: () => void;
+}) {
+    if (busy) {
+        return (
+            <div className="plugin-install-progress" aria-label="Installing">
+                <div className="plugin-install-progress-track">
+                    <div className="plugin-install-progress-fill" />
+                </div>
+                <span>INSTALLING</span>
+            </div>
+        );
+    }
+    return (
+        <button type="button" className="btn btn-accent" disabled={disabled} onClick={onClick}>
+            INSTALL
+        </button>
     );
 }
 
@@ -507,7 +561,10 @@ function InstalledTab({
     onRemoveGithub: (id: string, title: string) => void;
     onRemoveBundle: (directory: string) => void;
 }) {
-    const chainPlugins = catalog.filter(isChainPlugin).sort((a, b) => str(a.name).localeCompare(str(b.name)));
+    const hiddenUris = new Set(hidden.map((item) => str(item.uri)).filter(Boolean));
+    const chainPlugins = catalog
+        .filter((plugin) => isChainPlugin(plugin) && !hiddenUris.has(str(plugin.uri)))
+        .sort((a, b) => str(a.name).localeCompare(str(b.name)));
     const hiddenCount = hidden.length;
     const extras = Math.max(0, catalog.length - chainPlugins.length);
     return (
@@ -518,13 +575,13 @@ function InstalledTab({
                     {chainPlugins.length} effects with audio in and out
                     {extras ? ` · ${extras} utilities hidden from this list` : ""}
                     {bool(status.lv2Available, true) ? "" : " · LV2 host not available in this build"}
-                    {" · Delete hides a plugin from Add Effect without removing the apt package."}
+                    {" · Hide removes a plugin from Add Effect without uninstalling the apt package."}
                 </div>
                 <button type="button" className="btn" onClick={onRescan}>RESCAN LV2</button>
                 <div className="plugin-catalog-list">
                     {chainPlugins.map((plugin) => (
                         <div className="plugin-catalog-row" key={str(plugin.uri)}>
-                            <div style={{ minWidth: 0 }}>
+                            <div className="plugin-catalog-info">
                                 <strong>{str(plugin.name)}</strong>
                                 <div className="muted">
                                     {str(plugin.brand, str(plugin.category))}
@@ -533,10 +590,10 @@ function InstalledTab({
                             </div>
                             <button
                                 type="button"
-                                className="btn btn-danger"
+                                className="btn btn-danger plugin-catalog-action"
                                 onClick={() => onHide(str(plugin.uri), str(plugin.name))}
                             >
-                                DELETE
+                                HIDE
                             </button>
                         </div>
                     ))}
@@ -621,40 +678,34 @@ function InstallTab({
     https,
     query,
     packages,
-    installedNames,
-    recommended,
     patches,
     patchTotal,
     patchHasMore,
     patchSort,
+    installingId,
     listEndRef,
     onQuery,
     onSort,
     onReload,
     onInstallApt,
-    onRemoveApt,
     onInstallGithub,
-    onRemoveGithub,
     onInstallPatch
 }: {
     helper: boolean;
     https: boolean;
     query: string;
     packages: InstallPackage[];
-    installedNames: Set<string>;
-    recommended: JsonObject[];
     patches: JsonObject[];
     patchTotal: number;
     patchHasMore: boolean;
     patchSort: PatchSort;
+    installingId: string;
     listEndRef: { current: HTMLDivElement | null };
     onQuery: (value: string) => void;
     onSort: (value: PatchSort) => void;
     onReload: () => void;
     onInstallApt: (name: string) => void;
-    onRemoveApt: (name: string) => void;
     onInstallGithub: (id: string, title: string) => void;
-    onRemoveGithub: (id: string, title: string) => void;
     onInstallPatch: (patchId: number, title: string) => void;
 }) {
     const needle = query.trim().toLowerCase();
@@ -664,7 +715,7 @@ function InstallTab({
                 <h2>FIND A PLUGIN</h2>
                 <div className="muted">
                     Search package names, individual effects inside those packages, and PatchStorage titles and descriptions.
-                    Apt still installs a whole package; hide unused effects on Installed.
+                    Apt still installs a whole package. Uninstall from Installed; hide unused effects there too.
                 </div>
                 <label className="field">
                     <span>Search</span>
@@ -686,12 +737,10 @@ function InstallTab({
                     </div>
                 )}
                 {packages.map((pack) => {
-                    const installed = installedNames.has(pack.package) || recommended.some((item) => (
-                        bool(item.installed) && (str(item.id) === pack.id || str(item.package) === pack.package)
-                    ));
                     const matchingPlugins = needle
                         ? pack.plugins.filter((name) => name.toLowerCase().includes(needle))
                         : pack.plugins;
+                    const installKey = pack.source === "github" ? pack.id : pack.package;
                     return (
                         <div className="list-item plugin-install-card" key={pack.id}>
                             <div style={{ minWidth: 0, flex: 1 }}>
@@ -705,28 +754,13 @@ function InstallTab({
                                     </div>
                                 )}
                             </div>
-                            {installed ? (
-                                <button
-                                    type="button"
-                                    className="btn btn-danger"
-                                    onClick={() => pack.source === "github"
-                                        ? onRemoveGithub(pack.id, pack.title)
-                                        : onRemoveApt(pack.package)}
-                                >
-                                    REMOVE
-                                </button>
-                            ) : (
-                                <button
-                                    type="button"
-                                    className="btn btn-accent"
-                                    disabled={!helper || (pack.source === "github" && !https)}
-                                    onClick={() => pack.source === "github"
-                                        ? onInstallGithub(pack.id, pack.title)
-                                        : onInstallApt(pack.package)}
-                                >
-                                    INSTALL
-                                </button>
-                            )}
+                            <InstallAction
+                                busy={installingId === installKey}
+                                disabled={!helper || Boolean(installingId) || (pack.source === "github" && !https)}
+                                onClick={() => pack.source === "github"
+                                    ? onInstallGithub(pack.id, pack.title)
+                                    : onInstallApt(pack.package)}
+                            />
                         </div>
                     );
                 })}
@@ -735,7 +769,7 @@ function InstallTab({
             <div className="panel stack">
                 <h2>PATCHSTORAGE</h2>
                 <div className="muted">
-                    LV2 builds for Raspberry Pi 64-bit. Filter uses the same search box above.
+                    LV2 builds for Raspberry Pi 64-bit. Installed items leave this list until you uninstall them.
                 </div>
                 {!https && <div className="danger">This build has no HTTPS support, so PatchStorage is unavailable.</div>}
                 <div className="row">
@@ -768,18 +802,11 @@ function InstallTab({
                             </div>
                             {str(patch.excerpt) && <div className="muted">{str(patch.excerpt)}</div>}
                         </div>
-                        {bool(patch.installed) ? (
-                            <button type="button" className="btn" disabled>INSTALLED</button>
-                        ) : (
-                            <button
-                                type="button"
-                                className="btn btn-accent"
-                                disabled={!https}
-                                onClick={() => onInstallPatch(num(patch.id), str(patch.title))}
-                            >
-                                INSTALL
-                            </button>
-                        )}
+                        <InstallAction
+                            busy={installingId === `patch-${num(patch.id)}`}
+                            disabled={!https || Boolean(installingId)}
+                            onClick={() => onInstallPatch(num(patch.id), str(patch.title))}
+                        />
                     </div>
                 ))}
                 {patchTotal > 0 && patches.length === 0 && (

@@ -484,7 +484,7 @@ export function LibraryBrowser({
                                 setCheckedPaths([]);
                             }}
                         >
-                            SELECT
+                            MULTI SELECT
                         </button>
                     )}
                     <button type="button" className="btn" onClick={() => void createFolder()}>NEW FOLDER</button>

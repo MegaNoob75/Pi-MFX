@@ -40,6 +40,7 @@ SUGGESTED = {
     "x42-plugins",
     "zam-plugins",
     "guitarix-lv2",
+    "gxplugins",
     "lsp-plugins-lv2",
     "eq10q",
     "dragonfly-reverb",
@@ -53,7 +54,7 @@ SUGGESTED = {
     "toobamp",
 }
 
-PLUGIN_NAME_HINTS = ("lv2", "guitarix", "calf", "zam-plugin", "x42", "toobamp")
+PLUGIN_NAME_HINTS = ("lv2", "guitarix", "gxplugin", "calf", "zam-plugin", "x42", "toobamp")
 DEB_PACKAGES = {"toobamp"}
 
 

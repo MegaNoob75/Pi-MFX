@@ -9,8 +9,8 @@ their own licenses. This page explains the boundary and what it means for you.
 There are no plugin binaries in this repository and none in any Pi-MFX release
 artifact. After install, **Plugins → Install** can run `apt` for well-known
 plugin packages, install recommended Raspberry Pi `.deb` packs such as
-[ToobAmp](https://github.com/rerdavies/ToobAmp) and
-[Guitarix LV2](https://github.com/brummer10/GxPlugins.lv2), and download LV2
+[ToobAmp](https://github.com/rerdavies/ToobAmp),
+[Guitarix LV2](https://github.com/brummer10/GxPlugins.lv2) / `gxplugins`, and download LV2
 builds from PatchStorage — but that installs them onto your Pi under their own
 licenses,
 exactly as if you had typed the command yourself. Skip that and Pi-MFX still

@@ -7,6 +7,7 @@ import {
     STATUS_WIDGET_LABELS,
     analogMinSize,
     clampRect,
+    fitRectInEmptySpace,
     gridCellRect,
     isMeterWidget,
     layoutGroupsToJson,
@@ -489,17 +490,52 @@ export function LayoutEditorView({
         }
     };
 
+    const occupyExcept = (id: string) => (
+        placedEntries().filter((item) => item.id !== id).map((item) => item.rect)
+    );
+
     const toggleHidden = (id: string) => {
-        setHiddenIds((current) => (
-            current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
-        ));
+        if (hidden.has(id)) {
+            const control = controls.find((item) => str(item.id) === id);
+            if (!control) {
+                return;
+            }
+            const desired = controlRect(control, placedControls.length);
+            const fitted = fitRectInEmptySpace(desired, occupyExcept(id), minSizeForId(id));
+            if (!fitted) {
+                setMessage("No empty space for that control. Make a gap first.");
+                return;
+            }
+            setDraftRects((current) => ({ ...current, [id]: fitted }));
+            setHiddenIds((current) => current.filter((item) => item !== id));
+            setMessage("");
+            return;
+        }
+        setHiddenIds((current) => [...current, id]);
         setMessage("");
     };
 
     const toggleWidget = (id: string) => {
+        const widget = widgets[id];
+        if (!widget) {
+            return;
+        }
+        if (widget.visible) {
+            setWidgets((current) => ({
+                ...current,
+                [id]: { ...current[id], visible: false }
+            }));
+            setMessage("");
+            return;
+        }
+        const fitted = fitRectInEmptySpace(widget.rect, occupyExcept(id), minSizeForId(id));
+        if (!fitted) {
+            setMessage("No empty space for that widget. Make a gap first.");
+            return;
+        }
         setWidgets((current) => ({
             ...current,
-            [id]: { ...current[id], visible: !current[id].visible }
+            [id]: { ...current[id], visible: true, rect: fitted }
         }));
         setMessage("");
     };
@@ -588,14 +624,22 @@ export function LayoutEditorView({
     };
 
     const addSnapshotWidget = () => {
-        setSnapshotWidgets((current) => {
-            const slot = current.reduce((max, item) => Math.max(max, item.slot), -1) + 1;
-            return [...current, {
-                id: snapshotWidgetId(slot),
-                slot,
-                rect: gridCellRect(slot, 3, Math.max(2, Math.ceil((slot + 1) / 3)))
-            }];
-        });
+        const slot = snapshotWidgets.reduce((max, item) => Math.max(max, item.slot), -1) + 1;
+        const desired = gridCellRect(slot, 3, Math.max(2, Math.ceil((slot + 1) / 3)));
+        const fitted = fitRectInEmptySpace(
+            desired,
+            snapshotWidgets.map((item) => item.rect),
+            { width: 0.12, height: 0.12 }
+        );
+        if (!fitted) {
+            setMessage("No empty space for that snapshot. Make a gap first.");
+            return;
+        }
+        setSnapshotWidgets((current) => [...current, {
+            id: snapshotWidgetId(slot),
+            slot,
+            rect: fitted
+        }]);
         setMessage("");
     };
 

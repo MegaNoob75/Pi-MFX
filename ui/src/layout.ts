@@ -294,6 +294,49 @@ export function rectsOverlap(a: LayoutRect, b: LayoutRect, gap = 0.004): boolean
         && a.y + a.height > b.y + gap;
 }
 
+export function fitRectInEmptySpace(
+    desired: LayoutRect,
+    occupied: LayoutRect[],
+    minSize = { width: 0.08, height: 0.08 }
+): LayoutRect | null {
+    const minW = Math.max(0.06, Math.min(desired.width, minSize.width));
+    const minH = Math.max(0.06, Math.min(desired.height, minSize.height));
+    const sizes: Array<{ width: number; height: number }> = [];
+    for (const scale of [1, 0.85, 0.7, 0.55, 0.4]) {
+        const width = Math.max(minW, desired.width * scale);
+        const height = Math.max(minH, desired.height * scale);
+        if (!sizes.some((size) => Math.abs(size.width - width) < 0.002 && Math.abs(size.height - height) < 0.002)) {
+            sizes.push({ width, height });
+        }
+    }
+    if (!sizes.some((size) => Math.abs(size.width - minW) < 0.002 && Math.abs(size.height - minH) < 0.002)) {
+        sizes.push({ width: minW, height: minH });
+    }
+
+    const fits = (rect: LayoutRect) => !occupied.some((other) => rectsOverlap(rect, other, 0.008));
+    const preferred = clampRect(desired);
+    if (fits(preferred)) {
+        return preferred;
+    }
+
+    const step = 0.025;
+    for (const size of sizes) {
+        const first = clampRect({ ...desired, width: size.width, height: size.height });
+        if (fits(first)) {
+            return first;
+        }
+        for (let y = 0; y <= 1 - size.height + 1e-6; y += step) {
+            for (let x = 0; x <= 1 - size.width + 1e-6; x += step) {
+                const candidate = clampRect({ x, y, width: size.width, height: size.height });
+                if (fits(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+    }
+    return null;
+}
+
 export function rectContainsPoint(rect: LayoutRect, x: number, y: number): boolean {
     return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
 }

@@ -2447,6 +2447,27 @@ button.list-item {
     letter-spacing: 0.06em;
 }
 
+.t3k-on-device-check {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--mfx-cyan) 88%, #000);
+    color: var(--mfx-cyan-text, #041016);
+    font-size: 0.85rem;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
+.t3k-on-device-check.is-complete {
+    background: var(--mfx-cyan);
+}
+
 .t3k-card-image,
 .t3k-card-image-fallback {
     width: 100%;
@@ -2784,13 +2805,68 @@ button.list-item {
 
 .plugin-catalog-row {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: space-between;
-    gap: 8px;
-    min-height: 44px;
-    padding: 6px 8px;
+    gap: 0;
+    min-height: var(--mfx-touch);
+    padding: 0;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.04);
+    overflow: hidden;
+}
+
+.plugin-catalog-info {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 6px 10px;
+}
+
+.plugin-catalog-action {
+    min-height: 0;
+    height: auto;
+    align-self: stretch;
+    border-radius: 0;
+    border-top: none;
+    border-bottom: none;
+    border-right: none;
+    flex: 0 0 auto;
+}
+
+.plugin-install-progress {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    min-width: 108px;
+    padding: 6px 8px;
+    color: var(--mfx-cyan);
+    font-size: 0.72rem;
+    font-weight: 900;
+    letter-spacing: 0.06em;
+    text-align: center;
+}
+
+.plugin-install-progress-track {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.plugin-install-progress-fill {
+    width: 42%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--mfx-cyan);
+    animation: plugin-install-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes plugin-install-slide {
+    0% { transform: translateX(-120%); }
+    100% { transform: translateX(280%); }
 }
 
 .plugin-install-card {

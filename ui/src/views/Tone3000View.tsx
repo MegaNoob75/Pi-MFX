@@ -369,6 +369,38 @@ function toneNameOnDevice(tone: JsonObject, stems: Set<string>): boolean {
     return false;
 }
 
+function libraryFiles(library: JsonObject): JsonObject[] {
+    return [
+        ...objects(library.models),
+        ...objects(library.aidax),
+        ...objects(library.impulseResponses)
+    ];
+}
+
+function entryMatchesName(entry: JsonObject, name: string): boolean {
+    const entryStem = fileStem(str(entry.name, str(entry.path)));
+    const stem = fileStem(name);
+    return stem.length > 1 && entryStem === stem;
+}
+
+function filesForModel(model: JsonObject, files: JsonObject[]): JsonObject[] {
+    const names = [str(model.name), str(model.filename), modelFileHint(model)].filter(Boolean);
+    return files.filter((entry) => names.some((name) => entryMatchesName(entry, name)));
+}
+
+function filesForTone(tone: JsonObject, models: JsonObject[], files: JsonObject[]): JsonObject[] {
+    const found = models.flatMap((model) => filesForModel(model, files));
+    const byPath = new Map(found.map((entry) => [str(entry.path), entry]));
+    if (byPath.size === 0) {
+        for (const entry of files) {
+            if (entryMatchesName(entry, toneName(tone))) {
+                byPath.set(str(entry.path), entry);
+            }
+        }
+    }
+    return [...byPath.values()];
+}
+
 function toneOnDeviceState(
     tone: JsonObject,
     models: JsonObject[] | undefined,
@@ -475,6 +507,7 @@ export function Tone3000View({
     const [downloadStatus, setDownloadStatus] = useState("");
     const [downloadError, setDownloadError] = useState("");
     const [downloading, setDownloading] = useState(false);
+    const [deleteConfirm, setDeleteConfirm] = useState<{ title: string; body: string; paths: string[] } | null>(null);
     const [hasMore, setHasMore] = useState(false);
     const [cached, setCached] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -755,6 +788,34 @@ export function Tone3000View({
         setFolderPicker(downloadKindForModels(tone, models));
     };
 
+    const askDelete = (paths: string[], label: string) => {
+        const unique = [...new Set(paths.filter(Boolean))];
+        if (!unique.length) {
+            return;
+        }
+        setDeleteConfirm({
+            title: unique.length === 1 ? "DELETE FILE" : "DELETE FILES",
+            body: unique.length === 1
+                ? `Delete “${label}” from this Pi? This cannot be undone.`
+                : `Delete ${unique.length} files for “${label}”? This cannot be undone.`,
+            paths: unique
+        });
+    };
+
+    const deleteConfirmed = () => {
+        const confirm = deleteConfirm;
+        if (!confirm) {
+            return;
+        }
+        setDeleteConfirm(null);
+        void run(async () => {
+            for (const path of confirm.paths) {
+                await engine.client.request("library/delete", { path });
+            }
+            await engine.client.request("library");
+        });
+    };
+
     const openTone = (tone: JsonObject) => {
         setSelectedTone(tone);
         setDownloadError("");
@@ -806,6 +867,7 @@ export function Tone3000View({
 
     const signedInAs = str(obj(status.user).username);
     const libraryStems = libraryFileStems(engine.library);
+    const storedFiles = libraryFiles(engine.library);
 
     useEffect(() => {
         void engine.client.request("library").catch(() => undefined);
@@ -900,14 +962,14 @@ export function Tone3000View({
     return (
         <div className="mfx-screen">
             <div className="mfx-screen-intro">
-                <div className="mfx-screen-intro-title">LIBRARY</div>
+                <div className="mfx-screen-intro-title">MODEL LIBRARY</div>
                 <div className="mfx-screen-intro-sub">Download NAM, AIDA-X and IR files from TONE3000</div>
             </div>
             <div className="page-scroll stack" style={{ flex: 1, minHeight: 0 }}>
                 {!bool(status.connected) && (
                     <div className="panel stack">
                         <div className="muted">
-                            Sign in to TONE3000 from Settings → Library, then come back here to browse.
+                            Sign in to TONE3000 from Settings → Model Library, then come back here to browse.
                         </div>
                         {onOpenSettings && (
                             <button type="button" className="btn btn-accent" onClick={onOpenSettings}>
@@ -1132,8 +1194,8 @@ export function Tone3000View({
                                             <div className="t3k-card-image-fallback">{gearLabel(toneGear(tone) || "NAM")}</div>
                                         )}
                                         {onDevice !== "none" && (
-                                            <div className="t3k-on-device-badge">
-                                                {onDevice === "all" ? "ON DEVICE" : "SOME ON DEVICE"}
+                                            <div className={`t3k-on-device-check${onDevice === "all" ? " is-complete" : ""}`} title={onDevice === "all" ? "All files on this Pi" : "Some files on this Pi"}>
+                                                ✓
                                             </div>
                                         )}
                                     </div>
@@ -1197,6 +1259,14 @@ export function Tone3000View({
                             onDownloadOne={(model) => {
                                 queueDownload(selectedTone, [model]);
                             }}
+                            onDeleteOne={(model) => {
+                                const files = filesForModel(model, storedFiles);
+                                askDelete(files.map((item) => str(item.path)), str(model.name, toneName(selectedTone)));
+                            }}
+                            onDeleteAll={(models) => {
+                                const files = filesForTone(selectedTone, models, storedFiles);
+                                askDelete(files.map((item) => str(item.path)), toneName(selectedTone));
+                            }}
                             creatorSaved={isFavoriteCreator(creatorUsername(selectedTone))}
                             onToggleCreator={() => {
                                 const username = creatorUsername(selectedTone);
@@ -1224,6 +1294,18 @@ export function Tone3000View({
                                 setCreatorPickerOpen(false);
                             }}
                         />
+                    )}
+                    {deleteConfirm && (
+                        <div className="dialog-backdrop" onClick={() => setDeleteConfirm(null)}>
+                            <div className="dialog" onClick={(event) => event.stopPropagation()}>
+                                <h2>{deleteConfirm.title}</h2>
+                                <div>{deleteConfirm.body}</div>
+                                <div className="row" style={{ justifyContent: "flex-end" }}>
+                                    <button type="button" className="btn" onClick={() => setDeleteConfirm(null)}>CANCEL</button>
+                                    <button type="button" className="btn btn-danger" onClick={deleteConfirmed}>DELETE</button>
+                                </div>
+                            </div>
+                        </div>
                     )}
                     {folderPicker && (
                         <LibraryFolderPicker
@@ -1265,6 +1347,8 @@ function ToneDownloadDialog({
     onClose,
     onDownloadAll,
     onDownloadOne,
+    onDeleteOne,
+    onDeleteAll,
     onToggleCreator
 }: {
     tone: JsonObject;
@@ -1279,6 +1363,8 @@ function ToneDownloadDialog({
     onClose: () => void;
     onDownloadAll: (models: JsonObject[]) => void;
     onDownloadOne: (model: JsonObject) => void;
+    onDeleteOne: (model: JsonObject) => void;
+    onDeleteAll: (models: JsonObject[]) => void;
     onToggleCreator: () => void;
 }) {
     const name = toneName(tone);
@@ -1327,20 +1413,29 @@ function ToneDownloadDialog({
                     </div>
                 )}
                 {error && <div className="danger">{error}</div>}
-                <button
-                    type="button"
-                    className={`btn ${remainingModels.length ? "btn-accent" : ""}`}
-                    disabled={downloading || loadingModels || remainingModels.length === 0}
-                    onClick={() => onDownloadAll(remainingModels)}
-                >
-                    {downloading
-                        ? "DOWNLOADING…"
-                        : remainingModels.length === 0 && downloadable.length > 0
-                            ? "ALL ON DEVICE"
+                {remainingModels.length === 0 && downloadable.length > 0 ? (
+                    <button
+                        type="button"
+                        className="btn btn-danger"
+                        disabled={downloading || loadingModels}
+                        onClick={() => onDeleteAll(downloadable)}
+                    >
+                        DELETE ALL
+                    </button>
+                ) : (
+                    <button
+                        type="button"
+                        className={`btn ${remainingModels.length ? "btn-accent" : ""}`}
+                        disabled={downloading || loadingModels || remainingModels.length === 0}
+                        onClick={() => onDownloadAll(remainingModels)}
+                    >
+                        {downloading
+                            ? "DOWNLOADING…"
                             : remainingModels.length < downloadable.length
                                 ? `DOWNLOAD REMAINING (${remainingModels.length})`
                                 : `DOWNLOAD ALL${downloadable.length ? ` (${downloadable.length})` : ""}`}
-                </button>
+                    </button>
+                )}
                 <div className="t3k-models">
                     {loadingModels && <div className="muted">Loading models…</div>}
                     {!loadingModels && downloadable.length === 0 && <div className="muted">No models listed.</div>}
@@ -1359,11 +1454,11 @@ function ToneDownloadDialog({
                             </div>
                             <button
                                 type="button"
-                                className={`btn ${saved ? "is-on-device" : "btn-accent"}`}
-                                disabled={downloading || saved}
-                                onClick={() => onDownloadOne(model)}
+                                className={`btn ${saved ? "btn-danger" : "btn-accent"}`}
+                                disabled={downloading}
+                                onClick={() => (saved ? onDeleteOne(model) : onDownloadOne(model))}
                             >
-                                {saved ? "ON DEVICE" : "DOWNLOAD"}
+                                {saved ? "DELETE" : "DOWNLOAD"}
                             </button>
                         </div>
                         );
