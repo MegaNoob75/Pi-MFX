@@ -26,7 +26,18 @@ as_clone_owner() {
 
 ensure_clone_writable() {
     clone_owner
-    if [[ -n "${CLONE_OWNER:-}" && "$CLONE_OWNER" != "root" ]]; then
-        chown -R "$CLONE_OWNER:$CLONE_GROUP" "$REPO_DIR"
+    [[ -n "${CLONE_OWNER:-}" && "$CLONE_OWNER" != "root" ]] || return 0
+    # After the first npm/cmake update, node_modules and engine/build are huge.
+    # Recursively chowning them stalls SSH before any "==>" line. Skip when the
+    # clone is already owned by the login that git uses.
+    local owner
+    owner="$(stat -c %U "$REPO_DIR" 2>/dev/null || true)"
+    if [[ "$owner" == "$CLONE_OWNER" ]]; then
+        return 0
     fi
+    printf '\033[1;36m==>\033[0m Fixing clone owner (%s); not walking node_modules or build\n' "$CLONE_OWNER"
+    chown "$CLONE_OWNER:$CLONE_GROUP" "$REPO_DIR" || true
+    find "$REPO_DIR" -xdev \
+        \( -path '*/node_modules' -o -path '*/engine/build' -o -path '*/.git/objects' \) -prune \
+        -o -user root -exec chown "$CLONE_OWNER:$CLONE_GROUP" {} + 2>/dev/null || true
 }

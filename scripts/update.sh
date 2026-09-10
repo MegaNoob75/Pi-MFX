@@ -20,6 +20,8 @@ die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "run this with sudo:  sudo ./scripts/update.sh"
 
 cd "$REPO_DIR"
+export GIT_TERMINAL_PROMPT=0
+log "Starting update in $REPO_DIR"
 # shellcheck source=clone-owner.inc.sh
 . "$REPO_DIR/scripts/clone-owner.inc.sh"
 ensure_clone_writable
@@ -35,7 +37,7 @@ elif [[ -d .git ]]; then
             *) die "branch must be main or dev" ;;
         esac
         log "Switching to ${requested}"
-        as_clone_owner git fetch origin
+        as_clone_owner git fetch origin --progress
         as_clone_owner git checkout "$requested"
         as_clone_owner git reset --hard "origin/${requested}"
         branch="$requested"
@@ -50,7 +52,7 @@ elif [[ -d .git ]]; then
             rm -f ui/package-lock.json
         fi
 
-        as_clone_owner git fetch origin
+        as_clone_owner git fetch origin --progress
         # Copies from the PC (MobaXterm) dirty tracked files and block a merge.
         # This clone is a deployment copy; origin wins. Banks live in /var/lib/pimfx.
         if ! as_clone_owner git diff --quiet || ! as_clone_owner git diff --cached --quiet; then
