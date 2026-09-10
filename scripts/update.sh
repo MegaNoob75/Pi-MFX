@@ -71,9 +71,10 @@ if ! command -v cmake >/dev/null 2>&1; then
 fi
 
 jobs="$(nproc)"
-if [[ "${PIMFX_UPDATE_FROM_HELPER:-0}" == "1" && "$jobs" -gt 1 ]]; then
-    # The engine, MIDI controller, and kiosk stay up until the service restart.
-    jobs=$((jobs - 1))
+# Leave cores for Chromium, JACK/ALSA, and SSH. -j nproc on a kiosk Pi freezes
+# the whole machine, not just the update script.
+if [[ "$jobs" -gt 2 ]]; then
+    jobs=2
 fi
 log "Building the engine"
 as_clone_owner nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -176,7 +177,7 @@ fi
 
 ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"
 if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
-    log "Refreshing the touchscreen session (Pi-MFX keyboard, no system popup)"
+    log "Keeping touchscreen flags; not restarting Chromium (that froze the Pi)"
     bash "$REPO_DIR/scripts/pimfx.sh" display-refresh
 fi
 log "Done. Open http://pimfx.local:${PIMFX_PORT:-8080}"

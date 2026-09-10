@@ -260,28 +260,9 @@ purge_squeekboard() {
 }
 
 restart_touchscreen_browser() {
-    local user uid runtime
-    user="$(cat "$DISPLAY_STATE_DIR/configured-user" 2>/dev/null || true)"
-    [[ -n "$user" ]] || return 0
-    uid="$(id -u "$user" 2>/dev/null || true)"
-    [[ -n "$uid" ]] || return 0
-    runtime="/run/user/$uid"
-    # Never wait on Chromium: yesterday's `&` still left `setsid` attached to
-    # this script, so the kiosk restart froze updates and the controller UI.
-    log "Restarting the touchscreen browser"
-    (
-        pkill -KILL -u "$user" -x chromium >/dev/null 2>&1 || true
-        pkill -KILL -u "$user" -f '/usr/bin/chromium' >/dev/null 2>&1 || true
-        sleep 0.3
-        [[ -d "$runtime" ]] || exit 0
-        if command -v setsid >/dev/null 2>&1; then
-            setsid -f sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
-                /etc/xdg/labwc/autostart </dev/null >/dev/null 2>&1 || true
-        else
-            sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
-                /etc/xdg/labwc/autostart </dev/null >/dev/null 2>&1 &
-        fi
-    ) </dev/null >/dev/null 2>&1 &
+    # Do not pkill Chromium here. On a live Labwc kiosk that races the GPU
+    # and freezes the whole Pi (SSH, audio, and the attached screen).
+    log "Leaving the touchscreen browser running; reboot later if the screen needs a reload"
 }
 
 refresh_touchscreen_session() {
