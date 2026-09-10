@@ -176,9 +176,5 @@ else
 fi
 
 ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"
-if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
-    log "Keeping touchscreen flags; not restarting Chromium (that froze the Pi)"
-    bash "$REPO_DIR/scripts/pimfx.sh" display-refresh
-fi
 log "Done. Open http://pimfx.local:${PIMFX_PORT:-8080}"
 log "     or http://${ADDRESS:-<this-pi>}:${PIMFX_PORT:-8080}"
