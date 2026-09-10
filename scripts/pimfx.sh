@@ -252,6 +252,13 @@ AUTOSTART
     chmod 0755 /etc/xdg/labwc/autostart
 }
 
+purge_squeekboard() {
+    dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed' || return 0
+    log "Removing the system on-screen keyboard so Pi-MFX can use its own"
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+        apt-get purge -y squeekboard || true
+}
+
 restart_touchscreen_browser() {
     local user uid runtime
     user="$(cat "$DISPLAY_STATE_DIR/configured-user" 2>/dev/null || true)"
@@ -264,8 +271,9 @@ restart_touchscreen_browser() {
     sleep 0.4
     if [[ -d "$runtime" ]]; then
         log "Restarting the touchscreen browser"
-        sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
+        setsid sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
             /etc/xdg/labwc/autostart >/dev/null 2>&1 &
+        disown || true
     else
         log "Reboot to reload the touchscreen browser (no graphical session yet)"
     fi
@@ -276,10 +284,6 @@ refresh_touchscreen_session() {
     log "Keeping the system keyboard off the touchscreen"
     disable_system_keyboard
     write_chromium_autostart
-    if dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed'; then
-        log "Removing the system on-screen keyboard so Pi-MFX can use its own"
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y squeekboard || true
-    fi
     restart_touchscreen_browser
 }
 
@@ -316,10 +320,7 @@ RCXML
     write_chromium_autostart
     printf '%s\n' "$DISPLAY_USER" > "$DISPLAY_STATE_DIR/configured-user"
     disable_system_keyboard
-    if dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed'; then
-        log "Removing the system on-screen keyboard so Pi-MFX can use its own"
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y squeekboard || true
-    fi
+    purge_squeekboard
 
     cat > "$profile" <<'PROFILE'
 # Pi-MFX fullscreen session on the attached screen.
