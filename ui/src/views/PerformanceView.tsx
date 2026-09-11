@@ -28,7 +28,7 @@ import {
     type SwitchRole
 } from "./PerformanceControl";
 
-const PRESET_DRAG_THRESHOLD = 24;
+const PRESET_DRAG_THRESHOLD = 48;
 const PRESET_BASELINE_KEY = "pimfx-preset-baseline";
 
 type PresetMenu = {
@@ -75,8 +75,6 @@ type PresetDrag = {
     offsetX: number;
     offsetY: number;
     dragging: boolean;
-    holdTimer: number | null;
-    holdFired: boolean;
 };
 
 export function PerformanceView({
@@ -136,7 +134,9 @@ export function PerformanceView({
     const dragRef = useRef<PresetDrag | null>(null);
     const toastTimer = useRef<number | null>(null);
     const feedbackTimer = useRef<number | null>(null);
-    const rememberedToastRef = useRef({ ready: false, presetId: "", enabled: false });
+    const rememberedToastRef = useRef({ ready: false, presetId: "", enabled: false, reloadCount: 0 });
+    const bypassToastRef = useRef({ ready: false, bypass: false, reloadCount: 0 });
+    const reloadToastRef = useRef({ ready: false, count: 0 });
     const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
@@ -181,23 +181,49 @@ export function PerformanceView({
 
     const rememberedEnabled = bool(obj(preset).rememberedSnapshotEnabled);
     const rememberedSlot = num(obj(preset).rememberedSnapshotSlot, -1);
+    const reloadCount = num(state.presetReloadCount);
     useEffect(() => {
         const presetId = str(state.activePresetId);
         const previous = rememberedToastRef.current;
         if (!previous.ready) {
-            rememberedToastRef.current = { ready: true, presetId, enabled: rememberedEnabled };
+            rememberedToastRef.current = { ready: true, presetId, enabled: rememberedEnabled, reloadCount };
             return;
         }
-        if (!snapshotMode && presetId === previous.presetId && rememberedEnabled !== previous.enabled) {
+        const reloaded = reloadCount !== previous.reloadCount;
+        if (!snapshotMode && presetId === previous.presetId && rememberedEnabled !== previous.enabled && !reloaded) {
             if (!rememberedEnabled) {
-                showToast("CLEARED • BASE PRESET");
+                showToast("SNAPSHOT INACTIVE");
             } else {
                 const snap = snapshotAtSlot(snapshots, rememberedSlot);
                 showToast(`${str(obj(snap).name, `SNAPSHOT ${Math.max(0, rememberedSlot) + 1}`)} ACTIVE`);
             }
         }
-        rememberedToastRef.current = { ready: true, presetId, enabled: rememberedEnabled };
-    }, [rememberedEnabled, rememberedSlot, snapshotMode, snapshots, state.activePresetId]);
+        rememberedToastRef.current = { ready: true, presetId, enabled: rememberedEnabled, reloadCount };
+    }, [rememberedEnabled, rememberedSlot, snapshotMode, snapshots, state.activePresetId, reloadCount]);
+
+    useEffect(() => {
+        const previous = bypassToastRef.current;
+        if (!previous.ready) {
+            bypassToastRef.current = { ready: true, bypass: bypassAll, reloadCount };
+            return;
+        }
+        if (previous.bypass !== bypassAll && reloadCount === previous.reloadCount) {
+            showToast(bypassAll ? "CHAIN BYPASS" : "CHAIN ACTIVE");
+        }
+        bypassToastRef.current = { ready: true, bypass: bypassAll, reloadCount };
+    }, [bypassAll, reloadCount]);
+
+    useEffect(() => {
+        const previous = reloadToastRef.current;
+        if (!previous.ready) {
+            reloadToastRef.current = { ready: true, count: reloadCount };
+            return;
+        }
+        if (reloadCount !== previous.count) {
+            showToast("PRESET RELOADED");
+        }
+        reloadToastRef.current = { ready: true, count: reloadCount };
+    }, [reloadCount]);
 
     useEffect(() => {
         rememberPresetBaseline(str(state.activePresetId), chainSignature);
@@ -224,8 +250,8 @@ export function PerformanceView({
         });
     };
 
-    const pressControl = (id: string, pressed: boolean) => {
-        void client.request("controller/press", { controlId: id, pressed }).catch(() => undefined);
+    const fireControl = (id: string, fire: "tap" | "hold" | "double") => {
+        void client.request("controller/press", { controlId: id, fire }).catch(() => undefined);
     };
 
     const closeMenu = () => setMenu(null);
@@ -243,7 +269,7 @@ export function PerformanceView({
         if (action === "bankUp" || action === "bankDown") {
             return "navigation";
         }
-        if (action === "snapshotMode") {
+        if (action === "snapshotMode" || action === "selectSnapshot") {
             return "snapshot";
         }
         if (action === "bypassAll") {
@@ -271,29 +297,33 @@ export function PerformanceView({
         if (action === "none" || action === "") {
             return "UNASSIGNED";
         }
+        if (action === "selectSnapshot") {
+            return "SNAPSHOT";
+        }
+        if (action === "reloadPreset") {
+            return "RELOAD PRESET";
+        }
         return action.toUpperCase();
     };
 
-    const holdLabelFor = (holdAction: string) => {
-        if (!holdAction || holdAction === "none") {
+    const actionLabelFor = (actionName: string) => {
+        if (!actionName || actionName === "none") {
             return undefined;
         }
-        if (holdAction === "bankUp") {
-            return "BANK UP";
-        }
-        if (holdAction === "bankDown") {
-            return "BANK DOWN";
-        }
-        if (holdAction === "bypassAll") {
-            return "CHAIN BYPASS";
-        }
-        if (holdAction === "snapshotMode") {
-            return "SNAPSHOT MODE";
-        }
-        if (holdAction === "selectPreset") {
-            return "PRESET";
-        }
-        return holdAction.replace(/([A-Z])/g, " $1").trim().toUpperCase();
+        const labels: Record<string, string> = {
+            bankUp: "BANK UP",
+            bankDown: "BANK DOWN",
+            bypassAll: "CHAIN BYPASS",
+            snapshotMode: "SNAPSHOT MODE",
+            selectPreset: "PRESET",
+            selectSnapshot: "SNAPSHOT",
+            reloadPreset: "RELOAD PRESET",
+            presetUp: "PRESET UP",
+            presetDown: "PRESET DOWN",
+            tapTempo: "TAP TEMPO",
+            tuner: "TUNER"
+        };
+        return labels[actionName] ?? actionName.replace(/([A-Z])/g, " $1").trim().toUpperCase();
     };
 
     const lightForPreset = (isActive: boolean): LightState => {
@@ -303,7 +333,7 @@ export function PerformanceView({
         if (bypassAll) {
             return "bypass";
         }
-        if (snapshotMode || activeSnapshot >= 0) {
+        if (rememberedEnabled || snapshotMode) {
             return "snapshot";
         }
         if (presetModified) {
@@ -366,9 +396,7 @@ export function PerformanceView({
             height: rect.height,
             offsetX: event.clientX - rect.left,
             offsetY: event.clientY - rect.top,
-            dragging: false,
-            holdTimer: null,
-            holdFired: false
+            dragging: false
         };
         dragRef.current = candidate;
         try {
@@ -376,13 +404,6 @@ export function PerformanceView({
         } catch {
             // optional
         }
-        candidate.holdTimer = window.setTimeout(() => {
-            if (dragRef.current?.pointerId !== candidate.pointerId || dragRef.current.dragging) {
-                return;
-            }
-            dragRef.current.holdFired = true;
-            openPresetMenu(controlId, slotIndex, assigned(controlId), true);
-        }, 600);
     };
 
     const movePresetDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -393,10 +414,6 @@ export function PerformanceView({
         const travel = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY);
         if (!candidate.dragging && travel >= PRESET_DRAG_THRESHOLD) {
             candidate.dragging = true;
-            if (candidate.holdTimer !== null) {
-                window.clearTimeout(candidate.holdTimer);
-                candidate.holdTimer = null;
-            }
         }
         if (!candidate.dragging) {
             return;
@@ -410,16 +427,12 @@ export function PerformanceView({
         setDropTargetId(overTrash ? "" : dropTargetAtPoint(event.clientX, event.clientY));
     };
 
-    const endPresetDrag = (event: ReactPointerEvent<HTMLButtonElement>, onTap: () => void) => {
+    const endPresetDrag = (event: ReactPointerEvent<HTMLButtonElement>): boolean => {
         const candidate = dragRef.current;
         if (!candidate || candidate.pointerId !== event.pointerId) {
-            return;
-        }
-        if (candidate.holdTimer !== null) {
-            window.clearTimeout(candidate.holdTimer);
+            return false;
         }
         const wasDragging = candidate.dragging;
-        const holdFired = candidate.holdFired;
         const overTrash = wasDragging && isTrashAtPoint(event.clientX, event.clientY);
         const dropIndex = overTrash ? "" : dropTargetAtPoint(event.clientX, event.clientY);
         dragRef.current = null;
@@ -427,24 +440,37 @@ export function PerformanceView({
         setDropTargetId("");
         setDragOverTrash(false);
         setPressedId("");
-        if (holdFired) {
-            return;
-        }
         if (wasDragging) {
             event.preventDefault();
             if (overTrash) {
                 clearAssignment(candidate.controlId);
-                return;
+                return true;
             }
             const target = dropIndex === "" ? undefined : visibleControls[Number(dropIndex)];
             const targetId = str(obj(target).id);
             if (targetId && targetId !== candidate.controlId) {
                 swapAssignments(candidate.controlId, targetId);
             }
+            return true;
+        }
+        return false;
+    };
+
+    const abortPresetDrag = () => {
+        const candidate = dragRef.current;
+        if (!candidate) {
             return;
         }
-        onTap();
+        dragRef.current = null;
+        setPresetDrag(null);
+        setDropTargetId("");
+        setDragOverTrash(false);
+        setPressedId("");
     };
+
+    useEffect(() => {
+        abortPresetDrag();
+    }, [snapshotMode]);
 
     const visibleControls = controls.filter((control) => !hidden.has(str(control.id)));
     const useConfigured = visibleControls.length > 0 && (mirror || controls.length > 0);
@@ -471,7 +497,7 @@ export function PerformanceView({
                     const clearing = activeSnapshot === widget.slot;
                     void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
                         .then(() => showToast(clearing
-                            ? "CLEARED • BASE PRESET"
+                            ? "SNAPSHOT INACTIVE"
                             : `${str(snapshot.name, `SNAPSHOT ${widget.slot + 1}`)} ACTIVE`));
                 },
                 onLongPress: () => {
@@ -500,6 +526,11 @@ export function PerformanceView({
                 const action = str(binding.action, "selectPreset");
                 const kind = normalizeControlKind(str(control.kind, "momentary"));
                 const analog = isAnalogKind(kind);
+                const latching = isLatchingKind(kind);
+                const holdAction = str(binding.holdAction);
+                const doubleAction = str(binding.doubleAction);
+                const hasHoldAction = Boolean(holdAction && holdAction !== "none");
+                const hasDoubleAction = Boolean(doubleAction && doubleAction !== "none");
                 const canAssign = !analog && (action === "selectPreset" || action === "none" || action === "");
                 const presetId = assignedPreset || str(binding.presetId);
                 const presetItem = presets.find((entry) => str(entry.id) === presetId);
@@ -513,6 +544,8 @@ export function PerformanceView({
                 const active = presetId === str(state.activePresetId)
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
+                    || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
+                        && num(binding.snapshotSlot, -1) >= 0)
                     || (toggleSlot !== "" && bool(
                         obj(chain.find((slot) => str(slot.id) === toggleSlot)).enabled,
                         true
@@ -524,7 +557,8 @@ export function PerformanceView({
                     valueText: analog
                         ? analogInfo?.value || ""
                         : valueForAction(action, str(obj(presetItem).name), empty),
-                    holdLabel: analog || isLatchingKind(kind) ? undefined : (empty ? undefined : holdLabelFor(str(binding.holdAction))),
+                    holdLabel: analog || latching ? undefined : actionLabelFor(holdAction),
+                    doubleLabel: analog || latching ? undefined : actionLabelFor(doubleAction),
                     empty,
                     role: analog ? "utility" : roleForAction(action),
                     lightState: action === "selectPreset" ? lightForPreset(active) : (active ? "active" : "inactive"),
@@ -537,7 +571,9 @@ export function PerformanceView({
                     analogValue: analogInfo?.value,
                     assigned: analog ? analogInfo?.parameter !== "UNASSIGNED" : undefined,
                     kind,
-                    value: num(positions[controlId], analog ? analogInfo?.range ?? 0 : (active ? 1 : 0)),
+                    value: analog
+                        ? analogInfo?.range ?? 0
+                        : num(positions[controlId], active ? 1 : 0),
                     presetSlotIndex: canAssign ? slotIndex : undefined,
                     dropTarget: dropTargetId === String(slotIndex),
                     dragging: presetDrag?.controlId === controlId && presetDrag.dragging,
@@ -557,37 +593,47 @@ export function PerformanceView({
                             openPresetMenu(controlId, slotIndex, "", true);
                             return;
                         }
-                        if (canAssign && presetId) {
-                            pressControl(controlId, true);
-                            window.setTimeout(() => pressControl(controlId, false), 80);
+                        if (analog) {
                             return;
                         }
-                        pressControl(controlId, true);
-                        window.setTimeout(() => pressControl(controlId, false), 80);
+                        fireControl(controlId, "tap");
                     },
                     onValue: analog
                         ? (value: number) => {
                             void client.request("controller/value", { controlId, value }).catch(() => undefined);
                         }
                         : undefined,
-                    onLongPress: canAssign
+                    onLongPress: analog || !hasHoldAction
+                        ? undefined
+                        : () => {
+                            abortPresetDrag();
+                            fireControl(controlId, "hold");
+                        },
+                    onMenu: canAssign
                         ? () => openPresetMenu(controlId, slotIndex, presetId, true)
                         : undefined,
+                    onDoublePress: analog || latching || !hasDoubleAction
+                        ? undefined
+                        : () => {
+                            abortPresetDrag();
+                            fireControl(controlId, "double");
+                        },
+                    onCancelPress: canAssign ? abortPresetDrag : undefined,
                     onFeedback: analog && feedbackOn ? showFeedback : undefined,
                     onPresetPointerDown: canAssign && presetId
                         ? (event) => {
                             setPressedId(controlId);
-                            beginPresetDrag(event, controlId, slotIndex, str(obj(presetItem).name, "Preset"));
+                            beginPresetDrag(
+                                event,
+                                controlId,
+                                slotIndex,
+                                str(obj(presetItem).name, "Preset")
+                            );
                         }
                         : undefined,
                     onPresetPointerMove: canAssign && presetId ? movePresetDrag : undefined,
                     onPresetPointerUp: canAssign && presetId
-                        ? (event) => {
-                            endPresetDrag(event, () => {
-                                pressControl(controlId, true);
-                                window.setTimeout(() => pressControl(controlId, false), 80);
-                            });
-                        }
+                        ? (event) => endPresetDrag(event)
                         : undefined
                 };
             })
@@ -613,7 +659,7 @@ export function PerformanceView({
                             }));
                         }
                     },
-                    onLongPress: () => openPresetMenu(item ? str(item.id) : `empty-${index}`, index, presetId, false)
+                    onMenu: () => openPresetMenu(item ? str(item.id) : `empty-${index}`, index, presetId, false)
                 };
             });
 
@@ -771,15 +817,11 @@ export function PerformanceView({
     const selectBankId = (id: string) => {
         setBankMenuOpen(false);
         const item = banks.find((entry) => str(entry.id) === id);
-        const first = objects(obj(item).presets)[0];
-        if (first) {
-            void run(() => client.request("preset/select", {
-                bankId: id,
-                presetId: str(first.id)
-            }));
+        if (!objects(obj(item).presets).length) {
+            showToast(`“${str(obj(item).name, "This bank")}” has no presets`);
             return;
         }
-        showToast(`“${str(obj(item).name, "This bank")}” has no presets`);
+        void run(() => client.request("bank/select", { bankId: id }));
     };
 
     const selectPresetId = (id: string) => {

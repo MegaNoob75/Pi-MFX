@@ -144,7 +144,7 @@ export function SnapshotManagerView({
                                         <button type="button" className="btn btn-accent" onClick={() => {
                                             void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
                                                 .then(() => show(selected
-                                                    ? "CLEARED • BASE PRESET"
+                                                    ? "SNAPSHOT INACTIVE"
                                                     : `${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} ACTIVE`));
                                         }}>RECALL</button>
                                         <button type="button" className="btn" onClick={() => {

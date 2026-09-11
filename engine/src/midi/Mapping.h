@@ -19,8 +19,13 @@ struct ActionRequest {
     float value = 0.0f;
     bool pressed = false;
     bool fromHold = false;
+    bool fromDouble = false;
     ControlKind kind = ControlKind::Momentary;
     bool fromPresetBind = false;
+    /// On-screen analog: apply immediately, do not wait for pot catch-up.
+    bool fromScreen = false;
+    /// Live analog (MIDI or screen) must not rewrite the stored preset.
+    bool persist = true;
 };
 
 /// The colour an LED should show, in the same 0-255 space as the theme.
@@ -46,6 +51,13 @@ public:
     /// Interprets one MIDI message. Returns the actions to run, which may be
     /// empty when the message belongs to a control the user has not bound.
     std::vector<ActionRequest> handleMessage(const MidiMessage& message);
+
+    /// Screen or tablet press of a named control. Uses the same tap/hold
+    /// rules as MIDI so a finger-down can fire the hold action.
+    std::vector<ActionRequest> virtualPress(const std::string& controlId, bool pressed);
+
+    /// Drop a pending tap/hold without running either action (drag started).
+    void cancelHold(const std::string& controlId);
 
     /// Anything that arrives while learn is active is assigned to
     /// `controlId` instead of being acted on.
@@ -86,13 +98,21 @@ private:
         std::chrono::steady_clock::time_point pressedAt;
         bool holdFired = false;
     };
+    struct PendingTap {
+        std::string controlId;
+        std::chrono::steady_clock::time_point due;
+    };
 
     const ControllerControl* matchControl(const MidiMessage& message) const;
+    std::vector<ActionRequest> discretePressUnlocked(const ControllerControl& control, bool pressed);
+    void cancelPendingTapUnlocked(const std::string& controlId);
 
     mutable std::mutex mutex_;
     ControllerConfig config_;
     std::string learnControlId_;
     std::vector<HeldControl> held_;
+    std::vector<PendingTap> pendingTaps_;
+    std::vector<std::string> swallowRelease_;
     std::vector<std::pair<std::string, float>> positions_;
 };
 

@@ -397,6 +397,8 @@ bool Engine::start(std::string& error) {
         }
     }
 
+    armAnalogCatchUnlocked();
+
     shuttingDown_.store(false);
     tunerThread_ = std::thread(&Engine::tunerThread, this);
     housekeepingThread_ = std::thread(&Engine::housekeepingThread, this);
@@ -832,15 +834,66 @@ void Engine::persistBankUnlocked(Bank* bank, bool syncFromChain) {
 }
 
 void Engine::persistActiveBankUnlocked() {
-    persistBankUnlocked(activeBank(), true);
+    persistBankUnlocked(activeBank(), false);
 }
 
-void Engine::flushPendingBasePresetUnlocked() {
+void Engine::writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value) {
     Preset* preset = activePreset();
     if (!preset || preset->activeSnapshot >= 0) {
         return;
     }
-    persistActiveBankUnlocked();
+    EffectSlot* stored = preset->findSlot(slotId);
+    if (!stored) {
+        return;
+    }
+    Json state = stored->state;
+    if (!state.isObject()) {
+        state = Json::object();
+    }
+    Json controls = state["controls"];
+    if (!controls.isObject()) {
+        controls = Json::object();
+    }
+    controls.set(portSymbol, Json(static_cast<double>(value)));
+    state.set("controls", std::move(controls));
+    stored->state = std::move(state);
+}
+
+void Engine::armAnalogCatchUnlocked() {
+    analogCatch_.clear();
+    const ControllerConfig config = controller_.config();
+    for (const ControllerControl& control : config.controls) {
+        if (control.kind == ControlKind::Pot || control.kind == ControlKind::Slider) {
+            analogCatch_[control.id] = AnalogCatch{};
+        }
+    }
+}
+
+bool Engine::analogCatchAllows(const ActionRequest& request) {
+    auto found = analogCatch_.find(request.controlId);
+    if (found == analogCatch_.end() || !found->second.waiting) {
+        return true;
+    }
+    AnalogCatch& catchState = found->second;
+    const float incoming = std::max(0.0f, std::min(1.0f, request.value));
+    if (catchState.lastVisual < 0.0f) {
+        catchState.lastVisual = incoming;
+        return false;
+    }
+    // A few MIDI ticks of motion takes over. Crossing the stored value is
+    // not required — that forced a sweep across the whole pot.
+    constexpr float kUnlock = 4.0f / 127.0f;
+    if (std::fabs(incoming - catchState.lastVisual) < kUnlock) {
+        return false;
+    }
+    catchState.lastVisual = incoming;
+    catchState.waiting = false;
+    return true;
+}
+
+void Engine::flushPendingBasePresetUnlocked() {
+    // Analog moves are live-only. Recalling a snapshot must not bake pots
+    // into the stored preset.
 }
 
 void Engine::requestBankPersist(bool immediate) {
@@ -896,21 +949,18 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
 
     const Preset* outgoing = activePreset();
-    if (!outgoing || outgoing->activeSnapshot < 0) {
-        // #region agent log
-        {
-            std::ofstream f("C:/Users/ross7/Documents/GitHub/Pi-MFX/debug-4847b9.log", std::ios::app);
-            if (f) {
-                f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H2\",\"location\":\"Engine.cpp:selectPreset\",\"message\":\"sync live chain into stored preset before load\",\"data\":{\"outgoingSnapshot\":" << (outgoing ? outgoing->activeSnapshot : -999) << ",\"targetPresetId\":\"" << presetId << "\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
-            }
-        }
-        // #endregion
-        syncPresetFromChain();
+    Bank* outgoingBank = activeBank();
+    if (outgoingBank && outgoingBank->id != bank->id) {
+        outgoingBank->lastPresetId = activePresetId_;
+        persistBankUnlocked(outgoingBank, false);
+    }
+    if (outgoing && outgoing->id != target->id && outgoingBank && outgoingBank->id == bank->id) {
         persistActiveBankUnlocked();
     }
 
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
+    bank->lastPresetId = target->id;
 
     std::string chainError;
     std::unique_ptr<Chain> chain = buildChain(*target, chainError);
@@ -926,6 +976,8 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
     persistSettings();
+    persistActiveBankUnlocked();
+    armAnalogCatchUnlocked();
     refreshLeds();
     notify();
     return true;
@@ -949,6 +1001,43 @@ bool Engine::stepPreset(int delta, std::string& error) {
     return selectPreset(bank->id, bank->presets[static_cast<size_t>(index)].id, error);
 }
 
+bool Engine::selectBank(const std::string& bankId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Bank* current = activeBank();
+    int slot = 0;
+    if (current) {
+        for (size_t i = 0; i < current->presets.size(); ++i) {
+            if (current->presets[i].id == activePresetId_) {
+                slot = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    Bank* next = findBank(bankId);
+    if (!next) {
+        error = "no such bank";
+        return false;
+    }
+    if (next->presets.empty()) {
+        error = "that bank is empty";
+        return false;
+    }
+    std::string presetId;
+    if (!next->lastPresetId.empty()) {
+        for (const Preset& preset : next->presets) {
+            if (preset.id == next->lastPresetId) {
+                presetId = preset.id;
+                break;
+            }
+        }
+    }
+    if (presetId.empty()) {
+        const int index = std::min(slot, static_cast<int>(next->presets.size()) - 1);
+        presetId = next->presets[static_cast<size_t>(std::max(0, index))].id;
+    }
+    return selectPreset(next->id, presetId, error);
+}
+
 bool Engine::stepBank(int delta, std::string& error) {
     if (banks_.empty()) {
         error = "no banks";
@@ -968,13 +1057,31 @@ bool Engine::stepBank(int delta, std::string& error) {
         error = "that bank is empty";
         return false;
     }
-    return selectPreset(bank.id, bank.presets.front().id, error);
+    return selectBank(bank.id, error);
+}
+
+bool Engine::reloadStoredPreset(std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    bypassAll_.store(false, std::memory_order_relaxed);
+    restoreStoredPresetToChainUnlocked(*preset);
+    forgetRememberedSnapshot(*preset);
+    presetReloadCount_ += 1;
+    armAnalogCatchUnlocked();
+    persistActiveBankUnlocked();
+    refreshLeds();
+    notify();
+    return true;
 }
 
 bool Engine::savePreset(std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
-    if (preset && preset->activeSnapshot < 0) {
+    if (preset) {
         syncPresetFromChain();
     }
     Bank* bank = activeBank();
@@ -1551,7 +1658,7 @@ bool Engine::setEffectName(const std::string& slotId, const std::string& name, s
 }
 
 bool Engine::setControlValue(const std::string& slotId, const std::string& portSymbol,
-                             float value, std::string& error) {
+                             float value, std::string& error, bool persist) {
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) {
         error = "no chain is running";
@@ -1573,7 +1680,11 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
                 slot.plugin->setControl(port.index, clamped);
             }
-            requestBankPersist(false);
+            if (persist) {
+                std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                writeStoredControlUnlocked(slotId, portSymbol, clamped);
+                requestBankPersist(false);
+            }
             // #region agent log
             {
                 static float lastLogged = -9999.0f;
@@ -1582,7 +1693,7 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
                     const Preset* preset = activePreset();
                     std::ofstream f("C:/Users/ross7/Documents/GitHub/Pi-MFX/debug-4847b9.log", std::ios::app);
                     if (f) {
-                        f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H1\",\"location\":\"Engine.cpp:setControlValue\",\"message\":\"live control write + persist\",\"data\":{\"slotId\":\"" << slotId << "\",\"port\":\"" << portSymbol << "\",\"value\":" << clamped << ",\"activeSnapshot\":" << (preset ? preset->activeSnapshot : -999) << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
+                        f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H1\",\"location\":\"Engine.cpp:setControlValue\",\"message\":\"live control write\",\"data\":{\"slotId\":\"" << slotId << "\",\"port\":\"" << portSymbol << "\",\"value\":" << clamped << ",\"persist\":" << (persist ? "true" : "false") << ",\"activeSnapshot\":" << (preset ? preset->activeSnapshot : -999) << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
                     }
                 }
             }
@@ -1718,6 +1829,7 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
         slot->enabled.store(stored->enabled, std::memory_order_relaxed);
     }
     preset.activeSnapshot = -1;
+    armAnalogCatchUnlocked();
 }
 
 void Engine::forgetRememberedSnapshot(Preset& preset) {
@@ -1815,6 +1927,7 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
         slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_));
         slot->enabled.store(state["enabled"].asBool(true), std::memory_order_relaxed);
     }
+    armAnalogCatchUnlocked();
 }
 
 bool Engine::captureSnapshot(const std::string& name, int slot, std::string& snapshotId, std::string& error) {
@@ -2026,6 +2139,7 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
     }
 
     persistSettings();
+    armAnalogCatchUnlocked();
     refreshLeds();
     notify();
     error.clear();
@@ -2211,20 +2325,53 @@ bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std
         if (continuous) {
             return true;
         }
-        ActionRequest request;
-        request.controlId = control.id;
-        request.binding = control.binding;
-        request.action = control.binding.action;
-        request.pressed = pressed;
-        request.value = pressed ? 1.0f : 0.0f;
-        request.kind = control.kind;
-        if (pressed || control.kind == ControlKind::Latching) {
+        for (const ActionRequest& request : controller_.virtualPress(controlId, pressed)) {
             runAction(request);
         }
         return true;
     }
     error = "no such control";
     return false;
+}
+
+bool Engine::fireVirtualAction(const std::string& controlId, const std::string& fire, std::string& error) {
+    const ControllerConfig config = controller_.config();
+    for (const ControllerControl& control : config.controls) {
+        if (control.id != controlId) {
+            continue;
+        }
+        ActionRequest request;
+        request.controlId = control.id;
+        request.binding = control.binding;
+        request.pressed = true;
+        request.value = 1.0f;
+        request.kind = control.kind;
+        if (fire == "hold") {
+            if (control.binding.holdAction.empty() || control.binding.holdAction == "none") {
+                error = "no hold action";
+                return false;
+            }
+            request.action = control.binding.holdAction;
+            request.fromHold = true;
+        } else if (fire == "double") {
+            if (control.binding.doubleAction.empty() || control.binding.doubleAction == "none") {
+                error = "no double-tap action";
+                return false;
+            }
+            request.action = control.binding.doubleAction;
+            request.fromDouble = true;
+        } else {
+            request.action = control.binding.action;
+        }
+        runAction(request);
+        return true;
+    }
+    error = "no such control";
+    return false;
+}
+
+void Engine::cancelVirtualHold(const std::string& controlId) {
+    controller_.cancelHold(controlId);
 }
 
 bool Engine::setVirtualControlValue(const std::string& controlId, float value, std::string& error) {
@@ -2242,6 +2389,8 @@ bool Engine::setVirtualControlValue(const std::string& controlId, float value, s
         request.pressed = true;
         request.value = visual;
         request.kind = control.kind;
+        request.fromScreen = true;
+        request.persist = false;
         runAction(request);
         return true;
     }
@@ -2279,6 +2428,14 @@ void Engine::runAction(const ActionRequest& incoming) {
     ActionRequest request = incoming;
     overlayPresetBind(request);
 
+    const bool catchKind = request.kind == ControlKind::Pot || request.kind == ControlKind::Slider;
+    if (catchKind && request.action == "setParameter" && !request.fromScreen) {
+        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+        if (!analogCatchAllows(request)) {
+            return;
+        }
+    }
+
     if (!request.pressed && request.kind != ControlKind::Latching) {
         return;
     }
@@ -2305,7 +2462,8 @@ void Engine::runAction(const ActionRequest& incoming) {
     if (!request.fromPresetBind && snapshotView && request.action != "setParameter"
         && request.action != "snapshotMode"
         && request.action != "bypassAll" && request.action != "tapTempo"
-        && request.action != "tuner" && request.action != "toggleEffect") {
+        && request.action != "tuner" && request.action != "toggleEffect"
+        && request.action != "reloadPreset") {
         if (binding.snapshotSlot >= 0) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             Preset* preset = activePreset();
@@ -2354,7 +2512,32 @@ void Engine::runAction(const ActionRequest& incoming) {
             selectPreset(bankId, presetId, error);
         }
     } else if (request.action == "selectSnapshot") {
-        selectSnapshot(binding.snapshotId, error);
+        if (binding.snapshotSlot >= 0) {
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+            Preset* preset = activePreset();
+            if (preset) {
+                pressSnapshotSlotUnlocked(*preset, binding.snapshotSlot, error);
+                persistActiveBankUnlocked();
+                refreshLeds();
+                notify();
+            }
+        } else {
+            selectSnapshot(binding.snapshotId, error);
+        }
+    } else if (request.action == "reloadPreset") {
+        const ControllerConfig config = controller_.config();
+        std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
+        std::string presetId = binding.presetId;
+        if (presetId.empty()) {
+            presetId = assignedPresetForControl(config, bankId, request.controlId);
+        }
+        if (!presetId.empty()
+            && (presetId != activePresetId_ || (!bankId.empty() && bankId != activeBankId_))) {
+            if (!selectPreset(bankId, presetId, error)) {
+                return;
+            }
+        }
+        reloadStoredPreset(error);
     } else if (request.action == "toggleEffect") {
         if (latching) {
             setEffectEnabled(binding.slotId, latchOn(request), error);
@@ -2372,7 +2555,8 @@ void Engine::runAction(const ActionRequest& incoming) {
             setEffectEnabled(binding.slotId, enabled, error);
         }
     } else if (request.action == "setParameter") {
-        setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error);
+        const bool persist = request.persist && !isContinuousKind(request.kind);
+        setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error, persist);
         notifyPerformance();
     } else if (request.action == "bypassAll") {
         if (latching) {
@@ -2433,23 +2617,7 @@ void Engine::refreshLeds() {
         state.pixelIndex = led.pixelIndex;
         state.on = true;
 
-        for (const RoleColour& role : kRoles) {
-            if (led.role == role.role) {
-                state.red = role.r;
-                state.green = role.g;
-                state.blue = role.b;
-                break;
-            }
-        }
-        const Json& themeColor = settings_.ui.ledColors[led.role];
-        if (themeColor.isString()) {
-            const std::string hex = themeColor.asString();
-            if (hex.size() == 7 && hex[0] == '#') {
-                state.red = static_cast<uint8_t>(std::strtol(hex.substr(1, 2).c_str(), nullptr, 16));
-                state.green = static_cast<uint8_t>(std::strtol(hex.substr(3, 2).c_str(), nullptr, 16));
-                state.blue = static_cast<uint8_t>(std::strtol(hex.substr(5, 2).c_str(), nullptr, 16));
-            }
-        }
+        std::string colourRole = led.role;
 
         // An LED tied to a control follows what that control currently does,
         // so a switch bound to an effect lights only while that effect is on.
@@ -2475,16 +2643,48 @@ void Engine::refreshLeds() {
                 state.on = preset
                     && preset->rememberedSnapshotEnabled
                     && preset->activeSnapshot == control.binding.snapshotSlot;
+                colourRole = "snapshot";
             } else if (control.binding.action == "selectPreset") {
                 std::string presetId = control.binding.presetId;
                 if (presetId.empty()) {
                     presetId = assignedPresetForControl(config, activeBankId_, control.id);
                 }
                 state.on = !presetId.empty() && presetId == activePresetId_;
+                if (state.on && bypassAll_.load(std::memory_order_relaxed)) {
+                    colourRole = "bypass";
+                } else if (state.on && preset && preset->rememberedSnapshotEnabled
+                           && preset->activeSnapshot >= 0) {
+                    colourRole = "snapshot";
+                }
+            } else if (control.binding.action == "selectSnapshot") {
+                state.on = preset
+                    && preset->rememberedSnapshotEnabled
+                    && control.binding.snapshotSlot >= 0
+                    && preset->activeSnapshot == control.binding.snapshotSlot;
+                colourRole = "snapshot";
             } else if (control.binding.action == "bypassAll") {
                 state.on = bypassAll_.load(std::memory_order_relaxed);
+                colourRole = "bypass";
             }
             break;
+        }
+
+        for (const RoleColour& role : kRoles) {
+            if (colourRole == role.role) {
+                state.red = role.r;
+                state.green = role.g;
+                state.blue = role.b;
+                break;
+            }
+        }
+        const Json& themeColor = settings_.ui.ledColors[colourRole];
+        if (themeColor.isString()) {
+            const std::string hex = themeColor.asString();
+            if (hex.size() == 7 && hex[0] == '#') {
+                state.red = static_cast<uint8_t>(std::strtol(hex.substr(1, 2).c_str(), nullptr, 16));
+                state.green = static_cast<uint8_t>(std::strtol(hex.substr(3, 2).c_str(), nullptr, 16));
+                state.blue = static_cast<uint8_t>(std::strtol(hex.substr(5, 2).c_str(), nullptr, 16));
+            }
         }
 
         states.push_back(std::move(state));
@@ -2901,6 +3101,7 @@ Json Engine::fullState() const {
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
+    json.set("presetReloadCount", presetReloadCount_);
     json.set("audioRunning", backend_ && backend_->isRunning());
     json.set("audioBackend", backend_ ? backend_->name() : std::string("none"));
     if (!audioError_.empty()) {
@@ -2962,6 +3163,7 @@ Json Engine::performanceState() const {
     json.set("activePresetId", activePresetId_);
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
+    json.set("presetReloadCount", presetReloadCount_);
 
     if (const Preset* preset = activePreset()) {
         json.set("tempo", preset->tempo);

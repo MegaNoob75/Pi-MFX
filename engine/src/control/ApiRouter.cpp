@@ -179,6 +179,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.stepPreset(payload["delta"].asInt(1), error);
         return Json::object();
     }
+    if (command == "bank/select") {
+        ok = engine_.selectBank(payload["bankId"].asString(), error);
+        return Json::object();
+    }
     if (command == "bank/step") {
         ok = engine_.stepBank(payload["delta"].asInt(1), error);
         return Json::object();
@@ -375,6 +379,15 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "controller/press") {
+        if (payload["cancel"].asBool(false)) {
+            engine_.cancelVirtualHold(payload["controlId"].asString());
+            return Json::object();
+        }
+        const std::string fire = payload["fire"].asString();
+        if (fire == "tap" || fire == "hold" || fire == "double") {
+            ok = engine_.fireVirtualAction(payload["controlId"].asString(), fire, error);
+            return Json::object();
+        }
         ok = engine_.pressVirtualControl(payload["controlId"].asString(),
                                          payload["pressed"].asBool(true), error);
         return Json::object();

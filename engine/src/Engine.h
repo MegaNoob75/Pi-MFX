@@ -17,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace pimfx {
@@ -70,8 +71,10 @@ public:
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
+    bool selectBank(const std::string& bankId, std::string& error);
     bool stepPreset(int delta, std::string& error);
     bool stepBank(int delta, std::string& error);
+    bool reloadStoredPreset(std::string& error);
     bool savePreset(std::string& error);
     bool savePresetAs(const std::string& name, std::string& error);
     bool createPreset(const std::string& name, std::string& error);
@@ -95,7 +98,7 @@ public:
     bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error);
     bool setEffectName(const std::string& slotId, const std::string& name, std::string& error);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
-                         float value, std::string& error);
+                         float value, std::string& error, bool persist = true);
     bool setEffectProperty(const std::string& slotId, const std::string& propertyUri,
                            const std::string& path, std::string& error);
     bool setBypassAll(bool bypassed);
@@ -122,6 +125,8 @@ public:
     /// Presses a control from the browser. This is what makes a tablet a
     /// complete control surface with no hardware attached.
     bool pressVirtualControl(const std::string& controlId, bool pressed, std::string& error);
+    bool fireVirtualAction(const std::string& controlId, const std::string& fire, std::string& error);
+    void cancelVirtualHold(const std::string& controlId);
     /// Sets a pot, slider or expression pedal from the screen. `value` is 0-1
     /// as the on-screen control is pointing.
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
@@ -230,6 +235,9 @@ private:
     void overlayPresetBind(ActionRequest& request);
     void migrateHardwareParameterBinds();
     void runAction(const ActionRequest& request);
+    void armAnalogCatchUnlocked();
+    bool analogCatchAllows(const ActionRequest& request);
+    void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
     void refreshLeds();
     Json describeControllerRuntime() const;
 
@@ -256,6 +264,7 @@ private:
 
     std::atomic<bool> bypassAll_{false};
     std::atomic<bool> snapshotMode_{false};
+    int presetReloadCount_ = 0;
     std::atomic<float> inputGain_{1.0f};
     std::atomic<float> outputGain_{1.0f};
     std::atomic<float> targetOutputGain_{1.0f};
@@ -288,6 +297,12 @@ private:
 
     std::vector<std::chrono::steady_clock::time_point> tapTimes_;
     std::mutex tapMutex_;
+
+    struct AnalogCatch {
+        bool waiting = true;
+        float lastVisual = -1.0f;
+    };
+    std::unordered_map<std::string, AnalogCatch> analogCatch_;
 
     StateListener listener_;
     mutable std::mutex listenerMutex_;

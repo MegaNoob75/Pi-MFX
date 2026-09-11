@@ -2686,15 +2686,97 @@ function stableNameBucket(name: string): number {
 }
 
 function paletteLuminance(color: string): number {
-    const values = [1, 3, 5].map((start) =>
-        Number.parseInt(color.slice(start, start + 2), 16) / 255
-    );
-    const [r, g, b] = values.map((value) =>
-        value <= 0.04045
-            ? value / 12.92
-            : Math.pow((value + 0.055) / 1.055, 2.4)
-    );
+    const values = hexRgb(color).map((value) => {
+        const channel = value / 255;
+        return channel <= 0.04045
+            ? channel / 12.92
+            : Math.pow((channel + 0.055) / 1.055, 2.4);
+    });
+    const [r, g, b] = values;
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function hexRgb(color: string): [number, number, number] {
+    const hex = color.replace("#", "");
+    if (hex.length < 6 || Number.isNaN(Number.parseInt(hex.slice(0, 6), 16))) {
+        return [0, 0, 0];
+    }
+    return [
+        Number.parseInt(hex.slice(0, 2), 16),
+        Number.parseInt(hex.slice(2, 4), 16),
+        Number.parseInt(hex.slice(4, 6), 16)
+    ];
+}
+
+function rgbHex(r: number, g: number, b: number): string {
+    const to = (value: number) => Math.max(0, Math.min(255, Math.round(value)))
+        .toString(16)
+        .padStart(2, "0");
+    return `#${to(r)}${to(g)}${to(b)}`;
+}
+
+function mixHex(a: string, b: string, amount: number): string {
+    const [ar, ag, ab] = hexRgb(a);
+    const [br, bg, bb] = hexRgb(b);
+    return rgbHex(
+        ar + (br - ar) * amount,
+        ag + (bg - ag) * amount,
+        ab + (bb - ab) * amount
+    );
+}
+
+function rotateHex(color: string, degrees: number): string {
+    const [r, g, b] = hexRgb(color).map((value) => value / 255) as [number, number, number];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const light = (max + min) / 2;
+    const delta = max - min;
+    let hue = 0;
+    let saturation = 0;
+    if (delta !== 0) {
+        saturation = delta / (1 - Math.abs(2 * light - 1));
+        if (max === r) {
+            hue = ((g - b) / delta) % 6;
+        } else if (max === g) {
+            hue = (b - r) / delta + 2;
+        } else {
+            hue = (r - g) / delta + 4;
+        }
+        hue *= 60;
+        if (hue < 0) {
+            hue += 360;
+        }
+    }
+    hue = (hue + degrees) % 360;
+    if (hue < 0) {
+        hue += 360;
+    }
+    const chroma = (1 - Math.abs(2 * light - 1)) * saturation;
+    const x = chroma * (1 - Math.abs((hue / 60) % 2 - 1));
+    const match = light - chroma / 2;
+    let r1 = 0;
+    let g1 = 0;
+    let b1 = 0;
+    if (hue < 60) {
+        r1 = chroma;
+        g1 = x;
+    } else if (hue < 120) {
+        r1 = x;
+        g1 = chroma;
+    } else if (hue < 180) {
+        g1 = chroma;
+        b1 = x;
+    } else if (hue < 240) {
+        g1 = x;
+        b1 = chroma;
+    } else if (hue < 300) {
+        r1 = x;
+        b1 = chroma;
+    } else {
+        r1 = chroma;
+        b1 = x;
+    }
+    return rgbHex((r1 + match) * 255, (g1 + match) * 255, (b1 + match) * 255);
 }
 
 function paletteContrastRatio(foreground: string, background: string): number {
@@ -3182,6 +3264,32 @@ function makeTheme(
             break;
     }
 
+    const snapshotColor = rotateHex(c.selected, 110);
+    const snapshotSurface = mixHex(snapshotColor, c.panel, 0.72);
+    snapshotNormal = controlState(
+        gradient(snapshotSurface, c.panel),
+        solid(snapshotColor),
+        snapshotColor,
+        c.text,
+        snapshotColor
+    );
+    const snapshotActive = controlState(
+        gradient(snapshotSurface, c.panelAlt),
+        gradient(snapshotColor, snapshotSurface),
+        snapshotColor,
+        readablePaletteText(c.text, snapshotSurface, c.selectedText),
+        snapshotColor,
+        `0 0 20px ${snapshotColor}`
+    );
+    const navigationActive = controlState(
+        gradient(c.navigationSurface, c.panelAlt),
+        gradient(c.navigation, c.navigationText),
+        c.navigation,
+        readablePaletteText(c.navigationText, c.navigationSurface, c.text),
+        c.navigation,
+        `0 0 20px ${c.navigation}`
+    );
+
     const role = (
         roleNormal: MultiFXThemeControlState,
         roleActive: MultiFXThemeControlState
@@ -3201,9 +3309,9 @@ function makeTheme(
             },
             roles: {
                 preset: role(normal, active),
-                navigation: role(navigationNormal, active),
+                navigation: role(navigationNormal, navigationActive),
                 utility: role(utilityNormal, active),
-                snapshot: role(snapshotNormal, active),
+                snapshot: role(snapshotNormal, snapshotActive),
                 bypass: role(normal, dangerState),
                 danger: role(dangerState, dangerState)
             },

@@ -16,7 +16,7 @@ import { PluginsView } from "./views/PluginsView";
 import { Tone3000View } from "./views/Tone3000View";
 import { FilesView } from "./views/LibraryManager";
 import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
-import { loadCustomMultiFXThemes, themeLedColors } from "./theme/theme";
+import { saveCustomMultiFXTheme, themeLedColors } from "./theme/theme";
 import { MarqueeText } from "./views/MarqueeText";
 import { ConfirmDialog } from "./views/ConfirmDialog";
 import { installResponsiveSizing } from "./responsive";
@@ -111,6 +111,12 @@ export function App() {
             setLeaveLayout(next);
             return;
         }
+        if (view === "edit" && next !== "edit") {
+            void engine.client.request("preset/save").catch(() => undefined).finally(() => {
+                navigateTo(next);
+            });
+            return;
+        }
         navigateTo(next);
     };
 
@@ -137,6 +143,12 @@ export function App() {
         }
         if (view === "edit" && editSubpage !== "chain") {
             setEditBackRequest((value) => value + 1);
+            return;
+        }
+        if (view === "edit") {
+            void engine.client.request("preset/save").catch(() => undefined).finally(() => {
+                finishBack();
+            });
             return;
         }
         if (view === "layout" && layoutDirty) {
@@ -372,10 +384,11 @@ export function App() {
                         engine={engine}
                         run={run}
                         persistTheme={async (theme) => {
+                            const customThemes = saveCustomMultiFXTheme(theme);
                             await engine.client.request("ui/settings", persistThemeSettings(
                                 obj(engine.state.ui),
                                 theme.name,
-                                loadCustomMultiFXThemes(),
+                                customThemes,
                                 themeLedColors(theme)
                             ));
                         }}

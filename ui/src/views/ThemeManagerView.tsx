@@ -267,9 +267,11 @@ export default function ThemeManagerView({
             return;
         }
 
-            originalRef.current = cloneTheme(theme);
-            setActiveName(theme.name);
-            if (!persistTheme) {
+        originalRef.current = cloneTheme(theme);
+        setActiveName(theme.name);
+        const custom = saveCustomMultiFXTheme(theme);
+        setCustomThemes(custom);
+        if (!persistTheme) {
             setMessage(`"${theme.name}" is now the active theme.`);
             return;
         }
@@ -1287,7 +1289,20 @@ function ControlStyleEditor({
         role: keyof MultiFXThemeDefinition["appearance"]["roles"],
         indicator: string
     ) => onChange((next) => {
-        next.appearance.roles[role].active.indicator = indicator;
+        const active = next.appearance.roles[role].active;
+        active.indicator = indicator;
+        active.label = indicator;
+        active.border = { kind: "solid", colors: [indicator], angle: 0 };
+        active.shadow = `0 0 20px ${indicator}`;
+        if (active.background.colors.length > 0) {
+            active.background = {
+                ...active.background,
+                colors: [indicator, ...active.background.colors.slice(1)]
+            };
+        }
+        if (role === "preset") {
+            next.appearance.controls.indicatorActive = indicator;
+        }
     });
     return (
         <div style={editorScrollStyle}>

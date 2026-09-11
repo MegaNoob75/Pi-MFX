@@ -193,6 +193,9 @@ Json Bank::toJson() const {
     json.set("id", id);
     json.set("name", name);
     json.set("order", order);
+    if (!lastPresetId.empty()) {
+        json.set("lastPresetId", lastPresetId);
+    }
     Json presetJson = Json::array();
     for (const Preset& preset : presets) {
         presetJson.push(preset.toJson());
@@ -206,6 +209,7 @@ Bank Bank::fromJson(const Json& json) {
     bank.id = json["id"].asString(newId("bank"));
     bank.name = json["name"].asString("Bank");
     bank.order = json["order"].asInt(0);
+    bank.lastPresetId = json["lastPresetId"].asString();
     const Json& presetJson = json["presets"];
     for (size_t i = 0; i < presetJson.size(); ++i) {
         bank.presets.push_back(Preset::fromJson(presetJson.at(i)));
@@ -254,6 +258,8 @@ Json ControlBinding::toJson() const {
         json.set("holdAction", holdAction);
         json.set("holdMs", holdMilliseconds);
     }
+    json.set("doubleAction", doubleAction.empty() ? "none" : doubleAction);
+    json.set("doubleMs", doubleTapMilliseconds);
     return json;
 }
 
@@ -271,9 +277,12 @@ ControlBinding ControlBinding::fromJson(const Json& json) {
     binding.inverted = json["inverted"].asBool(false);
     binding.holdAction = json["holdAction"].asString();
     binding.holdMilliseconds = json["holdMs"].asInt(600);
-    if (binding.action == "selectSnapshot") {
-        binding.action = "selectPreset";
+    if (json.has("doubleAction")) {
+        binding.doubleAction = json["doubleAction"].asString();
+    } else if (binding.action == "selectPreset") {
+        binding.doubleAction = "reloadPreset";
     }
+    binding.doubleTapMilliseconds = json["doubleMs"].asInt(320);
     return binding;
 }
 

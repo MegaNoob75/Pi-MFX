@@ -1022,6 +1022,7 @@ function ExplorerRow({
         <button
             type="button"
             className={`explorer-row ${selected ? "selected" : ""}${checked ? " is-checked" : ""}`}
+            style={{ touchAction: "none", WebkitTouchCallout: "none" }}
             draggable
             onDragStart={(event) => {
                 event.dataTransfer.setData("application/x-pimfx-path", str(item.path));
@@ -1052,6 +1053,11 @@ function ExplorerRow({
             onPointerDown={(event) => {
                 longPress.current = false;
                 start.current = { x: event.clientX, y: event.clientY };
+                try {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                } catch {
+                    // optional
+                }
                 window.clearTimeout(timer.current);
                 timer.current = window.setTimeout(() => {
                     longPress.current = true;

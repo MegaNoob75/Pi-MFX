@@ -87,17 +87,13 @@ export function BanksView({
 
     const selectBank = (id: string) => {
         const bank = banks.find((item) => str(item.id) === id);
-        const first = objects(obj(bank).presets)[0];
-        if (first) {
-            mutate(() => client.request("preset/select", {
-                bankId: id,
-                presetId: str(first.id)
-            }));
+        if (!objects(obj(bank).presets).length) {
+            setEmptyBank(obj(bank));
+            setToast(`“${str(obj(bank).name, "This bank")}” has no presets.`);
+            window.setTimeout(() => setToast(""), 2800);
             return;
         }
-        setEmptyBank(obj(bank));
-        setToast(`“${str(obj(bank).name, "This bank")}” has no presets.`);
-        window.setTimeout(() => setToast(""), 2800);
+        mutate(() => client.request("bank/select", { bankId: id }));
     };
 
     const saveBankToPi = () => {

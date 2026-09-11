@@ -100,6 +100,8 @@ const CONTROL_LABEL_PREFIX: Record<string, string> = {
 const HARDWARE_ACTIONS = [
     "none",
     "selectPreset",
+    "selectSnapshot",
+    "reloadPreset",
     "presetUp",
     "presetDown",
     "bankUp",
@@ -109,6 +111,21 @@ const HARDWARE_ACTIONS = [
     "tapTempo",
     "tuner"
 ] as const;
+
+const HARDWARE_ACTION_LABELS: Record<string, string> = {
+    none: "None",
+    selectPreset: "Preset",
+    selectSnapshot: "Snapshot",
+    reloadPreset: "Reload preset",
+    presetUp: "Preset up",
+    presetDown: "Preset down",
+    bankUp: "Bank up",
+    bankDown: "Bank down",
+    snapshotMode: "Snapshot mode",
+    bypassAll: "Chain bypass",
+    tapTempo: "Tap tempo",
+    tuner: "Tuner"
+};
 
 function controlPrefix(kind: string): string {
     return CONTROL_LABEL_PREFIX[kind] ?? kind.toUpperCase();
@@ -652,10 +669,29 @@ function HardwareControlDetail({
     const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
     const rawAction = str(binding.action, "none");
     const action = (HARDWARE_ACTIONS as readonly string[]).includes(rawAction) ? rawAction : "none";
+    const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
+    const doubleAction = str(binding.doubleAction) === "none" ? "" : str(binding.doubleAction);
     const assignedSnapshot = num(binding.snapshotSlot, -1);
+    const usesSnapshot = action === "selectSnapshot"
+        || holdAction === "selectSnapshot"
+        || doubleAction === "selectSnapshot";
+    const actionOptions = (includeEmpty: boolean) => (
+        <>
+            {includeEmpty && <option value="">None</option>}
+            {HARDWARE_ACTIONS.filter((item) => includeEmpty ? item !== "none" : true).map((item) => (
+                <option key={item} value={item}>{HARDWARE_ACTION_LABELS[item] ?? item}</option>
+            ))}
+        </>
+    );
     const snapshotOptions = assignedSnapshot >= 0 && !snapshotSlots.includes(assignedSnapshot)
         ? [...snapshotSlots, assignedSnapshot]
         : snapshotSlots;
+    const withSnapshotSlot = (next: JsonObject, chosen: string) => {
+        if (chosen !== "selectSnapshot" || num(next.snapshotSlot, -1) >= 0) {
+            return next;
+        }
+        return { ...next, snapshotSlot: snapshotSlots[0] ?? 0 };
+    };
     return (
         <div className="stack">
             <div className="hardware-field-grid">
@@ -685,6 +721,7 @@ function HardwareControlDetail({
                         }
                         if (isLatchingKind(nextKind)) {
                             nextBinding.holdAction = "";
+                            nextBinding.doubleAction = "";
                         }
                         onPatch({ ...control, kind: nextKind, label, binding: nextBinding });
                     }}>
@@ -695,28 +732,22 @@ function HardwareControlDetail({
                 </label>
                 {!analog && (
                     <label className="field">
-                        <span>Function</span>
+                        <span>Main function</span>
                         <select
                             value={action}
-                            onChange={(event) => patchBinding({ ...binding, action: event.target.value })}
+                            onChange={(event) => {
+                                const next = event.target.value;
+                                patchBinding(withSnapshotSlot({
+                                    ...binding,
+                                    action: next,
+                                    doubleAction: next === "selectPreset"
+                                        && (!str(binding.doubleAction) || str(binding.doubleAction) === "none")
+                                        ? "reloadPreset"
+                                        : binding.doubleAction
+                                }, next));
+                            }}
                         >
-                            {HARDWARE_ACTIONS.map((item) => (
-                                <option key={item} value={item}>{item}</option>
-                            ))}
-                        </select>
-                    </label>
-                )}
-                {!analog && (
-                    <label className="field">
-                        <span>Snapshot</span>
-                        <select
-                            value={assignedSnapshot}
-                            onChange={(event) => patchBinding({ ...binding, snapshotSlot: Number(event.target.value) })}
-                        >
-                            <option value={-1}>None</option>
-                            {snapshotOptions.map((slot) => (
-                                <option key={slot} value={slot}>Snapshot {slot + 1}</option>
-                            ))}
+                            {actionOptions(false)}
                         </select>
                     </label>
                 )}
@@ -724,12 +755,34 @@ function HardwareControlDetail({
                     <label className="field">
                         <span>Hold</span>
                         <select
-                            value={str(binding.holdAction)}
-                            onChange={(event) => patchBinding({ ...binding, holdAction: event.target.value })}
+                            value={holdAction}
+                            onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, holdAction: event.target.value }, event.target.value))}
                         >
-                            <option value="">none</option>
-                            {["selectPreset", "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll"].map((item) => (
-                                <option key={item} value={item}>{item}</option>
+                            {actionOptions(true)}
+                        </select>
+                    </label>
+                )}
+                {!analog && !latching && (
+                    <label className="field">
+                        <span>Double tap</span>
+                        <select
+                            value={doubleAction}
+                            onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, doubleAction: event.target.value }, event.target.value))}
+                        >
+                            {actionOptions(true)}
+                        </select>
+                    </label>
+                )}
+                {!analog && usesSnapshot && (
+                    <label className="field">
+                        <span>Snapshot slot</span>
+                        <select
+                            value={assignedSnapshot}
+                            onChange={(event) => patchBinding({ ...binding, snapshotSlot: Number(event.target.value) })}
+                        >
+                            <option value={-1}>Choose slot</option>
+                            {snapshotOptions.map((slot) => (
+                                <option key={slot} value={slot}>Snapshot {slot + 1}</option>
                             ))}
                         </select>
                     </label>

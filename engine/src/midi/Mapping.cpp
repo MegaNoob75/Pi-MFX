@@ -18,6 +18,18 @@ constexpr uint8_t kCommandIdentityRequest = 0x01;
 constexpr uint8_t kCommandSetLeds = 0x02;
 constexpr uint8_t kCommandIdentityReply = 0x10;
 
+bool assignedAction(const std::string& action) {
+    return !action.empty() && action != "none";
+}
+
+int holdDelayMs(const ControlBinding& binding) {
+    return binding.holdMilliseconds < 250 ? 600 : binding.holdMilliseconds;
+}
+
+int doubleDelayMs(const ControlBinding& binding) {
+    return binding.doubleTapMilliseconds < 80 ? 320 : binding.doubleTapMilliseconds;
+}
+
 /// MIDI data bytes only carry seven bits, so 0-255 colour components are
 /// scaled rather than truncated: dividing by two would lose the top of the
 /// range on every channel.
@@ -138,41 +150,122 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
     }
 
     const bool pressed = message.isNoteOn() || (message.isControlChange() && message.data2 >= 64);
+    return discretePressUnlocked(*control, pressed);
+}
+
+std::vector<ActionRequest> ControllerRuntime::discretePressUnlocked(
+        const ControllerControl& control, bool pressed) {
+    std::vector<ActionRequest> actions;
+    ActionRequest request;
+    request.controlId = control.id;
+    request.binding = control.binding;
+    request.action = control.binding.action;
+    request.kind = control.kind;
     request.pressed = pressed;
     request.value = pressed ? 1.0f : 0.0f;
 
-    if (control->kind == ControlKind::Latching) {
+    if (control.kind == ControlKind::Latching) {
         actions.push_back(std::move(request));
         return actions;
     }
 
+    const bool hold = assignedAction(control.binding.holdAction);
+    const bool dbl = assignedAction(control.binding.doubleAction);
+
     if (pressed) {
-        if (!control->binding.holdAction.empty()) {
-            // With a hold action configured the press is not acted on until we
-            // know whether it was a tap or a hold.
-            held_.push_back({control->id, std::chrono::steady_clock::now(), false});
+        for (auto it = swallowRelease_.begin(); it != swallowRelease_.end(); ++it) {
+            if (*it == control.id) {
+                swallowRelease_.erase(it);
+                break;
+            }
+        }
+        for (size_t i = 0; i < pendingTaps_.size(); ++i) {
+            if (pendingTaps_[i].controlId != control.id) {
+                continue;
+            }
+            pendingTaps_.erase(pendingTaps_.begin() + static_cast<long>(i));
+            if (dbl) {
+                request.action = control.binding.doubleAction;
+                request.fromDouble = true;
+                request.pressed = true;
+                swallowRelease_.push_back(control.id);
+                actions.push_back(std::move(request));
+            }
+            return actions;
+        }
+        for (const HeldControl& held : held_) {
+            if (held.controlId == control.id) {
+                return actions;
+            }
+        }
+        if (hold || dbl) {
+            held_.push_back({control.id, std::chrono::steady_clock::now(), false});
             return actions;
         }
         actions.push_back(std::move(request));
         return actions;
     }
 
-    // Release: a momentary with a hold action fires its tap action here, unless
-    // the hold already fired.
+    for (auto it = swallowRelease_.begin(); it != swallowRelease_.end(); ++it) {
+        if (*it == control.id) {
+            swallowRelease_.erase(it);
+            return actions;
+        }
+    }
+
     for (size_t i = 0; i < held_.size(); ++i) {
-        if (held_[i].controlId != control->id) {
+        if (held_[i].controlId != control.id) {
             continue;
         }
         const bool alreadyFired = held_[i].holdFired;
         held_.erase(held_.begin() + static_cast<long>(i));
-        if (!alreadyFired) {
-            request.pressed = true;
-            actions.push_back(std::move(request));
+        if (alreadyFired) {
+            return actions;
         }
+        if (dbl) {
+            pendingTaps_.push_back({
+                control.id,
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(doubleDelayMs(control.binding))
+            });
+            return actions;
+        }
+        request.pressed = true;
+        actions.push_back(std::move(request));
         return actions;
     }
 
     return actions;
+}
+
+void ControllerRuntime::cancelPendingTapUnlocked(const std::string& controlId) {
+    pendingTaps_.erase(std::remove_if(pendingTaps_.begin(), pendingTaps_.end(),
+                                      [&](const PendingTap& tap) { return tap.controlId == controlId; }),
+                       pendingTaps_.end());
+}
+
+std::vector<ActionRequest> ControllerRuntime::virtualPress(const std::string& controlId, bool pressed) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const ControllerControl& control : config_.controls) {
+        if (control.id != controlId) {
+            continue;
+        }
+        const bool continuous = control.kind == ControlKind::Pot
+                             || control.kind == ControlKind::Slider
+                             || control.kind == ControlKind::Expression;
+        if (continuous) {
+            return {};
+        }
+        return discretePressUnlocked(control, pressed);
+    }
+    return {};
+}
+
+void ControllerRuntime::cancelHold(const std::string& controlId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    held_.erase(std::remove_if(held_.begin(), held_.end(),
+                               [&](const HeldControl& held) { return held.controlId == controlId; }),
+                held_.end());
+    cancelPendingTapUnlocked(controlId);
 }
 
 std::vector<ActionRequest> ControllerRuntime::pollHolds() {
@@ -191,22 +284,55 @@ std::vector<ActionRequest> ControllerRuntime::pollHolds() {
                 break;
             }
         }
-        if (!control || control->kind == ControlKind::Latching || control->binding.holdAction.empty()) {
+        if (!control || control->kind == ControlKind::Latching
+            || control->binding.holdAction.empty()
+            || control->binding.holdAction == "none") {
             continue;
         }
 
+        int holdMs = control->binding.holdMilliseconds;
+        if (holdMs < 250) {
+            holdMs = 600;
+        }
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - held.pressedAt);
-        if (elapsed.count() < control->binding.holdMilliseconds) {
+        if (elapsed.count() < holdMs) {
             continue;
         }
 
         held.holdFired = true;
+        cancelPendingTapUnlocked(control->id);
         ActionRequest request;
         request.controlId = control->id;
         request.binding = control->binding;
         request.action = control->binding.holdAction;
         request.pressed = true;
         request.fromHold = true;
+        request.kind = control->kind;
+        actions.push_back(std::move(request));
+    }
+
+    for (size_t i = 0; i < pendingTaps_.size();) {
+        if (pendingTaps_[i].due > now) {
+            ++i;
+            continue;
+        }
+        const std::string controlId = pendingTaps_[i].controlId;
+        pendingTaps_.erase(pendingTaps_.begin() + static_cast<long>(i));
+        const ControllerControl* control = nullptr;
+        for (const ControllerControl& candidate : config_.controls) {
+            if (candidate.id == controlId) {
+                control = &candidate;
+                break;
+            }
+        }
+        if (!control) {
+            continue;
+        }
+        ActionRequest request;
+        request.controlId = control->id;
+        request.binding = control->binding;
+        request.action = control->binding.action;
+        request.pressed = true;
         request.kind = control->kind;
         actions.push_back(std::move(request));
     }

@@ -8,7 +8,8 @@ import MultiFXFootswitchGraphic, { MultiFXArcadeButtonGraphic } from "../theme/F
 import { MarqueeText } from "./MarqueeText";
 
 const LONG_PRESS_MS = 600;
-const CANCEL_MOVE_PX = 24;
+const DOUBLE_TAP_MS = 320;
+const CANCEL_MOVE_PX = 48;
 
 export type SwitchRole = "preset" | "navigation" | "snapshot" | "bypass" | "utility";
 export type LightState = "active" | "inactive" | "bypass" | "snapshot" | "modified";
@@ -26,6 +27,7 @@ export interface PerformanceTile {
     switchLabel: string;
     valueText: string;
     holdLabel?: string;
+    doubleLabel?: string;
     empty?: boolean;
     role: SwitchRole;
     lightState: LightState;
@@ -47,10 +49,15 @@ export interface PerformanceTile {
     onPress: () => void;
     onValue?: (value: number) => void;
     onLongPress?: () => void;
+    onDoublePress?: () => void;
+    onMenu?: () => void;
+    onEngage?: () => void;
+    onRelease?: () => void;
+    onCancelPress?: () => void;
     onFeedback?: (feedback: AnalogFeedback | null) => void;
     onPresetPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
     onPresetPointerMove?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-    onPresetPointerUp?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPresetPointerUp?: (event: ReactPointerEvent<HTMLButtonElement>) => boolean | void;
 }
 
 function visualVars(role: SwitchRole, active: boolean) {
@@ -106,10 +113,16 @@ export function PerformanceControl({
         startX: number;
         startY: number;
         suppressed: boolean;
-    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false });
+        doubleTimer: number | null;
+    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false, doubleTimer: null });
     const range = clampUnit(tile.value ?? (tile.active ? 1 : 0));
-    const visualActive = analog ? tile.active : (tile.pressed || tile.active);
-    const vars = visualVars(tile.role, visualActive);
+    const displayRole: SwitchRole = tile.lightState === "snapshot"
+        ? "snapshot"
+        : tile.lightState === "bypass"
+            ? "bypass"
+            : tile.role;
+    const visualActive = analog ? tile.active : (tile.pressed || tile.active || tile.lightState === "snapshot" || tile.lightState === "bypass");
+    const vars = visualVars(displayRole, visualActive);
     const led = indicatorColor(tile, visualActive, vars);
 
     const clearHold = () => {
@@ -119,11 +132,24 @@ export function PerformanceControl({
         }
     };
 
-    useEffect(() => () => clearHold(), []);
+    const clearDouble = () => {
+        if (hold.current.doubleTimer !== null) {
+            window.clearTimeout(hold.current.doubleTimer);
+            hold.current.doubleTimer = null;
+        }
+    };
+
+    useEffect(() => () => {
+        clearHold();
+        clearDouble();
+        tile.onCancelPress?.();
+    }, []);
 
     const openHoldMenu = () => {
+        clearDouble();
         hold.current.timer = null;
         hold.current.suppressed = true;
+        tile.onCancelPress?.();
         tile.onLongPress?.();
     };
 
@@ -150,8 +176,17 @@ export function PerformanceControl({
         hold.current.pointerId = event.pointerId;
         hold.current.startX = event.clientX;
         hold.current.startY = event.clientY;
-        if (tile.onPresetPointerDown) {
-            tile.onPresetPointerDown(event as ReactPointerEvent<HTMLButtonElement>);
+        try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+            // optional on older touch browsers
+        }
+        tile.onEngage?.();
+        if (tile.onDoublePress && hold.current.doubleTimer !== null) {
+            clearDouble();
+            hold.current.suppressed = true;
+            tile.onCancelPress?.();
+            tile.onDoublePress();
             return;
         }
         if (analog && tile.onValue) {
@@ -159,7 +194,6 @@ export function PerformanceControl({
             if (behavior.controlPopout || keep) {
                 setPopout(true);
             }
-            event.currentTarget.setPointerCapture(event.pointerId);
             drag.current = {
                 pointerId: event.pointerId,
                 startY: event.clientY,
@@ -168,27 +202,26 @@ export function PerformanceControl({
                 keep
             };
             publishFeedback();
-            if (tile.onLongPress) {
-                hold.current.timer = window.setTimeout(openHoldMenu, LONG_PRESS_MS);
-            }
-            return;
         }
-        event.currentTarget.setPointerCapture(event.pointerId);
         if (tile.onLongPress) {
             hold.current.timer = window.setTimeout(openHoldMenu, LONG_PRESS_MS);
         }
+        tile.onPresetPointerDown?.(event as ReactPointerEvent<HTMLButtonElement>);
     };
 
     const move = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>) => {
-        if (tile.onPresetPointerMove) {
-            tile.onPresetPointerMove(event as ReactPointerEvent<HTMLButtonElement>);
-            return;
-        }
         const dx = event.clientX - hold.current.startX;
         const dy = event.clientY - hold.current.startY;
         const cancelPx = analog ? 8 : CANCEL_MOVE_PX;
         if (hold.current.timer !== null && (dx * dx + dy * dy) > cancelPx * cancelPx) {
             clearHold();
+        }
+        if (hold.current.suppressed) {
+            return;
+        }
+        tile.onPresetPointerMove?.(event as ReactPointerEvent<HTMLButtonElement>);
+        if (tile.onPresetPointerMove) {
+            return;
         }
         if (analog && hold.current.suppressed) {
             return;
@@ -216,23 +249,50 @@ export function PerformanceControl({
         });
     };
 
-    const end = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>) => {
-        if (tile.onPresetPointerUp) {
-            tile.onPresetPointerUp(event as ReactPointerEvent<HTMLButtonElement>);
+    const queueTap = () => {
+        if (tile.onDoublePress) {
+            clearDouble();
+            hold.current.doubleTimer = window.setTimeout(() => {
+                hold.current.doubleTimer = null;
+                tile.onPress();
+            }, DOUBLE_TAP_MS);
             return;
         }
+        tile.onPress();
+    };
+
+    const finishPointer = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>, cancelled: boolean) => {
         const analogDrag = drag.current && drag.current.pointerId === event.pointerId;
         const suppressed = hold.current.suppressed;
         clearHold();
         drag.current = null;
+        if (cancelled) {
+            tile.onCancelPress?.();
+        } else if (suppressed) {
+            tile.onCancelPress?.();
+        } else {
+            const dragged = tile.onPresetPointerUp?.(event as ReactPointerEvent<HTMLButtonElement>);
+            tile.onRelease?.();
+            if (dragged) {
+                if (analogDrag) {
+                    const behavior = loadUiBehavior();
+                    window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
+                }
+                return;
+            }
+        }
         if (analogDrag) {
             const behavior = loadUiBehavior();
             window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
             return;
         }
-        if (!suppressed) {
-            tile.onPress();
+        if (!cancelled && !suppressed) {
+            queueTap();
         }
+    };
+
+    const end = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>) => {
+        finishPointer(event, false);
     };
 
     const analogCard = (className: string, style?: CSSProperties) => (
@@ -254,7 +314,7 @@ export function PerformanceControl({
             onPointerDown={(event) => begin(event, className.includes("popout"))}
             onPointerMove={move}
             onPointerUp={end}
-            onPointerCancel={end}
+            onPointerCancel={(event) => finishPointer(event, true)}
             onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -263,6 +323,7 @@ export function PerformanceControl({
                 }
                 clearHold();
                 hold.current.suppressed = true;
+                tile.onCancelPress?.();
                 tile.onLongPress();
             }}
         >
@@ -304,29 +365,39 @@ export function PerformanceControl({
     }
 
     const empty = Boolean(tile.empty);
-    const holdText = tile.holdLabel;
+    const holdText = [
+        tile.holdLabel ? `HOLD: ${tile.holdLabel}` : "",
+        tile.doubleLabel ? `DBL: ${tile.doubleLabel}` : ""
+    ].filter(Boolean).join(" · ") || undefined;
+    const hasMenu = Boolean(tile.onMenu);
     return (
+        <div
+            className="mfx-performance-switch-wrap"
+            data-mfx-has-menu={hasMenu ? "true" : undefined}
+        >
         <button
             type="button"
             className="mfx-performance-switch"
-            data-mfx-role={tile.role}
+            data-mfx-role={displayRole}
             data-mfx-active={visualActive ? "true" : "false"}
             data-mfx-modified={tile.lightState === "modified" ? "true" : "false"}
-            data-mfx-light-state={bypassed && tile.role === "preset" && tile.active ? "bypass" : tile.lightState}
+            data-mfx-light-state={bypassed && displayRole === "preset" && tile.active ? "bypass" : tile.lightState}
             data-mfx-performance-preset-index={tile.presetSlotIndex ?? undefined}
             onPointerDown={(event) => begin(event, false)}
             onPointerMove={move}
             onPointerUp={end}
-            onPointerCancel={end}
+            onPointerCancel={(event) => finishPointer(event, true)}
             onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                if (!tile.onLongPress) {
-                    return;
-                }
                 clearHold();
                 hold.current.suppressed = true;
-                tile.onLongPress();
+                tile.onCancelPress?.();
+                if (tile.onMenu) {
+                    tile.onMenu();
+                    return;
+                }
+                tile.onLongPress?.();
             }}
             style={{
                 width: "100%",
@@ -343,8 +414,8 @@ export function PerformanceControl({
                 containerType: tile.freeform ? "size" : undefined,
                 display: "flex",
                 flexDirection: "column",
-                justifyContent: empty ? "center" : "space-between",
-                alignItems: empty ? "center" : "stretch",
+                justifyContent: empty && !holdText ? "center" : "space-between",
+                alignItems: empty && !holdText ? "center" : "stretch",
                 boxShadow: tile.dropTarget
                     ? `${vars.shadow}, inset 0 0 0 4px var(--mfx-role-preset-active-border)`
                     : vars.shadow,
@@ -366,7 +437,9 @@ export function PerformanceControl({
                 style={{
                     position: "absolute",
                     top: tile.freeform ? "clamp(1px, 3cqh, 6px)" : 6,
-                    right: tile.freeform ? "clamp(1px, 3cqw, 7px)" : 7,
+                    right: hasMenu
+                        ? "clamp(40px, 26cqmin, 56px)"
+                        : tile.freeform ? "clamp(1px, 3cqw, 7px)" : 7,
                     width: tile.freeform ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
                     height: tile.freeform ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
                     borderRadius: "50%",
@@ -377,7 +450,7 @@ export function PerformanceControl({
                     boxSizing: "border-box"
                 }}
             />
-            {empty ? (
+            {empty && !holdText ? (
                 <MarqueeText
                     text="+"
                     color={vars.value}
@@ -405,7 +478,9 @@ export function PerformanceControl({
                         style={{
                             minWidth: 0,
                             minHeight: 0,
-                            paddingRight: tile.presetSlotIndex != null
+                            paddingRight: hasMenu
+                                ? "clamp(48px, 34cqmin, 76px)"
+                                : tile.presetSlotIndex != null
                                 ? "clamp(8px, min(17cqw, 28cqh), 26px)"
                                 : 0
                         }}
@@ -432,7 +507,7 @@ export function PerformanceControl({
                         <div className="mfx-performance-switch__hold-row" style={{ minWidth: 0, minHeight: 0 }}>
                             <MarqueeText
                                 className="mfx-performance-switch__hold"
-                                text={`HOLD: ${holdText}`.toUpperCase()}
+                                text={holdText.toUpperCase()}
                                 color={vars.label}
                                 fontSize="var(--mfx-font-switch-secondary-size, clamp(8px, min(11px, 18cqh), 11px))"
                                 fontWeight={800}
@@ -477,11 +552,56 @@ export function PerformanceControl({
                                 opacity: 0.82
                             }}
                         >
-                            HOLD: {holdText}
+                            {holdText}
                         </span>
                     )}
                 </>
             )}
+        </button>
+            {hasMenu && tile.onMenu ? (
+                <TileMenuButton color={vars.label} onMenu={tile.onMenu} />
+            ) : null}
+        </div>
+    );
+}
+
+function TileMenuButton({
+    color,
+    onMenu
+}: {
+    color: string;
+    onMenu: () => void;
+}) {
+    const ignore = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+    };
+    return (
+        <button
+            type="button"
+            className="mfx-performance-switch__menu"
+            aria-label="Preset menu"
+            style={{ color }}
+            onPointerDown={ignore}
+            onPointerMove={ignore}
+            onPointerCancel={ignore}
+            onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }}
+            onPointerUp={(event) => {
+                ignore(event);
+                if (event.pointerType === "mouse" && event.button !== 0) {
+                    return;
+                }
+                onMenu();
+            }}
+        >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="5" r="2.25" fill="currentColor" />
+                <circle cx="12" cy="12" r="2.25" fill="currentColor" />
+                <circle cx="12" cy="19" r="2.25" fill="currentColor" />
+            </svg>
         </button>
     );
 }

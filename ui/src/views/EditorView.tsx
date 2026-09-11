@@ -787,8 +787,14 @@ function ChainPluginCard({
                     aria-checked={on}
                     onPointerDown={(event) => {
                         event.stopPropagation();
+                        event.preventDefault();
                         holdFiredRef.current = false;
                         clearHold();
+                        try {
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                        } catch {
+                            // optional
+                        }
                         if (!onBypassLongPress) {
                             return;
                         }
@@ -801,15 +807,14 @@ function ChainPluginCard({
                     onPointerUp={(event) => {
                         event.stopPropagation();
                         clearHold();
+                        if (!holdFiredRef.current) {
+                            onToggle();
+                        }
                     }}
                     onPointerCancel={() => clearHold()}
                     onClick={(event) => {
                         event.stopPropagation();
-                        if (holdFiredRef.current) {
-                            holdFiredRef.current = false;
-                            return;
-                        }
-                        onToggle();
+                        event.preventDefault();
                     }}
                 />
             </div>
@@ -947,6 +952,11 @@ export function EffectControls({
                                         const originX = event.clientX;
                                         const originY = event.clientY;
                                         const target = event.currentTarget;
+                                        try {
+                                            target.setPointerCapture(event.pointerId);
+                                        } catch {
+                                            // optional
+                                        }
                                         const hold = window.setTimeout(() => {
                                             target.removeEventListener("pointerup", cancel);
                                             target.removeEventListener("pointercancel", cancel);

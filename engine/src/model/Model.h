@@ -88,6 +88,8 @@ struct Bank {
     std::string id;
     std::string name = "Bank";
     int order = 0; ///< user-facing list order; lower values appear first
+    /// Last preset loaded in this bank, so returning to it restores that slot.
+    std::string lastPresetId;
     std::vector<Preset> presets;
 
     Json toJson() const;
@@ -133,6 +135,10 @@ struct ControlBinding {
     /// Held-switch alternative action, so one footswitch can do two jobs.
     std::string holdAction;
     int holdMilliseconds = 600;
+    /// Second tap within `doubleTapMilliseconds`. Preset switches default to
+    /// reloading the stored preset with bypass and snapshot cleared.
+    std::string doubleAction;
+    int doubleTapMilliseconds = 320;
 
     Json toJson() const;
     static ControlBinding fromJson(const Json& json);
