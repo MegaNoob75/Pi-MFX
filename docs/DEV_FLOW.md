@@ -66,8 +66,11 @@ The numbered items match **`scripts/pimfx.sh` on the Pi**. The Windows script on
 | 2 | `pimfx.sh install` |
 | 3 | `pimfx.sh update --branch dev` |
 | 4 | `pimfx.sh rebuild` |
-| 5–6 | Touchscreen display / remove |
-| 7–8 | Boot logo / faster-boot submenus |
+| 5 | `pimfx.sh display` |
+| 5r | `pimfx.sh display-refresh` |
+| 6 | `pimfx.sh display-remove` |
+| 7.1 / 7.2 | Boot logo install / remove (`splash`) |
+| 8.1 / 8.2 / 8.3 | Faster boot skip-wait / unused / restore |
 | 9 | Hotspot helper |
 | 10 | Status |
 | 11 | Remove Pi-MFX (asks before deleting `/var/lib/pimfx`) |

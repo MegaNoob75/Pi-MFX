@@ -240,9 +240,15 @@ function Invoke-MenuAction([string]$Choice) {
         "3" { Invoke-Pimfx "update -y --branch dev" }
         "4" { Invoke-Pimfx "rebuild -y" }
         "5" { Invoke-Pimfx ("display -y --display-user " + $userName) }
+        "5r" { Invoke-Pimfx "display-refresh -y" }
         "6" { Invoke-Pimfx "display-remove -y" }
         "7" { Show-BootScreenMenu }
+        "7.1" { Invoke-Pimfx "splash -y" }
+        "7.2" { Invoke-Pimfx "splash-remove -y" }
         "8" { Show-FasterBootMenu }
+        "8.1" { Invoke-Pimfx "boot-speed -y" }
+        "8.2" { Invoke-Pimfx "boot-speed-unused -y" }
+        "8.3" { Invoke-Pimfx "boot-speed-restore -y" }
         "9" { Invoke-Pimfx "hotspot -y" }
         "10" { Invoke-Pimfx "status" }
         "11" {
@@ -268,28 +274,37 @@ function Show-Menu {
     while ($true) {
         Write-Host ""
         Write-Host "  +--------------------------------------------------+"
-        Write-Host "  |  PI-MFX  (Windows)                               |"
-        Write-Host "  |  Same jobs as scripts/pimfx.sh on the Pi         |"
+        Write-Host "  |  PI-MFX                                          |"
+        Write-Host "  |  Raspberry Pi guitar multi-effects               |"
         Write-Host "  +--------------------------------------------------+"
         Write-Host ("  Login  {0}" -f $script:Target)
         Write-Host ""
+        Write-Host "  This PC"
         Write-Host "  0) Copy this PC to the Pi and rebuild  (no git push)"
+        Write-Host "  L) Change saved SSH login"
+        Write-Host ""
+        Write-Host "  Same as scripts/pimfx.sh on the Pi"
         Write-Host "  1) Complete setup  (install + touchscreen)"
         Write-Host "  2) Install / first-time setup"
         Write-Host "  3) Update  (fetch GitHub, then rebuild and restart)"
         Write-Host "  4) Rebuild local files  (no git pull)"
         Write-Host "  5) Set up touchscreen display"
+        Write-Host "  5r) Refresh touchscreen (Chromium flags, hide system keyboard)"
         Write-Host "  6) Remove touchscreen display"
         Write-Host "  7) Boot screen  (PI-MFX logo, hide boot text)"
+        Write-Host "       7.1) Install PI-MFX logo and hide boot / shutdown text"
+        Write-Host "       7.2) Remove logo and restore console messages"
         Write-Host "  8) Faster boot  (skip network wait, unused services)"
+        Write-Host "       8.1) Skip waiting for a network connection at boot"
+        Write-Host "       8.2) Disable unused printer, modem, VNC and file-share services"
+        Write-Host "       8.3) Restore those boot-speed changes"
         Write-Host "  9) Wi-Fi hotspot support"
         Write-Host "  10) Status"
         Write-Host "  11) Remove Pi-MFX"
         Write-Host "  12) Reboot now"
-        Write-Host "  L) Change saved SSH login"
         Write-Host "  13) Exit"
         Write-Host ""
-        $choice = Read-Host "Choose"
+        $choice = (Read-Host "Choose").Trim()
         if ($choice -eq "13" -or $choice -eq "q" -or $choice -eq "Q") {
             return
         }
@@ -298,8 +313,10 @@ function Show-Menu {
         } catch {
             Write-Host $_
         }
-        Write-Host ""
-        Read-Host "Press Enter to return to the menu"
+        if ($choice -ne "L" -and $choice -ne "l") {
+            Write-Host ""
+            Read-Host "Press Enter to return to the menu"
+        }
     }
 }
 

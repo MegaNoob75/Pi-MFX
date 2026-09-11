@@ -22,6 +22,11 @@ firmware/**/build/
 .DS_Store
 Thumbs.db
 *.swp
+*.lnk
+
+# Cursor debug session logs (keep .cursor/rules tracked)
+.cursor/*.log
+debug-*.log
 
 # Python
 __pycache__/
