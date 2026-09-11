@@ -6,9 +6,13 @@
 #
 #   sudo bash ./scripts/pimfx.sh
 #   sudo bash ./scripts/pimfx.sh update
-  sudo bash ./scripts/pimfx.sh update --branch dev
-  sudo bash ./scripts/pimfx.sh update --branch main
+#   sudo bash ./scripts/pimfx.sh update --branch dev
+#   sudo bash ./scripts/pimfx.sh update --branch main
 #   sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
+
+# Print before touching the clone. If this never appears, the disk is wedged
+# (leftover chown/git) and this script must not be started again until reboot.
+printf 'Pi-MFX setup starting...\n' >&2
 
 set -euo pipefail
 
@@ -128,7 +132,6 @@ parse_args() {
 }
 
 draw_banner() {
-    printf '\033[2J\033[H'
     printf '\033[38;5;141m'
     cat <<'BANNER'
   +--------------------------------------------------+
@@ -357,11 +360,25 @@ do_install() {
 }
 
 do_update() {
-    if [[ -n "$UPDATE_BRANCH" ]]; then
-        PIMFX_BRANCH="$UPDATE_BRANCH" run_script update.sh
-    else
-        run_script update.sh
+    local user="${SUDO_USER:-}"
+    local branch="${UPDATE_BRANCH:-dev}"
+    case "$branch" in
+        main|dev) ;;
+        *) branch="dev" ;;
+    esac
+    if [[ -n "$user" && "$user" != "root" ]]; then
+        log "Fetching origin/${branch} as ${user} (60s limit)"
+        if sudo -u "$user" env HOME="$(getent passwd "$user" | cut -d: -f6)" \
+            GIT_TERMINAL_PROMPT=0 SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
+            timeout 60 git -C "$REPO_DIR" fetch origin --progress
+        then
+            sudo -u "$user" git -C "$REPO_DIR" checkout "$branch"
+            sudo -u "$user" git -C "$REPO_DIR" reset --hard "origin/${branch}"
+        else
+            warn "GitHub fetch timed out or failed; rebuilding the files already on this Pi"
+        fi
     fi
+    SKIP_PULL=1 run_script update.sh
 }
 
 do_rebuild() {
@@ -481,8 +498,8 @@ show_menu() {
         cat <<'MENU'
   1) Complete setup  (install + touchscreen)
   2) Install / first-time setup
-  3) Update  (pull, rebuild, restart)
-  4) Rebuild local files  (after MobaXterm copy, no git pull)
+  3) Update  (fetch GitHub, then rebuild and restart)
+  4) Rebuild local files  (no git pull)
   5) Set up touchscreen display
   6) Remove touchscreen display
   7) Boot screen  (PI-MFX logo, hide boot text)
