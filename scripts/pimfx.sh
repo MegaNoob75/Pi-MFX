@@ -43,6 +43,7 @@ Usage:
 
 Actions:
   menu             Interactive menu (default)
+  complete         Install plus touchscreen
   install          First-time setup: packages, engine, UI, service
   update           Pull, rebuild, restart
   rebuild          Rebuild from files already on the Pi (no git pull)
@@ -126,7 +127,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|install|update|rebuild|display|display-refresh|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
+        menu|complete|install|update|rebuild|display|display-refresh|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -549,6 +550,7 @@ main() {
     cd "$REPO_DIR"
     case "$ACTION" in
         menu) show_menu ;;
+        complete) do_complete ;;
         install) do_install ;;
         update) do_update ;;
         rebuild) do_rebuild ;;

@@ -52,6 +52,9 @@ sudo bash ./scripts/pimfx.sh
 Pick **1) Complete setup** for a first Pi with an attached touchscreen, or
 **2) Install** for the engine and web UI only.
 
+From a Windows PC you can run that same menu over SSH: double-click
+`pimfx.cmd` (see [DEV_FLOW.md](DEV_FLOW.md)). Do not commit `.pimfx-remote`.
+
 This builds the engine and the UI, creates a `pimfx` service account, installs
 a systemd service, and tunes the OS for audio. Everything it changes is listed
 in [LOW_LATENCY.md](LOW_LATENCY.md) and undone from the same menu (**Remove**).
