@@ -81,12 +81,12 @@ if ! command -v cmake >/dev/null 2>&1; then
 fi
 
 jobs="$(nproc)"
-# Leave cores for Chromium, JACK/ALSA, and SSH. -j nproc on a kiosk Pi freezes
-# the whole machine, not just the update script.
-if [[ "$jobs" -gt 2 ]]; then
-    jobs=2
+# Leave one core when the pedal or kiosk is live so SSH and audio stay up.
+# A stopped engine can use every core.
+if { pgrep -x chromium >/dev/null 2>&1 || systemctl is-active --quiet pimfx.service; } && [[ "$jobs" -gt 1 ]]; then
+    jobs=$((jobs - 1))
 fi
-log "Building the engine"
+log "Building the engine (${jobs} cores)"
 as_clone_owner nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
 as_clone_owner nice -n 10 cmake --build "$REPO_DIR/engine/build" -j "$jobs"
 
