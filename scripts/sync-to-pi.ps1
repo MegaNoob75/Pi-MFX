@@ -36,7 +36,13 @@ if (-not $Target) {
     }
 }
 if (-not $Target) {
-    throw "Pass the Pi as user@host, for example:  .\scripts\sync-to-pi.ps1 pi@pimfx.local"
+    $guess = "pi@pimfx.local"
+    $typed = Read-Host "Pi SSH target [$guess]"
+    if ($typed) {
+        $Target = $typed.Trim()
+    } else {
+        $Target = $guess
+    }
 }
 if ($Target -notmatch "@") {
     $Target = "$User@$Target"

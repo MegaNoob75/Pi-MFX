@@ -50,21 +50,17 @@ Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS i
 
 ### On the PC (test without commit/push)
 
-From this repo in PowerShell:
+Double-click **`sync-to-pi.cmd`** in this folder (or run it from a prompt). That copies the current files over SSH, then rebuilds and restarts Pi-MFX on the Pi — no git commit or push. Banks in `/var/lib/pimfx` stay put.
+
+First run asks for `pi@pimfx.local` (or `pi@<pi-ip>`). After that it remembers `.pimfx-remote`.
 
 ```powershell
-.\scripts\sync-to-pi.ps1 pi@pimfx.local
+.\sync-to-pi.cmd
+.\scripts\sync-to-pi.ps1 pi@192.168.1.50
+.\scripts\sync-to-pi.ps1 -NoRebuild
 ```
 
-Use `pi@<pi-ip>` if `.local` does not resolve. That copies the current files over SSH, then runs **rebuild** on the Pi (no `git pull`). Banks in `/var/lib/pimfx` are left alone. The first target is saved in `.pimfx-remote`, so later you can run:
-
-```powershell
-.\scripts\sync-to-pi.ps1
-```
-
-Copy only, no rebuild: `.\scripts\sync-to-pi.ps1 -NoRebuild`.
-
-You still need OpenSSH (`ssh` / `scp`) and a login that works: `ssh pi@pimfx.local`.
+You need OpenSSH (`ssh` / `scp`) and a login that already works: `ssh pi@pimfx.local`.
 
 ### On the PC (when you do want GitHub)
 
@@ -163,4 +159,5 @@ npm run dev
 | `scripts/status.sh` | Pi, any time | Branch, service, cards |
 | `scripts/uninstall.sh` | Pi | Same as menu item Remove |
 | `scripts/dev-pc.ps1` | Windows, optional | Reminds you of the PC steps and checks you are on `dev` |
-| `scripts/sync-to-pi.ps1` | Windows | Copy this folder to the Pi over SSH and rebuild (no push) |
+| `sync-to-pi.cmd` | Windows, double-click | Copy this folder to the Pi and rebuild (no push) |
+| `scripts/sync-to-pi.ps1` | Windows | Same job, from PowerShell |

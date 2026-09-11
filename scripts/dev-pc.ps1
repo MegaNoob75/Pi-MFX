@@ -25,7 +25,7 @@ Write-Host ""
 git status -sb
 Write-Host ""
 Write-Host "Next:" -ForegroundColor Cyan
-Write-Host "  Test without push:  .\scripts\sync-to-pi.ps1 pi@pimfx.local"
+Write-Host "  Test without push:  double-click sync-to-pi.cmd"
 Write-Host "  Or commit/push, then on the Pi:  sudo bash ./scripts/pimfx.sh update"
 Write-Host "  Browser:     http://<pi-address>:8080   (Ctrl+Shift+R)"
 Write-Host ""
