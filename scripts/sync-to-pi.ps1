@@ -49,7 +49,7 @@ if ($Target -notmatch "@") {
 }
 
 Write-Host ""
-Write-Host "Pi-MFX  —  sync this PC to the Pi (no git push)" -ForegroundColor Cyan
+Write-Host "Pi-MFX - sync this PC to the Pi (no git push)" -ForegroundColor Cyan
 Write-Host "From    $Repo"
 Write-Host "To      ${Target}:$RemotePath"
 Write-Host ""
@@ -82,7 +82,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "==> Unpacking on the Pi"
-$unpack = "mkdir -p $RemotePath && tar -xzf /tmp/pimfx-sync.tgz -C $RemotePath && rm -f /tmp/pimfx-sync.tgz"
+# Remote bash uses semicolons. Do not put ampersand-ampersand in this file;
+# Windows PowerShell 5 treats that as a parser token.
+$unpack = "mkdir -p $RemotePath; tar -xzf /tmp/pimfx-sync.tgz -C $RemotePath; rm -f /tmp/pimfx-sync.tgz"
 & ssh $Target $unpack
 if ($LASTEXITCODE -ne 0) {
     throw "unpack on the Pi failed"
@@ -91,20 +93,21 @@ if ($LASTEXITCODE -ne 0) {
 Set-Content -Path $RemoteFile -Value $Target -NoNewline
 Remove-Item $archive -Force -ErrorAction SilentlyContinue
 
+$rebuild = "cd $RemotePath; sudo SKIP_PULL=1 bash ./scripts/pimfx.sh rebuild"
 if ($NoRebuild) {
     Write-Host ""
     Write-Host "Files are on the Pi. Rebuild when ready:"
-    Write-Host "  ssh -t $Target `"cd $RemotePath && sudo SKIP_PULL=1 bash ./scripts/pimfx.sh rebuild`""
+    Write-Host ("  ssh -t {0} {1}" -f $Target, $rebuild)
     exit 0
 }
 
 Write-Host "==> Rebuilding on the Pi (no git pull)"
 Write-Host "    sudo may ask for the Pi password"
-& ssh -t $Target "cd $RemotePath && sudo SKIP_PULL=1 bash ./scripts/pimfx.sh rebuild"
+& ssh -t $Target $rebuild
 if ($LASTEXITCODE -ne 0) {
     throw "rebuild on the Pi failed"
 }
 
 Write-Host ""
-Write-Host "Done. Open http://pimfx.local:8080 and hard-refresh (Ctrl+Shift+R)."
+Write-Host "Done. Open http://pimfx.local:8080 and hard-refresh the page."
 Write-Host "Next time:  .\scripts\sync-to-pi.ps1"
