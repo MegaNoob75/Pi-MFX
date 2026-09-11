@@ -50,17 +50,17 @@ Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS i
 
 ### On the PC (test without commit/push)
 
-Double-click **`sync-to-pi.cmd`** in this folder (or run it from a prompt). That copies the current files over SSH, then rebuilds and restarts Pi-MFX on the Pi — no git commit or push. Banks in `/var/lib/pimfx` stay put.
+Double-click **`sync-to-pi.cmd`** in this folder (or run it from a prompt). It asks for the Pi SSH login (`user@host` or `user@ip`) and password, copies this tree, then rebuilds on the Pi. Banks in `/var/lib/pimfx` stay put.
 
-First run asks for `pi@pimfx.local` (or `pi@<pi-ip>`). After that it remembers `.pimfx-remote`.
+The last successful login is saved in `.pimfx-remote` on that PC only (not in git). Next run shows it in brackets; press Enter to keep it.
 
 ```powershell
 .\sync-to-pi.cmd
-.\scripts\sync-to-pi.ps1 pi@192.168.1.50
+.\scripts\sync-to-pi.ps1 you@pimfx.local
 .\scripts\sync-to-pi.ps1 -NoRebuild
 ```
 
-You need OpenSSH (`ssh` / `scp`) and a login that already works: `ssh pi@pimfx.local`.
+You need OpenSSH (`ssh` / `scp`). A login that already works, such as `ssh you@pimfx.local`, is required.
 
 ### On the PC (when you do want GitHub)
 
