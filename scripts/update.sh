@@ -37,9 +37,19 @@ elif [[ -d .git ]]; then
             *) die "branch must be main or dev" ;;
         esac
         log "Switching to ${requested}"
-        as_clone_owner git fetch origin --progress
-        as_clone_owner git checkout "$requested"
-        as_clone_owner git reset --hard "origin/${requested}"
+        current="$(as_clone_owner git rev-parse HEAD)"
+        remote="$(as_clone_owner git rev-parse --verify "origin/${requested}" 2>/dev/null || true)"
+        if [[ -n "$remote" && "$current" == "$remote" ]]; then
+            log "Already on origin/${requested}; not fetching"
+        else
+            log "Fetching origin/${requested}"
+            if ! as_clone_owner timeout 60 git fetch origin --progress; then
+                warn "git fetch timed out or failed; using the files already in this folder"
+            else
+                as_clone_owner git checkout "$requested"
+                as_clone_owner git reset --hard "origin/${requested}"
+            fi
+        fi
         branch="$requested"
     else
         branch="$(as_clone_owner git rev-parse --abbrev-ref HEAD)"
@@ -52,7 +62,7 @@ elif [[ -d .git ]]; then
             rm -f ui/package-lock.json
         fi
 
-        as_clone_owner git fetch origin --progress
+        as_clone_owner timeout 60 git fetch origin --progress
         # Copies from the PC (MobaXterm) dirty tracked files and block a merge.
         # This clone is a deployment copy; origin wins. Banks live in /var/lib/pimfx.
         if ! as_clone_owner git diff --quiet || ! as_clone_owner git diff --cached --quiet; then

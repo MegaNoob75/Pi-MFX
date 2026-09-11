@@ -18,9 +18,15 @@ clone_owner() {
 
 as_clone_owner() {
     if [[ -n "${CLONE_OWNER:-}" && "$CLONE_OWNER" != "root" ]] && id "$CLONE_OWNER" >/dev/null 2>&1; then
-        sudo -u "$CLONE_OWNER" env HOME="$(getent passwd "$CLONE_OWNER" | cut -d: -f6)" "$@"
+        # Keep the caller's SSH agent so `sudo git fetch` does not sit forever
+        # waiting for a GitHub key the root shell does not have.
+        sudo -u "$CLONE_OWNER" env \
+            HOME="$(getent passwd "$CLONE_OWNER" | cut -d: -f6)" \
+            GIT_TERMINAL_PROMPT=0 \
+            SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
+            "$@"
     else
-        "$@"
+        GIT_TERMINAL_PROMPT=0 "$@"
     fi
 }
 
