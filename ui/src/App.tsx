@@ -91,6 +91,9 @@ export function App() {
         if (next === view) {
             return;
         }
+        // #region agent log
+        fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "App.tsx:navigateTo", message: "navigate", data: { from: view, to: next, snapshotEditId, snapshotMode, cancelRequest: snapshotCancelRequest }, timestamp: Date.now(), hypothesisId: "H4" }) }).catch(() => undefined);
+        // #endregion
         if (next === "edit") {
             setEditSubpage("chain");
             setEditEffectTitle(undefined);
@@ -121,6 +124,9 @@ export function App() {
 
     const goBack = () => {
         setMenuOpen(false);
+        // #region agent log
+        fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "App.tsx:goBack", message: "goBack", data: { view, snapshotEditId, snapshotMode, cancelRequest: snapshotCancelRequest }, timestamp: Date.now(), hypothesisId: "H4" }) }).catch(() => undefined);
+        // #endregion
         if (view === "performance" && snapshotMode) {
             void engine.client.request("snapshot/mode", { enabled: false }).catch(() => undefined);
             return;
@@ -282,7 +288,11 @@ export function App() {
                         </button>
                     )}
                     {shellBackVisible ? (
-                        <button type="button" className="btn-mfx btn-back" onClick={goBack}>←</button>
+                        <button type="button" className="btn-mfx btn-back" onPointerUp={() => {
+                            // #region agent log
+                            fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "App.tsx:backPointerUp", message: "back pointerup", data: { view, snapshotEditId }, timestamp: Date.now(), hypothesisId: "H4" }) }).catch(() => undefined);
+                            // #endregion
+                        }} onClick={goBack}>←</button>
                     ) : (
                         <div style={{ width: 48 }} />
                     )}
@@ -335,6 +345,9 @@ export function App() {
                         saveRequest={snapshotSaveRequest}
                         cancelRequest={snapshotCancelRequest}
                         onComplete={() => {
+                            // #region agent log
+                            fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "App.tsx:snapshotEditComplete", message: "snapshot editor complete", data: { snapshotEditId }, timestamp: Date.now(), hypothesisId: "H5" }) }).catch(() => undefined);
+                            // #endregion
                             setSnapshotEditId("");
                             setHistory([]);
                             setView("performance");

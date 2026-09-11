@@ -1069,6 +1069,9 @@ export function PerformanceView({
                             type="button"
                             className="mfx-overlay-option"
                             onClick={() => {
+                                // #region agent log
+                                fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "PerformanceView.tsx:editSnapshot", message: "EDIT SNAPSHOT click", data: { snapshotId: menu.snapshotId, index: menu.index }, timestamp: Date.now(), hypothesisId: "H4" }) }).catch(() => undefined);
+                                // #endregion
                                 closeMenu();
                                 onEditSnapshot?.(menu.snapshotId);
                             }}

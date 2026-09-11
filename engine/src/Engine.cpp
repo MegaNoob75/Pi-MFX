@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 namespace pimfx {
 namespace {
@@ -895,6 +897,14 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 
     const Preset* outgoing = activePreset();
     if (!outgoing || outgoing->activeSnapshot < 0) {
+        // #region agent log
+        {
+            std::ofstream f("C:/Users/ross7/Documents/GitHub/Pi-MFX/debug-4847b9.log", std::ios::app);
+            if (f) {
+                f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H2\",\"location\":\"Engine.cpp:selectPreset\",\"message\":\"sync live chain into stored preset before load\",\"data\":{\"outgoingSnapshot\":" << (outgoing ? outgoing->activeSnapshot : -999) << ",\"targetPresetId\":\"" << presetId << "\"},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
+            }
+        }
+        // #endregion
         syncPresetFromChain();
         persistActiveBankUnlocked();
     }
@@ -1564,6 +1574,19 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
                 slot.plugin->setControl(port.index, clamped);
             }
             requestBankPersist(false);
+            // #region agent log
+            {
+                static float lastLogged = -9999.0f;
+                if (std::fabs(clamped - lastLogged) > 0.15f) {
+                    lastLogged = clamped;
+                    const Preset* preset = activePreset();
+                    std::ofstream f("C:/Users/ross7/Documents/GitHub/Pi-MFX/debug-4847b9.log", std::ios::app);
+                    if (f) {
+                        f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H1\",\"location\":\"Engine.cpp:setControlValue\",\"message\":\"live control write + persist\",\"data\":{\"slotId\":\"" << slotId << "\",\"port\":\"" << portSymbol << "\",\"value\":" << clamped << ",\"activeSnapshot\":" << (preset ? preset->activeSnapshot : -999) << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
+                    }
+                }
+            }
+            // #endregion
             notifyPerformance();
             return true;
         }
@@ -1752,11 +1775,27 @@ bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& er
         return false;
     }
     if (preset.activeSnapshot == slot && preset.rememberedSnapshotEnabled) {
+        // #region agent log
+        {
+            std::ofstream f("C:/Users/ross7/Documents/GitHub/Pi-MFX/debug-4847b9.log", std::ios::app);
+            if (f) {
+                f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H2\",\"location\":\"Engine.cpp:pressSnapshotSlot\",\"message\":\"toggle off restore stored preset\",\"data\":{\"slot\":" << slot << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
+            }
+        }
+        // #endregion
         restoreStoredPresetToChainUnlocked(preset);
         forgetRememberedSnapshot(preset);
         return true;
     }
     flushPendingBasePresetUnlocked();
+    // #region agent log
+    {
+        std::ofstream f("C:/Users/ross7/Documents/GitHub/Pi-MFX/debug-4847b9.log", std::ios::app);
+        if (f) {
+            f << "{\"sessionId\":\"4847b9\",\"hypothesisId\":\"H2\",\"location\":\"Engine.cpp:pressSnapshotSlot\",\"message\":\"flush live base then apply snapshot\",\"data\":{\"slot\":" << slot << "},\"timestamp\":" << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() << "}\n";
+        }
+    }
+    // #endregion
     applySnapshotToChain(*snapshot);
     preset.activeSnapshot = slot;
     rememberSnapshot(preset, slot, true);

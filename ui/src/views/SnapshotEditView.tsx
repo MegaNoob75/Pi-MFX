@@ -43,10 +43,16 @@ export function SnapshotEditView({
             return;
         }
         started.current = true;
+        // #region agent log
+        fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "SnapshotEditView.tsx:mount", message: "editor mount select", data: { snapshotId, snapshotFound: Boolean(snapshot), originalIndex: originalIndex.current, originalId: originalId.current, cancelRequest, saveRequest }, timestamp: Date.now(), hypothesisId: "H5" }) }).catch(() => undefined);
+        // #endregion
         void run(() => engine.client.request("snapshot/select", { snapshotId }));
     }, [engine.client, run, snapshotId]);
 
     const cancel = () => {
+        // #region agent log
+        fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "SnapshotEditView.tsx:cancel", message: "editor cancel", data: { snapshotId, originalId: originalId.current }, timestamp: Date.now(), hypothesisId: "H5" }) }).catch(() => undefined);
+        // #endregion
         void run(async () => {
             if (originalId.current) {
                 await engine.client.request("snapshot/select", { snapshotId: originalId.current });
