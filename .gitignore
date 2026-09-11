@@ -39,3 +39,6 @@ secrets.json
 
 # TONE3000 credentials (secret key must stay on the Pi)
 tone3000-secret*
+
+# Last SSH target for scripts/sync-to-pi.ps1
+.pimfx-remote

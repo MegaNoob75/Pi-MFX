@@ -48,13 +48,31 @@ Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS i
 
 ## Every day (the loop)
 
-### On the PC
+### On the PC (test without commit/push)
+
+From this repo in PowerShell:
+
+```powershell
+.\scripts\sync-to-pi.ps1 pi@pimfx.local
+```
+
+Use `pi@<pi-ip>` if `.local` does not resolve. That copies the current files over SSH, then runs **rebuild** on the Pi (no `git pull`). Banks in `/var/lib/pimfx` are left alone. The first target is saved in `.pimfx-remote`, so later you can run:
+
+```powershell
+.\scripts\sync-to-pi.ps1
+```
+
+Copy only, no rebuild: `.\scripts\sync-to-pi.ps1 -NoRebuild`.
+
+You still need OpenSSH (`ssh` / `scp`) and a login that works: `ssh pi@pimfx.local`.
+
+### On the PC (when you do want GitHub)
 
 1. GitHub Desktop: branch **`dev`** (not `main`).
 2. Edit in Cursor.
 3. Desktop: **Commit** → **Push origin**.
 
-### On the Pi
+### On the Pi (after a GitHub push)
 
 SSH in, then:
 
@@ -65,7 +83,7 @@ sudo bash ./scripts/pimfx.sh
 
 Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update` **from `~/Pi-MFX`**. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone. The same job is **Settings → System → Updates** in the UI.
 
-If you copied files onto the Pi with MobaXterm, `git pull` can refuse to overwrite them. Either pick **4) Rebuild local files** (no pull), or throw the copies away and match GitHub:
+If the Pi has copies from this PC (`sync-to-pi.ps1` or MobaXterm), `git pull` can refuse to overwrite them. Either pick **4) Rebuild local files** (no pull), or throw the copies away and match GitHub:
 
 ```bash
 cd ~/Pi-MFX
@@ -145,3 +163,4 @@ npm run dev
 | `scripts/status.sh` | Pi, any time | Branch, service, cards |
 | `scripts/uninstall.sh` | Pi | Same as menu item Remove |
 | `scripts/dev-pc.ps1` | Windows, optional | Reminds you of the PC steps and checks you are on `dev` |
+| `scripts/sync-to-pi.ps1` | Windows | Copy this folder to the Pi over SSH and rebuild (no push) |

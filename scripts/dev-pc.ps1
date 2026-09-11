@@ -25,9 +25,8 @@ Write-Host ""
 git status -sb
 Write-Host ""
 Write-Host "Next:" -ForegroundColor Cyan
-Write-Host "  1. Commit and Push in GitHub Desktop (branch: dev)"
-Write-Host "  2. On the Pi:   cd ~/Pi-MFX"
-Write-Host "                  sudo bash ./scripts/pimfx.sh update"
-Write-Host "  3. Browser:     http://<pi-address>:8080   (Ctrl+Shift+R)"
+Write-Host "  Test without push:  .\scripts\sync-to-pi.ps1 pi@pimfx.local"
+Write-Host "  Or commit/push, then on the Pi:  sudo bash ./scripts/pimfx.sh update"
+Write-Host "  Browser:     http://<pi-address>:8080   (Ctrl+Shift+R)"
 Write-Host ""
 Write-Host "Full steps: docs/DEV_FLOW.md"
