@@ -24,11 +24,21 @@ function websocketUrl(): string {
     return `${protocol}//${window.location.host}/ws`;
 }
 
+function shouldOpenEngineSocket(): boolean {
+    // Vite on the PC has no local engine. Opening /ws just makes Vite log
+    // ECONNREFUSED 127.0.0.1:8080 on a 750ms reconnect loop.
+    if (import.meta.env.DEV && !import.meta.env.VITE_PIMFX_ENGINE) {
+        return false;
+    }
+    return true;
+}
+
 export class EngineClient {
     private socket: WebSocket | undefined;
     private reconnectTimer: number | undefined;
     private closed = false;
     private listeners = new Set<(snapshot: EngineSnapshot) => void>();
+    private meterListeners = new Set<(meters: JsonObject) => void>();
     snapshot: EngineSnapshot = emptySnapshot();
 
     start(): void {
@@ -54,6 +64,14 @@ export class EngineClient {
         };
     }
 
+    subscribeMeters(listener: (meters: JsonObject) => void): () => void {
+        this.meterListeners.add(listener);
+        listener(this.snapshot.meters);
+        return () => {
+            this.meterListeners.delete(listener);
+        };
+    }
+
     async request(command: string, payload: JsonObject = {}): Promise<JsonObject> {
         const response = await fetch(`/api/${command}`, {
             method: "POST",
@@ -73,7 +91,7 @@ export class EngineClient {
     }
 
     private connect(): void {
-        if (this.closed) {
+        if (this.closed || !shouldOpenEngineSocket()) {
             return;
         }
         const socket = new WebSocket(websocketUrl());
@@ -117,7 +135,10 @@ export class EngineClient {
             return;
         }
         if (type === "meters") {
-            this.patch({ meters: message });
+            this.snapshot = { ...this.snapshot, meters: message };
+            for (const listener of this.meterListeners) {
+                listener(message);
+            }
             return;
         }
         if (type === "performance") {
@@ -186,6 +207,14 @@ export function useEngine(): EngineSnapshot & { client: EngineClient } {
     }, [client]);
 
     return { client, ...snapshot };
+}
+
+export function useMeters(client: EngineClient): JsonObject {
+    const [meters, setMeters] = useState(client.snapshot.meters);
+
+    useEffect(() => client.subscribeMeters(setMeters), [client]);
+
+    return meters;
 }
 
 export function findBank(state: JsonObject, bankId = str(state.activeBankId)): JsonObject | undefined {

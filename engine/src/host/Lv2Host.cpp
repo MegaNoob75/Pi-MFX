@@ -243,7 +243,7 @@ private:
 /// plugin's atom input on the audio thread. Fixed size so the queue itself
 /// never allocates.
 struct PropertyMessage {
-    char property[256];
+    uint32_t propertyUrid = 0;
     char value[1024];
 };
 
@@ -590,6 +590,7 @@ struct PluginInstance::Impl {
     const LV2_Worker_Interface* workerInterface = nullptr;
     ByteRing workRequests{64 * 1024};
     ByteRing workResponses{64 * 1024};
+    std::vector<uint8_t> workerScratch;
     std::thread workerThread;
     std::mutex workerMutex;
     std::condition_variable workerSignal;
@@ -867,6 +868,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                 }
             }
         });
+        impl.workerScratch.reserve(65536);
     }
 
     lilv_instance_activate(impl.instance);
@@ -917,14 +919,13 @@ bool PluginInstance::setProperty(const std::string& propertyUri,
         error = "this plugin has no atom input, so it cannot take a file";
         return false;
     }
-    if (propertyUri.size() >= sizeof(PropertyMessage::property)
-        || value.size() >= sizeof(PropertyMessage::value)) {
+    if (value.size() >= sizeof(PropertyMessage::value)) {
         error = "property or value is too long";
         return false;
     }
 
     PropertyMessage message{};
-    std::memcpy(message.property, propertyUri.c_str(), propertyUri.size() + 1);
+    message.propertyUrid = impl.uridMap.map(impl.uridMap.handle, propertyUri.c_str());
     std::memcpy(message.value, value.c_str(), value.size() + 1);
     if (!impl.propertyQueue.push(message)) {
         error = "the plugin is not keeping up with property changes";
@@ -985,12 +986,11 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
 
         PropertyMessage property;
         while (propertyQueue.pop(property)) {
-            const LV2_URID propertyUrid = uridMap.map(uridMap.handle, property.property);
             LV2_Atom_Forge_Frame objectFrame;
             lv2_atom_forge_frame_time(&forge, 0);
             lv2_atom_forge_object(&forge, &objectFrame, 0, urids.patchSet);
             lv2_atom_forge_key(&forge, urids.patchProperty);
-            lv2_atom_forge_urid(&forge, propertyUrid);
+            lv2_atom_forge_urid(&forge, property.propertyUrid);
             lv2_atom_forge_key(&forge, urids.patchValue);
             lv2_atom_forge_path(&forge, property.value,
                                 static_cast<uint32_t>(std::strlen(property.value) + 1));
@@ -1009,12 +1009,11 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
     lilv_instance_run(instance, frames);
 
     if (workerInterface) {
-        std::vector<uint8_t> response;
-        while (workResponses.read(response)) {
+        while (workResponses.read(workerScratch)) {
             if (workerInterface->work_response) {
                 workerInterface->work_response(lilv_instance_get_handle(instance),
-                                               static_cast<uint32_t>(response.size()),
-                                               response.data());
+                                               static_cast<uint32_t>(workerScratch.size()),
+                                               workerScratch.data());
             }
         }
         if (workerInterface->end_run) {

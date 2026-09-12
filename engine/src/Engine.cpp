@@ -612,6 +612,8 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 
     feedTuner();
 
+    std::vector<float*>* rendered = &chain->pointersA;
+
     if (!bypassAll_.load(std::memory_order_relaxed)) {
         std::vector<float*>* source = &chain->pointersA;
         std::vector<float*>* destination = &chain->pointersB;
@@ -644,11 +646,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             std::swap(source, destination);
         }
 
-        if (source != &chain->pointersA) {
-            for (unsigned channel = 0; channel < channels; ++channel) {
-                std::memcpy(chain->bufferA[channel].data(), (*source)[channel], frames * sizeof(float));
-            }
-        }
+        rendered = source;
     }
 
     // Ramp the output gain rather than stepping it, so a fader move or a
@@ -662,8 +660,8 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
     for (unsigned frame = 0; frame < frames; ++frame) {
         gain += step;
         for (unsigned channel = 0; channel < outputChannels; ++channel) {
-            const unsigned source = std::min(channel, channels - 1);
-            outputs[channel][frame] = chain->bufferA[source][frame] * gain;
+            const unsigned sourceChannel = std::min(channel, channels - 1);
+            outputs[channel][frame] = (*rendered)[sourceChannel][frame] * gain;
         }
     }
     outputGain_.store(target, std::memory_order_relaxed);

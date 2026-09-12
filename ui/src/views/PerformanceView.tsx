@@ -1,7 +1,7 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { findBank, findPreset, isAnalogKind, isLatchingKind, normalizeControlKind, type EngineSnapshot } from "../api";
+import { findBank, findPreset, isAnalogKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
@@ -89,7 +89,7 @@ export function PerformanceView({
     onEdit?: () => void;
     onEditSnapshot?: (snapshotId: string) => void;
 }) {
-    const { client, state, meters } = engine;
+    const { client, state } = engine;
     const bank = findBank(state);
     const preset = findPreset(state);
     const banks = objects(state.banks);
@@ -107,7 +107,6 @@ export function PerformanceView({
     const switchCount = Math.max(1, num(ui.virtualSwitchCount, 8));
     const bypassAll = bool(state.bypassAll);
     const snapshotMode = bool(state.snapshotMode);
-    const tuner = obj(meters.tuner);
     const useFreeform = true;
     const mirror = bool(controller.mirrorLayoutOnScreen, true);
     const switchStyle = document.documentElement.dataset.mfxSwitchStyle || "tiles";
@@ -888,14 +887,8 @@ export function PerformanceView({
     const widgetValues = {
         bank: str(obj(bank).name, "—"),
         preset: str(obj(preset).name, "—"),
-        dsp: `${(num(meters.dspLoad) * 100).toFixed(0)}%`,
-        xruns: `${num(meters.xruns)}`,
-        audio: bool(meters.running, bool(state.audioRunning)) ? "RUN" : "STOP",
         bypass: bypassAll ? "ON" : "OFF",
-        snaps: snapshotMode ? "ON" : "OFF",
-        tuner: bool(tuner.valid)
-            ? `${str(tuner.note)} ${num(tuner.cents) >= 0 ? "+" : ""}${num(tuner.cents).toFixed(0)}¢`
-            : "—"
+        snaps: snapshotMode ? "ON" : "OFF"
     };
 
     const selectBankId = (id: string) => {
@@ -1040,10 +1033,24 @@ export function PerformanceView({
                             {id === "currentBank" ? bankPicker
                                 : id === "activePreset" ? presetPicker
                                     : isMeterWidget(id) ? (
-                                        <GainMeter
+                                        <LiveGainMeter
+                                            client={client}
                                             label={STATUS_WIDGET_LABELS[id]}
-                                            peak={id === "inputMeter" ? num(meters.inputPeak) : num(meters.outputPeak)}
+                                            channel={id === "inputMeter" ? "input" : "output"}
                                         />
+                                    ) : isLiveMeterText(id) ? (
+                                        <>
+                                            {widget.showLabel && (
+                                                <div className="field-label mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
+                                            )}
+                                            <strong className="marquee mfx-performance-ui-value">
+                                                <LiveMeterText
+                                                    client={client}
+                                                    id={id}
+                                                    audioRunning={bool(state.audioRunning)}
+                                                />
+                                            </strong>
+                                        </>
                                     ) : (
                                         <>
                                             {widget.showLabel && (
@@ -1369,6 +1376,49 @@ function NamePicker({
             {menu}
         </div>
     );
+}
+
+function isLiveMeterText(id: string): boolean {
+    return id === "cpuUsage" || id === "xruns" || id === "audioStatus" || id === "tuner";
+}
+
+function LiveGainMeter({
+    client,
+    label,
+    channel
+}: {
+    client: import("../api").EngineClient;
+    label: string;
+    channel: "input" | "output";
+}) {
+    const meters = useMeters(client);
+    return (
+        <GainMeter
+            label={label}
+            peak={channel === "input" ? num(meters.inputPeak) : num(meters.outputPeak)}
+        />
+    );
+}
+
+function LiveMeterText({
+    client,
+    id,
+    audioRunning
+}: {
+    client: import("../api").EngineClient;
+    id: string;
+    audioRunning: boolean;
+}) {
+    const meters = useMeters(client);
+    const tuner = obj(meters.tuner);
+    return widgetText(id, {
+        dsp: `${(num(meters.dspLoad) * 100).toFixed(0)}%`,
+        xruns: `${num(meters.xruns)}`,
+        audio: bool(meters.running, audioRunning) ? "RUN" : "STOP",
+        tuner: bool(tuner.valid)
+            ? `${str(tuner.note)} ${num(tuner.cents) >= 0 ? "+" : ""}${num(tuner.cents).toFixed(0)}¢`
+            : "—"
+    });
 }
 
 function widgetText(id: string, values: Record<string, string>): string {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { formatMs, isAnalogKind, isLatchingKind, normalizeControlKind, type EngineSnapshot } from "../api";
+import { formatMs, isAnalogKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { analogMinSize, defaultSnapshotWidgets, defaultStatusWidgets, gridCellRect, snapshotLayoutSlots, snapshotWidgetsToJson, statusWidgetsToJson } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
@@ -280,7 +280,8 @@ function AudioSettings({
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-    const { client, state, meters, connected } = engine;
+    const { client, state, connected } = engine;
+    const meters = useMeters(client);
     const audio = obj(state.audio);
     const [devices, setDevices] = useState<JsonObject[]>([]);
     const [draft, setDraft] = useState(audio);

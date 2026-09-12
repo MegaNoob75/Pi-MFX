@@ -47,7 +47,7 @@ Avahi publishes `pimfx.local`. Default port is **8080** (`PIMFX_PORT` / install
 ## UI
 
 - Built into `ui/dist` and served by the engine
-- Dev: `cd ui && npm run dev` proxies `/api` and `/ws` to `127.0.0.1:8080`
+- Dev: `cd ui && npm run dev` is UI-only. Set `PIMFX_ENGINE=http://<pi>:8080` to proxy `/api` and `/ws`
 - Designed around a 7" **1024×600** kiosk; phones and tablets scale
 
 ## Firmware
