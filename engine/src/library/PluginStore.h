@@ -46,6 +46,7 @@ public:
 
     Json updateStatus(const Json& payload, std::string& error);
     Json updateInstall(const Json& payload, std::string& error);
+    Json systemPower(const std::string& action, std::string& error);
 
     Json hotspotStatus(std::string& error);
     Json hotspotConfig(std::string& error);

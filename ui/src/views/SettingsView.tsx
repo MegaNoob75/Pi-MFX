@@ -9,6 +9,7 @@ import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
 import { HotspotView } from "./HotspotView";
 import { MarqueeText } from "./MarqueeText";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 export type SettingsPage =
     | "audio"
@@ -52,6 +53,28 @@ function SystemHub({
     onOpen?: (page: SettingsPage) => void;
 }) {
     const [realtime, setRealtime] = useState(false);
+    const [confirm, setConfirm] = useState<"reboot" | "shutdown" | null>(null);
+    const [busy, setBusy] = useState<"reboot" | "shutdown" | null>(null);
+    const [message, setMessage] = useState("");
+
+    const power = (action: "reboot" | "shutdown") => {
+        setConfirm(null);
+        setBusy(action);
+        setMessage(action === "reboot" ? "Rebooting…" : "Shutting down…");
+        void run(async () => {
+            try {
+                const next = obj(await engine.client.request(
+                    action === "reboot" ? "system/reboot" : "system/shutdown"
+                ));
+                setMessage(str(next.message) || (action === "reboot" ? "Rebooting…" : "Shutting down…"));
+            } catch (error) {
+                setBusy(null);
+                setMessage(error instanceof Error ? error.message : String(error));
+                throw error;
+            }
+        });
+    };
+
     if (realtime) {
         return (
             <div className="mfx-screen">
@@ -75,7 +98,45 @@ function SystemHub({
                 <HubCard title="WIFI / HOTSPOT" subtitle="Join a home network or host a tablet access point" onClick={() => onOpen?.("hotspot")} />
                 <HubCard title="UPDATES" subtitle="Check git and rebuild Pi-MFX on this Pi" onClick={() => onOpen?.("updates")} />
                 <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => setRealtime(true)} />
+                <div className="system-power">
+                    <button
+                        type="button"
+                        className="btn system-power-btn"
+                        disabled={busy !== null}
+                        onClick={() => setConfirm("reboot")}
+                    >
+                        {busy === "reboot" ? "REBOOTING..." : "REBOOT"}
+                    </button>
+                    <button
+                        type="button"
+                        className="btn btn-danger system-power-btn"
+                        disabled={busy !== null}
+                        onClick={() => setConfirm("shutdown")}
+                    >
+                        {busy === "shutdown" ? "SHUTTING DOWN..." : "SHUT DOWN"}
+                    </button>
+                    {message ? <div className="muted" style={{ gridColumn: "1 / -1" }}>{message}</div> : null}
+                </div>
             </div>
+            {confirm === "reboot" && (
+                <ConfirmDialog
+                    title="REBOOT THIS PI?"
+                    body="Audio stops. The touchscreen comes back after boot."
+                    confirmLabel="REBOOT"
+                    onCancel={() => setConfirm(null)}
+                    onConfirm={() => power("reboot")}
+                />
+            )}
+            {confirm === "shutdown" && (
+                <ConfirmDialog
+                    title="SHUT DOWN THIS PI?"
+                    body="Audio stops. Power the Pi back on to use it again."
+                    confirmLabel="SHUT DOWN"
+                    danger
+                    onCancel={() => setConfirm(null)}
+                    onConfirm={() => power("shutdown")}
+                />
+            )}
         </div>
     );
 }

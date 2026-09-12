@@ -38,6 +38,7 @@ the ESP32 match immediately.
 - HTTP JSON-RPC under `/api`, WebSocket at `/ws`
 - Library upload for layouts, banks, models, IRs
 - `system/update/status` and install job used by **Settings → System → Updates**
+- `system/reboot` and `system/shutdown` used by **Settings → System** power buttons
 - Helpers: `scripts/plugin-helper.py`, `scripts/hotspot.py`, `scripts/mdns.py`
 
 Avahi publishes `pimfx.local`. Default port is **8080** (`PIMFX_PORT` / install

@@ -28,7 +28,8 @@ ProtectHome=no
 # from git fetch/checkout during Settings → Updates.
 ReadWritePaths=@DATA_ROOT@ @REPO@ /run/pimfx /home
 ProtectKernelTunables=yes
-ProtectControlGroups=yes
+# Reboot/shutdown from Settings needs to enqueue a systemd job.
+ProtectControlGroups=no
 RestrictNamespaces=yes
 LockPersonality=yes
 

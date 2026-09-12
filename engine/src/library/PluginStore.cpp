@@ -1705,6 +1705,14 @@ Json PluginStore::updateInstall(const Json& payload, std::string& error) {
     return helperCall("update-install", args, error, 15);
 }
 
+Json PluginStore::systemPower(const std::string& action, std::string& error) {
+    if (action != "reboot" && action != "shutdown") {
+        error = "unknown power action";
+        return Json::object();
+    }
+    return helperCall(action, Json::object(), error, 10);
+}
+
 Json PluginStore::hotspotStatus(std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     Json stored = readHotspotFile(paths_);

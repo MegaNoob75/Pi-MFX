@@ -495,6 +495,19 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     font-size: 0.82rem;
 }
 
+.system-power {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: inherit;
+}
+
+.system-power-btn {
+    width: 100%;
+    min-height: calc(64px * var(--mfx-ui-scale, 1));
+    letter-spacing: 0.06em;
+}
+
 .split-panes {
     position: absolute;
     inset: 0;

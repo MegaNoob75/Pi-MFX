@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Root helper for Pi-MFX plugin apt, extra-repo, updates, and Wi-Fi hotspot operations.
+"""Root helper for Pi-MFX plugin apt, extra-repo, updates, Wi-Fi, and power.
 
 The audio engine runs as an unprivileged user with NoNewPrivileges, so it
-cannot call apt or nmcli. This process listens on a UNIX socket owned by that
-user, accepts one JSON command per connection, and replies with one JSON object.
+cannot call apt, nmcli, reboot, or shutdown. This process listens on a UNIX
+socket owned by that user, accepts one JSON command per connection, and
+replies with one JSON object.
 
 It only installs packages on the curated list. Repo lines must be HTTPS and
 include a signing key. Hotspot and Wi-Fi commands only run the installed
-hotspot.py helper. It never runs a shell with user text.
+hotspot.py helper. Power commands talk to systemd/logind. It never runs a
+shell with user text.
 """
 from __future__ import annotations
 
@@ -244,6 +246,45 @@ def download_key(repo_id: str, key_url: str, timeout: int) -> str:
     return dest
 
 
+def power_pi(action: str) -> dict:
+    """Reboot or power off through logind, then systemctl if that fails."""
+    if action == "reboot":
+        method = "Reboot"
+        unit = "reboot"
+        message = "Rebooting…"
+    elif action == "poweroff":
+        method = "PowerOff"
+        unit = "poweroff"
+        message = "Shutting down…"
+    else:
+        return {"ok": False, "error": "unknown power action"}
+
+    result = run(
+        [
+            "busctl",
+            "call",
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            method,
+            "b",
+            "false",
+        ],
+        timeout=8,
+    )
+    if result.returncode != 0:
+        fallback = run(["systemctl", unit, "--no-block"], timeout=8)
+        if fallback.returncode != 0:
+            detail = (
+                (result.stderr or "")
+                or (fallback.stderr or "")
+                or (result.stdout or "")
+                or (fallback.stdout or "")
+            ).strip()
+            return {"ok": False, "error": detail or f"could not {action} this Pi"}
+    return {"ok": True, "action": action, "message": message}
+
+
 def handle(request: dict) -> dict:
     op = request.get("op") or ""
     timeout = int(request.get("timeout") or 60)
@@ -471,6 +512,12 @@ def handle(request: dict) -> dict:
 
     if op == "update-install":
         return git_update_install(timeout, str(request.get("branch") or ""))
+
+    if op == "reboot":
+        return power_pi("reboot")
+
+    if op == "shutdown":
+        return power_pi("poweroff")
 
     return {"ok": False, "error": f"unknown helper op: {op}"}
 

@@ -157,6 +157,16 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
+    if (command == "system/reboot") {
+        const Json result = plugins_.systemPower("reboot", error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "system/shutdown") {
+        const Json result = plugins_.systemPower("shutdown", error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "ui/settings") {
         ok = engine_.applyUiSettings(payload, error);
         return Json::object();
