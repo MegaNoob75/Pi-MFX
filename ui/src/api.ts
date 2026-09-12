@@ -24,15 +24,6 @@ function websocketUrl(): string {
     return `${protocol}//${window.location.host}/ws`;
 }
 
-function shouldOpenEngineSocket(): boolean {
-    // Vite on the PC has no local engine. Opening /ws just makes Vite log
-    // ECONNREFUSED 127.0.0.1:8080 on a 750ms reconnect loop.
-    if (import.meta.env.DEV && !import.meta.env.VITE_PIMFX_ENGINE) {
-        return false;
-    }
-    return true;
-}
-
 export class EngineClient {
     private socket: WebSocket | undefined;
     private reconnectTimer: number | undefined;
@@ -91,7 +82,7 @@ export class EngineClient {
     }
 
     private connect(): void {
-        if (this.closed || !shouldOpenEngineSocket()) {
+        if (this.closed) {
             return;
         }
         const socket = new WebSocket(websocketUrl());
