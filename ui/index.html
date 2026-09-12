@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#12081c" />
     <title>PI-MFX</title>
+    <script>
+      (function () {
+        try {
+          if (new URLSearchParams(location.search).get("kiosk") === "1") {
+            document.documentElement.setAttribute("data-mfx-kiosk", "true");
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      html[data-mfx-kiosk="true"],
+      html[data-mfx-kiosk="true"] * {
+        cursor: none !important;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

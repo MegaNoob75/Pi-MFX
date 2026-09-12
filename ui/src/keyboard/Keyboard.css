@@ -49,19 +49,30 @@ textarea[data-pimfx-osk="1"] {
     border: 2px solid var(--mfx-cyan);
     border-radius: 10px;
     background: var(--mfx-bg);
+    cursor: text;
+    touch-action: none;
 }
 
 .pimfx-keyboard-label {
     color: var(--mfx-cyan);
     font-weight: 900;
     letter-spacing: 0.04em;
+    cursor: default;
 }
 
 .pimfx-keyboard-text {
     margin-top: 6px;
+    min-height: 1.35em;
     font-size: clamp(20px, 4vh, 34px);
     font-weight: 800;
     white-space: pre;
+    cursor: text;
+    touch-action: none;
+}
+
+.pimfx-keyboard-text-end {
+    display: inline-block;
+    min-width: 0.7em;
 }
 
 .pimfx-keyboard-selection {

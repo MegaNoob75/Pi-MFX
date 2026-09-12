@@ -122,6 +122,27 @@ export function sanitizePaste(
     return next;
 }
 
+export function caretIndexAtClientX(root: HTMLElement, clientX: number, length: number): number {
+    const chars = root.querySelectorAll<HTMLElement>("[data-k-i]");
+    if (chars.length === 0) {
+        return clientX <= root.getBoundingClientRect().left ? 0 : length;
+    }
+    for (const el of chars) {
+        const index = Number(el.dataset.kI);
+        if (!Number.isFinite(index)) {
+            continue;
+        }
+        const rect = el.getBoundingClientRect();
+        if (clientX < rect.left) {
+            return index;
+        }
+        if (clientX <= rect.right) {
+            return clientX < (rect.left + rect.right) / 2 ? index : Math.min(length, index + 1);
+        }
+    }
+    return length;
+}
+
 export function eraseSelection(
     value: string,
     start: number,

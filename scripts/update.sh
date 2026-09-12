@@ -181,8 +181,10 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     systemctl restart pimfx.service
     sleep 2
     systemctl --no-pager --full status pimfx.service || true
-    # Ctrl+Shift+R on the kiosk. Do not restart Chromium; that can freeze the Pi.
-    if [[ -f "$REPO_DIR/scripts/kiosk-reload.inc.sh" ]]; then
+    # Rewrite Labwc autostart (hide pointer) and Ctrl+Shift+R. Do not pkill Chromium.
+    if [[ -f /var/lib/pimfx-touchscreen/configured-user ]]; then
+        bash "$REPO_DIR/scripts/pimfx.sh" display-refresh -y
+    elif [[ -f "$REPO_DIR/scripts/kiosk-reload.inc.sh" ]]; then
         # shellcheck source=kiosk-reload.inc.sh
         . "$REPO_DIR/scripts/kiosk-reload.inc.sh"
         reload_kiosk_browser

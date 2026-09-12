@@ -4,6 +4,8 @@
 *.plymouth text eol=lf
 *.script text eol=lf
 *.service.in text eol=lf
-systemd/** text eol=lf
-*.json text eol=lf
+# JSON and modprobe conf are fine as CRLF on Windows. Forcing LF here makes
+# GitHub Desktop list them as dirty with no text change.
+*.json text
+systemd/*.conf text
 *.ps1 text eol=crlf

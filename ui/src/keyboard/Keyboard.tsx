@@ -1,10 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LETTER_ROWS, NUMERIC_ROWS, SYMBOL_ROWS, type KeyboardLayer, type KeyboardLayout } from "./layouts";
 import { loadKeyboardAppearance, onKeyboardAppearanceChange } from "./settings";
 import { resolveMultiFXKeyboardTheme } from "./keyboardTheme";
 import { themePaintToCss } from "../theme/theme";
-import { eraseSelection, overlayRoot, replaceSelection, sanitizePaste, type EditableElement } from "./utils";
+import {
+    caretIndexAtClientX,
+    eraseSelection,
+    overlayRoot,
+    replaceSelection,
+    sanitizePaste,
+    type EditableElement
+} from "./utils";
 import "./Keyboard.css";
 
 export interface KeyboardSession {
@@ -37,6 +44,8 @@ export function Keyboard({
     const [caps, setCaps] = useState(false);
     const [appearance, setAppearance] = useState(loadKeyboardAppearance);
     const keyboardTheme = resolveMultiFXKeyboardTheme(appearance.themeId);
+    const textRef = useRef<HTMLDivElement>(null);
+    const draggingCaret = useRef(false);
 
     useEffect(() => onKeyboardAppearanceChange(() => setAppearance(loadKeyboardAppearance())), []);
 
@@ -56,6 +65,24 @@ export function Keyboard({
         const result = eraseSelection(value, selection.start, selection.end);
         setValue(result.value);
         setSelection({ start: result.start, end: result.end });
+    };
+
+    const moveCursor = (amount: number, extend: boolean) => {
+        const cursor = Math.max(0, Math.min(value.length, selection.end + amount));
+        setSelection(extend
+            ? { start: Math.min(selection.start, cursor), end: Math.max(selection.start, cursor) }
+            : { start: cursor, end: cursor });
+    };
+
+    const placeCaret = (clientX: number, extend: boolean) => {
+        const root = textRef.current;
+        if (!root) {
+            return;
+        }
+        const cursor = caretIndexAtClientX(root, clientX, value.length);
+        setSelection((current) => extend
+            ? { start: Math.min(current.start, cursor), end: Math.max(current.start, cursor) }
+            : { start: cursor, end: cursor });
     };
 
     const pasteText = (raw: string) => {
@@ -93,6 +120,12 @@ export function Keyboard({
             } else if (event.key === "Backspace") {
                 event.preventDefault();
                 erase();
+            } else if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                moveCursor(-1, event.shiftKey);
+            } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                moveCursor(1, event.shiftKey);
             } else if (event.key.length === 1) {
                 event.preventDefault();
                 insert(event.key);
@@ -123,10 +156,6 @@ export function Keyboard({
     const rows = session.layout === "numeric"
         ? NUMERIC_ROWS
         : layer === "symbols" ? SYMBOL_ROWS : letterRows;
-
-    const before = value.slice(0, selection.start);
-    const selected = value.slice(selection.start, selection.end);
-    const after = value.slice(selection.end);
 
     const key = (label: string, action: () => void, className = "") => (
         <button
@@ -167,14 +196,61 @@ export function Keyboard({
             }}
         >
             <div className="pimfx-keyboard-panel">
-                <div className="pimfx-keyboard-value">
+                <div
+                    className="pimfx-keyboard-value"
+                    onPointerDown={(event) => {
+                        if ((event.target as HTMLElement).closest(".pimfx-keyboard-label")) {
+                            return;
+                        }
+                        event.preventDefault();
+                        try {
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                        } catch {
+                            // Capture can fail on synthetic events; still place the caret.
+                        }
+                        draggingCaret.current = true;
+                        placeCaret(event.clientX, event.shiftKey);
+                    }}
+                    onPointerMove={(event) => {
+                        if (!draggingCaret.current) {
+                            return;
+                        }
+                        placeCaret(event.clientX, event.shiftKey);
+                    }}
+                    onPointerUp={() => {
+                        draggingCaret.current = false;
+                    }}
+                    onPointerCancel={() => {
+                        draggingCaret.current = false;
+                    }}
+                >
                     <div className="pimfx-keyboard-label">{session.label}</div>
-                    <div className="pimfx-keyboard-text">
-                        {before}
-                        {selected
-                            ? <span className="pimfx-keyboard-selection">{selected}</span>
-                            : <span className="pimfx-keyboard-caret" />}
-                        {after || "\u00a0"}
+                    <div
+                        ref={textRef}
+                        className="pimfx-keyboard-text"
+                        role="textbox"
+                        aria-readonly="true"
+                        aria-label={`${session.label} text`}
+                    >
+                        {Array.from(value).map((character, index) => (
+                            <span key={index}>
+                                {selection.start === selection.end && selection.start === index && (
+                                    <span className="pimfx-keyboard-caret" />
+                                )}
+                                <span
+                                    data-k-i={index}
+                                    className={index >= selection.start && index < selection.end
+                                        ? "pimfx-keyboard-selection"
+                                        : undefined}
+                                >
+                                    {character}
+                                </span>
+                            </span>
+                        ))}
+                        {selection.start === selection.end && selection.start === value.length && (
+                            <span className="pimfx-keyboard-caret" />
+                        )}
+                        <span data-k-i={value.length} className="pimfx-keyboard-text-end">{"\u00a0"}</span>
                     </div>
                 </div>
                 <div className="pimfx-keyboard-rows">

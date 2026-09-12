@@ -41,6 +41,11 @@ body,
     touch-action: manipulation;
 }
 
+html[data-mfx-kiosk="true"],
+html[data-mfx-kiosk="true"] * {
+    cursor: none !important;
+}
+
 #root {
     overflow: hidden;
 }

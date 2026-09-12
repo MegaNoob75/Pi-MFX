@@ -48,7 +48,7 @@ Actions:
   update           Pull, rebuild, restart
   rebuild          Rebuild from files already on the Pi (no git pull)
   display          Fullscreen touchscreen (Labwc + Chromium)
-  display-refresh  Re-apply Chromium flags, hide the system keyboard, hard-refresh
+  display-refresh  Re-apply Chromium flags, hide the pointer, hide the system keyboard, hard-refresh
   kiosk-reload     Hard-refresh the attached Chromium kiosk (no Chromium restart)
   display-remove   Undo the touchscreen session
   splash           PI-MFX boot / shutdown logo, hide boot text
@@ -237,6 +237,26 @@ disable_system_keyboard() {
     done
 }
 
+write_labwc_rc() {
+    mkdir -p /etc/xdg/labwc
+    cat > /etc/xdg/labwc/rc.xml <<'RCXML'
+<?xml version="1.0"?>
+<labwc_config>
+  <keyboard>
+    <keybind key="A-W-h">
+      <action name="HideCursor"/>
+      <action name="WarpCursor" x="-1" y="-1"/>
+    </keybind>
+  </keyboard>
+  <windowRules>
+    <windowRule identifier="*">
+      <serverDecoration>no</serverDecoration>
+    </windowRule>
+  </windowRules>
+</labwc_config>
+RCXML
+}
+
 write_chromium_autostart() {
     local url
     url="$(ui_url)"
@@ -246,6 +266,13 @@ write_chromium_autostart() {
 export GTK_IM_MODULE=none
 export QT_IM_MODULE=none
 export SDL_IM_MODULE=none
+# Labwc draws a pointer until the first touch. Hide it before Chromium paints,
+# then once more after the window maps.
+(
+    wtype -M alt -M logo -k h -m logo -m alt >/dev/null 2>&1 || true
+    sleep 1
+    wtype -M alt -M logo -k h -m logo -m alt >/dev/null 2>&1 || true
+) &
 exec /usr/bin/chromium \\
     --ozone-platform=wayland \\
     --start-maximized \\
@@ -276,7 +303,10 @@ refresh_touchscreen_session() {
     [[ -f "$DISPLAY_STATE_DIR/configured-user" ]] || return 0
     log "Keeping the system keyboard off the touchscreen"
     disable_system_keyboard
+    write_labwc_rc
     write_chromium_autostart
+    pkill -HUP -x labwc >/dev/null 2>&1 || true
+    sleep 0.4
     restart_touchscreen_browser
 }
 
@@ -299,17 +329,7 @@ configure_touchscreen() {
 
     raspi-config nonint do_boot_behaviour B2
 
-    cat > /etc/xdg/labwc/rc.xml <<'RCXML'
-<?xml version="1.0"?>
-<labwc_config>
-  <windowRules>
-    <windowRule identifier="*">
-      <serverDecoration>no</serverDecoration>
-    </windowRule>
-  </windowRules>
-</labwc_config>
-RCXML
-
+    write_labwc_rc
     write_chromium_autostart
     printf '%s\n' "$DISPLAY_USER" > "$DISPLAY_STATE_DIR/configured-user"
     disable_system_keyboard

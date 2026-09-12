@@ -69,15 +69,6 @@ export class EngineClient {
             throw new Error(str(body.error, `${command} failed`));
         }
         this.ingest(body);
-        // #region agent log
-        if (command === "preset/select" || command === "snapshot/select" || command === "snapshot/capture"
-            || command === "preset/restoreLive" || command === "controller/value") {
-            const interesting = command !== "controller/value" || num(payload.value) >= 0.95 || num(payload.value) <= 0.05;
-            if (interesting) {
-                fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "api.ts:request", message: "engine request", data: { command, payload, bound: boundParamDebug(this.snapshot.state) }, timestamp: Date.now(), hypothesisId: command === "controller/value" ? "H1" : "H2" }) }).catch(() => undefined);
-            }
-        }
-        // #endregion
         return body;
     }
 
@@ -170,9 +161,6 @@ export class EngineClient {
                 });
             }
             this.patch({ state: nextState });
-            // #region agent log
-            logBoundIfChanged(nextState, "api.ts:performance");
-            // #endregion
         }
     }
 
@@ -203,48 +191,6 @@ export function useEngine(): EngineSnapshot & { client: EngineClient } {
 export function findBank(state: JsonObject, bankId = str(state.activeBankId)): JsonObject | undefined {
     return arr(state.banks).find((bank) => isObj(bank) && str(bank.id) === bankId) as JsonObject | undefined;
 }
-
-// #region agent log
-function boundParamDebug(state: JsonObject) {
-    const preset = findPreset(state);
-    const bindings = objects(obj(preset).parameterBindings).filter((item) => str(item.action) === "setParameter");
-    const positions = obj(state.controlPositions);
-    const liveChain = objects(state.chain);
-    const storedChain = objects(obj(preset).chain);
-    return {
-        activeSnapshot: num(obj(preset).activeSnapshot, -1),
-        rememberedSlot: num(obj(preset).rememberedSnapshotSlot, -1),
-        rememberedOn: bool(obj(preset).rememberedSnapshotEnabled),
-        snapshotMode: bool(state.snapshotMode),
-        binds: bindings.map((bind) => {
-            const symbol = str(bind.portSymbol);
-            const live = liveChain.find((slot) => str(slot.id) === str(bind.slotId));
-            const stored = storedChain.find((slot) => str(slot.id) === str(bind.slotId));
-            return {
-                controlId: str(bind.controlId),
-                symbol,
-                live: live ? controlValue(live, symbol, Number.NaN) : Number.NaN,
-                stored: stored ? controlValue(stored, symbol, Number.NaN) : Number.NaN,
-                pot: num(positions[str(bind.controlId)], Number.NaN)
-            };
-        })
-    };
-}
-
-let lastBoundSig = "";
-function logBoundIfChanged(state: JsonObject, location: string) {
-    const bound = boundParamDebug(state);
-    if (bound.binds.length === 0) {
-        return;
-    }
-    const sig = JSON.stringify(bound);
-    if (sig === lastBoundSig) {
-        return;
-    }
-    lastBoundSig = sig;
-    fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location, message: "bound live vs stored", data: bound, timestamp: Date.now(), hypothesisId: "H3" }) }).catch(() => undefined);
-}
-// #endregion
 
 export function findPreset(state: JsonObject): JsonObject | undefined {
     const bank = findBank(state);

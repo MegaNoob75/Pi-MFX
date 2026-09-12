@@ -319,7 +319,7 @@ function Show-Menu {
         Write-Host "  3) Update  (fetch GitHub, then rebuild and restart)"
         Write-Host "  4) Rebuild local files  (no git pull)"
         Write-Host "  5) Set up touchscreen display"
-        Write-Host "  5r) Refresh touchscreen (hard-refresh kiosk, Chromium flags, hide keyboard)"
+        Write-Host "  5r) Refresh touchscreen (hard-refresh kiosk, hide pointer, hide keyboard)"
         Write-Host "  6) Remove touchscreen display"
         Write-Host "  7) Boot screen  (PI-MFX logo, hide boot text)"
         Write-Host "       7.1) Install PI-MFX logo and hide boot / shutdown text"

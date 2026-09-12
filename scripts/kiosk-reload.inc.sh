@@ -111,5 +111,7 @@ reload_kiosk_browser() {
             wtype -M ctrl -M shift -k r -m shift -m ctrl >/dev/null 2>&1; then
         warn "Could not refresh the Pi screen. Reboot or press Ctrl+Shift+R on that display."
     fi
+    timeout 5 sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" \
+        wtype -M alt -M logo -k h -m logo -m alt >/dev/null 2>&1 || true
     return 0
 }
