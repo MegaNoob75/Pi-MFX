@@ -48,16 +48,31 @@
     pointer-events: auto;
     touch-action: none;
     overscroll-behavior: contain;
-    background: radial-gradient(circle, #0003, transparent 62%);
+    background: transparent;
 }
 
 .mfx-performance-control--popout {
     animation: mfx-control-popout-in 140ms ease-out both;
+    isolation: isolate;
+    backdrop-filter: none !important;
+    background: var(--mfx-surface-panel-bg, var(--mfx-panel)) padding-box,
+        var(--mfx-surface-panel-border) border-box !important;
+    color: var(--mfx-surface-panel-text) !important;
     box-shadow: var(--mfx-surface-popup-shadow), 0 0 0 2px
         var(--mfx-surface-panel-accent) !important;
     pointer-events: auto;
     touch-action: none;
     cursor: ns-resize;
+}
+
+.mfx-performance-control--popout::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--mfx-panel, var(--mfx-bg));
+    pointer-events: none;
 }
 
 @keyframes mfx-control-popout-in {
@@ -355,26 +370,30 @@ html[data-mfx-analog-style="minimal"] .mfx-hardware-button {
     min-width: 0;
     min-height: 0;
     container-type: size;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    overflow: visible;
 }
 
 .mfx-performance-switch__menu {
     position: absolute;
     top: 0;
     right: 0;
-    z-index: 6;
+    z-index: 30;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: clamp(44px, 30cqmin, 64px);
-    height: clamp(44px, 30cqmin, 64px);
-    min-width: 44px;
-    min-height: 44px;
+    width: clamp(48px, 32cqmin, 72px);
+    height: clamp(48px, 32cqmin, 72px);
+    min-width: 48px;
+    min-height: 48px;
     padding: 0;
     border: 0;
     border-radius: 10px;
     background: transparent;
     color: inherit;
     cursor: pointer;
+    pointer-events: auto;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
 }

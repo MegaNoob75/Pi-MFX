@@ -1012,7 +1012,7 @@ export function LayoutEditorView({
                             onClick={() => toggleHidden(str(control.id))}
                         >
                             {hidden.has(str(control.id)) ? "+ " : "✓ "}
-                            {str(control.label, str(control.id))}
+                            {str(control.label).trim() || str(control.id)}
                         </button>
                     ))}
                     {controls.length === 0 && <div className="muted">Add controls in Hardware Setup.</div>}
@@ -1100,13 +1100,13 @@ export function LayoutEditorView({
                                     <PerformanceControl
                                         tile={{
                                             id,
-                                            switchLabel: str(control.label, id),
+                                            switchLabel: str(control.label).trim() || id,
                                             valueText: caption,
                                             role: analog ? "utility" : roleForAction(action),
                                             lightState: "inactive",
                                             active: false,
                                             analog,
-                                            analogSource: str(control.label, id),
+                                            analogSource: str(control.label).trim() || id,
                                             analogFunction: analog ? caption : undefined,
                                             assigned: analog ? caption !== "Unassigned" : undefined,
                                             kind,

@@ -58,6 +58,7 @@ export interface PerformanceTile {
     onPresetPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
     onPresetPointerMove?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
     onPresetPointerUp?: (event: ReactPointerEvent<HTMLButtonElement>) => boolean | void;
+    hardwarePopout?: boolean;
 }
 
 function visualVars(role: SwitchRole, active: boolean) {
@@ -89,11 +90,13 @@ function indicatorColor(tile: PerformanceTile, active: boolean, vars: ReturnType
 export function PerformanceControl({
     tile,
     switchStyle: _switchStyle,
-    bypassed
+    bypassed,
+    renderMenu = true
 }: {
     tile: PerformanceTile;
     switchStyle: string;
     bypassed: boolean;
+    renderMenu?: boolean;
 }) {
     void _switchStyle;
     const analog = tile.analog || isAnalogKind(tile.kind ?? "");
@@ -114,7 +117,8 @@ export function PerformanceControl({
         startY: number;
         suppressed: boolean;
         doubleTimer: number | null;
-    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false, doubleTimer: null });
+        contextMenuAt: number;
+    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false, doubleTimer: null, contextMenuAt: 0 });
     const range = clampUnit(tile.value ?? (tile.active ? 1 : 0));
     const displayRole: SwitchRole = tile.lightState === "snapshot"
         ? "snapshot"
@@ -124,6 +128,19 @@ export function PerformanceControl({
     const visualActive = analog ? tile.active : (tile.pressed || tile.active || tile.lightState === "snapshot" || tile.lightState === "bypass");
     const vars = visualVars(displayRole, visualActive);
     const led = indicatorColor(tile, visualActive, vars);
+
+    useEffect(() => {
+        if (!analog) {
+            return;
+        }
+        if (tile.hardwarePopout) {
+            setPopout(true);
+            return;
+        }
+        if (!drag.current) {
+            setPopout(false);
+        }
+    }, [analog, tile.hardwarePopout]);
 
     const clearHold = () => {
         if (hold.current.timer !== null) {
@@ -151,6 +168,12 @@ export function PerformanceControl({
         hold.current.suppressed = true;
         tile.onCancelPress?.();
         tile.onLongPress?.();
+    };
+
+    const suppressBrowserMenu = (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+        event.preventDefault();
+        event.stopPropagation();
+        hold.current.contextMenuAt = Date.now();
     };
 
     const publishFeedback = () => {
@@ -263,6 +286,15 @@ export function PerformanceControl({
 
     const finishPointer = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>, cancelled: boolean) => {
         const analogDrag = drag.current && drag.current.pointerId === event.pointerId;
+        const fromTouchMenu = Date.now() - hold.current.contextMenuAt < 800;
+        if (!cancelled && fromTouchMenu) {
+            if (hold.current.timer !== null) {
+                return;
+            }
+            hold.current.suppressed = true;
+            tile.onCancelPress?.();
+            return;
+        }
         const suppressed = hold.current.suppressed;
         clearHold();
         drag.current = null;
@@ -295,6 +327,18 @@ export function PerformanceControl({
         finishPointer(event, false);
     };
 
+    const onPointerCancelHold = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>) => {
+        // Touch Chromium synthesizes contextmenu and often pointercancel on a
+        // long-press. Keep a pending hold so the assigned function still fires.
+        if (event.pointerType !== "mouse" && hold.current.timer !== null) {
+            return;
+        }
+        if (Date.now() - hold.current.contextMenuAt < 800) {
+            return;
+        }
+        finishPointer(event, true);
+    };
+
     const analogCard = (className: string, style?: CSSProperties) => (
         <div
             className={`mfx-performance-control${className}`}
@@ -314,20 +358,12 @@ export function PerformanceControl({
             onPointerDown={(event) => begin(event, className.includes("popout"))}
             onPointerMove={move}
             onPointerUp={end}
-            onPointerCancel={(event) => finishPointer(event, true)}
-            onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (!tile.onLongPress) {
-                    return;
-                }
-                clearHold();
-                hold.current.suppressed = true;
-                tile.onCancelPress?.();
-                tile.onLongPress();
-            }}
+            onPointerCancel={onPointerCancelHold}
+            onContextMenu={suppressBrowserMenu}
         >
-            <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />
+            {(tile.analogSource || tile.switchLabel).trim() ? (
+                <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />
+            ) : null}
             <div className="mfx-performance-control__graphic">
                 <ControlGraphic kind={tile.kind ?? "pot"} range={range} active={tile.active} />
             </div>
@@ -370,10 +406,12 @@ export function PerformanceControl({
         tile.doubleLabel ? `DBL: ${tile.doubleLabel}` : ""
     ].filter(Boolean).join(" · ") || undefined;
     const hasMenu = Boolean(tile.onMenu);
+    const named = Boolean(tile.switchLabel.trim());
     return (
         <div
             className="mfx-performance-switch-wrap"
             data-mfx-has-menu={hasMenu ? "true" : undefined}
+            onContextMenu={suppressBrowserMenu}
         >
         <button
             type="button"
@@ -386,19 +424,8 @@ export function PerformanceControl({
             onPointerDown={(event) => begin(event, false)}
             onPointerMove={move}
             onPointerUp={end}
-            onPointerCancel={(event) => finishPointer(event, true)}
-            onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                clearHold();
-                hold.current.suppressed = true;
-                tile.onCancelPress?.();
-                if (tile.onMenu) {
-                    tile.onMenu();
-                    return;
-                }
-                tile.onLongPress?.();
-            }}
+            onPointerCancel={onPointerCancelHold}
+            onContextMenu={suppressBrowserMenu}
             style={{
                 width: "100%",
                 height: "100%",
@@ -414,8 +441,8 @@ export function PerformanceControl({
                 containerType: tile.freeform ? "size" : undefined,
                 display: "flex",
                 flexDirection: "column",
-                justifyContent: empty && !holdText ? "center" : "space-between",
-                alignItems: empty && !holdText ? "center" : "stretch",
+                justifyContent: (empty || !named) && !holdText ? "center" : "space-between",
+                alignItems: (empty || !named) && !holdText ? "center" : "stretch",
                 boxShadow: tile.dropTarget
                     ? `${vars.shadow}, inset 0 0 0 4px var(--mfx-role-preset-active-border)`
                     : vars.shadow,
@@ -426,6 +453,7 @@ export function PerformanceControl({
                 font: "inherit",
                 userSelect: "none",
                 WebkitUserSelect: "none",
+                WebkitTouchCallout: "none",
                 touchAction: "none"
             }}
         >
@@ -467,12 +495,15 @@ export function PerformanceControl({
                         minWidth: 0,
                         minHeight: 0,
                         display: "grid",
-                        gridTemplateRows: holdText
+                        gridTemplateRows: named && holdText
                             ? "minmax(0,.78fr) minmax(0,1.55fr) minmax(0,.67fr)"
-                            : "minmax(0,.82fr) minmax(0,1.78fr)",
+                            : named || holdText
+                            ? "minmax(0,.82fr) minmax(0,1.78fr)"
+                            : "minmax(0,1fr)",
                         gap: 1
                     }}
                 >
+                    {named ? (
                     <div
                         className="mfx-performance-switch__label-row"
                         style={{
@@ -494,6 +525,7 @@ export function PerformanceControl({
                             textTransform="uppercase"
                         />
                     </div>
+                    ) : null}
                     <div className="mfx-performance-switch__value-row" style={{ minWidth: 0, minHeight: 0 }}>
                         <MarqueeText
                             className="mfx-performance-switch__value"
@@ -519,6 +551,7 @@ export function PerformanceControl({
                 </div>
             ) : (
                 <>
+                    {named ? (
                     <span
                         className="mfx-performance-switch__label"
                         style={{
@@ -532,6 +565,7 @@ export function PerformanceControl({
                     >
                         {tile.switchLabel}
                     </span>
+                    ) : null}
                     <MarqueeText
                         className="mfx-performance-switch__value"
                         text={tile.valueText}
@@ -558,23 +592,32 @@ export function PerformanceControl({
                 </>
             )}
         </button>
-            {hasMenu && tile.onMenu ? (
+            {renderMenu && hasMenu && tile.onMenu ? (
                 <TileMenuButton color={vars.label} onMenu={tile.onMenu} />
             ) : null}
         </div>
     );
 }
 
-function TileMenuButton({
+export function TileMenuButton({
     color,
     onMenu
 }: {
     color: string;
     onMenu: () => void;
 }) {
-    const ignore = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const opened = useRef(false);
+    const open = (event: { preventDefault: () => void; stopPropagation: () => void }) => {
         event.preventDefault();
         event.stopPropagation();
+        if (opened.current) {
+            return;
+        }
+        opened.current = true;
+        onMenu();
+        window.setTimeout(() => {
+            opened.current = false;
+        }, 500);
     };
     return (
         <button
@@ -582,19 +625,32 @@ function TileMenuButton({
             className="mfx-performance-switch__menu"
             aria-label="Preset menu"
             style={{ color }}
-            onPointerDown={ignore}
-            onPointerMove={ignore}
-            onPointerCancel={ignore}
-            onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-            }}
-            onPointerUp={(event) => {
-                ignore(event);
+            onPointerDown={(event) => {
                 if (event.pointerType === "mouse" && event.button !== 0) {
                     return;
                 }
-                onMenu();
+                event.preventDefault();
+                event.stopPropagation();
+                try {
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                } catch {
+                    // optional on older touch browsers
+                }
+                open(event);
+            }}
+            onPointerMove={(event) => event.stopPropagation()}
+            onPointerUp={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }}
+            onPointerCancel={(event) => event.stopPropagation()}
+            onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            }}
+            onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
             }}
         >
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

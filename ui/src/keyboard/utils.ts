@@ -136,20 +136,51 @@ export function eraseSelection(
     return replaceSelection(value, start - 1, start, "");
 }
 
+export const KEYBOARD_DONE_EVENT = "pimfx-keyboard-done";
+
+type TrackedElement = EditableElement & {
+    _valueTracker?: { setValue: (value: string) => void };
+};
+
 export function commitValue(element: EditableElement, value: string): void {
     const wasReadOnly = element.readOnly;
     element.readOnly = false;
+    const previous = element.value;
     const prototype = element instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
     setter?.call(element, value);
+    (element as TrackedElement)._valueTracker?.setValue(previous);
     element.dispatchEvent(new InputEvent("input", {
         bubbles: true,
         composed: true,
         inputType: "insertReplacementText",
         data: value
     }));
+    element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.dispatchEvent(new CustomEvent(KEYBOARD_DONE_EVENT, {
+        bubbles: true,
+        detail: { value }
+    }));
+    element.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     element.readOnly = wasReadOnly;
+}
+
+export function listenForKeyboardCommit(
+    element: EditableElement | null,
+    onCommit: (value: string) => void
+): () => void {
+    if (!element) {
+        return () => undefined;
+    }
+    const handle = (event: Event) => {
+        const value = (event as CustomEvent<{ value?: string }>).detail?.value;
+        if (typeof value === "string") {
+            onCommit(value);
+        }
+    };
+    element.addEventListener(KEYBOARD_DONE_EVENT, handle);
+    return () => element.removeEventListener(KEYBOARD_DONE_EVENT, handle);
 }

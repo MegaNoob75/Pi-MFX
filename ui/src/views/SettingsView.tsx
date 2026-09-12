@@ -3,6 +3,7 @@ import { formatMs, isAnalogKind, isLatchingKind, normalizeControlKind, type Engi
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { analogMinSize, defaultSnapshotWidgets, defaultStatusWidgets, gridCellRect, snapshotLayoutSlots, snapshotWidgetsToJson, statusWidgetsToJson } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
+import { listenForKeyboardCommit } from "../keyboard/utils";
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
@@ -465,6 +466,8 @@ function ControllerSettings({
 }) {
     const { client, state } = engine;
     const controller = obj(state.controller);
+    const controllerRef = useRef(controller);
+    controllerRef.current = controller;
     const controls = objects(controller.controls);
     const grouped = groupedControls(controls);
     const controlsRef = useRef(controls);
@@ -527,7 +530,7 @@ function ControllerSettings({
     };
 
     const patch = (nextControl: JsonObject) => {
-        const next = groupedControls(controls.map((item) => (
+        const next = groupedControls(controlsRef.current.map((item) => (
             str(item.id) === str(nextControl.id) ? nextControl : item
         )));
         controlsRef.current = next;
@@ -539,10 +542,10 @@ function ControllerSettings({
             <div className="split-toolbar" style={{ flexWrap: "wrap" }}>
                 <label className="field" style={{ minWidth: 140 }}>
                     <span>Name</span>
-                    <input
-                        key={str(controller.name)}
+                    <KeyboardCommitInput
+                        className="input"
                         defaultValue={str(controller.name)}
-                        onBlur={(event) => save({ ...controller, name: event.target.value })}
+                        onCommit={(name) => save({ ...controllerRef.current, name })}
                     />
                 </label>
                 <label className="field" style={{ minWidth: 180 }}>
@@ -608,7 +611,7 @@ function ControllerSettings({
                                 onClick={() => setSelectedId(str(control.id))}
                             >
                                 <MarqueeText
-                                    text={`${str(control.label, str(control.id))} · ${normalizeControlKind(str(control.kind, "momentary")).toUpperCase()}`}
+                                    text={`${str(control.label).trim() || str(control.id)} · ${normalizeControlKind(str(control.kind, "momentary")).toUpperCase()}`}
                                     align="left"
                                     fontWeight={800}
                                 />
@@ -618,7 +621,7 @@ function ControllerSettings({
                     </div>
                 </section>
                 <section className="split-pane">
-                    <div className="split-pane-title">{selected ? str(selected.label, "CONTROL") : "DETAIL"}</div>
+                    <div className="split-pane-title">{selected ? (str(selected.label).trim() || "CONTROL") : "DETAIL"}</div>
                     <div className="hardware-setup-detail">
                         {selected ? (
                             <HardwareControlDetail
@@ -662,6 +665,8 @@ function HardwareControlDetail({
     onRemove: () => void;
     onLearn: () => void;
 }) {
+    const controlRef = useRef(control);
+    controlRef.current = control;
     const binding = obj(control.binding);
     const kind = normalizeControlKind(str(control.kind, "momentary"));
     const analog = isAnalogKind(kind);
@@ -697,11 +702,11 @@ function HardwareControlDetail({
             <div className="hardware-field-grid">
                 <label className="field">
                     <span>Name</span>
-                    <input
+                    <KeyboardCommitInput
+                        key={str(control.id)}
                         className="input"
-                        key={`${str(control.id)}-${str(control.label)}`}
                         defaultValue={str(control.label)}
-                        onBlur={(event) => onPatch({ ...control, label: event.target.value })}
+                        onCommit={(label) => onPatch({ ...controlRef.current, label })}
                     />
                 </label>
                 <label className="field">
@@ -941,11 +946,15 @@ function UiBehaviorEditor() {
     };
     return (
         <div className="stack">
-            <div className="muted">On-screen pots enlarge while you drag them, and show the bound parameter name.</div>
+            <div className="muted">Pots enlarge while you drag them on screen or turn them on the floorboard, using the current theme so the background does not show through.</div>
             <div className="row">
                 <button type="button" className={`btn ${settings.controlPopout ? "btn-active" : ""}`}
                     onClick={() => apply({ ...settings, controlPopout: !settings.controlPopout })}>
-                    CONTROL POP-OUT
+                    TOUCH POP-OUT
+                </button>
+                <button type="button" className={`btn ${settings.physicalControlPopout ? "btn-active" : ""}`}
+                    onClick={() => apply({ ...settings, physicalControlPopout: !settings.physicalControlPopout })}>
+                    PHYSICAL POP-OUT
                 </button>
                 <button type="button" className={`btn ${settings.parameterFeedback ? "btn-active" : ""}`}
                     onClick={() => apply({ ...settings, parameterFeedback: !settings.parameterFeedback })}>
@@ -961,5 +970,34 @@ function UiBehaviorEditor() {
                     onChange={(event) => apply({ ...settings, controlPopoutDurationMs: Number(event.target.value) })} />
             </label>
         </div>
+    );
+}
+
+function KeyboardCommitInput({
+    className,
+    defaultValue,
+    onCommit
+}: {
+    className?: string;
+    defaultValue: string;
+    onCommit: (value: string) => void;
+}) {
+    const ref = useRef<HTMLInputElement>(null);
+    const onCommitRef = useRef(onCommit);
+    onCommitRef.current = onCommit;
+    useEffect(() => listenForKeyboardCommit(ref.current, (value) => onCommitRef.current(value)), []);
+    return (
+        <input
+            ref={ref}
+            className={className}
+            defaultValue={defaultValue}
+            onChange={(event) => onCommitRef.current(event.target.value)}
+            onBlur={(event) => onCommitRef.current(event.target.value)}
+            onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                }
+            }}
+        />
     );
 }

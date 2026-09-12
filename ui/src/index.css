@@ -1539,6 +1539,7 @@ button.list-item {
     min-height: 0;
     z-index: 1;
     pointer-events: auto;
+    overflow: visible;
 }
 
 .freeform-slot .footswitch {
@@ -1729,7 +1730,6 @@ button.list-item {
 
 .mfx-performance-control--popout {
     z-index: 30;
-    transform: scale(1.18);
 }
 
 .edit-tabs {
@@ -1911,6 +1911,9 @@ button.list-item {
     color: inherit;
     font: inherit;
     font-weight: 800;
+    letter-spacing: 0.02em;
+    word-spacing: 0.12em;
+    white-space: normal;
     text-align: left;
 }
 

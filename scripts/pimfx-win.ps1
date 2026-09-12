@@ -136,6 +136,33 @@ function Disable-Askpass {
     Remove-Item Env:SSH_ASKPASS, Env:SSH_ASKPASS_REQUIRE, Env:DISPLAY -ErrorAction SilentlyContinue
 }
 
+function Reload-PiKiosk {
+    $inc = Join-Path $PSScriptRoot "kiosk-reload.inc.sh"
+    if (-not (Test-Path $inc)) {
+        Write-Host "Kiosk refresh script is missing on this PC ($inc)."
+        return
+    }
+    Ensure-Login
+    Enable-Askpass
+    $quotedPass = Escape-BashSingle $script:Password
+    $remoteInc = Join-Path $env:TEMP "pimfx-kiosk-reload.inc.sh"
+    try {
+        Write-Host "==> Refreshing the Pi touchscreen browser"
+        $text = [IO.File]::ReadAllText($inc) -replace "`r`n", "`n" -replace "`r", "`n"
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllBytes($remoteInc, $utf8.GetBytes(($text.TrimEnd() + "`n")))
+        Invoke-SshTool scp ((Get-SshOpts) + @("-O", $remoteInc, "$($script:Target):/tmp/pimfx-kiosk-reload.inc.sh"))
+        $remote = "printf '%s\n' $quotedPass | sudo -S -p '' bash -c '. /tmp/pimfx-kiosk-reload.inc.sh; reload_kiosk_browser; rm -f /tmp/pimfx-kiosk-reload.inc.sh'"
+        Invoke-SshTool ssh ((Get-SshOpts) + @("-n", $script:Target, $remote))
+    } catch {
+        Write-Host "Could not refresh the Pi screen. Hard-refresh that display or reboot."
+        Write-Host $_
+    } finally {
+        Remove-Item $remoteInc -Force -ErrorAction SilentlyContinue
+        Disable-Askpass
+    }
+}
+
 function Invoke-Pimfx([string]$ActionLine) {
     Ensure-Login
     Enable-Askpass
@@ -193,10 +220,13 @@ rm -f /tmp/pimfx-apply.sh
         Write-Host "==> Applying on the Pi"
         Invoke-SshTool ssh ((Get-SshOpts) + @("-n", $script:Target, "bash /tmp/pimfx-apply.sh $Mode"))
         Save-Login $script:Target $script:Password
-        Write-Host "Done. Open http://pimfx.local:8080 and hard-refresh the page."
+        Write-Host "Done. Other browsers: hard-refresh http://pimfx.local:8080"
     } finally {
         Remove-Item $archive, $apply -Force -ErrorAction SilentlyContinue
         Disable-Askpass
+    }
+    if ($Mode -eq "rebuild") {
+        Reload-PiKiosk
     }
 }
 
@@ -237,8 +267,8 @@ function Invoke-MenuAction([string]$Choice) {
         "0" { Copy-LocalTree "rebuild" }
         "1" { Invoke-Pimfx ("complete -y --display-user " + $userName) }
         "2" { Invoke-Pimfx "install -y" }
-        "3" { Invoke-Pimfx "update -y --branch dev" }
-        "4" { Invoke-Pimfx "rebuild -y" }
+        "3" { Invoke-Pimfx "update -y --branch dev"; Reload-PiKiosk }
+        "4" { Invoke-Pimfx "rebuild -y"; Reload-PiKiosk }
         "5" { Invoke-Pimfx ("display -y --display-user " + $userName) }
         "5r" { Invoke-Pimfx "display-refresh -y" }
         "6" { Invoke-Pimfx "display-remove -y" }
@@ -289,7 +319,7 @@ function Show-Menu {
         Write-Host "  3) Update  (fetch GitHub, then rebuild and restart)"
         Write-Host "  4) Rebuild local files  (no git pull)"
         Write-Host "  5) Set up touchscreen display"
-        Write-Host "  5r) Refresh touchscreen (Chromium flags, hide system keyboard)"
+        Write-Host "  5r) Refresh touchscreen (hard-refresh kiosk, Chromium flags, hide keyboard)"
         Write-Host "  6) Remove touchscreen display"
         Write-Host "  7) Boot screen  (PI-MFX logo, hide boot text)"
         Write-Host "       7.1) Install PI-MFX logo and hide boot / shutdown text"

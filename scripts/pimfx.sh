@@ -48,7 +48,8 @@ Actions:
   update           Pull, rebuild, restart
   rebuild          Rebuild from files already on the Pi (no git pull)
   display          Fullscreen touchscreen (Labwc + Chromium)
-  display-refresh  Re-apply Chromium flags and hide the system keyboard
+  display-refresh  Re-apply Chromium flags, hide the system keyboard, hard-refresh
+  kiosk-reload     Hard-refresh the attached Chromium kiosk (no Chromium restart)
   display-remove   Undo the touchscreen session
   splash           PI-MFX boot / shutdown logo, hide boot text
   splash-remove    Restore console boot messages
@@ -127,7 +128,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|complete|install|update|rebuild|display|display-refresh|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
+        menu|complete|install|update|rebuild|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -266,7 +267,9 @@ purge_squeekboard() {
 restart_touchscreen_browser() {
     # Do not pkill Chromium here. On a live Labwc kiosk that races the GPU
     # and freezes the whole Pi (SSH, audio, and the attached screen).
-    log "Leaving the touchscreen browser running; reboot later if the screen needs a reload"
+    # shellcheck source=kiosk-reload.inc.sh
+    . "$SCRIPT_DIR/kiosk-reload.inc.sh"
+    reload_kiosk_browser
 }
 
 refresh_touchscreen_session() {
@@ -285,7 +288,7 @@ configure_touchscreen() {
 
     log "Setting up a fullscreen Pi-MFX session for $DISPLAY_USER"
     apt-get update
-    apt-get install -y --no-install-recommends labwc chromium
+    apt-get install -y --no-install-recommends labwc chromium wtype
     [[ -x /usr/bin/chromium ]] || die "chromium did not install at /usr/bin/chromium"
 
     mkdir -p "$DISPLAY_STATE_DIR" /etc/xdg/labwc
@@ -556,6 +559,11 @@ main() {
         rebuild) do_rebuild ;;
         display) configure_touchscreen ;;
         display-refresh) refresh_touchscreen_session ;;
+        kiosk-reload)
+            # shellcheck source=kiosk-reload.inc.sh
+            . "$SCRIPT_DIR/kiosk-reload.inc.sh"
+            reload_kiosk_browser
+            ;;
         display-remove) remove_touchscreen ;;
         splash) do_splash ${ASSUME_YES:+--yes} ;;
         splash-remove) do_splash_remove ${ASSUME_YES:+--yes} ;;

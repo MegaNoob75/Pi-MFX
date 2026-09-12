@@ -179,8 +179,14 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     fi
     log "Restarting pimfx"
     systemctl restart pimfx.service
-    sleep 1
+    sleep 2
     systemctl --no-pager --full status pimfx.service || true
+    # Ctrl+Shift+R on the kiosk. Do not restart Chromium; that can freeze the Pi.
+    if [[ -f "$REPO_DIR/scripts/kiosk-reload.inc.sh" ]]; then
+        # shellcheck source=kiosk-reload.inc.sh
+        . "$REPO_DIR/scripts/kiosk-reload.inc.sh"
+        reload_kiosk_browser
+    fi
 else
     die "pimfx is not installed yet. First time on this Pi: sudo bash ./scripts/pimfx.sh"
 fi
@@ -188,3 +194,4 @@ fi
 ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"
 log "Done. Open http://pimfx.local:${PIMFX_PORT:-8080}"
 log "     or http://${ADDRESS:-<this-pi>}:${PIMFX_PORT:-8080}"
+log "     The Pi screen was hard-refreshed if a graphical browser session is running."

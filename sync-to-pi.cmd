@@ -8,7 +8,7 @@ echo.
 if %ERR% neq 0 (
     echo Sync/rebuild did not finish.
 ) else (
-    echo Sync/rebuild finished. Hard-refresh http://pimfx.local:8080
+    echo Sync/rebuild finished. Other browsers: hard-refresh http://pimfx.local:8080
 )
 pause
 exit /b %ERR%

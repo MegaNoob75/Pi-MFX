@@ -32,21 +32,29 @@ export function KeyboardProvider() {
     const nextId = useRef(0);
     sessionRef.current = session;
 
+    const finishingRef = useRef(false);
+
     const finish = useCallback((current: KeyboardSession, value: string | null) => {
-        const resolve = current.resolve;
-        current.resolve = undefined;
-        if (value !== null && current.target) {
-            commitValue(current.target, value);
-            if (ask) {
-                setAskValue(current.target.value);
-            }
-        }
-        if (current.target && document.activeElement === current.target) {
-            current.target.blur();
+        if (sessionRef.current?.id !== current.id) {
+            return;
         }
         sessionRef.current = null;
-        setSession(null);
-        resolve?.(value);
+        finishingRef.current = true;
+        const resolve = current.resolve;
+        current.resolve = undefined;
+        try {
+            if (value !== null && current.target) {
+                commitValue(current.target, value);
+                if (ask) {
+                    setAskValue(value);
+                }
+                current.target.blur();
+            }
+            setSession(null);
+            resolve?.(value);
+        } finally {
+            finishingRef.current = false;
+        }
     }, [ask]);
 
     const open = useCallback((element: EditableElement) => {
@@ -126,7 +134,7 @@ export function KeyboardProvider() {
         };
 
         const focusIn = (event: FocusEvent) => {
-            if (!shouldUseOnScreenKeyboard()) {
+            if (finishingRef.current || !shouldUseOnScreenKeyboard()) {
                 return;
             }
             const element = editableFromTarget(event.target);

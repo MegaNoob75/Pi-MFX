@@ -137,6 +137,12 @@ export function PerformanceView({
     const rememberedToastRef = useRef({ ready: false, presetId: "", enabled: false, reloadCount: 0 });
     const bypassToastRef = useRef({ ready: false, bypass: false, reloadCount: 0 });
     const reloadToastRef = useRef({ ready: false, count: 0 });
+    const menuArmCleanup = useRef<(() => void) | null>(null);
+    const [menuLive, setMenuLive] = useState(false);
+    const positionsRef = useRef<Record<string, number>>({});
+    const physicalPopoutReady = useRef(false);
+    const physicalPopoutTimer = useRef<number | null>(null);
+    const [hardwarePopoutId, setHardwarePopoutId] = useState("");
     const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
@@ -177,7 +183,51 @@ export function PerformanceView({
         if (feedbackTimer.current !== null) {
             window.clearTimeout(feedbackTimer.current);
         }
+        if (physicalPopoutTimer.current !== null) {
+            window.clearTimeout(physicalPopoutTimer.current);
+        }
+        menuArmCleanup.current?.();
     }, []);
+
+    useEffect(() => {
+        const next: Record<string, number> = {};
+        for (const [id, value] of Object.entries(positions)) {
+            next[id] = num(value);
+        }
+        const previous = positionsRef.current;
+        const moved = Object.keys(next).filter((id) => {
+            const before = previous[id];
+            if (before === undefined) {
+                return false;
+            }
+            return Math.abs(next[id] - before) > 0.012;
+        });
+        positionsRef.current = next;
+        if (!physicalPopoutReady.current) {
+            physicalPopoutReady.current = true;
+            return;
+        }
+        if (moved.length !== 1 || !loadUiBehavior().physicalControlPopout) {
+            return;
+        }
+        const controlId = moved[0];
+        const control = controls.find((item) => str(item.id) === controlId);
+        if (!control || !isAnalogKind(normalizeControlKind(str(control.kind, "momentary")))) {
+            return;
+        }
+        setHardwarePopoutId(controlId);
+        if (physicalPopoutTimer.current !== null) {
+            window.clearTimeout(physicalPopoutTimer.current);
+        }
+        physicalPopoutTimer.current = window.setTimeout(() => {
+            physicalPopoutTimer.current = null;
+            setHardwarePopoutId("");
+        }, loadUiBehavior().controlPopoutDurationMs);
+    }, [positions, controls]);
+
+    useEffect(() => {
+        physicalPopoutReady.current = false;
+    }, [state.activePresetId]);
 
     const rememberedEnabled = bool(obj(preset).rememberedSnapshotEnabled);
     const rememberedSlot = num(obj(preset).rememberedSnapshotSlot, -1);
@@ -221,9 +271,10 @@ export function PerformanceView({
         }
         if (reloadCount !== previous.count) {
             showToast("PRESET RELOADED");
+            rememberPresetBaseline(str(state.activePresetId), chainSignature, true);
         }
         reloadToastRef.current = { ready: true, count: reloadCount };
-    }, [reloadCount]);
+    }, [reloadCount, chainSignature, state.activePresetId]);
 
     useEffect(() => {
         rememberPresetBaseline(str(state.activePresetId), chainSignature);
@@ -254,10 +305,41 @@ export function PerformanceView({
         void client.request("controller/press", { controlId: id, fire }).catch(() => undefined);
     };
 
-    const closeMenu = () => setMenu(null);
+    const closeMenu = () => {
+        menuArmCleanup.current?.();
+        menuArmCleanup.current = null;
+        setMenuLive(false);
+        setMenu(null);
+    };
+
+    const armMenuUntilIdle = () => {
+        menuArmCleanup.current?.();
+        setMenuLive(false);
+        const swallow = (event: Event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        window.addEventListener("pointerup", swallow, true);
+        window.addEventListener("pointercancel", swallow, true);
+        window.addEventListener("click", swallow, true);
+        const timer = window.setTimeout(() => {
+            window.removeEventListener("pointerup", swallow, true);
+            window.removeEventListener("pointercancel", swallow, true);
+            window.removeEventListener("click", swallow, true);
+            menuArmCleanup.current = null;
+            setMenuLive(true);
+        }, 400);
+        menuArmCleanup.current = () => {
+            window.clearTimeout(timer);
+            window.removeEventListener("pointerup", swallow, true);
+            window.removeEventListener("pointercancel", swallow, true);
+            window.removeEventListener("click", swallow, true);
+        };
+    };
 
     const openPresetMenu = (controlId: string, slotIndex: number, presetId: string, canAssign: boolean) => {
         const item = presets.find((entry) => str(entry.id) === presetId);
+        armMenuUntilIdle();
         setRenameValue(str(obj(item).name));
         setMenu({ kind: "preset", controlId, slotIndex, presetId, canAssign });
     };
@@ -323,7 +405,8 @@ export function PerformanceView({
             tapTempo: "TAP TEMPO",
             tuner: "TUNER"
         };
-        return labels[actionName] ?? actionName.replace(/([A-Z])/g, " $1").trim().toUpperCase();
+        return labels[actionName]
+            ?? formatMenuLabel(actionName).toUpperCase();
     };
 
     const lightForPreset = (isActive: boolean): LightState => {
@@ -634,7 +717,8 @@ export function PerformanceView({
                     onPresetPointerMove: canAssign && presetId ? movePresetDrag : undefined,
                     onPresetPointerUp: canAssign && presetId
                         ? (event) => endPresetDrag(event)
-                        : undefined
+                        : undefined,
+                    hardwarePopout: analog && hardwarePopoutId === controlId
                 };
             })
             : Array.from({ length: Math.min(switchCount, rows * columns) }, (_, index) => {
@@ -672,7 +756,7 @@ export function PerformanceView({
                 : ["Create New Preset", "Cancel"];
         }
         const options = ["Load Preset", "Edit Preset"];
-        if (current.presetId === str(state.activePresetId) && !snapshotWriteBlocked) {
+        if (current.presetId === str(state.activePresetId) && !snapshotWriteBlocked && presetModified) {
             options.push("Save Loaded Preset");
         }
         if (current.canAssign) {
@@ -942,11 +1026,16 @@ export function PerformanceView({
             <div className="performance-stage freeform">
                 {STATUS_WIDGET_IDS.filter((id) => widgets[id].visible).map((id) => {
                     const widget = widgets[id];
+                    const pickerOpen = (id === "currentBank" && bankMenuOpen)
+                        || (id === "activePreset" && presetMenuOpen);
                     return (
                         <div
                             key={id}
                             className={`status-widget${isMeterWidget(id) ? " is-meter" : ""}`}
-                            style={rectStyle(widget.rect)}
+                            style={{
+                                ...rectStyle(widget.rect),
+                                zIndex: pickerOpen ? 50 : undefined
+                            }}
                         >
                             {id === "currentBank" ? bankPicker
                                 : id === "activePreset" ? presetPicker
@@ -968,7 +1057,11 @@ export function PerformanceView({
                 })}
 
                 {stageTiles.map((tile) => (
-                    <div key={tile.id} className="freeform-slot" style={tile.rect ? rectStyle(tile.rect) : undefined}>
+                    <div
+                        key={tile.id}
+                        className="freeform-slot"
+                        style={tile.rect ? { ...rectStyle(tile.rect), zIndex: slotZIndex(tile) } : undefined}
+                    >
                         <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
                     </div>
                 ))}
@@ -1028,8 +1121,35 @@ export function PerformanceView({
             )}
 
             {menu?.kind === "preset" && createPortal(
-                <div className="mfx-overlay" onClick={closeMenu}>
-                    <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
+                <div
+                    className="mfx-overlay"
+                    onPointerDown={(event) => {
+                        if (event.target !== event.currentTarget) {
+                            return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (menuLive) {
+                            closeMenu();
+                        }
+                    }}
+                    onClick={(event) => {
+                        if (event.target !== event.currentTarget) {
+                            return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (menuLive) {
+                            closeMenu();
+                        }
+                    }}
+                >
+                    <div
+                        className="mfx-overlay-card"
+                        style={{ pointerEvents: menuLive ? "auto" : "none" }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => event.stopPropagation()}
+                    >
                         <div className="mfx-overlay-title">PRESET SWITCH {menu.slotIndex + 1}</div>
                         {selectedPreset && (
                             <div className="row" style={{ marginBottom: 10 }}>
@@ -1046,9 +1166,10 @@ export function PerformanceView({
                                 key={option}
                                 type="button"
                                 className="mfx-overlay-option"
+                                disabled={!menuLive}
                                 onClick={() => runPresetOption(option, menu)}
                             >
-                                {option}
+                                {formatMenuLabel(option)}
                             </button>
                         ))}
                     </div>
@@ -1111,9 +1232,6 @@ export function PerformanceView({
                             type="button"
                             className="mfx-overlay-option"
                             onClick={() => {
-                                // #region agent log
-                                fetch("http://127.0.0.1:7671/ingest/50e56e7c-9d0c-4ac2-8675-d5943d42b03b", { method: "POST", headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "4847b9" }, body: JSON.stringify({ sessionId: "4847b9", location: "PerformanceView.tsx:editSnapshot", message: "EDIT SNAPSHOT click", data: { snapshotId: menu.snapshotId, index: menu.index }, timestamp: Date.now(), hypothesisId: "H4" }) }).catch(() => undefined);
-                                // #endregion
                                 closeMenu();
                                 onEditSnapshot?.(menu.snapshotId);
                             }}
@@ -1274,6 +1392,23 @@ function rectStyle(rect: { x: number; y: number; width: number; height: number }
         width: `${rect.width * 100}%`,
         height: `${rect.height * 100}%`
     };
+}
+
+function formatMenuLabel(label: string): string {
+    return label
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+        .replace(/_/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function slotZIndex(tile: PerformanceTile): number {
+    const x = tile.rect?.x ?? 0;
+    if (tile.analog) {
+        return 6;
+    }
+    return 14 + Math.round((1 - x) * 18);
 }
 
 function signatureForChain(chain: JsonObject[]): string {
