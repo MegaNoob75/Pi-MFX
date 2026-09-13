@@ -100,9 +100,10 @@ if ! command -v cmake >/dev/null 2>&1; then
     die "cmake is not installed. This Pi has not been set up yet. Run:  sudo bash ./scripts/pimfx.sh"
 fi
 
-# Stamp both the engine and browser bundle with the exact remote commit. Local
-# PC copies already provide their own <hash>-local identity.
-if [[ -z "${PIMFX_GIT_SHA:-}" ]]; then
+# Stamp both the engine and browser bundle with the exact remote commit. Do not
+# trust an inherited local-build value during a GitHub update; only the explicit
+# Copy Local Tree path (SKIP_PULL=1) may retain its <hash>-local identity.
+if [[ "${SKIP_PULL:-0}" != "1" || -z "${PIMFX_GIT_SHA:-}" ]]; then
     PIMFX_GIT_SHA="$(as_clone_owner git rev-parse --short HEAD)"
 fi
 
@@ -227,3 +228,13 @@ ADDRESS="$(hostname -I 2>/dev/null | awk '{print $1}')"
 log "Done. Open http://pimfx.local:${PIMFX_PORT:-8080}"
 log "     or http://${ADDRESS:-<this-pi>}:${PIMFX_PORT:-8080}"
 log "     The Pi screen was hard-refreshed if a graphical browser session is running."
+
+# The running helper must stay alive until it records this job's final output,
+# but its installed Python file may have changed. Restart it shortly after this
+# script exits so the next request uses the updated helper implementation.
+if [[ "${PIMFX_UPDATE_FROM_HELPER:-0}" == "1" ]] && command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --quiet --collect --on-active=3s \
+        --unit="pimfx-plugin-helper-refresh-$(date +%s)" \
+        /bin/systemctl restart pimfx-plugin-helper.service \
+        || warn "could not schedule the plugin helper refresh"
+fi
