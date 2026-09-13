@@ -39,12 +39,11 @@ list your card.
 
 ## 3. Install
 
-The repo is private. Clone with SSH after the Pi’s public key is on GitHub
-(`ssh -T git@github.com` should greet you). HTTPS will prompt for a username
-and then fail.
+The repository is public. Clone it over HTTPS so the unattended updater needs
+no GitHub username, password, token, or personal SSH key on the Pi.
 
 ```bash
-git clone git@github.com:MegaNoob75/Pi-MFX.git
+git clone https://github.com/MegaNoob75/Pi-MFX.git
 cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```

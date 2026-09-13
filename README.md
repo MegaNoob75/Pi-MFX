@@ -51,10 +51,10 @@ or HAT is required.
 
 ## Install
 
-On the Pi (the repo is private; clone with SSH):
+On the Pi, clone the public repository over HTTPS:
 
 ```bash
-git clone git@github.com:MegaNoob75/Pi-MFX.git
+git clone https://github.com/MegaNoob75/Pi-MFX.git
 cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
