@@ -532,6 +532,8 @@ export function Tone3000View({
     const scrollPublishFrame = useRef<number | null>(null);
     const pendingScrollRatio = useRef(0);
     const localScrollUntil = useRef(0);
+    const previousToneCount = useRef(0);
+    const previousSharedScrollRatio = useRef<number | undefined>(undefined);
     const sharedTone = obj(engine.uiSession.tone3000);
     const updateSharedTone = (patch: JsonObject) => {
         engine.client.updateUiSession({
@@ -582,13 +584,25 @@ export function Tone3000View({
 
     useEffect(() => {
         const scroller = scrollerRef.current;
-        if (!scroller || typeof sharedTone.scrollRatio !== "number") return;
+        const ratio = sharedTone.scrollRatio;
+        const priorCount = previousToneCount.current;
+        const initialPopulation = priorCount === 0 && tones.length > 0;
+        const remoteRatioChanged = typeof ratio === "number"
+            && ratio !== previousSharedScrollRatio.current;
+        previousToneCount.current = tones.length;
+        previousSharedScrollRatio.current = typeof ratio === "number" ? ratio : undefined;
+        if (!scroller || typeof ratio !== "number") return;
+        // Adding another infinite-scroll page increases scrollHeight. Reusing
+        // the old percentage against that larger range moves the viewport even
+        // though the user did not ask it to move. Only restore after the first
+        // population, or when another browser actually sends a new position.
+        if (!initialPopulation && !remoteRatioChanged) return;
         // Ignore the websocket echo of this browser's own scroll gesture.
         // Applying an older ratio during touchpad momentum makes the list
         // visibly jump back and forth.
         if (performance.now() < localScrollUntil.current) return;
         const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-        const desired = Math.max(0, Math.min(1, sharedTone.scrollRatio)) * range;
+        const desired = Math.max(0, Math.min(1, ratio)) * range;
         if (Math.abs(scroller.scrollTop - desired) < 2) return;
         applyingSharedScroll.current = true;
         scroller.scrollTop = desired;

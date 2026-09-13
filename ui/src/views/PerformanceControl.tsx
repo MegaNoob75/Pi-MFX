@@ -48,6 +48,7 @@ export interface PerformanceTile {
     freeform?: boolean;
     onPress: () => void;
     onValue?: (value: number) => void;
+    onStep?: (delta: number) => void;
     onLongPress?: () => void;
     onDoublePress?: () => void;
     onMenu?: () => void;
@@ -109,7 +110,9 @@ export function PerformanceControl({
         startValue: number;
         bounds: DOMRect;
         keep: boolean;
+        emittedSteps: number;
     } | null>(null);
+    const encoderGestureCleanup = useRef<(() => void) | null>(null);
     const hold = useRef<{
         timer: number | null;
         pointerId: number;
@@ -157,6 +160,7 @@ export function PerformanceControl({
     };
 
     useEffect(() => () => {
+        encoderGestureCleanup.current?.();
         clearHold();
         clearDouble();
         tile.onCancelPress?.();
@@ -189,6 +193,19 @@ export function PerformanceControl({
         });
     };
 
+    const emitEncoderSteps = (pointerId: number, clientX: number, clientY: number) => {
+        const active = drag.current;
+        if (!active || active.pointerId !== pointerId || !tile.onStep) return;
+        const horizontal = clientX - hold.current.startX;
+        const vertical = active.startY - clientY;
+        const travel = Math.abs(horizontal) > Math.abs(vertical) ? horizontal : vertical;
+        const steps = Math.trunc(travel / 12);
+        const delta = steps - active.emittedSteps;
+        if (delta === 0) return;
+        active.emittedSteps = steps;
+        tile.onStep(delta > 0 ? 1 : -1);
+    };
+
     const begin = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>, keep: boolean) => {
         if (event.pointerType === "mouse" && event.button !== 0) {
             return;
@@ -212,7 +229,7 @@ export function PerformanceControl({
             tile.onDoublePress();
             return;
         }
-        if (analog && tile.onValue) {
+        if (analog && (tile.onValue || tile.onStep)) {
             const behavior = loadUiBehavior();
             if (behavior.controlPopout || keep) {
                 setPopout(true);
@@ -222,9 +239,83 @@ export function PerformanceControl({
                 startY: event.clientY,
                 startValue: range,
                 bounds: event.currentTarget.getBoundingClientRect(),
-                keep
+                keep,
+                emittedSteps: 0
             };
             publishFeedback();
+            if ((tile.kind ?? "pot") === "encoder" && tile.onStep) {
+                encoderGestureCleanup.current?.();
+                const pointerId = event.pointerId;
+                const touchGesture = event.pointerType !== "mouse";
+                const onMove = (moveEvent: PointerEvent) => {
+                    if (moveEvent.pointerId !== pointerId) return;
+                    moveEvent.preventDefault();
+                    moveEvent.stopPropagation();
+                    emitEncoderSteps(pointerId, moveEvent.clientX, moveEvent.clientY);
+                };
+                const onMouseMove = (moveEvent: MouseEvent) => {
+                    if (touchGesture || drag.current?.pointerId !== pointerId) return;
+                    moveEvent.preventDefault();
+                    emitEncoderSteps(pointerId, moveEvent.clientX, moveEvent.clientY);
+                };
+                const onTouchMove = (moveEvent: TouchEvent) => {
+                    if (!touchGesture || drag.current?.pointerId !== pointerId) return;
+                    const touch = moveEvent.touches.item(0);
+                    if (!touch) return;
+                    moveEvent.preventDefault();
+                    emitEncoderSteps(pointerId, touch.clientX, touch.clientY);
+                };
+                const finish = (cancelled: boolean, endEvent?: Event) => {
+                    if (drag.current?.pointerId !== pointerId) return;
+                    endEvent?.preventDefault();
+                    endEvent?.stopPropagation();
+                    const tapped = drag.current.emittedSteps === 0;
+                    clearHold();
+                    drag.current = null;
+                    tile.onRelease?.();
+                    encoderGestureCleanup.current?.();
+                    const duration = loadUiBehavior().controlPopoutDurationMs;
+                    window.setTimeout(() => setPopout(false), duration);
+                    if (!cancelled && tapped) queueTap();
+                };
+                const onUp = (endEvent: PointerEvent) => {
+                    if (endEvent.pointerId === pointerId) finish(false, endEvent);
+                };
+                // Chromium may cancel the pointer when the popout portal is
+                // inserted. Native touch/mouse events continue, so keep the
+                // gesture alive and let their matching end event finish it.
+                const onCancel = (endEvent: PointerEvent) => {
+                    if (endEvent.pointerId === pointerId) endEvent.stopPropagation();
+                };
+                const onMouseUp = (endEvent: MouseEvent) => {
+                    if (!touchGesture) finish(false, endEvent);
+                };
+                const onTouchEnd = (endEvent: TouchEvent) => {
+                    if (touchGesture) finish(false, endEvent);
+                };
+                const onTouchCancel = (endEvent: TouchEvent) => {
+                    if (touchGesture) finish(true, endEvent);
+                };
+                encoderGestureCleanup.current = () => {
+                    window.removeEventListener("pointermove", onMove, true);
+                    window.removeEventListener("pointerup", onUp, true);
+                    window.removeEventListener("pointercancel", onCancel, true);
+                    window.removeEventListener("mousemove", onMouseMove, true);
+                    window.removeEventListener("mouseup", onMouseUp, true);
+                    window.removeEventListener("touchmove", onTouchMove, true);
+                    window.removeEventListener("touchend", onTouchEnd, true);
+                    window.removeEventListener("touchcancel", onTouchCancel, true);
+                    encoderGestureCleanup.current = null;
+                };
+                window.addEventListener("pointermove", onMove, { capture: true, passive: false });
+                window.addEventListener("pointerup", onUp, { capture: true, passive: false });
+                window.addEventListener("pointercancel", onCancel, { capture: true, passive: false });
+                window.addEventListener("mousemove", onMouseMove, { capture: true, passive: false });
+                window.addEventListener("mouseup", onMouseUp, { capture: true, passive: false });
+                window.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
+                window.addEventListener("touchend", onTouchEnd, { capture: true, passive: false });
+                window.addEventListener("touchcancel", onTouchCancel, { capture: true, passive: false });
+            }
         }
         if (tile.onLongPress) {
             hold.current.timer = window.setTimeout(openHoldMenu, LONG_PRESS_MS);
@@ -249,11 +340,16 @@ export function PerformanceControl({
         if (analog && hold.current.suppressed) {
             return;
         }
-        if (!drag.current || drag.current.pointerId !== event.pointerId || !tile.onValue) {
+        if (!drag.current || drag.current.pointerId !== event.pointerId) {
             return;
         }
         event.preventDefault();
         const kind = tile.kind ?? "pot";
+        if (kind === "encoder" && tile.onStep) {
+            emitEncoderSteps(event.pointerId, event.clientX, event.clientY);
+            return;
+        }
+        if (!tile.onValue) return;
         let next: number;
         if (kind === "slider" || kind === "expression") {
             next = 1 - (event.clientY - drag.current.bounds.top) / Math.max(1, drag.current.bounds.height);
@@ -286,6 +382,8 @@ export function PerformanceControl({
 
     const finishPointer = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>, cancelled: boolean) => {
         const analogDrag = drag.current && drag.current.pointerId === event.pointerId;
+        const encoderTap = analogDrag && (tile.kind ?? "pot") === "encoder"
+            && drag.current?.emittedSteps === 0;
         const fromTouchMenu = Date.now() - hold.current.contextMenuAt < 800;
         if (!cancelled && fromTouchMenu) {
             if (hold.current.timer !== null) {
@@ -316,6 +414,7 @@ export function PerformanceControl({
         if (analogDrag) {
             const behavior = loadUiBehavior();
             window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
+            if (!cancelled && !suppressed && encoderTap) queueTap();
             return;
         }
         if (!cancelled && !suppressed) {
@@ -361,6 +460,12 @@ export function PerformanceControl({
             onPointerUp={end}
             onPointerCancel={onPointerCancelHold}
             onContextMenu={suppressBrowserMenu}
+            onWheel={(event) => {
+                if ((tile.kind ?? "pot") !== "encoder" || !tile.onStep || event.deltaY === 0) return;
+                event.preventDefault();
+                event.stopPropagation();
+                tile.onStep(event.deltaY < 0 ? 1 : -1);
+            }}
         >
             {(tile.analogSource || tile.switchLabel).trim() ? (
                 <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />

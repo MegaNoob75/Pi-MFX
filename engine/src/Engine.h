@@ -131,6 +131,7 @@ public:
     /// Sets a pot, slider or expression pedal from the screen. `value` is 0-1
     /// as the on-screen control is pointing.
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
+    bool turnVirtualEncoder(const std::string& controlId, int delta, std::string& error);
     /// Binds a hardware control to a parameter or bypass of the active preset.
     bool bindPresetControl(const Json& json, std::string& error);
     /// Session-only switch→preset map used by Performance encoder "session"

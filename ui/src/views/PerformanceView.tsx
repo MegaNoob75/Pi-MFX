@@ -152,6 +152,8 @@ export function PerformanceView({
     const [hardwarePopoutId, setHardwarePopoutId] = useState("");
     const encoderDrivingRef = useRef(false);
     const encoderDriveTimer = useRef<number | null>(null);
+    const screenEncoderStepRef = useRef<(delta: number) => void>(() => undefined);
+    const screenEncoderSelectRef = useRef<() => void>(() => undefined);
     const browseNavRef = useRef({
         catalog: [] as PerformanceCatalogEntry[],
         browseIndex: 0,
@@ -770,6 +772,8 @@ export function PerformanceView({
                         : gridCellRect(index, columns, rows),
                     onPress: () => {
                         if (encoder) {
+                            if (navigationEncoder) screenEncoderSelectRef.current();
+                            else if (pairId) fireControl(pairId, "tap");
                             return;
                         }
                         if (empty) {
@@ -791,6 +795,15 @@ export function PerformanceView({
                     onValue: analogAssigned
                         ? (value: number) => {
                             void client.request("controller/value", { controlId, value }).catch(() => undefined);
+                        }
+                        : undefined,
+                    onStep: encoder
+                        ? (delta: number) => {
+                            if (navigationEncoder) {
+                                screenEncoderStepRef.current(delta);
+                            } else {
+                                void client.request("controller/turn", { controlId, delta }).catch(() => undefined);
+                            }
                         }
                         : undefined,
                     onLongPress: analog || encoder || !hasHoldAction
@@ -1001,12 +1014,18 @@ export function PerformanceView({
     const selectedPreset = menu?.kind === "preset"
         ? presets.find((entry) => str(entry.id) === menu.presetId)
         : undefined;
+    const appliedSnapshot = activeSnapshot >= 0 ? snapshotAtSlot(snapshots, activeSnapshot) : undefined;
+    const snapshotStatus = activeSnapshot >= 0
+        ? `${str(obj(appliedSnapshot).name, `SNAPSHOT ${activeSnapshot + 1}`)} · ACTIVE`
+        : snapshotMode
+            ? "SELECT SNAPSHOT"
+            : "BASE PRESET";
 
     const widgetValues = {
         bank: str(obj(bank).name, "—"),
         preset: str(obj(preset).name, "—"),
         bypass: bypassAll ? "ON" : "OFF",
-        snaps: snapshotMode ? "ON" : "OFF"
+        snaps: snapshotStatus
     };
 
     const selectBankId = (id: string) => {
@@ -1164,6 +1183,8 @@ export function PerformanceView({
                 presetId: entry.presetId
             }));
         };
+        screenEncoderStepRef.current = stepBrowse;
+        screenEncoderSelectRef.current = confirmBrowse;
         const onKey = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
             if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {

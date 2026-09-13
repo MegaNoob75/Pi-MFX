@@ -2455,6 +2455,30 @@ bool Engine::setVirtualControlValue(const std::string& controlId, float value, s
     return false;
 }
 
+bool Engine::turnVirtualEncoder(const std::string& controlId, int delta, std::string& error) {
+    const ControllerConfig config = controller_.config();
+    for (const ControllerControl& control : config.controls) {
+        if (control.id != controlId) continue;
+        if (control.kind != ControlKind::Encoder) {
+            error = "control is not an encoder";
+            return false;
+        }
+        ActionRequest request;
+        request.controlId = control.id;
+        request.binding = control.binding;
+        request.action = control.binding.action;
+        request.pressed = true;
+        request.kind = control.kind;
+        request.delta = delta < 0 ? -1 : 1;
+        request.fromScreen = true;
+        request.persist = false;
+        runAction(request);
+        return true;
+    }
+    error = "no such control";
+    return false;
+}
+
 void Engine::handleMidiMessage(const MidiMessage& message) {
     bool encoderUi = false;
     for (const ActionRequest& request : controller_.handleMessage(message)) {

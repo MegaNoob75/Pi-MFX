@@ -454,6 +454,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                             payload["value"].asFloat(0.0f), error);
         return Json::object();
     }
+    if (command == "controller/turn") {
+        ok = engine_.turnVirtualEncoder(payload["controlId"].asString(),
+                                        payload["delta"].asInt(1), error);
+        return Json::object();
+    }
 
     // --- library -----------------------------------------------------------
     if (command == "library/upload") {
