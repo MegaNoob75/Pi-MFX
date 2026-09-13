@@ -33,7 +33,7 @@ HOTSPOT_SCRIPT = os.path.join(PREFIX, "libexec/pimfx/hotspot.py")
 REPO_DIR = os.environ.get("PIMFX_REPO", "")
 UPDATE_STATUS_PATH = "/run/pimfx/update-status.json"
 SOURCE_REPO_PATH = os.path.join(DATA_ROOT, "source-repo")
-OFFICIAL_REPO_URL = "https://github.com/MegaNoob75/Pi-MFX.git"
+PUBLIC_REPO_URL = "https://github.com/MegaNoob75/Pi-MFX.git"
 SOURCES_DIR = "/etc/apt/sources.list.d"
 KEYRING_DIR = "/usr/share/keyrings"
 
@@ -517,10 +517,18 @@ def handle(request: dict) -> dict:
         return payload
 
     if op == "update-status":
-        return git_update_status(bool(request.get("fetch")), str(request.get("branch") or ""))
+        return git_update_status(
+            bool(request.get("fetch")),
+            str(request.get("branch") or ""),
+            str(request.get("installedCommit") or ""),
+        )
 
     if op == "update-install":
-        return git_update_install(timeout, str(request.get("branch") or ""))
+        return git_update_install(
+            timeout,
+            str(request.get("branch") or ""),
+            str(request.get("installedCommit") or ""),
+        )
 
     if op == "reboot":
         return power_pi("reboot")
@@ -671,7 +679,7 @@ def git_error(result: subprocess.CompletedProcess[str], fallback: str) -> str:
 def ensure_update_origin(repo: str) -> None:
     result = git_in_repo(["remote", "get-url", "origin"], repo=repo)
     if result.returncode != 0:
-        added = git_in_repo(["remote", "add", "origin", OFFICIAL_REPO_URL], repo=repo)
+        added = git_in_repo(["remote", "add", "origin", PUBLIC_REPO_URL], repo=repo)
         if added.returncode != 0:
             raise ValueError(git_error(added, "could not configure the Pi-MFX GitHub remote"))
         return
@@ -684,10 +692,10 @@ def ensure_update_origin(repo: str) -> None:
         "ssh://git@github.com/meganoob75/pi-mfx",
         "https://github.com/meganoob75/pi-mfx",
         "http://github.com/meganoob75/pi-mfx",
-    } and current != OFFICIAL_REPO_URL:
-        changed = git_in_repo(["remote", "set-url", "origin", OFFICIAL_REPO_URL], repo=repo)
+    } and current != PUBLIC_REPO_URL:
+        changed = git_in_repo(["remote", "set-url", "origin", PUBLIC_REPO_URL], repo=repo)
         if changed.returncode != 0:
-            raise ValueError(git_error(changed, "could not use the public Pi-MFX GitHub remote"))
+            raise ValueError(git_error(changed, "could not configure anonymous GitHub updates"))
 
 
 def install_in_progress() -> bool:
@@ -735,7 +743,7 @@ def start_origin_fetch(repo: str) -> None:
     threading.Thread(target=work, daemon=True, name="pimfx-git-fetch").start()
 
 
-def git_refs(repo: str, branch_wanted: str = "") -> dict:
+def git_refs(repo: str, branch_wanted: str = "", deployed_commit: str = "") -> dict:
     current_result = git_in_repo(["rev-parse", "--abbrev-ref", "HEAD"], repo=repo)
     installed_result = git_in_repo(["rev-parse", "--short", "HEAD"], repo=repo)
     installed_full_result = git_in_repo(["rev-parse", "HEAD"], repo=repo)
@@ -743,7 +751,9 @@ def git_refs(repo: str, branch_wanted: str = "") -> dict:
         if result.returncode != 0:
             raise ValueError(git_error(result, "could not read the installed Pi-MFX revision"))
     current = current_result.stdout.strip()
-    installed = installed_result.stdout.strip()
+    source_commit = installed_result.stdout.strip()
+    deployed_commit = deployed_commit.strip()
+    installed = deployed_commit if re.match(r"^[0-9a-fA-F]+(?:-local)?$", deployed_commit) else source_commit
     installed_full = installed_full_result.stdout.strip()
     wanted = normalize_branch(branch_wanted) or normalize_branch(current) or "dev"
     remote = f"origin/{wanted}"
@@ -762,7 +772,7 @@ def git_refs(repo: str, branch_wanted: str = "") -> dict:
     }
 
 
-def git_update_status(fetch: bool, branch_wanted: str = "") -> dict:
+def git_update_status(fetch: bool, branch_wanted: str = "", deployed_commit: str = "") -> dict:
     stored = read_update_status()
     repo = find_repo()
     if not repo_is_clone(repo):
@@ -787,7 +797,7 @@ def git_update_status(fetch: bool, branch_wanted: str = "") -> dict:
         "fetching": fetch_in_progress(),
     }
     try:
-        payload.update(git_refs(repo, branch_wanted))
+        payload.update(git_refs(repo, branch_wanted, deployed_commit))
         payload["jobState"] = job_state
         payload["fetching"] = fetch_in_progress()
         fetch_error = last_fetch_error()
@@ -806,7 +816,7 @@ def git_update_status(fetch: bool, branch_wanted: str = "") -> dict:
     return payload
 
 
-def git_update_install(timeout: int, branch: str = "") -> dict:
+def git_update_install(timeout: int, branch: str = "", deployed_commit: str = "") -> dict:
     global _install_running
     del timeout  # the job runs in the background; the HTTP thread must not wait
     repo = find_repo()
@@ -817,8 +827,18 @@ def git_update_install(timeout: int, branch: str = "") -> dict:
         }
     try:
         ensure_update_origin(repo)
+        refs = git_refs(repo, branch, deployed_commit)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+    if not refs.get("updateAvailable"):
+        wanted = refs.get("requestedBranch") or normalize_branch(branch) or "dev"
+        commit = refs.get("installedCommit") or "the latest commit"
+        return {
+            **refs,
+            "ok": True,
+            "jobState": "idle",
+            "message": f"Pi-MFX is already up to date on {wanted} ({commit}).",
+        }
     with INSTALL_LOCK:
         if _install_running:
             stored = read_update_status()

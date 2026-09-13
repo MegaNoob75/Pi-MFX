@@ -12,7 +12,7 @@ export NEEDRESTART_SUSPEND=1
 PREFIX="${PREFIX:-/usr/local}"
 WEB_ROOT="/usr/share/pimfx/web"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OFFICIAL_REPO_URL="https://github.com/MegaNoob75/Pi-MFX.git"
+PUBLIC_REPO_URL="https://github.com/MegaNoob75/Pi-MFX.git"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*"; }
@@ -52,11 +52,11 @@ elif [[ -d .git ]]; then
         case "$origin_url" in
             "")
                 log "Configuring the Pi-MFX GitHub remote"
-                as_clone_owner git remote add origin "$OFFICIAL_REPO_URL"
+                as_clone_owner git remote add origin "$PUBLIC_REPO_URL"
                 ;;
             git@github.com:MegaNoob75/Pi-MFX.git|ssh://git@github.com/MegaNoob75/Pi-MFX.git|http://github.com/MegaNoob75/Pi-MFX.git)
-                log "Using the public Pi-MFX GitHub remote"
-                as_clone_owner git remote set-url origin "$OFFICIAL_REPO_URL"
+                log "Using anonymous HTTPS for Pi-MFX updates"
+                as_clone_owner git remote set-url origin "$PUBLIC_REPO_URL"
                 ;;
         esac
         log "Fetching origin/${requested}"

@@ -18,10 +18,9 @@ RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=2
 
-# Already root; do not let the helper gain extra capabilities.
-# Do not set RestrictSUIDSGID: apt-get drops to the _apt user (uid 42) and
-# local .deb installs fail with "seteuid 42" / "Method file has died".
-NoNewPrivileges=yes
+# Git checks and builds run as the owner of the source clone.  Keep privilege
+# transitions available so runuser/sudo can drop from root to that account.
+# NoNewPrivileges and RestrictSUIDSGID break that with "cannot set user id".
 PrivateTmp=yes
 ProtectHome=no
 # The clone usually lives in a user home directory. ProtectHome would hide it

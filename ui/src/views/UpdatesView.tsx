@@ -69,7 +69,8 @@ export function UpdatesView({
         try {
             const next = obj(await engine.client.request("system/update/status", {
                 fetch: fetchLatest,
-                branch
+                branch,
+                installedCommit: gitSha
             }));
             applyStatus(next);
             if (str(next.error) && !bool(next.ok, true)) {
@@ -80,7 +81,7 @@ export function UpdatesView({
         } finally {
             setChecking(false);
         }
-    }, [branch, engine.client]);
+    }, [branch, engine.client, gitSha]);
 
     useEffect(() => {
         void check(true);
@@ -93,13 +94,24 @@ export function UpdatesView({
         let stopped = false;
         const poll = async () => {
             try {
-                const next = obj(await engine.client.request("system/update/status", { fetch: false, branch }));
+                const next = obj(await engine.client.request("system/update/status", {
+                    fetch: false,
+                    branch,
+                    installedCommit: gitSha
+                }));
                 if (stopped) {
                     return;
                 }
                 applyStatus(next);
-            } catch {
-                // pimfx.service restarts during a successful update. Keep polling.
+            } catch (error) {
+                // pimfx.service restarts during a successful update. Keep polling
+                // in that case, but a failed Git fetch must clear the spinner and
+                // show its error instead of leaving `fetching` stuck forever.
+                if (!installing && !stopped) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    setStatus((current) => ({ ...current, fetching: false, ok: false, error: detail }));
+                    setMessage(detail);
+                }
             }
         };
         const timer = window.setInterval(() => void poll(), POLL_MS);
@@ -108,9 +120,9 @@ export function UpdatesView({
             stopped = true;
             window.clearInterval(timer);
         };
-    }, [branch, engine.client, installing, fetching]);
+    }, [branch, engine.client, gitSha, installing, fetching]);
 
-    const installedCommit = str(status.installedCommit, gitSha);
+    const installedCommit = gitSha || str(status.installedCommit);
     const latestCommit = str(status.latestCommit);
     const updateAvailable = bool(status.updateAvailable);
     const helperMissing = str(status.error).includes("not configured")
@@ -134,7 +146,10 @@ export function UpdatesView({
         setMessage("Starting update…");
         void run(async () => {
             try {
-                const next = obj(await engine.client.request("system/update/install", { branch }));
+                const next = obj(await engine.client.request("system/update/install", {
+                    branch,
+                    installedCommit: gitSha
+                }));
                 applyStatus(next);
                 setMessage(str(next.message) || str(next.error) || "Update started.");
             } catch (error) {
@@ -187,7 +202,8 @@ export function UpdatesView({
                         {!checking && !fetching && installing && (str(status.message) || "Installing the update…")}
                         {!checking && !fetching && !installing && switching && `This Pi is on ${currentBranch}. Update to switch to ${branch}.`}
                         {!checking && !fetching && !installing && !switching && updateAvailable && `Commit ${latestCommit} is available on ${branch}.`}
-                        {!checking && !fetching && !installing && upToDate && `Pi-MFX is up to date on ${branch}.`}
+                        {!checking && !fetching && !installing && upToDate
+                            && `Pi-MFX is all up to date on ${branch} (${latestCommit}).`}
                         {!checking && !fetching && !installing && str(status.jobState) === "failed" && str(status.message)}
                         {!checking && !fetching && !installing && str(status.error) && str(status.error)}
                         {!checking && !fetching && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
@@ -216,7 +232,7 @@ export function UpdatesView({
                                 disabled={checking || installing || fetching}
                                 onClick={() => showInstallConfirmation(true)}
                             >
-                                {installing ? "UPDATING..." : `UPDATE ${branch.toUpperCase()}`}
+                                {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || branch.toUpperCase()}`}
                             </button>
                         )}
                     </div>

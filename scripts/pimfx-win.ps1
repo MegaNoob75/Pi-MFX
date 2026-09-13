@@ -186,13 +186,9 @@ function Copy-LocalTree([string]$Mode) {
         if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) {
             throw "Could not read the current Windows commit"
         }
-        $sourceChanges = & git -C $Repo status --porcelain --untracked-files=normal
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not check the Windows working tree"
-        }
-        if ($sourceChanges) {
-            $sourceCommit += "-local"
-        }
+        # Anything sent through Copy Local Tree is a local deployment, even
+        # when the PC working tree currently matches its commit exactly.
+        $sourceCommit += "-local"
         if (Test-Path $archive) {
             Remove-Item $archive -Force
         }

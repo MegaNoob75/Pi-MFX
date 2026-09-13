@@ -1696,12 +1696,14 @@ Json PluginStore::updateStatus(const Json& payload, std::string& error) {
     Json args = Json::object();
     args.set("fetch", payload["fetch"].asBool(false));
     args.set("branch", payload["branch"].asString());
+    args.set("installedCommit", payload["installedCommit"].asString());
     return helperCall("update-status", args, error, 15);
 }
 
 Json PluginStore::updateInstall(const Json& payload, std::string& error) {
     Json args = Json::object();
     args.set("branch", payload["branch"].asString());
+    args.set("installedCommit", payload["installedCommit"].asString());
     return helperCall("update-install", args, error, 15);
 }
 
