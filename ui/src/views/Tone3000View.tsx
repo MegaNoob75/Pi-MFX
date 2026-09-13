@@ -531,6 +531,7 @@ export function Tone3000View({
     const applyingSharedScroll = useRef(false);
     const scrollPublishFrame = useRef<number | null>(null);
     const pendingScrollRatio = useRef(0);
+    const localScrollUntil = useRef(0);
     const sharedTone = obj(engine.uiSession.tone3000);
     const updateSharedTone = (patch: JsonObject) => {
         engine.client.updateUiSession({
@@ -582,6 +583,10 @@ export function Tone3000View({
     useEffect(() => {
         const scroller = scrollerRef.current;
         if (!scroller || typeof sharedTone.scrollRatio !== "number") return;
+        // Ignore the websocket echo of this browser's own scroll gesture.
+        // Applying an older ratio during touchpad momentum makes the list
+        // visibly jump back and forth.
+        if (performance.now() < localScrollUntil.current) return;
         const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         const desired = Math.max(0, Math.min(1, sharedTone.scrollRatio)) * range;
         if (Math.abs(scroller.scrollTop - desired) < 2) return;
@@ -600,6 +605,7 @@ export function Tone3000View({
     const shareScroll = () => {
         const scroller = scrollerRef.current;
         if (!scroller || applyingSharedScroll.current) return;
+        localScrollUntil.current = performance.now() + 250;
         const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         pendingScrollRatio.current = range > 0 ? scroller.scrollTop / range : 0;
         if (scrollPublishFrame.current !== null) return;
