@@ -1100,7 +1100,7 @@ export function Tone3000View({
                 <div className="mfx-screen-intro-title">MODEL LIBRARY</div>
                 <div className="mfx-screen-intro-sub">Download NAM, AIDA-X and IR files from TONE3000</div>
             </div>
-            <div className="page-scroll stack" style={{ flex: 1, minHeight: 0 }}>
+            <div className="page-scroll stack t3k-page-scroll" style={{ flex: 1, minHeight: 0 }}>
                 {!bool(status.connected) && (
                     <div className="panel stack">
                         <div className="muted">

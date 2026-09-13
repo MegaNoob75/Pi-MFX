@@ -2468,6 +2468,10 @@ button.list-item {
     min-height: 0;
 }
 
+.t3k-page-scroll {
+    overflow: hidden;
+}
+
 .controller-firmware-alert {
     position: absolute;
     z-index: 70;
