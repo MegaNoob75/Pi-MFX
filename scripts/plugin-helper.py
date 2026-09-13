@@ -904,7 +904,7 @@ def git_update_install(timeout: int, branch: str = "", deployed_commit: str = ""
         payload = {
             "ok": code == 0,
             "jobState": "idle" if code == 0 else "failed",
-            "log": log,
+            "log": "" if code == 0 else log,
             "message": "Update finished" if code == 0 else "update failed",
         }
         if code != 0:

@@ -88,9 +88,9 @@ export function UpdatesView({
     }, [check]);
 
     useEffect(() => {
-        if (!installing && !fetching) {
-            return;
-        }
+        // Keep observing the backend even while this browser is idle. Another
+        // browser (for example the PC) may start an update, and every open
+        // Updates page must join that shared job without a local button press.
         let stopped = false;
         const poll = async () => {
             try {
@@ -209,7 +209,7 @@ export function UpdatesView({
                         {!checking && !fetching && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
                             && (str(status.message) || "Could not determine update status.")}
                     </div>
-                    {logLines.length > 0 && (
+                    {logLines.length > 0 && (installing || str(status.jobState) === "failed") && (
                         <pre className="updates-progress">{logLines.join("\n")}</pre>
                     )}
                     <div className="updates-warning">

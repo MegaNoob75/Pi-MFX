@@ -84,6 +84,28 @@ export function App() {
     const [layoutDirty, setLayoutDirty] = useState(false);
     const [leaveLayout, setLeaveLayout] = useState<View | "back" | null>(null);
     const menuRef = useRef<HTMLElement | null>(null);
+    const engineWasConnected = useRef(false);
+    const engineRestarted = useRef(false);
+
+    useEffect(() => {
+        if (!engine.connected) {
+            if (engineWasConnected.current) {
+                engineRestarted.current = true;
+            }
+            return;
+        }
+        engineWasConnected.current = true;
+        if (!engineRestarted.current) {
+            return;
+        }
+        const bundledCommit = import.meta.env.VITE_PIMFX_GIT_SHA || "";
+        const runningCommit = str(engine.state.gitSha);
+        if (!bundledCommit || !runningCommit || bundledCommit === runningCommit) {
+            return;
+        }
+        const timer = window.setTimeout(() => window.location.reload(), 500);
+        return () => window.clearTimeout(timer);
+    }, [engine.connected, engine.state.gitSha]);
 
     useEffect(() => {
         const shared = engine.uiSession;

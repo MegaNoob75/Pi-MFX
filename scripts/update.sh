@@ -100,6 +100,12 @@ if ! command -v cmake >/dev/null 2>&1; then
     die "cmake is not installed. This Pi has not been set up yet. Run:  sudo bash ./scripts/pimfx.sh"
 fi
 
+# Stamp both the engine and browser bundle with the exact remote commit. Local
+# PC copies already provide their own <hash>-local identity.
+if [[ -z "${PIMFX_GIT_SHA:-}" ]]; then
+    PIMFX_GIT_SHA="$(as_clone_owner git rev-parse --short HEAD)"
+fi
+
 jobs="$(nproc)"
 # Leave one core when the pedal or kiosk is live so SSH and audio stay up.
 # A stopped engine can use every core.
