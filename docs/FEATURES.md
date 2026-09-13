@@ -2,6 +2,9 @@
 
 Pi-MFX is a headless guitar multi-effects system for a dedicated Raspberry Pi 5.
 
+Planned performance, recording, accompaniment, and community-sharing work is
+tracked in [ROADMAP.md](ROADMAP.md).
+
 ## Audio
 
 - Direct ALSA `hw:` capture and playback from one realtime thread
