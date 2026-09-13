@@ -74,6 +74,7 @@ public:
     bool selectBank(const std::string& bankId, std::string& error);
     bool stepPreset(int delta, std::string& error);
     bool stepBank(int delta, std::string& error);
+    bool stepSnapshot(int delta, std::string& error);
     bool reloadStoredPreset(std::string& error);
     bool savePreset(std::string& error);
     bool savePresetAs(const std::string& name, std::string& error);
@@ -132,6 +133,9 @@ public:
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
     /// Binds a hardware control to a parameter or bypass of the active preset.
     bool bindPresetControl(const Json& json, std::string& error);
+    /// Session-only switch→preset map used by Performance encoder "session"
+    /// mode. Never written to settings, so a reboot restores saved assignments.
+    bool applySessionPresets(const Json& json, std::string& error);
 
     // --- UI preferences --------------------------------------------------
     bool applyUiSettings(const Json& json, std::string& error);
@@ -229,12 +233,14 @@ private:
     bool persistSettings();
     void notify();
     void notifyPerformance();
+    void notifyUiNav(int delta, bool select);
 
     void handleMidiMessage(const MidiMessage& message);
     void handleSysEx(const std::vector<uint8_t>& sysex);
     void overlayPresetBind(ActionRequest& request);
     void migrateHardwareParameterBinds();
     void runAction(const ActionRequest& request);
+    bool nudgeEncoderParameter(const ActionRequest& request, std::string& error);
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
     void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
@@ -274,6 +280,8 @@ private:
     ControllerRuntime controller_;
     std::string audioError_;
     std::string controllerError_;
+    std::string controllerFirmwareVersion_;
+    bool controllerFirmwareUpdateRequired_ = false;
     std::vector<std::string> missingPluginFiles_;
     std::vector<std::string> brokenBankFiles_;
 
@@ -303,6 +311,15 @@ private:
         float lastVisual = -1.0f;
     };
     std::unordered_map<std::string, AnalogCatch> analogCatch_;
+
+    struct SessionPreset {
+        std::string bankId;
+        std::string presetId;
+    };
+    std::unordered_map<std::string, SessionPreset> sessionPresets_;
+
+    void applyControllerFeel();
+    bool sessionPresetForControl(const std::string& controlId, std::string& bankId, std::string& presetId) const;
 
     StateListener listener_;
     mutable std::mutex listenerMutex_;

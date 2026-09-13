@@ -42,6 +42,7 @@ constexpr uint8_t kEncoderPinB = 17;
 constexpr uint8_t kEncoderPinButton = 21;
 constexpr uint8_t kEncoderTurnCc = 30;
 constexpr uint8_t kEncoderButtonCc = 31;
+constexpr uint8_t kEncoderStepsPerDetent = 4;
 
 constexpr uint8_t kLedPin = 48;
 constexpr uint16_t kLedCount = 8;

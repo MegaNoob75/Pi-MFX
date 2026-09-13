@@ -29,7 +29,12 @@ Json envelope(bool ok, const std::string& error, const Json& payload) {
 } // namespace
 
 ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plugins, HttpServer& server)
-    : engine_(engine), tone3000_(tone3000), plugins_(plugins), server_(server) {}
+    : engine_(engine), tone3000_(tone3000), plugins_(plugins), server_(server) {
+    uiSession_.set("type", "uiSession");
+    uiSession_.set("view", "performance");
+    uiSession_.set("menuOpen", false);
+    uiSession_.set("performancePicker", "");
+}
 
 void ApiRouter::attach() {
     server_.setRequestHandler([this](const HttpRequest& request, HttpResponse& response) {
@@ -39,8 +44,16 @@ void ApiRouter::attach() {
     server_.setSocketMessageHandler([this](uint64_t clientId, const std::string& message) {
         handleSocketMessage(clientId, message);
     });
+    server_.setSocketCloseHandler([this](uint64_t clientId) { handleSocketClose(clientId); });
 
     engine_.setStateListener([this](const Json& state) {
+        if (state["type"].asString() == "uiNav") {
+            const uint64_t clientId = uiNavClient_.load(std::memory_order_acquire);
+            if (clientId != 0) {
+                server_.sendTo(clientId, state.dump());
+            }
+            return;
+        }
         server_.broadcast(state.dump());
     });
 }
@@ -79,12 +92,23 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
 }
 
 void ApiRouter::handleSocketOpen(uint64_t clientId) {
+    uint64_t noOwner = 0;
+    uiNavClient_.compare_exchange_strong(noOwner, clientId, std::memory_order_acq_rel);
     // A new client gets everything it needs to render, in one burst, rather
     // than making five requests before it can draw anything.
     server_.sendTo(clientId, engine_.fullState().dump());
     server_.sendTo(clientId, visibleCatalog(false).dump());
     server_.sendTo(clientId, engine_.libraryState().dump());
     server_.sendTo(clientId, engine_.meterState().dump());
+    {
+        std::lock_guard<std::mutex> lock(uiSessionMutex_);
+        server_.sendTo(clientId, uiSession_.dump());
+    }
+}
+
+void ApiRouter::handleSocketClose(uint64_t clientId) {
+    uint64_t closingOwner = clientId;
+    uiNavClient_.compare_exchange_strong(closingOwner, 0, std::memory_order_acq_rel);
 }
 
 void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& message) {
@@ -96,6 +120,25 @@ void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& messag
 
     const std::string command = json["command"].asString();
     if (command.empty()) {
+        return;
+    }
+    if (command == "ui/focus") {
+        uiNavClient_.store(clientId, std::memory_order_release);
+        return;
+    }
+    if (command == "ui/session") {
+        Json session = json["payload"];
+        if (!session.isObject()) {
+            return;
+        }
+        session.set("type", "uiSession");
+        session.set("owner", static_cast<double>(clientId));
+        {
+            std::lock_guard<std::mutex> lock(uiSessionMutex_);
+            uiSession_ = session;
+        }
+        uiNavClient_.store(clientId, std::memory_order_release);
+        server_.broadcast(session.dump());
         return;
     }
 
@@ -169,6 +212,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
     if (command == "ui/settings") {
         ok = engine_.applyUiSettings(payload, error);
+        return Json::object();
+    }
+    if (command == "controller/sessionPresets") {
+        ok = engine_.applySessionPresets(payload, error);
         return Json::object();
     }
     if (command == "meters/reset") {

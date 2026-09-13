@@ -16,7 +16,10 @@ struct ActionRequest {
     std::string controlId;
     ControlBinding binding;
     /// 0-1 visual position for analog controls. Discrete presses use 1 or 0.
+    /// Encoder turns store a signed step here as well as in `delta`.
     float value = 0.0f;
+    /// Relative encoder detents: +1 clockwise, -1 counterclockwise.
+    int delta = 0;
     bool pressed = false;
     bool fromHold = false;
     bool fromDouble = false;
@@ -47,6 +50,9 @@ class ControllerRuntime {
 public:
     void setConfig(ControllerConfig config);
     ControllerConfig config() const;
+    /// Global encoder grouping, analog jitter filter, and extra switch debounce
+    /// from UI settings. Does not change per-control hold/double-tap.
+    void setFeel(int encoderStepsPerDetent, int analogDeadband, int switchDebounceMs);
 
     /// Interprets one MIDI message. Returns the actions to run, which may be
     /// empty when the message belongs to a control the user has not bound.
@@ -80,6 +86,8 @@ public:
     /// Parses an identity reply. Returns false for SysEx that is not ours.
     struct Identity {
         std::string firmwareVersion;
+        int firmwareMajor = 0;
+        int firmwareMinor = 0;
         int controlCount = 0;
         int ledCount = 0;
         bool rgbLeds = false;
@@ -106,6 +114,12 @@ private:
     const ControllerControl* matchControl(const MidiMessage& message) const;
     std::vector<ActionRequest> discretePressUnlocked(const ControllerControl& control, bool pressed);
     void cancelPendingTapUnlocked(const std::string& controlId);
+    bool switchDebouncedUnlocked(const std::string& controlId);
+
+    struct EncoderState {
+        std::string controlId;
+        int accum = 0;
+    };
 
     mutable std::mutex mutex_;
     ControllerConfig config_;
@@ -114,6 +128,11 @@ private:
     std::vector<PendingTap> pendingTaps_;
     std::vector<std::string> swallowRelease_;
     std::vector<std::pair<std::string, float>> positions_;
+    std::vector<EncoderState> encoders_;
+    std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> lastSwitchAt_;
+    int encoderStepsPerDetent_ = 1;
+    int analogDeadband_ = 0;
+    int switchDebounceMs_ = 0;
 };
 
 } // namespace pimfx

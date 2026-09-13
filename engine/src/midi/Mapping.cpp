@@ -1,6 +1,8 @@
 #include "midi/Mapping.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 
 namespace pimfx {
 namespace {
@@ -37,12 +39,35 @@ uint8_t to7Bit(uint8_t value) {
     return static_cast<uint8_t>((static_cast<int>(value) * 127) / 255);
 }
 
+/// One tactile click is one list step. MIDI relative encodings vary (63/65
+/// offset, or 1/127 two's complement). Never treat the raw offset as a count.
+int encoderPulse(uint8_t data2) {
+    if (data2 == 0 || data2 == 64) {
+        return 0;
+    }
+    if (data2 >= 125) {
+        return -1;
+    }
+    if (data2 <= 3) {
+        return 1;
+    }
+    return data2 > 64 ? 1 : -1;
+}
+
 } // namespace
 
 void ControllerRuntime::setConfig(ControllerConfig config) {
     std::lock_guard<std::mutex> lock(mutex_);
     config_ = std::move(config);
     held_.clear();
+    encoders_.clear();
+}
+
+void ControllerRuntime::setFeel(int encoderStepsPerDetent, int analogDeadband, int switchDebounceMs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    encoderStepsPerDetent_ = std::max(1, std::min(8, encoderStepsPerDetent));
+    analogDeadband_ = std::max(0, std::min(16, analogDeadband));
+    switchDebounceMs_ = std::max(0, std::min(80, switchDebounceMs));
 }
 
 ControllerConfig ControllerRuntime::config() const {
@@ -126,6 +151,89 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
                          || control->kind == ControlKind::Expression;
 
     float visual = static_cast<float>(message.data2) / 127.0f;
+    if (control->kind == ControlKind::Encoder) {
+        int pulse = encoderPulse(message.data2);
+        if (pulse == 0) {
+            return actions;
+        }
+        if (control->binding.inverted) {
+            pulse = -pulse;
+        }
+        auto position = std::find_if(positions_.begin(), positions_.end(),
+                                     [&](const std::pair<std::string, float>& entry) {
+                                         return entry.first == control->id;
+                                     });
+        float knob = position == positions_.end() ? 0.5f : position->second;
+        knob += static_cast<float>(pulse) / 24.0f;
+        while (knob < 0.0f) {
+            knob += 1.0f;
+        }
+        while (knob > 1.0f) {
+            knob -= 1.0f;
+        }
+        if (position == positions_.end()) {
+            positions_.emplace_back(control->id, knob);
+        } else {
+            position->second = knob;
+        }
+
+        auto state = std::find_if(encoders_.begin(), encoders_.end(),
+                                  [&](const EncoderState& entry) {
+                                      return entry.controlId == control->id;
+                                  });
+        if (state == encoders_.end()) {
+            encoders_.push_back({control->id, 0});
+            state = encoders_.end() - 1;
+        }
+
+        const int needed = encoderStepsPerDetent_;
+        if ((state->accum > 0 && pulse < 0) || (state->accum < 0 && pulse > 0)) {
+            state->accum = 0;
+        }
+        state->accum += pulse;
+        if (std::abs(state->accum) < needed) {
+            return actions;
+        }
+
+        const int step = state->accum > 0 ? 1 : -1;
+        state->accum = 0;
+
+        ActionRequest request;
+        request.controlId = control->id;
+        request.binding = control->binding;
+        request.action = control->binding.action;
+        request.kind = control->kind;
+        request.pressed = true;
+        request.delta = step;
+        request.value = static_cast<float>(step);
+        actions.push_back(std::move(request));
+        return actions;
+    }
+
+    if (continuous && control->binding.inverted) {
+        visual = 1.0f - visual;
+    }
+    if (continuous && analogDeadband_ > 0) {
+        auto previous = std::find_if(positions_.begin(), positions_.end(),
+                                     [&](const std::pair<std::string, float>& entry) {
+                                         return entry.first == control->id;
+                                     });
+        if (previous != positions_.end()) {
+            const int lastMidi = static_cast<int>(std::lround(previous->second * 127.0f));
+            const int midiNow = static_cast<int>(std::lround(visual * 127.0f));
+            const int gap = std::abs(midiNow - lastMidi);
+            if (gap < analogDeadband_ && midiNow != 0 && midiNow != 127) {
+                return actions;
+            }
+        }
+    }
+    if (!continuous && !switchDebouncedUnlocked(control->id)) {
+        return actions;
+    }
+    const bool pressed = message.isNoteOn() || (message.isControlChange() && message.data2 >= 64);
+    if (control->kind == ControlKind::EncoderPush) {
+        visual = pressed ? 1.0f : 0.0f;
+    }
     auto position = std::find_if(positions_.begin(), positions_.end(),
                                  [&](const std::pair<std::string, float>& entry) {
                                      return entry.first == control->id;
@@ -136,21 +244,54 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
         position->second = visual;
     }
 
-    ActionRequest request;
-    request.controlId = control->id;
-    request.binding = control->binding;
-    request.action = control->binding.action;
-    request.kind = control->kind;
-
     if (continuous) {
+        ActionRequest request;
+        request.controlId = control->id;
+        request.binding = control->binding;
+        request.action = control->binding.action;
+        request.kind = control->kind;
         request.value = visual;
         request.pressed = true;
         actions.push_back(std::move(request));
         return actions;
     }
 
-    const bool pressed = message.isNoteOn() || (message.isControlChange() && message.data2 >= 64);
+    if (control->kind == ControlKind::EncoderPush) {
+        std::vector<ActionRequest> pressActions = discretePressUnlocked(*control, pressed);
+        if (pressActions.empty()) {
+            ActionRequest tick;
+            tick.controlId = control->id;
+            tick.binding = control->binding;
+            tick.action = "none";
+            tick.kind = control->kind;
+            tick.pressed = pressed;
+            tick.value = visual;
+            pressActions.push_back(std::move(tick));
+        }
+        return pressActions;
+    }
     return discretePressUnlocked(*control, pressed);
+}
+
+bool ControllerRuntime::switchDebouncedUnlocked(const std::string& controlId) {
+    if (switchDebounceMs_ <= 0) {
+        return true;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    auto found = std::find_if(lastSwitchAt_.begin(), lastSwitchAt_.end(),
+                              [&](const std::pair<std::string, std::chrono::steady_clock::time_point>& entry) {
+                                  return entry.first == controlId;
+                              });
+    if (found == lastSwitchAt_.end()) {
+        lastSwitchAt_.emplace_back(controlId, now);
+        return true;
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - found->second).count();
+    if (elapsed < switchDebounceMs_) {
+        return false;
+    }
+    found->second = now;
+    return true;
 }
 
 std::vector<ActionRequest> ControllerRuntime::discretePressUnlocked(
@@ -405,7 +546,10 @@ bool ControllerRuntime::parseIdentity(const std::vector<uint8_t>& sysex, Identit
         return false;
     }
 
-    identity.firmwareVersion = std::to_string(sysex[5]) + "." + std::to_string(sysex[6]);
+    identity.firmwareMajor = sysex[5];
+    identity.firmwareMinor = sysex[6];
+    identity.firmwareVersion = std::to_string(identity.firmwareMajor) + "."
+        + std::to_string(identity.firmwareMinor);
     identity.controlCount = sysex[7] | (sysex[8] << 7);
     identity.ledCount = sysex[9] | (sysex.size() > 10 ? (sysex[10] << 7) : 0);
     identity.rgbLeds = sysex.size() > 11 && sysex[11] != 0;

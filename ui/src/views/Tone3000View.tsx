@@ -494,6 +494,8 @@ export function Tone3000View({
     const [verified, setVerified] = useState(false);
     const [favoriteCreators, setFavoriteCreators] = useState<FavoriteCreator[]>(loadFavoriteCreators);
     const [selectedCreators, setSelectedCreators] = useState<string[]>([]);
+    const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+    const [filtersOpen, setFiltersOpen] = useState(false);
     const [creatorPickerOpen, setCreatorPickerOpen] = useState(false);
     const [tones, setTones] = useState<JsonObject[]>([]);
     const [modelsByTone, setModelsByTone] = useState<Record<string, JsonObject[]>>({});
@@ -526,6 +528,86 @@ export function Tone3000View({
     });
     const scrollerRef = useRef<HTMLDivElement>(null);
     const sentinelRef = useRef<HTMLDivElement>(null);
+    const applyingSharedScroll = useRef(false);
+    const scrollPublishFrame = useRef<number | null>(null);
+    const pendingScrollRatio = useRef(0);
+    const sharedTone = obj(engine.uiSession.tone3000);
+    const updateSharedTone = (patch: JsonObject) => {
+        engine.client.updateUiSession({
+            tone3000: { ...obj(engine.client.snapshot.uiSession.tone3000), ...patch }
+        });
+    };
+
+    useEffect(() => {
+        const nextSource = str(sharedTone.source) as CatalogSource;
+        if (SOURCES.some((item) => item.id === nextSource) && nextSource !== source) setSource(nextSource);
+        if (typeof sharedTone.gear === "string" && sharedTone.gear !== gear) setGear(sharedTone.gear);
+        if (typeof sharedTone.sort === "string" && sharedTone.sort !== sort) setSort(sharedTone.sort);
+        if (typeof sharedTone.architecture === "string" && sharedTone.architecture !== architecture) {
+            setArchitecture(sharedTone.architecture);
+        }
+        if (typeof sharedTone.calibrated === "boolean" && sharedTone.calibrated !== calibrated) {
+            setCalibrated(sharedTone.calibrated);
+        }
+        if (typeof sharedTone.verified === "boolean" && sharedTone.verified !== verified) {
+            setVerified(sharedTone.verified);
+        }
+        if (typeof sharedTone.query === "string" && sharedTone.query !== query) setQuery(sharedTone.query);
+        if (Array.isArray(sharedTone.selectedCreators)) {
+            const next = sharedTone.selectedCreators.filter((item): item is string => typeof item === "string");
+            if (JSON.stringify(next) !== JSON.stringify(selectedCreators)) setSelectedCreators(next);
+        }
+        if (Array.isArray(sharedTone.favoriteCreators)) {
+            const next = objects(sharedTone.favoriteCreators).map((item) => ({
+                username: str(item.username), label: str(item.label)
+            })).filter((item) => item.username);
+            if (JSON.stringify(next) !== JSON.stringify(favoriteCreators)) {
+                setFavoriteCreators(next);
+                saveFavoriteCreators(next);
+            }
+        }
+        if (typeof sharedTone.creatorPickerOpen === "boolean"
+            && sharedTone.creatorPickerOpen !== creatorPickerOpen) {
+            setCreatorPickerOpen(sharedTone.creatorPickerOpen);
+        }
+        if (typeof sharedTone.sourcePickerOpen === "boolean"
+            && sharedTone.sourcePickerOpen !== sourcePickerOpen) {
+            setSourcePickerOpen(sharedTone.sourcePickerOpen);
+        }
+        if (typeof sharedTone.filtersOpen === "boolean" && sharedTone.filtersOpen !== filtersOpen) {
+            setFiltersOpen(sharedTone.filtersOpen);
+        }
+    }, [engine.uiSession.tone3000]);
+
+    useEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller || typeof sharedTone.scrollRatio !== "number") return;
+        const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const desired = Math.max(0, Math.min(1, sharedTone.scrollRatio)) * range;
+        if (Math.abs(scroller.scrollTop - desired) < 2) return;
+        applyingSharedScroll.current = true;
+        scroller.scrollTop = desired;
+        const frame = window.requestAnimationFrame(() => {
+            applyingSharedScroll.current = false;
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [sharedTone.scrollRatio, tones.length]);
+
+    useEffect(() => () => {
+        if (scrollPublishFrame.current !== null) window.cancelAnimationFrame(scrollPublishFrame.current);
+    }, []);
+
+    const shareScroll = () => {
+        const scroller = scrollerRef.current;
+        if (!scroller || applyingSharedScroll.current) return;
+        const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        pendingScrollRatio.current = range > 0 ? scroller.scrollTop / range : 0;
+        if (scrollPublishFrame.current !== null) return;
+        scrollPublishFrame.current = window.requestAnimationFrame(() => {
+            scrollPublishFrame.current = null;
+            updateSharedTone({ scrollRatio: pendingScrollRatio.current });
+        });
+    };
     catalogRef.current = {
         source, gear, query, sort, architecture, calibrated, verified, creators: selectedCreators
     };
@@ -818,6 +900,7 @@ export function Tone3000View({
 
     const openTone = (tone: JsonObject) => {
         setSelectedTone(tone);
+        updateSharedTone({ selectedToneId: toneKey(tone) });
         setDownloadError("");
         setDownloadStatus("");
         void loadModels(tone).catch((caught: unknown) => {
@@ -828,6 +911,7 @@ export function Tone3000View({
     const persistCreators = (list: FavoriteCreator[]) => {
         setFavoriteCreators(list);
         saveFavoriteCreators(list);
+        updateSharedTone({ favoriteCreators: list });
     };
 
     const addFavoriteCreator = (username: string, label = username) => {
@@ -844,7 +928,11 @@ export function Tone3000View({
 
     const removeFavoriteCreator = (username: string) => {
         persistCreators(favoriteCreators.filter((item) => creatorKey(item.username) !== creatorKey(username)));
-        setSelectedCreators((current) => current.filter((item) => creatorKey(item) !== creatorKey(username)));
+        setSelectedCreators((current) => {
+            const next = current.filter((item) => creatorKey(item) !== creatorKey(username));
+            updateSharedTone({ selectedCreators: next });
+            return next;
+        });
     };
 
     const isFavoriteCreator = (username: string) => (
@@ -854,10 +942,31 @@ export function Tone3000View({
     const browseCreators = (usernames: string[]) => {
         setSelectedCreators(usernames);
         setSelectedTone(null);
-        if (source === "favorited") {
-            setSource("trending");
-        }
+        const nextSource = source === "favorited" ? "trending" : source;
+        if (nextSource !== source) setSource(nextSource);
+        updateSharedTone({
+            selectedCreators: usernames,
+            selectedToneId: "",
+            source: nextSource
+        });
     };
+
+    useEffect(() => {
+        const selectedToneId = str(sharedTone.selectedToneId);
+        if (!selectedToneId) {
+            if (selectedTone) setSelectedTone(null);
+            return;
+        }
+        if (selectedTone && toneKey(selectedTone) === selectedToneId) return;
+        const tone = tones.find((item) => toneKey(item) === selectedToneId);
+        if (!tone) return;
+        setSelectedTone(tone);
+        setDownloadError("");
+        setDownloadStatus("");
+        void loadModels(tone).catch((caught: unknown) => {
+            setDownloadError(caught instanceof Error ? caught.message : String(caught));
+        });
+    }, [sharedTone.selectedToneId, tones]);
 
     const myCreatorsActive = favoriteCreators.length > 0
         && selectedCreators.length === favoriteCreators.length
@@ -868,6 +977,26 @@ export function Tone3000View({
     const signedInAs = str(obj(status.user).username);
     const libraryStems = libraryFileStems(engine.library);
     const storedFiles = libraryFiles(engine.library);
+    const sourceLabel = SOURCES.find((item) => item.id === source)?.label ?? "BROWSE";
+    const activeFilterCount = (gear ? 1 : 0)
+        + (gear !== "ir" && architecture ? 1 : 0)
+        + (calibrated ? 1 : 0)
+        + (verified ? 1 : 0)
+        + selectedCreators.length
+        + (source === "search" && sort !== "trending" ? 1 : 0);
+    const chooseSource = (nextSource: CatalogSource) => {
+        const nextSort = nextSource === "search" && !query.trim() ? "trending" : sort;
+        setSource(nextSource);
+        setSort(nextSort);
+        setSelectedTone(null);
+        setSourcePickerOpen(false);
+        updateSharedTone({
+            source: nextSource,
+            sort: nextSort,
+            selectedToneId: "",
+            sourcePickerOpen: false
+        });
+    };
 
     useEffect(() => {
         void engine.client.request("library").catch(() => undefined);
@@ -980,192 +1109,58 @@ export function Tone3000View({
                 )}
                 {bool(status.connected) && (
                 <div className="t3k-catalog">
-                    <div className="t3k-status-row">
-                        <div className="muted">
-                            {signedInAs ? `Signed in as @${signedInAs}` : "Signed in"}
-                            {cached ? " · cached" : ""}
-                            {loading ? " · loading…" : ""}
-                        </div>
+                    <div className={`t3k-compact-bar${source === "search" ? " is-searching" : ""}`}
+                        data-mfx-nav-list="tone-compact-bar">
                         <button
                             type="button"
-                            className="btn"
-                            onClick={() => void fetchTones({ refresh: true })}
-                        >
-                            REFRESH
-                        </button>
-                    </div>
-                    <div className="t3k-tabs">
-                        {SOURCES.map((item) => (
-                            <button
-                                key={item.id}
-                                type="button"
-                                className={`btn ${source === item.id ? "btn-active" : ""}`}
-                                onClick={() => {
-                                    setSource(item.id);
-                                    setSelectedTone(null);
-                                    if (item.id === "search" && !query.trim()) {
-                                        setSort("trending");
-                                    }
-                                }}
-                            >
-                                {item.label}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="t3k-gears">
-                        {GEARS.map((item) => (
-                            <button
-                                key={item.id || "all"}
-                                type="button"
-                                className={`btn ${gear === item.id ? "btn-active" : ""}`}
-                                onClick={() => {
-                                    setGear(item.id);
-                                    setSelectedTone(null);
-                                }}
-                            >
-                                {item.label}
-                            </button>
-                        ))}
-                    </div>
-                    {gear !== "ir" && (
-                        <div className="t3k-filters">
-                            {ARCHITECTURES.map((item) => (
-                                <button
-                                    key={item.id}
-                                    type="button"
-                                    className={`btn ${architecture === item.id ? "btn-active" : ""}`}
-                                    onClick={() => {
-                                        setArchitecture(item.id);
-                                        setSelectedTone(null);
-                                    }}
-                                >
-                                    {item.label}
-                                </button>
-                            ))}
-                            <button
-                                type="button"
-                                className={`btn ${calibrated ? "btn-active" : ""}`}
-                                onClick={() => {
-                                    setCalibrated((value) => !value);
-                                    setSelectedTone(null);
-                                }}
-                            >
-                                CALIBRATED
-                            </button>
-                        </div>
-                    )}
-                    <div className="t3k-creators">
-                        <button
-                            type="button"
-                            className={`btn ${creatorPickerOpen ? "btn-active" : ""}`}
-                            onClick={() => setCreatorPickerOpen(true)}
-                        >
-                            CREATORS
-                        </button>
-                        <button
-                            type="button"
-                            className={`btn ${verified ? "btn-active" : ""}`}
+                            className="btn btn-active t3k-source-button"
+                            data-mfx-nav-key="source-picker"
                             onClick={() => {
-                                setVerified((value) => !value);
-                                setSelectedTone(null);
+                                setSourcePickerOpen(true);
+                                updateSharedTone({ sourcePickerOpen: true });
                             }}
                         >
-                            VERIFIED
+                            {sourceLabel} ▾
                         </button>
-                        <button
-                            type="button"
-                            className={`btn ${myCreatorsActive ? "btn-active" : ""}`}
-                            onClick={() => {
-                                if (myCreatorsActive) {
-                                    browseCreators([]);
-                                    return;
-                                }
-                                if (!favoriteCreators.length) {
-                                    setCreatorPickerOpen(true);
-                                    return;
-                                }
-                                browseCreators(favoriteCreators.map((item) => item.username));
-                            }}
-                        >
-                            MY CREATORS
-                        </button>
-                        {favoriteCreators.map((item) => {
-                            const active = selectedCreators.some((username) => (
-                                creatorKey(username) === creatorKey(item.username)
-                            ));
-                            return (
-                                <button
-                                    key={item.username}
-                                    type="button"
-                                    className={`btn ${active ? "btn-active" : ""}`}
-                                    onClick={() => {
-                                        if (active && selectedCreators.length === 1) {
-                                            browseCreators([]);
-                                            return;
+                        {source === "search" && (
+                            <div className="t3k-compact-search">
+                                <input
+                                    value={query}
+                                    aria-label="Search TONE3000"
+                                    placeholder="Search models"
+                                    onChange={(event) => setQuery(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                            updateSharedTone({ query, source: "search", sort, selectedToneId: "" });
+                                            void fetchTones({ refresh: false });
                                         }
-                                        if (active) {
-                                            browseCreators(selectedCreators.filter((username) => (
-                                                creatorKey(username) !== creatorKey(item.username)
-                                            )));
-                                            return;
-                                        }
-                                        browseCreators([...selectedCreators, item.username]);
                                     }}
-                                >
-                                    @{item.label}
-                                </button>
-                            );
-                        })}
-                    </div>
-                    <div className="row">
-                        <label className="field" style={{ flex: 1, minWidth: 180 }}>
-                            <span>Search</span>
-                            <input
-                                value={query}
-                                placeholder="Search TONE3000"
-                                onChange={(event) => {
-                                    const value = event.target.value;
-                                    setQuery(value);
-                                    if (source !== "search") {
-                                        setSource("search");
-                                        setSort(value.trim() ? "best-match" : "trending");
-                                    }
-                                }}
-                                onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                        setSource("search");
-                                        void fetchTones({ refresh: false });
-                                    }
-                                }}
-                            />
-                        </label>
+                                />
+                                <button type="button" className="btn btn-accent" data-mfx-nav-key="search" onClick={() => {
+                                    updateSharedTone({ query, source: "search", sort, selectedToneId: "" });
+                                    void fetchTones({ refresh: false });
+                                }}>GO</button>
+                            </div>
+                        )}
                         <button
                             type="button"
-                            className="btn btn-accent"
+                            className={`btn${activeFilterCount > 0 ? " btn-active" : ""}`}
+                            data-mfx-nav-key="filters"
                             onClick={() => {
-                                setSource("search");
-                                void fetchTones({ refresh: false });
+                                setFiltersOpen(true);
+                                updateSharedTone({ filtersOpen: true });
                             }}
                         >
-                            SEARCH
+                            FILTERS{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
+                        </button>
+                        <button type="button" className="btn t3k-refresh-button" data-mfx-nav-key="refresh"
+                            title={`${signedInAs ? `Signed in as @${signedInAs}` : "Signed in"}${cached ? " · cached" : ""}`}
+                            onClick={() => void fetchTones({ refresh: true })}>
+                            {loading ? "…" : "REFRESH"}
                         </button>
                     </div>
-                    {source === "search" && (
-                        <div className="t3k-sorts">
-                            {SORTS.map((item) => (
-                                <button
-                                    key={item.id}
-                                    type="button"
-                                    className={`btn ${sort === item.id ? "btn-active" : ""}`}
-                                    onClick={() => setSort(item.id)}
-                                >
-                                    {item.label}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-                    <div className="t3k-scroll" ref={scrollerRef}>
-                    <div className="t3k-grid">
+                    <div className="t3k-scroll" ref={scrollerRef} onScroll={shareScroll}>
+                    <div className="t3k-grid" data-mfx-nav-list="tone-results">
                         {tones.map((tone) => {
                             const id = toneKey(tone);
                             const name = toneName(tone);
@@ -1178,6 +1173,7 @@ export function Tone3000View({
                                     key={id}
                                     role="button"
                                     tabIndex={0}
+                                    data-mfx-nav-key={`tone:${id}`}
                                     className={`t3k-card${selectedTone && toneKey(selectedTone) === id ? " expanded" : ""}${onDevice !== "none" ? " is-on-device" : ""}${onDevice === "all" ? " is-complete" : ""}`}
                                     onClick={() => openTone(tone)}
                                     onKeyDown={(event) => {
@@ -1235,6 +1231,135 @@ export function Tone3000View({
                         <div className="muted" style={{ padding: "8px 12px 12px" }}>End of list.</div>
                     )}
                     </div>
+                    {sourcePickerOpen && (
+                        <div className="dialog-backdrop" onClick={() => {
+                            setSourcePickerOpen(false);
+                            updateSharedTone({ sourcePickerOpen: false });
+                        }}>
+                            <div className="dialog t3k-compact-dialog" onClick={(event) => event.stopPropagation()}>
+                                <h2>BROWSE</h2>
+                                <div className="t3k-source-options" data-mfx-nav-list="tone-source-picker">
+                                    {SOURCES.map((item) => (
+                                        <button key={item.id} type="button"
+                                            data-mfx-nav-key={`source:${item.id}`}
+                                            className={`btn ${source === item.id ? "btn-active" : ""}`}
+                                            onClick={() => chooseSource(item.id)}>
+                                            {item.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {filtersOpen && (
+                        <div className="dialog-backdrop" onClick={() => {
+                            setFiltersOpen(false);
+                            updateSharedTone({ filtersOpen: false });
+                        }}>
+                            <div className="dialog t3k-filter-dialog" onClick={(event) => event.stopPropagation()}>
+                                <div className="t3k-dialog-head">
+                                    <h2>FILTERS</h2>
+                                    <button type="button" className="btn" onClick={() => {
+                                        setFiltersOpen(false);
+                                        updateSharedTone({ filtersOpen: false });
+                                    }}>DONE</button>
+                                </div>
+                                <div className="field-label">GEAR</div>
+                                <div className="t3k-filter-options" data-mfx-nav-list="tone-gears">
+                                    {GEARS.map((item) => (
+                                        <button key={item.id || "all"} type="button"
+                                            data-mfx-nav-key={`gear:${item.id || "all"}`}
+                                            className={`btn ${gear === item.id ? "btn-active" : ""}`}
+                                            onClick={() => {
+                                                setGear(item.id);
+                                                setSelectedTone(null);
+                                                updateSharedTone({ gear: item.id, selectedToneId: "" });
+                                            }}>{item.label}</button>
+                                    ))}
+                                </div>
+                                {gear !== "ir" && (
+                                    <>
+                                        <div className="field-label">ARCHITECTURE</div>
+                                        <div className="t3k-filter-options" data-mfx-nav-list="tone-architecture">
+                                            {ARCHITECTURES.map((item) => (
+                                                <button key={item.id} type="button"
+                                                    data-mfx-nav-key={`architecture:${item.id}`}
+                                                    className={`btn ${architecture === item.id ? "btn-active" : ""}`}
+                                                    onClick={() => {
+                                                        setArchitecture(item.id);
+                                                        setSelectedTone(null);
+                                                        updateSharedTone({ architecture: item.id, selectedToneId: "" });
+                                                    }}>{item.label}</button>
+                                            ))}
+                                            <button type="button" data-mfx-nav-key="calibrated"
+                                                className={`btn ${calibrated ? "btn-active" : ""}`}
+                                                onClick={() => {
+                                                    const next = !calibrated;
+                                                    setCalibrated(next);
+                                                    setSelectedTone(null);
+                                                    updateSharedTone({ calibrated: next, selectedToneId: "" });
+                                                }}>CALIBRATED</button>
+                                        </div>
+                                    </>
+                                )}
+                                <div className="field-label">CREATORS</div>
+                                <div className="t3k-filter-options" data-mfx-nav-list="tone-creators">
+                                    <button type="button" data-mfx-nav-key="creator-picker"
+                                        className={`btn ${creatorPickerOpen ? "btn-active" : ""}`}
+                                        onClick={() => {
+                                            setCreatorPickerOpen(true);
+                                            updateSharedTone({ creatorPickerOpen: true });
+                                        }}>CHOOSE CREATORS</button>
+                                    <button type="button" data-mfx-nav-key="verified"
+                                        className={`btn ${verified ? "btn-active" : ""}`}
+                                        onClick={() => {
+                                            const next = !verified;
+                                            setVerified(next);
+                                            setSelectedTone(null);
+                                            updateSharedTone({ verified: next, selectedToneId: "" });
+                                        }}>VERIFIED</button>
+                                    <button type="button" data-mfx-nav-key="my-creators"
+                                        className={`btn ${myCreatorsActive ? "btn-active" : ""}`}
+                                        onClick={() => {
+                                            if (myCreatorsActive) browseCreators([]);
+                                            else if (!favoriteCreators.length) {
+                                                setCreatorPickerOpen(true);
+                                                updateSharedTone({ creatorPickerOpen: true });
+                                            } else browseCreators(favoriteCreators.map((item) => item.username));
+                                        }}>MY CREATORS</button>
+                                    {favoriteCreators.map((item) => {
+                                        const active = selectedCreators.some((username) => creatorKey(username) === creatorKey(item.username));
+                                        return (
+                                            <button key={item.username} type="button"
+                                                data-mfx-nav-key={`creator:${item.username}`}
+                                                className={`btn ${active ? "btn-active" : ""}`}
+                                                onClick={() => browseCreators(active
+                                                    ? selectedCreators.filter((username) => creatorKey(username) !== creatorKey(item.username))
+                                                    : [...selectedCreators, item.username])}>
+                                                @{item.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                {source === "search" && (
+                                    <>
+                                        <div className="field-label">SORT</div>
+                                        <div className="t3k-filter-options" data-mfx-nav-list="tone-sorts">
+                                            {SORTS.map((item) => (
+                                                <button key={item.id} type="button"
+                                                    data-mfx-nav-key={`sort:${item.id}`}
+                                                    className={`btn ${sort === item.id ? "btn-active" : ""}`}
+                                                    onClick={() => {
+                                                        setSort(item.id);
+                                                        updateSharedTone({ sort: item.id });
+                                                    }}>{item.label}</button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    )}
                     {selectedTone && (
                         <ToneDownloadDialog
                             tone={selectedTone}
@@ -1248,6 +1373,7 @@ export function Tone3000View({
                             onClose={() => {
                                 if (!downloading) {
                                     setSelectedTone(null);
+                                    updateSharedTone({ selectedToneId: "" });
                                     setDownloadError("");
                                     setDownloadStatus("");
                                     setDownloadProgress({ current: 0, total: 0, name: "" });
@@ -1286,12 +1412,16 @@ export function Tone3000View({
                             engine={engine}
                             saved={favoriteCreators}
                             selected={selectedCreators}
-                            onClose={() => setCreatorPickerOpen(false)}
+                            onClose={() => {
+                                setCreatorPickerOpen(false);
+                                updateSharedTone({ creatorPickerOpen: false });
+                            }}
                             onAdd={addFavoriteCreator}
                             onRemove={removeFavoriteCreator}
                             onShow={(usernames) => {
                                 browseCreators(usernames);
                                 setCreatorPickerOpen(false);
+                                updateSharedTone({ creatorPickerOpen: false });
                             }}
                         />
                     )}

@@ -5,7 +5,9 @@
 #include "library/PluginStore.h"
 #include "library/Tone3000.h"
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace pimfx {
@@ -26,6 +28,7 @@ private:
     bool handleRequest(const HttpRequest& request, HttpResponse& response);
     void handleSocketMessage(uint64_t clientId, const std::string& message);
     void handleSocketOpen(uint64_t clientId);
+    void handleSocketClose(uint64_t clientId);
 
     /// Runs one command. Returns the reply payload; `ok` and `error` describe
     /// the outcome.
@@ -40,6 +43,9 @@ private:
     Tone3000Client& tone3000_;
     PluginStore& plugins_;
     HttpServer& server_;
+    std::atomic<uint64_t> uiNavClient_{0};
+    std::mutex uiSessionMutex_;
+    Json uiSession_ = Json::object();
 };
 
 } // namespace pimfx

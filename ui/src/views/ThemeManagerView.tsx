@@ -37,7 +37,10 @@ import {
     validateMultiFXKeyboardTheme
 } from "../keyboard/keyboardTheme";
 import type { EngineSnapshot } from "../api";
+import { obj, str, type JsonObject } from "../json";
+import { updateUiSessionSection } from "../uiSession";
 import { LibraryJsonPicker } from "./LibraryManager";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type ThemeBrowseMode = "STYLE" | "COLOR";
 
@@ -141,6 +144,145 @@ export default function ThemeManagerView({
     const themeListRef = useRef<HTMLDivElement>(null);
     const [activeName, setActiveName] = useState(() => originalRef.current.name);
     const [picker, setPicker] = useState<"load" | "save" | "saveAll" | null>(null);
+    const [deleteTarget, setDeleteTarget] = useState<{ kind: "ui" | "keyboard"; name: string } | null>(null);
+    const applyingSharedTheme = useRef(false);
+    const applyingSharedKeyboardTheme = useRef(false);
+    const themeReady = useRef(false);
+    const keyboardThemeReady = useRef(false);
+    const themeLibrariesReady = useRef(false);
+    const lastSharedTheme = useRef("");
+    const lastSharedKeyboardTheme = useRef("");
+
+    useEffect(() => {
+        if (!engine) {
+            return;
+        }
+        const shared = obj(engine.uiSession.themeManager);
+        const nextTab = str(shared.editorTab) as ThemeEditorTab;
+        if (["COLORS", "SURFACES", "TILES", "CONTROLS", "MOTION", "FONTS", "KEYBOARD"].includes(nextTab)) {
+            setEditorTab(nextTab);
+        }
+        const nextBrowse = str(shared.browseMode) as ThemeBrowseMode;
+        if (nextBrowse === "STYLE" || nextBrowse === "COLOR") {
+            setBrowseMode(nextBrowse);
+        }
+        if (typeof shared.activeName === "string") {
+            setActiveName(shared.activeName);
+        }
+        const nextPicker = str(shared.picker);
+        setPicker(nextPicker === "load" || nextPicker === "save" || nextPicker === "saveAll" ? nextPicker : null);
+        const deleteKind = str(shared.deleteKind);
+        const deleteName = str(shared.deleteName);
+        setDeleteTarget((deleteKind === "ui" || deleteKind === "keyboard") && deleteName
+            ? { kind: deleteKind, name: deleteName }
+            : null);
+        const nextTheme = validateMultiFXTheme(shared.theme);
+        const nextThemeJson = nextTheme ? JSON.stringify(nextTheme) : "";
+        if (nextTheme && nextThemeJson !== lastSharedTheme.current) {
+            lastSharedTheme.current = nextThemeJson;
+            applyingSharedTheme.current = true;
+            setTheme(cloneTheme(nextTheme));
+        }
+        const nextKeyboardTheme = validateMultiFXKeyboardTheme(shared.keyboardTheme);
+        const nextKeyboardThemeJson = nextKeyboardTheme ? JSON.stringify(nextKeyboardTheme) : "";
+        if (nextKeyboardTheme && nextKeyboardThemeJson !== lastSharedKeyboardTheme.current) {
+            lastSharedKeyboardTheme.current = nextKeyboardThemeJson;
+            applyingSharedKeyboardTheme.current = true;
+            setKeyboardTheme(structuredClone(nextKeyboardTheme));
+        }
+        if (Array.isArray(shared.customThemes)) {
+            const nextCustomThemes = shared.customThemes
+                .map(validateMultiFXTheme)
+                .filter((item): item is MultiFXThemeDefinition => Boolean(item));
+            setCustomThemes(nextCustomThemes);
+            window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(nextCustomThemes, null, 2));
+        }
+        if (Array.isArray(shared.customKeyboardThemes)) {
+            const nextKeyboardThemes = shared.customKeyboardThemes
+                .map(validateMultiFXKeyboardTheme)
+                .filter((item): item is MultiFXKeyboardThemeDefinition => Boolean(item));
+            setCustomKeyboardThemes(nextKeyboardThemes);
+            window.localStorage.setItem(CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, JSON.stringify(nextKeyboardThemes, null, 2));
+        }
+        // The shared session is the trigger; including local drafts here would undo edits before publication.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine?.uiSession.themeManager]);
+
+    useEffect(() => {
+        if (!engine) {
+            return;
+        }
+        if (!themeReady.current) {
+            themeReady.current = true;
+            if (applyingSharedTheme.current) {
+                applyingSharedTheme.current = false;
+                return;
+            }
+        }
+        if (applyingSharedTheme.current) {
+            applyingSharedTheme.current = false;
+            return;
+        }
+        lastSharedTheme.current = JSON.stringify(theme);
+        updateUiSessionSection(engine.client, "themeManager", {
+            theme: theme as unknown as JsonObject
+        });
+    }, [theme, engine?.client]);
+
+    useEffect(() => {
+        if (!engine) {
+            return;
+        }
+        if (!keyboardThemeReady.current) {
+            keyboardThemeReady.current = true;
+            if (applyingSharedKeyboardTheme.current) {
+                applyingSharedKeyboardTheme.current = false;
+                return;
+            }
+        }
+        if (applyingSharedKeyboardTheme.current) {
+            applyingSharedKeyboardTheme.current = false;
+            return;
+        }
+        lastSharedKeyboardTheme.current = JSON.stringify(keyboardTheme);
+        updateUiSessionSection(engine.client, "themeManager", {
+            keyboardTheme: keyboardTheme as unknown as JsonObject
+        });
+    }, [keyboardTheme, engine?.client]);
+
+    useEffect(() => {
+        if (!engine || themeLibrariesReady.current) {
+            return;
+        }
+        themeLibrariesReady.current = true;
+        const shared = obj(engine.uiSession.themeManager);
+        const patch: JsonObject = {};
+        if (!Array.isArray(shared.customThemes)) {
+            patch.customThemes = customThemes as unknown as JsonObject[];
+        }
+        if (!Array.isArray(shared.customKeyboardThemes)) {
+            patch.customKeyboardThemes = customKeyboardThemes as unknown as JsonObject[];
+        }
+        if (Object.keys(patch).length > 0) {
+            updateUiSessionSection(engine.client, "themeManager", patch);
+        }
+        // Seed the shared library once; later saves publish in their handlers.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine?.client]);
+
+    const syncThemeUi = (patch: JsonObject) => {
+        if (engine) {
+            updateUiSessionSection(engine.client, "themeManager", patch);
+        }
+    };
+    const showThemePicker = (next: "load" | "save" | "saveAll" | null) => {
+        setPicker(next);
+        syncThemeUi({ picker: next ?? "" });
+    };
+    const showDeleteTheme = (next: { kind: "ui" | "keyboard"; name: string } | null) => {
+        setDeleteTarget(next);
+        syncThemeUi({ deleteKind: next?.kind ?? "", deleteName: next?.name ?? "" });
+    };
 
     useEffect(() => {
         const list = themeListRef.current;
@@ -269,6 +411,7 @@ export default function ThemeManagerView({
 
         originalRef.current = cloneTheme(theme);
         setActiveName(theme.name);
+        syncThemeUi({ activeName: theme.name });
         const custom = saveCustomMultiFXTheme(theme);
         setCustomThemes(custom);
         if (!persistTheme) {
@@ -309,17 +452,32 @@ export default function ThemeManagerView({
 
         const next = saveCustomMultiFXTheme(customTheme);
         setCustomThemes(next);
+        syncThemeUi({ customThemes: next as unknown as JsonObject[] });
         setTheme(cloneTheme(customTheme));
         setMessage(`Saved custom theme "${customName}".`);
     };
 
     const deleteCustom = (name: string) => {
-        if (!window.confirm(`Delete custom theme “${name}”?`)) {
+        showDeleteTheme({ kind: "ui", name });
+    };
+
+    const confirmDeleteTheme = () => {
+        const target = deleteTarget;
+        showDeleteTheme(null);
+        if (!target) {
             return;
         }
-        const next = deleteCustomMultiFXTheme(name);
+        if (target.kind === "keyboard") {
+            const next = deleteCustomMultiFXKeyboardTheme(target.name);
+            setCustomKeyboardThemes(next);
+            syncThemeUi({ customKeyboardThemes: next as unknown as JsonObject[] });
+            setMessage(`Deleted keyboard theme "${target.name}".`);
+            return;
+        }
+        const next = deleteCustomMultiFXTheme(target.name);
         setCustomThemes(next);
-        setMessage(`Deleted custom theme "${name}".`);
+        syncThemeUi({ customThemes: next as unknown as JsonObject[] });
+        setMessage(`Deleted custom theme "${target.name}".`);
     };
 
     const saveKeyboardCustom = () => {
@@ -328,17 +486,19 @@ export default function ThemeManagerView({
             return;
         }
         const saved = { ...keyboardTheme, author: "User" };
-        setCustomKeyboardThemes(saveCustomMultiFXKeyboardTheme(saved));
+        const next = saveCustomMultiFXKeyboardTheme(saved);
+        setCustomKeyboardThemes(next);
+        syncThemeUi({ customKeyboardThemes: next as unknown as JsonObject[] });
         setKeyboardTheme(structuredClone(saved));
         setMessage(`Saved keyboard theme "${saved.name}".`);
     };
 
     const exportAllThemes = () => {
-        setPicker("saveAll");
+        showThemePicker("saveAll");
     };
 
     const exportTheme = () => {
-        setPicker("save");
+        showThemePicker("save");
     };
 
     const applyImportedTheme = (raw: unknown) => {
@@ -373,6 +533,10 @@ export default function ThemeManagerView({
                 setTheme(cloneTheme(active));
                 setCustomThemes(restoredUI);
                 setCustomKeyboardThemes(restoredKeyboard);
+                syncThemeUi({
+                    customThemes: restoredUI as unknown as JsonObject[],
+                    customKeyboardThemes: restoredKeyboard as unknown as JsonObject[]
+                });
                 setKeyboardTheme(keyboardThemeFromUITheme(active));
                 setMessage("UI and keyboard themes restored from backup.");
                 return;
@@ -506,7 +670,7 @@ export default function ThemeManagerView({
                             >
                                 <button
                                     type="button"
-                                    onClick={() => setPicker("load")}
+                                    onClick={() => showThemePicker("load")}
                                     style={{
                                         ...buttonStyle,
                                         width: "100%",
@@ -567,7 +731,10 @@ export default function ThemeManagerView({
                                     <button
                                         key={mode}
                                         type="button"
-                                        onClick={() => setBrowseMode(mode)}
+                                        onClick={() => {
+                                            setBrowseMode(mode);
+                                            syncThemeUi({ browseMode: mode });
+                                        }}
                                         style={browseMode === mode
                                             ? smallTabActiveStyle
                                             : smallTabStyle}
@@ -580,6 +747,8 @@ export default function ThemeManagerView({
 
                         <div
                             ref={themeListRef}
+                            data-mfx-nav-list="themes"
+                            data-mfx-sync-scroll="settings-theme-list"
                             style={{
                                 flex: "1 1 auto",
                                 minHeight: 0,
@@ -852,6 +1021,7 @@ export default function ThemeManagerView({
                                     setKeyboardTheme(keyboardThemeFromUITheme(theme));
                                 }
                                 setEditorTab(tab);
+                                syncThemeUi({ editorTab: tab });
                             }}
                         />
 
@@ -997,13 +1167,7 @@ export default function ThemeManagerView({
                                 onChange={setKeyboardTheme}
                                 savedThemes={customKeyboardThemes}
                                 onLoad={(selected) => setKeyboardTheme(structuredClone(selected))}
-                                onDelete={(name) => {
-                                    if (!window.confirm(`Delete keyboard theme “${name}”?`)) {
-                                        return;
-                                    }
-                                    setCustomKeyboardThemes(deleteCustomMultiFXKeyboardTheme(name));
-                                    setMessage(`Deleted keyboard theme "${name}".`);
-                                }}
+                                onDelete={(name) => showDeleteTheme({ kind: "keyboard", name })}
                             />
                         )}
                     </div>
@@ -1029,11 +1193,21 @@ export default function ThemeManagerView({
                                 customKeyboardThemes
                             }, null, 2)
                             : undefined}
-                    onClose={() => setPicker(null)}
+                    onClose={() => showThemePicker(null)}
                     onLoad={(parsed) => applyImportedTheme(parsed)}
                     onSaved={() => setMessage(picker === "saveAll"
                         ? "All UI and keyboard themes saved on the Pi."
                         : "Theme saved on the Pi.")}
+                />
+            )}
+            {deleteTarget && (
+                <ConfirmDialog
+                    title={`DELETE ${deleteTarget.kind === "keyboard" ? "KEYBOARD THEME" : "THEME"}?`}
+                    body={`Delete “${deleteTarget.name}”?`}
+                    confirmLabel="DELETE"
+                    danger
+                    onCancel={() => showDeleteTheme(null)}
+                    onConfirm={confirmDeleteTheme}
                 />
             )}
         </div>
@@ -1100,7 +1274,7 @@ function SurfaceEditor({
         keyof typeof SURFACE_LABELS
     >;
     return (
-        <div style={editorScrollStyle}>
+        <div style={editorScrollStyle} data-mfx-sync-scroll="settings-theme-editor">
             <div style={editorCardGridStyle}>
                 {keys.map((key) => (
                     <SurfaceCard
@@ -1176,7 +1350,7 @@ function RoleEditor({
 }) {
     const keys = Object.keys(ROLE_LABELS) as Array<keyof typeof ROLE_LABELS>;
     return (
-        <div style={editorScrollStyle}>
+        <div style={editorScrollStyle} data-mfx-sync-scroll="settings-theme-editor">
             <section style={editorCardStyle}>
                 <div style={editorCardHeadingStyle}>LIGHTING BY FUNCTION</div>
                 <div style={{
@@ -1305,7 +1479,7 @@ function ControlStyleEditor({
         }
     });
     return (
-        <div style={editorScrollStyle}>
+        <div style={editorScrollStyle} data-mfx-sync-scroll="settings-theme-editor">
             <ControlStylePreview theme={theme} />
             <section style={editorCardStyle}>
                 <div style={editorCardHeadingStyle}>GRAPHICAL STYLE</div>
@@ -1419,7 +1593,7 @@ function KeyboardThemeEditor({
         </div>
     );
     return (
-        <div style={editorScrollStyle}>
+        <div style={editorScrollStyle} data-mfx-sync-scroll="settings-theme-editor">
             <section style={editorCardStyle}>
                 <div style={editorCardHeadingStyle}>KEYBOARD THEME LIBRARY</div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -1677,7 +1851,7 @@ function MotionEditor({
         next.appearance.motion = { ...next.appearance.motion, ...value };
     });
     return (
-        <div style={editorScrollStyle}>
+        <div style={editorScrollStyle} data-mfx-sync-scroll="settings-theme-editor">
             <section style={editorCardStyle}>
                 <div style={editorCardHeadingStyle}>MOTION & FEEDBACK</div>
                 <div style={twoColumnEditorStyle}>
@@ -1758,7 +1932,7 @@ function FontsEditor({
     });
 
     return (
-        <div style={editorScrollStyle}>
+        <div style={editorScrollStyle} data-mfx-sync-scroll="settings-theme-editor">
             <section style={editorCardStyle}>
                 <div style={editorCardHeadingStyle}>LIVE FONT PREVIEW</div>
                 <div style={fontPreviewStyle}>
@@ -2099,6 +2273,9 @@ function ThemePresetButton({
         <button
             type="button"
             data-theme-name={preset.name}
+            data-mfx-nav-item="true"
+            className={selected ? "selected" : undefined}
+            aria-current={selected ? "page" : undefined}
             onClick={onClick}
             style={{
                 minHeight:

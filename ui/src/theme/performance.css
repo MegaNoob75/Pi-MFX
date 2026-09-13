@@ -274,6 +274,23 @@
         repeating-conic-gradient(#4d5156 0 7deg, #17191c 7deg 13deg);
 }
 
+.mfx-hardware-knob[data-encoder="true"][data-pressed="true"] {
+    box-shadow:
+        inset 0 0 0 max(1px, .9cqw) #050505,
+        inset 0 -8px 12px #000a,
+        0 0 0 3px var(--mfx-surface-panel-accent),
+        0 0 18px var(--mfx-surface-panel-accent);
+}
+
+.mfx-hardware-knob[data-encoder="true"][data-pressed="true"]::before {
+    background: repeating-conic-gradient(
+        from 225deg,
+        var(--mfx-surface-panel-accent) 0 2deg,
+        transparent 2deg 18deg
+    );
+    opacity: 1;
+}
+
 .mfx-hardware-slider {
     position: relative;
     width: min(22cqw, 18px);
@@ -373,6 +390,22 @@ html[data-mfx-analog-style="minimal"] .mfx-hardware-button {
     touch-action: none;
     -webkit-touch-callout: none;
     overflow: visible;
+}
+
+.mfx-performance-switch-wrap[data-mfx-encoder-selected="true"]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 8;
+    pointer-events: none;
+    border: 3px solid var(--mfx-cyan);
+    border-radius: 12px;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+}
+
+.mfx-performance-control[data-mfx-encoder-selected="true"] {
+    box-shadow: inset 0 0 0 4px var(--mfx-cyan),
+        var(--mfx-surface-panel-shadow);
 }
 
 .mfx-performance-switch__menu {

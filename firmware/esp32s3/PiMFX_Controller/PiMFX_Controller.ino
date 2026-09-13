@@ -35,6 +35,7 @@ bool switchRaw[pimfx::kSwitchCount] = {};
 uint32_t switchChangedAt[pimfx::kSwitchCount] = {};
 
 uint8_t encoderPreviousAb = 0;
+int16_t encoderAccum = 0;
 bool encoderButtonStable = false;
 bool encoderButtonRaw = false;
 uint32_t encoderButtonChangedAt = 0;
@@ -188,10 +189,19 @@ void pollEncoder() {
     static const int8_t kTable[] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
     const int8_t step = kTable[(encoderPreviousAb << 2) | ab];
     encoderPreviousAb = ab;
-    if (step > 0) {
+    // A contact bounce can leave one transition from the old direction after
+    // a detent was emitted. Do not make the next real click cancel that stale
+    // residue before it starts moving in the new direction.
+    if ((encoderAccum > 0 && step < 0) || (encoderAccum < 0 && step > 0)) {
+        encoderAccum = 0;
+    }
+    encoderAccum = static_cast<int16_t>(encoderAccum + step);
+    if (encoderAccum >= static_cast<int16_t>(pimfx::kEncoderStepsPerDetent)) {
         sendControlChange(pimfx::kEncoderTurnCc, 65);
-    } else if (step < 0) {
+        encoderAccum = 0;
+    } else if (encoderAccum <= -static_cast<int16_t>(pimfx::kEncoderStepsPerDetent)) {
         sendControlChange(pimfx::kEncoderTurnCc, 63);
+        encoderAccum = 0;
     }
 
     const uint32_t now = millis();

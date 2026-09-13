@@ -16,6 +16,9 @@ namespace {
 constexpr size_t kTunerRingSize = 16384;
 constexpr float kTunerMinFrequency = 60.0f;   // below a dropped-B seven string
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
+constexpr int kRequiredControllerFirmwareMajor = 1;
+constexpr int kRequiredControllerFirmwareMinor = 1;
+constexpr const char* kRequiredControllerFirmwareVersion = "1.1";
 
 float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
@@ -298,7 +301,9 @@ float mappedBindingValue(const ActionRequest& request) {
     float visual = isContinuousKind(request.kind) ? request.value
                  : (request.pressed ? 1.0f : 0.0f);
     visual = std::max(0.0f, std::min(1.0f, visual));
-    if (request.binding.inverted) {
+    // Hardware reverse is applied when MIDI is decoded. This flag is the
+    // per-parameter reverse from the editor overlay.
+    if (request.fromPresetBind && request.binding.inverted) {
         visual = 1.0f - visual;
     }
     return request.binding.minimum
@@ -383,6 +388,7 @@ bool Engine::start(std::string& error) {
     }
 
     controller_.setConfig(settings_.controller);
+    applyControllerFeel();
     midi_.setMessageHandler([this](const MidiMessage& message) { handleMidiMessage(message); });
     midi_.setSysExHandler([this](const std::vector<uint8_t>& sysex) { handleSysEx(sysex); });
     if (settings_.controller.enabled) {
@@ -1057,6 +1063,46 @@ bool Engine::stepBank(int delta, std::string& error) {
     return selectBank(bank.id, error);
 }
 
+bool Engine::stepSnapshot(int delta, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    std::vector<int> slots;
+    for (const Snapshot& snapshot : preset->snapshots) {
+        const int slot = snapshot.slot >= 0 ? snapshot.slot : static_cast<int>(slots.size());
+        if (std::find(slots.begin(), slots.end(), slot) == slots.end()) {
+            slots.push_back(slot);
+        }
+    }
+    std::sort(slots.begin(), slots.end());
+    if (slots.empty()) {
+        error = "no snapshots";
+        return false;
+    }
+    int index = 0;
+    for (size_t i = 0; i < slots.size(); ++i) {
+        if (slots[i] == preset->activeSnapshot) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    if (preset->activeSnapshot < 0) {
+        index = delta > 0 ? -1 : 0;
+    }
+    const int count = static_cast<int>(slots.size());
+    index = ((index + delta) % count + count) % count;
+    if (!pressSnapshotSlotUnlocked(*preset, slots[static_cast<size_t>(index)], error)) {
+        return false;
+    }
+    persistActiveBankUnlocked();
+    refreshLeds();
+    notify();
+    return true;
+}
+
 bool Engine::reloadStoredPreset(std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
@@ -1681,6 +1727,49 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 writeStoredControlUnlocked(slotId, portSymbol, clamped);
                 requestBankPersist(false);
+            }
+            notifyPerformance();
+            return true;
+        }
+        error = "no such control on this effect";
+        return false;
+    }
+    error = "no such effect";
+    return false;
+}
+
+bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& error) {
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain) {
+        error = "no chain is running";
+        return false;
+    }
+    int delta = request.delta != 0 ? request.delta : (request.value >= 0.0f ? 1 : -1);
+    if (request.fromPresetBind && request.binding.inverted) {
+        delta = -delta;
+    }
+    for (size_t index = 0; index < chain->slots.size(); ++index) {
+        ChainSlot& slot = *chain->slots[index];
+        if (slot.id != request.binding.slotId || !slot.plugin) {
+            continue;
+        }
+        for (const PortInfo& port : slot.plugin->info().ports) {
+            if (!port.control || !port.input || port.symbol != request.binding.portSymbol) {
+                continue;
+            }
+            const float current = slot.plugin->control(port.index);
+            const float span = port.maximum - port.minimum;
+            float step = span == 0.0f ? 0.01f : span / 64.0f;
+            if (port.integer || port.enumerated) {
+                step = 1.0f;
+            }
+            if (port.toggled) {
+                return setControlValue(request.binding.slotId, request.binding.portSymbol,
+                                       delta > 0 ? port.maximum : port.minimum, error, false);
+            }
+            const float next = current + static_cast<float>(delta) * step;
+            if (!setControlValue(request.binding.slotId, request.binding.portSymbol, next, error, false)) {
+                return false;
             }
             notifyPerformance();
             return true;
@@ -2367,7 +2456,11 @@ bool Engine::setVirtualControlValue(const std::string& controlId, float value, s
 }
 
 void Engine::handleMidiMessage(const MidiMessage& message) {
+    bool encoderUi = false;
     for (const ActionRequest& request : controller_.handleMessage(message)) {
+        if (request.kind == ControlKind::Encoder || request.kind == ControlKind::EncoderPush) {
+            encoderUi = true;
+        }
         if (request.action == "learned") {
             // Learning changed the runtime copy of the config; persist it so a
             // reboot does not lose the assignment.
@@ -2377,6 +2470,9 @@ void Engine::handleMidiMessage(const MidiMessage& message) {
             continue;
         }
         runAction(request);
+    }
+    if (encoderUi) {
+        notifyPerformance();
     }
 }
 
@@ -2388,6 +2484,13 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
     logInfo("controller: firmware " + identity.firmwareVersion + ", "
             + std::to_string(identity.controlCount) + " controls, "
             + std::to_string(identity.ledCount) + (identity.rgbLeds ? " RGB LEDs" : " LEDs"));
+    {
+        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+        controllerFirmwareVersion_ = identity.firmwareVersion;
+        controllerFirmwareUpdateRequired_ = identity.firmwareMajor < kRequiredControllerFirmwareMajor
+            || (identity.firmwareMajor == kRequiredControllerFirmwareMajor
+                && identity.firmwareMinor < kRequiredControllerFirmwareMinor);
+    }
     refreshLeds();
     notify();
 }
@@ -2420,6 +2523,11 @@ void Engine::runAction(const ActionRequest& incoming) {
     const ControlBinding& binding = request.binding;
     const bool latching = request.kind == ControlKind::Latching;
     const bool snapshotView = snapshotMode_.load(std::memory_order_relaxed);
+    const int encoderDelta = request.delta != 0
+        ? request.delta
+        : (request.kind == ControlKind::Encoder
+            ? (request.value >= 0.0f ? 1 : -1)
+            : 0);
     const bool presetNav = request.action == "selectPreset"
         || request.action == "presetUp"
         || request.action == "presetDown"
@@ -2431,7 +2539,9 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "snapshotMode"
         && request.action != "bypassAll" && request.action != "tapTempo"
         && request.action != "tuner" && request.action != "toggleEffect"
-        && request.action != "reloadPreset") {
+        && request.action != "reloadPreset"
+        && request.action != "navigate"
+        && request.action != "select") {
         if (binding.snapshotSlot >= 0) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             Preset* preset = activePreset();
@@ -2451,18 +2561,25 @@ void Engine::runAction(const ActionRequest& incoming) {
         }
     }
 
-    if (request.action == "presetUp") {
-        stepPreset(1, error);
+    if (request.action == "navigate") {
+        notifyUiNav(encoderDelta != 0 ? encoderDelta : 1, false);
+        return;
+    } else if (request.action == "select") {
+        notifyUiNav(0, true);
+        return;
+    } else if (request.action == "presetUp") {
+        stepPreset(encoderDelta != 0 ? encoderDelta : 1, error);
     } else if (request.action == "presetDown") {
-        stepPreset(-1, error);
+        stepPreset(encoderDelta != 0 ? -encoderDelta : -1, error);
     } else if (request.action == "bankUp") {
-        stepBank(1, error);
+        stepBank(encoderDelta != 0 ? encoderDelta : 1, error);
     } else if (request.action == "bankDown") {
-        stepBank(-1, error);
+        stepBank(encoderDelta != 0 ? -encoderDelta : -1, error);
     } else if (request.action == "selectPreset") {
         const ControllerConfig config = controller_.config();
         std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
         std::string presetId = binding.presetId;
+        sessionPresetForControl(request.controlId, bankId, presetId);
         if (presetId.empty()) {
             presetId = assignedPresetForControl(config, bankId, request.controlId);
         }
@@ -2480,7 +2597,9 @@ void Engine::runAction(const ActionRequest& incoming) {
             selectPreset(bankId, presetId, error);
         }
     } else if (request.action == "selectSnapshot") {
-        if (binding.snapshotSlot >= 0) {
+        if (request.kind == ControlKind::Encoder) {
+            stepSnapshot(encoderDelta != 0 ? encoderDelta : 1, error);
+        } else if (binding.snapshotSlot >= 0) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             Preset* preset = activePreset();
             if (preset) {
@@ -2523,9 +2642,13 @@ void Engine::runAction(const ActionRequest& incoming) {
             setEffectEnabled(binding.slotId, enabled, error);
         }
     } else if (request.action == "setParameter") {
-        const bool persist = request.persist && !isContinuousKind(request.kind);
-        setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error, persist);
-        notifyPerformance();
+        if (request.kind == ControlKind::Encoder) {
+            nudgeEncoderParameter(request, error);
+        } else {
+            const bool persist = request.persist && !isContinuousKind(request.kind);
+            setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error, persist);
+            notifyPerformance();
+        }
     } else if (request.action == "bypassAll") {
         if (latching) {
             setBypassAll(latchOn(request));
@@ -2613,11 +2736,15 @@ void Engine::refreshLeds() {
                     && preset->activeSnapshot == control.binding.snapshotSlot;
                 colourRole = "snapshot";
             } else if (control.binding.action == "selectPreset") {
+                std::string bankId = activeBankId_;
                 std::string presetId = control.binding.presetId;
+                sessionPresetForControl(control.id, bankId, presetId);
                 if (presetId.empty()) {
                     presetId = assignedPresetForControl(config, activeBankId_, control.id);
+                    bankId = activeBankId_;
                 }
-                state.on = !presetId.empty() && presetId == activePresetId_;
+                state.on = !presetId.empty() && presetId == activePresetId_
+                    && (bankId.empty() || bankId == activeBankId_);
                 if (state.on && bypassAll_.load(std::memory_order_relaxed)) {
                     colourRole = "bypass";
                 } else if (state.on && preset && preset->rememberedSnapshotEnabled
@@ -2674,12 +2801,59 @@ bool Engine::applyUiSettings(const Json& json, std::string& error) {
         }
     }
     settings_.ui = UiSettings::fromJson(merged);
+    applyControllerFeel();
+    if (settings_.ui.performanceEncoder != "session") {
+        sessionPresets_.clear();
+    }
     if (!persistSettings()) {
         error = "could not save settings";
         return false;
     }
     refreshLeds();
     notify();
+    return true;
+}
+
+void Engine::applyControllerFeel() {
+    controller_.setFeel(
+        settings_.ui.encoderStepsPerDetent,
+        settings_.ui.analogDeadband,
+        settings_.ui.switchDebounceMs);
+}
+
+bool Engine::sessionPresetForControl(const std::string& controlId, std::string& bankId, std::string& presetId) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    auto found = sessionPresets_.find(controlId);
+    if (found == sessionPresets_.end() || found->second.presetId.empty()) {
+        return false;
+    }
+    if (!found->second.bankId.empty()) {
+        bankId = found->second.bankId;
+    }
+    presetId = found->second.presetId;
+    return true;
+}
+
+bool Engine::applySessionPresets(const Json& json, std::string& error) {
+    {
+        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+        sessionPresets_.clear();
+        if (json["enabled"].asBool(false)) {
+            for (const Json& item : json["assignments"].items()) {
+                const std::string controlId = item["controlId"].asString();
+                const std::string presetId = item["presetId"].asString();
+                if (controlId.empty() || presetId.empty()) {
+                    continue;
+                }
+                sessionPresets_[controlId] = SessionPreset{
+                    item["bankId"].asString(),
+                    presetId
+                };
+            }
+        }
+    }
+    refreshLeds();
+    error.clear();
     return true;
 }
 
@@ -3045,6 +3219,21 @@ void Engine::notifyPerformance() {
     }
 }
 
+void Engine::notifyUiNav(int delta, bool select) {
+    std::lock_guard<std::mutex> lock(listenerMutex_);
+    if (!listener_) {
+        return;
+    }
+    Json json = Json::object();
+    json.set("type", "uiNav");
+    if (select) {
+        json.set("select", true);
+    } else {
+        json.set("delta", delta);
+    }
+    listener_(json);
+}
+
 Json Engine::fullState() const {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Json json = Json::object();
@@ -3292,6 +3481,11 @@ Json Engine::describeControllerRuntime() const {
     json.set("activePort", midi_.activePort());
     json.set("learning", controller_.learning());
     json.set("learningControlId", controller_.learningControlId());
+    if (!controllerFirmwareVersion_.empty()) {
+        json.set("firmwareVersion", controllerFirmwareVersion_);
+        json.set("requiredFirmwareVersion", kRequiredControllerFirmwareVersion);
+        json.set("firmwareUpdateRequired", controllerFirmwareUpdateRequired_);
+    }
     return json;
 }
 

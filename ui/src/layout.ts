@@ -172,6 +172,9 @@ export function analogMinSize(kind: string): { width: number; height: number } {
     if (kind === "pot" || kind === "encoder") {
         return { width: 0.08, height: 0.14 };
     }
+    if (kind === "encoderPush") {
+        return { width: 0.08, height: 0.12 };
+    }
     return { width: 0.10, height: 0.16 };
 }
 

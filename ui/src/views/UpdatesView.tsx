@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { bool, obj, str } from "../json";
+import { updateUiSessionSection } from "../uiSession";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 const POLL_MS = 2000;
@@ -25,6 +26,25 @@ export function UpdatesView({
     const [installing, setInstalling] = useState(false);
     const [confirmInstall, setConfirmInstall] = useState(false);
     const [message, setMessage] = useState("");
+
+    useEffect(() => {
+        const shared = obj(engine.uiSession.updates);
+        const sharedBranch = str(shared.branch);
+        if (sharedBranch === "dev" || sharedBranch === "main") {
+            setBranch(sharedBranch);
+        }
+        setConfirmInstall(bool(shared.confirmInstall));
+    }, [engine.uiSession.updates]);
+
+    const chooseBranch = (next: "dev" | "main") => {
+        setBranch(next);
+        updateUiSessionSection(engine.client, "updates", { branch: next });
+    };
+
+    const showInstallConfirmation = (show: boolean) => {
+        setConfirmInstall(show);
+        updateUiSessionSection(engine.client, "updates", { confirmInstall: show });
+    };
 
     const applyStatus = (next: ReturnType<typeof obj>) => {
         setStatus(next);
@@ -109,7 +129,7 @@ export function UpdatesView({
         && !str(status.error);
 
     const install = () => {
-        setConfirmInstall(false);
+        showInstallConfirmation(false);
         setInstalling(true);
         setMessage("Starting update…");
         void run(async () => {
@@ -125,7 +145,7 @@ export function UpdatesView({
 
     return (
         <div className="mfx-screen">
-            <div className="page-scroll stack updates-page">
+            <div className="page-scroll stack updates-page" data-mfx-sync-scroll="settings-updates">
                 <section className="panel stack">
                     <h2>PI-MFX UPDATE</h2>
                     <div className="updates-version-grid">
@@ -153,7 +173,7 @@ export function UpdatesView({
                                 type="button"
                                 className={`btn ${branch === item ? "btn-active" : ""}`}
                                 disabled={checking || installing || fetching}
-                                onClick={() => setBranch(item)}
+                                onClick={() => chooseBranch(item)}
                             >
                                 {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
                             </button>
@@ -194,7 +214,7 @@ export function UpdatesView({
                                 type="button"
                                 className="btn btn-accent"
                                 disabled={checking || installing || fetching}
-                                onClick={() => setConfirmInstall(true)}
+                                onClick={() => showInstallConfirmation(true)}
                             >
                                 {installing ? "UPDATING..." : `UPDATE ${branch.toUpperCase()}`}
                             </button>
@@ -216,10 +236,10 @@ export function UpdatesView({
             {confirmInstall && (
                 <ConfirmDialog
                     title={`UPDATE ${branch.toUpperCase()}?`}
-                    body="Audio stops while the engine rebuilds. This takes several minutes, restarts the Pi-MFX service, and discards local source edits on this Pi. Banks stay in /var/lib/pimfx."
+                    body="The update takes several minutes. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes."
                     confirmLabel="UPDATE"
                     danger
-                    onCancel={() => setConfirmInstall(false)}
+                    onCancel={() => showInstallConfirmation(false)}
                     onConfirm={install}
                 />
             )}

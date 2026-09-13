@@ -55,5 +55,9 @@ Edit `Pins.h` if your enclosure uses different GPIOs, then flash again.
 2. Settings → Controller → Hardware Setup: pick the **ESP32** MIDI device
    (not Midi Through) and press SELECT. Hardware buttons stay dead until
    a device is selected.
-3. Add a switch or pot, press **LEARN**, then use the matching control.
-4. Assign presets by holding a Performance tile — not from Hardware Setup.
+3. Add a switch, pot or encoder, press **LEARN**, then use the matching control.
+   Encoders also have **LEARN BUTTON** for the built-in click. Reverse a pot or
+   encoder in Hardware Setup if it is wired or turning backwards.
+4. Assign an encoder’s turn to **Navigate menus** and its click to **Select**
+   to scroll lists (menus, banks, presets, themes) and confirm the highlight.
+5. Assign presets by holding a Performance tile — not from Hardware Setup.

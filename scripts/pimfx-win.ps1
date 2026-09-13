@@ -176,11 +176,23 @@ function Invoke-Pimfx([string]$ActionLine) {
 }
 
 function Copy-LocalTree([string]$Mode) {
+    Require-Command git
     Ensure-Login
     Enable-Askpass
     $archive = Join-Path $env:TEMP "pimfx-sync.tgz"
     $apply = Join-Path $env:TEMP "pimfx-apply.sh"
     try {
+        $sourceCommit = (& git -C $Repo rev-parse --short HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) {
+            throw "Could not read the current Windows commit"
+        }
+        $sourceChanges = & git -C $Repo status --porcelain --untracked-files=normal
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not check the Windows working tree"
+        }
+        if ($sourceChanges) {
+            $sourceCommit += "-local"
+        }
         if (Test-Path $archive) {
             Remove-Item $archive -Force
         }
@@ -200,6 +212,7 @@ function Copy-LocalTree([string]$Mode) {
             throw "tar failed"
         }
         $quotedPass = Escape-BashSingle $script:Password
+        $quotedCommit = Escape-BashSingle $sourceCommit
         $applyText = @"
 #!/bin/bash
 set -euo pipefail
@@ -209,7 +222,8 @@ tar -xzf /tmp/pimfx-sync.tgz -C "`$DEST"
 rm -f /tmp/pimfx-sync.tgz
 if [ "`$1" = "rebuild" ]; then
   cd "`$DEST"
-  printf '%s\n' $quotedPass | sudo -S -p '' env SKIP_PULL=1 bash ./scripts/pimfx.sh rebuild
+  printf '%s\n' $quotedCommit > .pimfx-build-commit
+  printf '%s\n' $quotedPass | sudo -S -p '' env SKIP_PULL=1 PIMFX_GIT_SHA=$quotedCommit bash ./scripts/pimfx.sh rebuild
 fi
 rm -f /tmp/pimfx-apply.sh
 "@

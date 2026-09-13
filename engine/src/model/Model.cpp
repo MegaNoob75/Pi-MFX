@@ -228,6 +228,7 @@ std::string controlKindToString(ControlKind kind) {
         case ControlKind::Pot: return "pot";
         case ControlKind::Slider: return "slider";
         case ControlKind::Encoder: return "encoder";
+        case ControlKind::EncoderPush: return "encoderPush";
         case ControlKind::Expression: return "expression";
     }
     return "momentary";
@@ -238,6 +239,7 @@ ControlKind controlKindFromString(const std::string& text) {
     if (text == "pot") return ControlKind::Pot;
     if (text == "slider") return ControlKind::Slider;
     if (text == "encoder") return ControlKind::Encoder;
+    if (text == "encoderPush" || text == "encoder_push") return ControlKind::EncoderPush;
     if (text == "expression") return ControlKind::Expression;
     return ControlKind::Momentary;
 }
@@ -302,6 +304,9 @@ Json ControllerControl::toJson() const {
     json.set("width", width);
     json.set("height", height);
     json.set("ledId", ledId);
+    if (!pairId.empty()) {
+        json.set("pairId", pairId);
+    }
     json.set("binding", binding.toJson());
     return json;
 }
@@ -322,6 +327,7 @@ ControllerControl ControllerControl::fromJson(const Json& json) {
     control.width = json["width"].asDouble(0.12);
     control.height = json["height"].asDouble(0.18);
     control.ledId = json["ledId"].asString();
+    control.pairId = json["pairId"].asString();
     control.binding = ControlBinding::fromJson(json["binding"]);
     return control;
 }
@@ -514,6 +520,10 @@ Json UiSettings::toJson() const {
     json.set("confirmPresetOverwrite", confirmPresetOverwrite);
     json.set("startupView", startupView);
     json.set("virtualSwitchCount", virtualSwitchCount);
+    json.set("performanceEncoder", performanceEncoder);
+    json.set("encoderStepsPerDetent", encoderStepsPerDetent);
+    json.set("analogDeadband", analogDeadband);
+    json.set("switchDebounceMs", switchDebounceMs);
     return json;
 }
 
@@ -531,6 +541,13 @@ UiSettings UiSettings::fromJson(const Json& json) {
     settings.confirmPresetOverwrite = json["confirmPresetOverwrite"].asBool(true);
     settings.startupView = json["startupView"].asString("performance");
     settings.virtualSwitchCount = std::max(1, std::min(64, json["virtualSwitchCount"].asInt(8)));
+    const std::string encoderMode = json["performanceEncoder"].asString("browse");
+    settings.performanceEncoder = (encoderMode == "live" || encoderMode == "session")
+        ? encoderMode
+        : "browse";
+    settings.encoderStepsPerDetent = std::max(1, std::min(8, json["encoderStepsPerDetent"].asInt(1)));
+    settings.analogDeadband = std::max(0, std::min(16, json["analogDeadband"].asInt(0)));
+    settings.switchDebounceMs = std::max(0, std::min(80, json["switchDebounceMs"].asInt(0)));
     return settings;
 }
 

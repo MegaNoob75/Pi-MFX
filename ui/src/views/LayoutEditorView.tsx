@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { findPreset, isAnalogKind, normalizeControlKind, type EngineSnapshot } from "../api";
-import { bool, num, obj, str, objects, type JsonObject } from "../json";
+import { findPreset, isAnalogKind, isEncoderKind, isEncoderPushKind, normalizeControlKind, type EngineSnapshot } from "../api";
+import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import {
     STATUS_WIDGET_IDS,
     STATUS_WIDGET_LABELS,
@@ -31,6 +31,7 @@ import { GainMeter } from "./GainMeter";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
 import { LibraryJsonPicker, utf8ToBase64 } from "./LibraryManager";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { updateUiSessionSection } from "../uiSession";
 
 function layoutNameFromPath(path: string, fallback = "default"): string {
     const leaf = path.replace(/\\/g, "/").split("/").pop() ?? fallback;
@@ -51,6 +52,10 @@ const ACTION_LABELS: Record<string, string> = {
     bypassAll: "Bypass All",
     tapTempo: "Tap Tempo",
     tuner: "Tuner",
+    navigate: "Navigate menus",
+    select: "Select",
+    selectSnapshot: "Snapshot",
+    reloadPreset: "Reload Preset",
     setParameter: "Set Parameter",
     toggleEffect: "Toggle Effect"
 };
@@ -105,6 +110,98 @@ export function LayoutEditorView({
         clientY: number;
         rect: LayoutRect;
     } | null>(null);
+    const applyingSharedDraft = useRef(false);
+    const draftReady = useRef(false);
+    const lastSharedDraft = useRef("");
+    useEffect(() => {
+        const shared = obj(engine.uiSession.layoutEditor);
+        const sharedStage = str(shared.stage);
+        if (sharedStage === "performance" || sharedStage === "snapshots") {
+            setStage(sharedStage);
+        }
+        if (typeof shared.selectedId === "string") {
+            setSelectedId(shared.selectedId);
+        }
+        if (typeof shared.activeGroupId === "string") {
+            setActiveGroupId(shared.activeGroupId);
+        }
+        if (typeof shared.groupMode === "boolean") {
+            setGroupMode(shared.groupMode);
+        }
+        if (typeof shared.matchSize === "boolean") {
+            setMatchSize(shared.matchSize);
+        }
+        if (typeof shared.snapEnabled === "boolean") {
+            setSnapEnabled(shared.snapEnabled);
+            window.localStorage.setItem(SNAP_ENABLED_KEY, shared.snapEnabled ? "1" : "0");
+        }
+        if (typeof shared.snapPixels === "number") {
+            const next = Math.min(64, Math.max(1, shared.snapPixels));
+            setSnapPixels(next);
+            window.localStorage.setItem(SNAP_PIXELS_KEY, String(next));
+        }
+        const sharedPicker = str(shared.picker);
+        setPicker(sharedPicker === "load" || sharedPicker === "save" ? sharedPicker : null);
+        if (typeof shared.confirmDelete === "boolean") {
+            setConfirmDelete(shared.confirmDelete);
+        }
+        const sharedDraft = obj(shared.draft);
+        const sharedDraftJson = Object.keys(sharedDraft).length > 0 ? JSON.stringify(sharedDraft) : "";
+        if (sharedDraftJson && sharedDraftJson !== lastSharedDraft.current) {
+            lastSharedDraft.current = sharedDraftJson;
+            applyingSharedDraft.current = true;
+            setWidgets(readStatusWidgets({ elements: sharedDraft.elements }));
+            setSnapshotWidgets(readSnapshotWidgets({ snapshotElements: sharedDraft.snapshotElements }));
+            setHiddenIds(arr(sharedDraft.hiddenIds).filter((item): item is string => typeof item === "string"));
+            setDraftRects(obj(sharedDraft.rects) as unknown as Record<string, LayoutRect>);
+            setGroups(readLayoutGroups({ groups: sharedDraft.groups }));
+            setSnapshotGroups(readLayoutGroups({ groups: sharedDraft.snapshotGroups }));
+            if (typeof sharedDraft.loadedLayoutName === "string") {
+                setLoadedLayoutName(sharedDraft.loadedLayoutName);
+            }
+            if (typeof sharedDraft.dirty === "boolean") {
+                setDirty(sharedDraft.dirty);
+            }
+        }
+    }, [engine.uiSession.layoutEditor]);
+    const syncLayoutUi = (patch: JsonObject) => updateUiSessionSection(engine.client, "layoutEditor", patch);
+    const selectLayoutItem = (id: string) => {
+        setSelectedId(id);
+        syncLayoutUi({ selectedId: id });
+    };
+    const showLayoutPicker = (next: "load" | "save" | null) => {
+        setPicker(next);
+        syncLayoutUi({ picker: next ?? "" });
+    };
+    const showDeleteConfirmation = (show: boolean) => {
+        setConfirmDelete(show);
+        syncLayoutUi({ confirmDelete: show });
+    };
+    useEffect(() => {
+        if (!draftReady.current) {
+            draftReady.current = true;
+            if (applyingSharedDraft.current) {
+                applyingSharedDraft.current = false;
+                return;
+            }
+        }
+        if (applyingSharedDraft.current) {
+            applyingSharedDraft.current = false;
+            return;
+        }
+        const draft = {
+            elements: statusWidgetsToJson(widgets),
+            snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
+            hiddenIds,
+            rects: draftRects as unknown as JsonObject,
+            groups: layoutGroupsToJson(groups),
+            snapshotGroups: layoutGroupsToJson(snapshotGroups),
+            loadedLayoutName,
+            dirty
+        };
+        lastSharedDraft.current = JSON.stringify(draft);
+        updateUiSessionSection(engine.client, "layoutEditor", { draft });
+    }, [widgets, snapshotWidgets, hiddenIds, draftRects, groups, snapshotGroups, loadedLayoutName, dirty, engine.client]);
     const stageRef = useRef<HTMLDivElement>(null);
     const stageGroups = stage === "snapshots" ? snapshotGroups : groups;
     const setStageGroups = stage === "snapshots" ? setSnapshotGroups : setGroups;
@@ -158,7 +255,13 @@ export function LayoutEditorView({
     };
 
     const placedControls = useMemo(
-        () => controls.filter((control) => !hidden.has(str(control.id))),
+        () => controls.filter((control) => {
+            const id = str(control.id);
+            if (hidden.has(id)) {
+                return false;
+            }
+            return !isEncoderPushKind(normalizeControlKind(str(control.kind, "momentary")));
+        }),
         [controls, hidden]
     );
 
@@ -315,6 +418,7 @@ export function LayoutEditorView({
         const group: LayoutGroup = { id, name: `Group ${groupsRef.current.length + 1}`, memberIds: [] };
         setStageGroups((current) => [...current, group]);
         setActiveGroupId(id);
+        syncLayoutUi({ activeGroupId: id });
         markDirty();
         return id;
     };
@@ -326,6 +430,7 @@ export function LayoutEditorView({
         setActiveGroupId(id);
         setGroupName("");
         setGroupMode(true);
+        syncLayoutUi({ activeGroupId: id, groupMode: true });
         markDirty();
         setMessage(`Group “${name}” added. Select widgets, then ADD TO GROUP.`);
     };
@@ -350,6 +455,7 @@ export function LayoutEditorView({
         setStageGroups((current) => current.filter((group) => group.id !== activeGroup.id));
         setActiveGroupId("");
         setGroupMode(false);
+        syncLayoutUi({ activeGroupId: "", groupMode: false });
         markDirty();
         setMessage(`Deleted group “${activeGroup.name}”.`);
     };
@@ -398,7 +504,7 @@ export function LayoutEditorView({
         };
         swapTargetRef.current = null;
         setSwapTargetId(null);
-        setSelectedId(id);
+        selectLayoutItem(id);
         setMeasurement({
             mode: gesture === "move" ? "MOVE" : "RESIZE",
             clientX: event.clientX,
@@ -515,7 +621,7 @@ export function LayoutEditorView({
         }
         patchRects(session.lastValid);
         if (click && session.mode === "move") {
-            setSelectedId(session.id);
+            selectLayoutItem(session.id);
         }
     };
 
@@ -606,7 +712,13 @@ export function LayoutEditorView({
                 layoutName,
                 elements: statusWidgetsToJson(widgets),
                 snapshotElements: snapshotWidgetsToJson(snapshotWidgets),
-                unplacedControlIds: hiddenIds,
+                unplacedControlIds: Array.from(new Set([
+                    ...hiddenIds,
+                    ...controls
+                        .filter((control) => isEncoderPushKind(normalizeControlKind(str(control.kind, "momentary"))))
+                        .map((control) => str(control.id))
+                        .filter(Boolean)
+                ])),
                 groups: layoutGroupsToJson(pruneGroups(groups, performanceIds)),
                 snapshotGroups: layoutGroupsToJson(pruneGroups(snapshotGroups, snapshotIds))
             },
@@ -627,7 +739,8 @@ export function LayoutEditorView({
         setHiddenIds(unplacedIds(importedLayout));
         setGroups(importedGroups);
         setSnapshotGroups(importedSnapGroups);
-        setActiveGroupId((stage === "snapshots" ? importedSnapGroups : importedGroups)[0]?.id ?? "");
+        const importedActiveGroupId = (stage === "snapshots" ? importedSnapGroups : importedGroups)[0]?.id ?? "";
+        setActiveGroupId(importedActiveGroupId);
         const nextRects: Record<string, LayoutRect> = {};
         for (const item of imported) {
             const id = str(item.id);
@@ -642,6 +755,7 @@ export function LayoutEditorView({
         }
         setDraftRects(nextRects);
         setGroupMode(false);
+        syncLayoutUi({ activeGroupId: importedActiveGroupId, groupMode: false });
         setLoadedLayoutName(name);
     };
 
@@ -689,7 +803,7 @@ export function LayoutEditorView({
 
     const deleteLayoutFile = () => {
         const name = loadedLayoutName.trim() || "default";
-        setConfirmDelete(false);
+        showDeleteConfirmation(false);
         void run(async () => {
             const listed = obj(await engine.client.request("library/list", { kind: "layout", directory: "" }));
             const file = objects(listed.files).find((item) => (
@@ -760,6 +874,7 @@ export function LayoutEditorView({
                                     setStage(item);
                                     setSelectedId("");
                                     setGroupMode(false);
+                                    syncLayoutUi({ stage: item, selectedId: "", groupMode: false });
                                     setMessage("");
                                 }}
                             >
@@ -778,7 +893,7 @@ export function LayoutEditorView({
                             className="btn layout-name-delete"
                             title={`Delete saved layout “${loadedLayoutName.trim() || "default"}”`}
                             aria-label={`Delete saved layout ${loadedLayoutName.trim() || "default"}`}
-                            onClick={() => setConfirmDelete(true)}
+                            onClick={() => showDeleteConfirmation(true)}
                         >
                             🗑
                         </button>
@@ -797,6 +912,7 @@ export function LayoutEditorView({
                             setSnapEnabled((value) => {
                                 const next = !value;
                                 window.localStorage.setItem(SNAP_ENABLED_KEY, next ? "1" : "0");
+                                syncLayoutUi({ snapEnabled: next });
                                 return next;
                             });
                         }}
@@ -815,11 +931,12 @@ export function LayoutEditorView({
                                 const next = Math.min(64, Math.max(1, Number(event.target.value) || 8));
                                 setSnapPixels(next);
                                 window.localStorage.setItem(SNAP_PIXELS_KEY, String(next));
+                                syncLayoutUi({ snapPixels: next });
                             }}
                         />
                     </label>
-                    <button type="button" className="btn" onClick={() => setPicker("load")}>LOAD</button>
-                    <button type="button" className="btn" onClick={() => setPicker("save")}>SAVE AS</button>
+                    <button type="button" className="btn" onClick={() => showLayoutPicker("load")}>LOAD</button>
+                    <button type="button" className="btn" onClick={() => showLayoutPicker("save")}>SAVE AS</button>
                     <button type="button" className="btn btn-accent" onClick={saveLayout}>SAVE LAYOUT</button>
                 </div>
                 {groupMode && activeGroup && (
@@ -835,6 +952,7 @@ export function LayoutEditorView({
                             className="btn"
                             onClick={() => {
                                 setGroupMode(false);
+                                syncLayoutUi({ groupMode: false });
                                 setMessage(activeGroup.memberIds.length
                                     ? `${activeGroup.memberIds.length} in “${activeGroup.name}”.`
                                     : "");
@@ -847,7 +965,7 @@ export function LayoutEditorView({
                 {message && <div className="muted">{message}</div>}
             </div>
             <div className="layout-editor-body">
-                <aside className="layout-editor-inspector">
+                <aside className="layout-editor-inspector" data-mfx-sync-scroll="settings-layout-inspector">
                     {canArrange && (
                         <div className="layout-palette">
                             <div className="field-label">GROUPS</div>
@@ -884,6 +1002,7 @@ export function LayoutEditorView({
                                         className={`layout-group-chip${activeGroupId === group.id ? " is-active" : ""}`}
                                         onClick={() => {
                                             setActiveGroupId(group.id);
+                                            syncLayoutUi({ activeGroupId: group.id });
                                             setGroupName("");
                                             setMessage(`Selected “${group.name}”. Turn on GROUP to move members together.`);
                                         }}
@@ -904,6 +1023,7 @@ export function LayoutEditorView({
                                                 setMessage(next
                                                     ? "Group mode on. Drag one member to move the group."
                                                     : "Group mode off. Drag items one at a time.");
+                                                syncLayoutUi({ groupMode: next });
                                                 return next;
                                             });
                                         }}
@@ -919,6 +1039,7 @@ export function LayoutEditorView({
                                                 setMessage(next
                                                     ? "Match size on. Resize one member to size the group."
                                                     : "Match size off. Resize items one at a time.");
+                                                syncLayoutUi({ matchSize: next });
                                                 return next;
                                             });
                                         }}
@@ -971,7 +1092,7 @@ export function LayoutEditorView({
                                         type="button"
                                         className={`btn ${selectedId === widget.id ? "btn-active" : ""}`}
                                         style={{ flex: 1 }}
-                                        onClick={() => setSelectedId(widget.id)}
+                                        onClick={() => selectLayoutItem(widget.id)}
                                     >
                                         SNAPSHOT {widget.slot + 1}
                                     </button>
@@ -1004,7 +1125,7 @@ export function LayoutEditorView({
                     </div>
                     <div className="layout-palette">
                     <div className="field-label">CONTROLS</div>
-                    {controls.map((control) => (
+                    {controls.filter((control) => !isEncoderPushKind(normalizeControlKind(str(control.kind, "momentary")))).map((control) => (
                         <button
                             key={str(control.id)}
                             type="button"
@@ -1086,6 +1207,7 @@ export function LayoutEditorView({
                         const rect = controlRect(control, index);
                         const kind = normalizeControlKind(str(control.kind, "momentary"));
                         const analog = isAnalogKind(kind);
+                        const encoder = isEncoderKind(kind);
                         const action = str(obj(control.binding).action, "none");
                         const presetBind = parameterBindings.find((item) => str(item.controlId) === id);
                         const caption = functionCaption(control, chain, presetBind);
@@ -1102,13 +1224,13 @@ export function LayoutEditorView({
                                             id,
                                             switchLabel: str(control.label).trim() || id,
                                             valueText: caption,
-                                            role: analog ? "utility" : roleForAction(action),
+                                            role: analog || encoder ? "utility" : roleForAction(action),
                                             lightState: "inactive",
                                             active: false,
-                                            analog,
+                                            analog: analog || encoder,
                                             analogSource: str(control.label).trim() || id,
-                                            analogFunction: analog ? caption : undefined,
-                                            assigned: analog ? caption !== "Unassigned" : undefined,
+                                            analogFunction: analog || encoder ? caption : undefined,
+                                            assigned: analog || encoder ? caption !== "Unassigned" : undefined,
                                             kind,
                                             value: 0.45,
                                             freeform: true,
@@ -1143,7 +1265,7 @@ export function LayoutEditorView({
                     body="This removes the saved layout file. Performance keeps the current arrangement until you save another."
                     confirmLabel="DELETE"
                     danger
-                    onCancel={() => setConfirmDelete(false)}
+                    onCancel={() => showDeleteConfirmation(false)}
                     onConfirm={deleteLayoutFile}
                 />
             )}
@@ -1156,7 +1278,7 @@ export function LayoutEditorView({
                     title={picker === "save" ? "SAVE LAYOUT AS" : "LOAD LAYOUT"}
                     defaultName={loadedLayoutName.trim() || "default"}
                     contents={picker === "save" ? JSON.stringify(visualLayout(loadedLayoutName.trim() || "default"), null, 2) : undefined}
-                    onClose={() => setPicker(null)}
+                    onClose={() => showLayoutPicker(null)}
                     onLoad={(parsed, path) => {
                         const name = str(obj(parsed.performanceLayout).layoutName)
                             || layoutNameFromPath(path, "default");
@@ -1185,12 +1307,14 @@ export function LayoutEditorView({
 
 function functionCaption(control: JsonObject, chain: JsonObject[], presetBind?: JsonObject): string {
     const kind = normalizeControlKind(str(control.kind, "momentary"));
-    if (isAnalogKind(kind)) {
+    if (isAnalogKind(kind) || isEncoderKind(kind)) {
         const info = analogFeedback(control, chain, presetBind);
-        if (!info.parameter || info.parameter === "UNASSIGNED") {
+        if (info.parameter && info.parameter !== "UNASSIGNED") {
+            return info.effect ? `${info.effect} · ${info.parameter}` : info.parameter;
+        }
+        if (isAnalogKind(kind)) {
             return "Unassigned";
         }
-        return info.effect ? `${info.effect} · ${info.parameter}` : info.parameter;
     }
     const action = str(obj(control.binding).action, "none");
     if (!action || action === "none") {

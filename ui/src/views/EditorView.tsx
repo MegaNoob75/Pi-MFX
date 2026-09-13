@@ -53,6 +53,21 @@ export function EditorView({
     const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
     const [chainCardWidth, setChainCardWidth] = useState(142);
 
+    useEffect(() => {
+        const sharedPage = str(engine.uiSession.editorPage) as EditPage;
+        if (["chain", "controls", "io"].includes(sharedPage) && sharedPage !== page) {
+            setPage(sharedPage);
+        }
+        const sharedSelectedId = str(engine.uiSession.editorSelectedId);
+        if (sharedSelectedId && sharedSelectedId !== selectedId) {
+            setSelectedId(sharedSelectedId);
+        }
+        const sharedIoKind = str(engine.uiSession.editorIoKind);
+        if ((sharedIoKind === "input" || sharedIoKind === "output") && sharedIoKind !== ioKind) {
+            setIoKind(sharedIoKind);
+        }
+    }, [engine.uiSession.editorPage, engine.uiSession.editorSelectedId, engine.uiSession.editorIoKind]);
+
     const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
     const plugin = obj(obj(selected).plugin);
     const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control" && bool(port.input, true));
@@ -94,6 +109,7 @@ export function EditorView({
         }
         previousBackRequestRef.current = backRequest;
         setPage("chain");
+        client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
     }, [backRequest]);
 
     useEffect(() => {
@@ -176,6 +192,11 @@ export function EditorView({
     const openControls = (slotId: string) => {
         setSelectedId(slotId);
         setPage("controls");
+        client.updateUiSession({
+            editorPage: "controls",
+            editorSelectedId: slotId,
+            editSubpage: "controls"
+        });
     };
 
     const onPointerDown = (slot: JsonObject, index: number, event: React.PointerEvent) => {
@@ -359,9 +380,16 @@ export function EditorView({
                                                                 className={`chain-slot endpoint${selectedId === node.kind ? " selected" : ""}`}
                                                                 style={{ flex: `0 0 ${chainCardWidth}px`, width: chainCardWidth }}
                                                                 onClick={() => {
-                                                                    setIoKind(node.kind === "input" ? "input" : "output");
+                                                                    const kind = node.kind === "input" ? "input" : "output";
+                                                                    setIoKind(kind);
                                                                     setSelectedId(node.kind);
                                                                     setPage("io");
+                                                                    client.updateUiSession({
+                                                                        editorPage: "io",
+                                                                        editorSelectedId: node.kind,
+                                                                        editorIoKind: kind,
+                                                                        editSubpage: "io"
+                                                                    });
                                                                 }}
                                                             >
                                                                 <strong>{node.kind === "input" ? "INPUT" : "OUTPUT"}</strong>
@@ -480,7 +508,10 @@ export function EditorView({
                                 </button>
                                 <button type="button" className="btn btn-danger" onClick={() => {
                                     if (window.confirm(`Remove ${effectTitle}?`)) {
-                                        void run(() => client.request("chain/remove", { slotId: str(selected.id) })).then(() => setPage("chain"));
+                                        void run(() => client.request("chain/remove", { slotId: str(selected.id) })).then(() => {
+                                            setPage("chain");
+                                            client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+                                        });
                                     }
                                 }}>REMOVE</button>
                             </>

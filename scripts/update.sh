@@ -12,6 +12,7 @@ export NEEDRESTART_SUSPEND=1
 PREFIX="${PREFIX:-/usr/local}"
 WEB_ROOT="/usr/share/pimfx/web"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OFFICIAL_REPO_URL="https://github.com/MegaNoob75/Pi-MFX.git"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*"; }
@@ -27,6 +28,16 @@ log "Starting update in $REPO_DIR"
 ensure_clone_writable
 
 if [[ "${SKIP_PULL:-0}" == "1" ]]; then
+    if [[ -f "$REPO_DIR/.pimfx-build-commit" ]]; then
+        PIMFX_GIT_SHA="$(tr -d '\r\n' < "$REPO_DIR/.pimfx-build-commit")"
+        rm -f "$REPO_DIR/.pimfx-build-commit"
+    fi
+    if [[ -n "${PIMFX_GIT_SHA:-}" && ! "${PIMFX_GIT_SHA}" =~ ^[0-9a-fA-F]+-local$ ]]; then
+        die "local deployment commit metadata is invalid"
+    fi
+    if [[ -z "${PIMFX_GIT_SHA:-}" && ! -d .git ]]; then
+        die "local deployment commit metadata is missing"
+    fi
     log "Skipping git pull (using the files already in this folder)"
 elif [[ -d .git ]]; then
     clone_owner
@@ -37,19 +48,28 @@ elif [[ -d .git ]]; then
             *) die "branch must be main or dev" ;;
         esac
         log "Switching to ${requested}"
-        current="$(as_clone_owner git rev-parse HEAD)"
-        remote="$(as_clone_owner git rev-parse --verify "origin/${requested}" 2>/dev/null || true)"
-        if [[ -n "$remote" && "$current" == "$remote" ]]; then
-            log "Already on origin/${requested}; not fetching"
-        else
-            log "Fetching origin/${requested}"
-            if ! as_clone_owner timeout 60 git fetch origin --progress; then
-                warn "git fetch timed out or failed; using the files already in this folder"
-            else
-                as_clone_owner git checkout "$requested"
-                as_clone_owner git reset --hard "origin/${requested}"
-            fi
+        origin_url="$(as_clone_owner git remote get-url origin 2>/dev/null || true)"
+        case "$origin_url" in
+            "")
+                log "Configuring the Pi-MFX GitHub remote"
+                as_clone_owner git remote add origin "$OFFICIAL_REPO_URL"
+                ;;
+            git@github.com:MegaNoob75/Pi-MFX.git|ssh://git@github.com/MegaNoob75/Pi-MFX.git|http://github.com/MegaNoob75/Pi-MFX.git)
+                log "Using the public Pi-MFX GitHub remote"
+                as_clone_owner git remote set-url origin "$OFFICIAL_REPO_URL"
+                ;;
+        esac
+        log "Fetching origin/${requested}"
+        if ! as_clone_owner timeout 60 git fetch --prune origin \
+            "+refs/heads/${requested}:refs/remotes/origin/${requested}" --progress
+        then
+            die "git fetch timed out or failed; the installed files were not changed"
         fi
+        log "Replacing the Pi source folder with origin/${requested}"
+        as_clone_owner git reset --hard HEAD
+        as_clone_owner git clean -fd
+        as_clone_owner git checkout -B "$requested" "origin/${requested}"
+        as_clone_owner git reset --hard "origin/${requested}"
         branch="$requested"
     else
         branch="$(as_clone_owner git rev-parse --abbrev-ref HEAD)"
@@ -87,12 +107,16 @@ if { pgrep -x chromium >/dev/null 2>&1 || systemctl is-active --quiet pimfx.serv
     jobs=$((jobs - 1))
 fi
 log "Building the engine (${jobs} cores)"
-as_clone_owner nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+as_clone_owner env PIMFX_GIT_SHA="${PIMFX_GIT_SHA:-}" \
+    nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" \
+        -DCMAKE_BUILD_TYPE=Release -DPIMFX_BUILD_COMMIT="${PIMFX_GIT_SHA:-}" >/dev/null
 as_clone_owner nice -n 10 cmake --build "$REPO_DIR/engine/build" -j "$jobs"
 
 if [[ -f "$REPO_DIR/ui/package.json" ]]; then
     log "Building the user interface"
-    as_clone_owner nice -n 10 bash -c 'cd "$1" && (npm ci --silent 2>/dev/null || npm install --silent) && npm run build --silent' bash "$REPO_DIR/ui"
+    as_clone_owner nice -n 10 bash -c \
+        'export VITE_PIMFX_GIT_SHA="$2"; cd "$1" && (npm ci --silent 2>/dev/null || npm install --silent) && npm run build --silent' \
+        bash "$REPO_DIR/ui" "${PIMFX_GIT_SHA:-}"
 fi
 
 log "Installing files"

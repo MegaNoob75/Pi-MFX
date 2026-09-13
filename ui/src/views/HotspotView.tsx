@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
-import { bool, num, str, objects, type JsonObject } from "../json";
+import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
+import { updateUiSessionSection } from "../uiSession";
 
 type HotspotMode = "off" | "auto" | "always";
 
@@ -26,6 +27,28 @@ export function HotspotView({
     const [busy, setBusy] = useState(false);
     const [networks, setNetworks] = useState<JsonObject[]>([]);
 
+    useEffect(() => {
+        const shared = obj(engine.uiSession.hotspot);
+        if (typeof shared.ssid === "string") {
+            setSsid(shared.ssid);
+        }
+        const sharedMode = str(shared.mode);
+        if (sharedMode === "off" || sharedMode === "auto" || sharedMode === "always") {
+            setMode(sharedMode);
+        }
+        if (Array.isArray(shared.networks)) {
+            setNetworks(objects(shared.networks));
+        }
+        const sharedStatus = obj(shared.status);
+        if (Object.keys(sharedStatus).length > 0) {
+            setStatus(sharedStatus);
+        }
+    }, [engine.uiSession.hotspot]);
+
+    const updateDraft = (patch: JsonObject) => {
+        updateUiSessionSection(engine.client, "hotspot", patch);
+    };
+
     const applyStatus = (next: JsonObject) => {
         setStatus(next);
         setSsid(str(next.ssid, "PI-MFX"));
@@ -33,6 +56,22 @@ export function HotspotView({
             setPassword(str(next.password));
         }
         setMode(asMode(str(next.mode, "off")));
+        updateDraft({
+            ssid: str(next.ssid, "PI-MFX"),
+            mode: asMode(str(next.mode, "off")),
+            networks: objects(next.networks),
+            status: {
+                active: bool(next.active),
+                helperAvailable: bool(next.helperAvailable, true),
+                url: str(next.url),
+                ip: str(next.ip),
+                device: str(next.device),
+                error: str(next.error),
+                stationSsid: str(next.stationSsid),
+                stationConnected: bool(next.stationConnected),
+                otherConnection: bool(next.otherConnection)
+            }
+        });
         if (objects(next.networks).length) {
             setNetworks(objects(next.networks));
         }
@@ -127,7 +166,7 @@ export function HotspotView({
                     Join a home network or host a tablet access point
                 </div>
             </div>
-            <div className="page-scroll stack">
+            <div className="page-scroll stack" data-mfx-sync-scroll="settings-hotspot">
                 <div className="panel stack">
                     <h2>JOIN A NETWORK</h2>
                     <div className="muted">
@@ -209,7 +248,10 @@ export function HotspotView({
                     <label className="field">
                         <span>Network name</span>
                         <input value={ssid} maxLength={32} autoComplete="off"
-                            onChange={(event) => setSsid(event.target.value)}
+                            onChange={(event) => {
+                                setSsid(event.target.value);
+                                updateDraft({ ssid: event.target.value });
+                            }}
                             onBlur={() => {
                                 if (mode !== "off") {
                                     save(mode);

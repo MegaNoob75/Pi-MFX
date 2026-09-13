@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
-import { obj, type JsonObject } from "../json";
+import { obj, str, type JsonObject } from "../json";
+import { updateUiSessionSection } from "../uiSession";
 import { CUSTOM_THEMES_STORAGE_KEY, loadCustomMultiFXThemes, loadMultiFXTheme, saveMultiFXTheme, validateMultiFXTheme } from "../theme/theme";
 import { CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, loadCustomMultiFXKeyboardThemes, validateMultiFXKeyboardTheme } from "../keyboard/keyboardTheme";
 import { loadKeyboardMode, saveKeyboardMode } from "../keyboard/mode";
@@ -19,6 +20,16 @@ export function BackupView({
 }) {
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [pendingRestore, setPendingRestore] = useState<JsonObject | null>(null);
+
+    useEffect(() => {
+        const sharedPicker = str(obj(engine.uiSession.backup).picker);
+        setPicker(sharedPicker === "load" || sharedPicker === "save" ? sharedPicker : null);
+    }, [engine.uiSession.backup]);
+
+    const showPicker = (next: "load" | "save" | null) => {
+        setPicker(next);
+        updateUiSessionSection(engine.client, "backup", { picker: next ?? "" });
+    };
 
     const backupPayload = () => JSON.stringify({
         format: "pimfx-ui-backup",
@@ -83,7 +94,7 @@ export function BackupView({
     };
 
     return (
-        <div className={embedded ? "stack" : "page-scroll stack"}>
+        <div className={embedded ? "stack" : "page-scroll stack"} {...(!embedded ? { "data-mfx-sync-scroll": "settings-backup" } : {})}>
             <div className="panel stack">
                 <h2>BACKUP / RESTORE</h2>
                 <div className="muted">
@@ -92,8 +103,8 @@ export function BackupView({
                     Restoring does not change your audio device unless you imported a bank.
                 </div>
                 <div className="row" style={{ flexWrap: "wrap" }}>
-                    <button type="button" className="btn btn-accent" onClick={() => setPicker("save")}>SAVE BACKUP</button>
-                    <button type="button" className="btn" onClick={() => setPicker("load")}>LOAD</button>
+                    <button type="button" className="btn btn-accent" onClick={() => showPicker("save")}>SAVE BACKUP</button>
+                    <button type="button" className="btn" onClick={() => showPicker("load")}>LOAD</button>
                     <label className="btn">
                         UPLOAD
                         <input type="file" accept="application/json" hidden onChange={(event) => {
@@ -121,7 +132,7 @@ export function BackupView({
                     title={picker === "save" ? "SAVE BACKUP" : "LOAD BACKUP"}
                     defaultName="pimfx-backup"
                     contents={picker === "save" ? backupPayload() : undefined}
-                    onClose={() => setPicker(null)}
+                    onClose={() => showPicker(null)}
                     onLoad={(parsed) => setPendingRestore(parsed)}
                 />
             )}

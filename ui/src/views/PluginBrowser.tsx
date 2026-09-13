@@ -96,7 +96,7 @@ export function PluginBrowser({
                 </select>
             </div>
             <div className="plugin-browser-grid-wrap">
-                <div className="plugin-browser-grid">
+                <div className="plugin-browser-grid" data-mfx-nav-list="plugins">
                     {filtered.map((item) => (
                         <button
                             key={str(item.uri)}

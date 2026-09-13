@@ -8,6 +8,7 @@ export interface EngineSnapshot {
     catalog: JsonObject;
     library: JsonObject;
     meters: JsonObject;
+    uiSession: JsonObject;
 }
 
 const emptySnapshot = (): EngineSnapshot => ({
@@ -16,7 +17,8 @@ const emptySnapshot = (): EngineSnapshot => ({
     state: {},
     catalog: {},
     library: {},
-    meters: {}
+    meters: {},
+    uiSession: {}
 });
 
 function websocketUrl(): string {
@@ -30,6 +32,7 @@ export class EngineClient {
     private closed = false;
     private listeners = new Set<(snapshot: EngineSnapshot) => void>();
     private meterListeners = new Set<(meters: JsonObject) => void>();
+    private navListeners = new Set<(message: JsonObject) => boolean | void>();
     snapshot: EngineSnapshot = emptySnapshot();
 
     start(): void {
@@ -61,6 +64,31 @@ export class EngineClient {
         return () => {
             this.meterListeners.delete(listener);
         };
+    }
+
+    subscribeUiNav(listener: (message: JsonObject) => boolean | void): () => void {
+        this.navListeners.add(listener);
+        return () => {
+            this.navListeners.delete(listener);
+        };
+    }
+
+    claimUiNavigation(): void {
+        if (this.socket?.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({ command: "ui/focus" }));
+        }
+    }
+
+    updateUiSession(patch: JsonObject): void {
+        if (this.socket?.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        const next = { ...this.snapshot.uiSession, ...patch, type: "uiSession" };
+        this.patch({ uiSession: next });
+        const payload: JsonObject = { ...next };
+        delete payload.type;
+        delete payload.owner;
+        this.socket.send(JSON.stringify({ command: "ui/session", payload }));
     }
 
     async request(command: string, payload: JsonObject = {}): Promise<JsonObject> {
@@ -130,6 +158,23 @@ export class EngineClient {
             for (const listener of this.meterListeners) {
                 listener(message);
             }
+            return;
+        }
+        if (type === "uiNav") {
+            if (!bool(message.select)) {
+                const raw = Math.trunc(num(message.delta));
+                if (raw === 0) {
+                    return;
+                }
+                message.delta = raw > 0 ? 1 : -1;
+            }
+            for (const listener of this.navListeners) {
+                if (listener(message) === true) break;
+            }
+            return;
+        }
+        if (type === "uiSession") {
+            this.patch({ uiSession: message });
             return;
         }
         if (type === "performance") {
@@ -244,6 +289,14 @@ export function controlValue(slot: JsonObject, symbol: string, fallback: number)
 
 export function isAnalogKind(kind: string): boolean {
     return kind === "pot" || kind === "slider" || kind === "expression";
+}
+
+export function isEncoderKind(kind: string): boolean {
+    return normalizeControlKind(kind) === "encoder";
+}
+
+export function isEncoderPushKind(kind: string): boolean {
+    return normalizeControlKind(kind) === "encoderPush";
 }
 
 export function normalizeControlKind(kind: string): string {

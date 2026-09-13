@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import type { EngineSnapshot } from "../api";
+import { obj, str, type JsonObject } from "../json";
+import { updateUiSessionSection } from "../uiSession";
 import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "../keyboard/mode";
 import {
     DEFAULT_KEYBOARD_APPEARANCE,
@@ -22,7 +25,11 @@ import {
     themePaintToCss
 } from "../theme/theme";
 
-export function KeyboardSettingsView() {
+export function KeyboardSettingsView({
+    engine
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+}) {
     const [mode, setMode] = useState<KeyboardMode>(loadKeyboardMode);
     const [appearance, setAppearance] = useState(loadKeyboardAppearance);
     const [message, setMessage] = useState("");
@@ -36,6 +43,34 @@ export function KeyboardSettingsView() {
     }, []);
 
     useEffect(() => {
+        const shared = obj(engine.uiSession.keyboardSettings);
+        if (Object.keys(shared).length === 0) {
+            updateUiSessionSection(engine.client, "keyboardSettings", {
+                mode,
+                appearance: appearance as unknown as JsonObject
+            });
+            return;
+        }
+        const sharedMode = str(shared.mode);
+        if (sharedMode === "auto" || sharedMode === "on" || sharedMode === "off") {
+            saveKeyboardMode(sharedMode);
+            setMode(sharedMode);
+        }
+        const sharedAppearance = obj(shared.appearance);
+        if (Object.keys(sharedAppearance).length > 0) {
+            const next = {
+                ...DEFAULT_KEYBOARD_APPEARANCE,
+                ...sharedAppearance,
+                version: 1
+            } as KeyboardAppearance;
+            saveKeyboardAppearance(next);
+            setAppearance(next);
+        }
+        // Only a shared-session change should reapply browser storage.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine.uiSession.keyboardSettings, engine.client]);
+
+    useEffect(() => {
         const node = themeListRef.current?.querySelector(".theme-pick.selected");
         node?.scrollIntoView({ block: "center", behavior: "auto" });
     }, [appearance.themeId]);
@@ -43,18 +78,22 @@ export function KeyboardSettingsView() {
     const applyAppearance = (next: KeyboardAppearance) => {
         saveKeyboardAppearance(next);
         setAppearance(next);
+        updateUiSessionSection(engine.client, "keyboardSettings", {
+            appearance: next as unknown as JsonObject
+        });
         setMessage("Applied. The next keyboard opened will use these settings.");
     };
 
     const applyMode = (next: KeyboardMode) => {
         saveKeyboardMode(next);
         setMode(next);
+        updateUiSessionSection(engine.client, "keyboardSettings", { mode: next });
         setMessage("Keyboard mode saved.");
     };
 
     return (
         <div className="mfx-screen keyboard-settings">
-            <div className="keyboard-settings-main">
+            <div className="keyboard-settings-main" data-mfx-sync-scroll="settings-keyboard-main">
                 <div className="panel stack">
                     <h2>ON-SCREEN KEYBOARD</h2>
                     <div className="muted">
@@ -159,8 +198,7 @@ export function KeyboardSettingsView() {
                             type="button"
                             className="btn"
                             onClick={() => {
-                                saveKeyboardMode("on");
-                                setMode("on");
+                                applyMode("on");
                                 applyAppearance({ ...DEFAULT_KEYBOARD_APPEARANCE });
                                 setMessage("Keyboard defaults restored.");
                             }}
@@ -179,10 +217,11 @@ export function KeyboardSettingsView() {
                     Keyboard colours come from the selected theme. Custom keyboard
                     themes you save in Theme → Keyboard appear here.
                 </div>
-                <div className="keyboard-theme-scroller" ref={themeListRef}>
+                <div className="keyboard-theme-scroller" ref={themeListRef} data-mfx-nav-list="keyboard-themes" data-mfx-sync-scroll="settings-keyboard-themes">
                     <button
                         type="button"
                         className={`theme-pick${appearance.themeId === "current" ? " selected" : ""}`}
+                        data-mfx-nav-item="true"
                         onClick={() => applyAppearance({ ...appearance, themeId: "current" })}
                     >
                         <strong>Match current UI theme</strong>
@@ -197,6 +236,7 @@ export function KeyboardSettingsView() {
                                     key={id}
                                     type="button"
                                     className={`theme-pick${appearance.themeId === id ? " selected" : ""}`}
+                                    data-mfx-nav-item="true"
                                     onClick={() => applyAppearance({ ...appearance, themeId: id })}
                                 >
                                     <strong>{theme.name}</strong>
@@ -215,6 +255,7 @@ export function KeyboardSettingsView() {
                                             key={id}
                                             type="button"
                                             className={`theme-pick${appearance.themeId === id ? " selected" : ""}`}
+                                            data-mfx-nav-item="true"
                                             onClick={() => applyAppearance({ ...appearance, themeId: id })}
                                         >
                                             <strong>{theme.name}</strong>
@@ -235,6 +276,7 @@ export function KeyboardSettingsView() {
                                             key={id}
                                             type="button"
                                             className={`theme-pick${appearance.themeId === id ? " selected" : ""}`}
+                                            data-mfx-nav-item="true"
                                             onClick={() => applyAppearance({ ...appearance, themeId: id })}
                                         >
                                             <strong>{theme.name}</strong>

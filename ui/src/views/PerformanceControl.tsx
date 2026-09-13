@@ -1,7 +1,7 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { clampUnit, isAnalogKind } from "../api";
+import { clampUnit, isAnalogKind, isEncoderKind } from "../api";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { loadUiBehavior } from "../uiBehavior";
 import MultiFXFootswitchGraphic, { MultiFXArcadeButtonGraphic } from "../theme/FootswitchGraphic";
@@ -99,7 +99,7 @@ export function PerformanceControl({
     renderMenu?: boolean;
 }) {
     void _switchStyle;
-    const analog = tile.analog || isAnalogKind(tile.kind ?? "");
+    const analog = tile.analog || isAnalogKind(tile.kind ?? "") || isEncoderKind(tile.kind ?? "");
     const assigned = tile.assigned ?? Boolean(tile.analogFunction && tile.analogFunction !== "UNASSIGNED");
     const popoutScale = loadUiBehavior().controlPopoutScale;
     const [popout, setPopout] = useState(false);
@@ -345,6 +345,7 @@ export function PerformanceControl({
             data-control-kind={tile.kind ?? "pot"}
             data-assigned={assigned ? "true" : "false"}
             data-adjustable="true"
+            data-mfx-encoder-selected={tile.encoderSelected ? "true" : undefined}
             style={{
                 position: "relative",
                 inset: "auto",
@@ -365,7 +366,12 @@ export function PerformanceControl({
                 <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />
             ) : null}
             <div className="mfx-performance-control__graphic">
-                <ControlGraphic kind={tile.kind ?? "pot"} range={range} active={tile.active} />
+                <ControlGraphic
+                    kind={tile.kind ?? "pot"}
+                    range={range}
+                    active={Boolean(tile.active || tile.pressed)}
+                    pressed={Boolean(tile.pressed)}
+                />
             </div>
             {tile.analogFunction ? (
                 <MarqueeText className="mfx-performance-control__function" text={tile.analogFunction} />
@@ -411,6 +417,7 @@ export function PerformanceControl({
         <div
             className="mfx-performance-switch-wrap"
             data-mfx-has-menu={hasMenu ? "true" : undefined}
+            data-mfx-encoder-selected={tile.encoderSelected ? "true" : undefined}
             onContextMenu={suppressBrowserMenu}
         >
         <button
@@ -434,8 +441,7 @@ export function PerformanceControl({
                 pointerEvents: "auto",
                 background: `${vars.background} padding-box, ${vars.border} border-box`,
                 border: "var(--mfx-control-border-width) solid transparent",
-                outline: tile.encoderSelected ? "4px solid var(--mfx-surface-header-border, var(--mfx-cyan))" : "none",
-                outlineOffset: tile.encoderSelected ? "-6px" : "0",
+                outline: "none",
                 borderRadius: "var(--mfx-control-radius)",
                 padding: tile.freeform ? 2 : undefined,
                 containerType: tile.freeform ? "size" : undefined,
@@ -662,7 +668,7 @@ export function TileMenuButton({
     );
 }
 
-function ControlGraphic({ kind, range, active }: { kind: string; range: number; active: boolean }) {
+function ControlGraphic({ kind, range, active, pressed }: { kind: string; range: number; active: boolean; pressed?: boolean }) {
     if (kind === "slider" || kind === "expression") {
         return (
             <div className="mfx-hardware-slider" aria-hidden="true">
@@ -671,12 +677,17 @@ function ControlGraphic({ kind, range, active }: { kind: string; range: number; 
             </div>
         );
     }
-    if (kind === "momentary") {
+    if (kind === "momentary" || kind === "encoderPush") {
         return <div className="mfx-hardware-button" data-active={active ? "true" : "false"} aria-hidden="true" />;
     }
     const degrees = -135 + range * 270;
     return (
-        <div className="mfx-hardware-knob" data-encoder={kind === "encoder" ? "true" : "false"} aria-hidden="true">
+        <div
+            className="mfx-hardware-knob"
+            data-encoder={kind === "encoder" ? "true" : "false"}
+            data-pressed={kind === "encoder" && pressed ? "true" : "false"}
+            aria-hidden="true"
+        >
             <div className="mfx-hardware-knob__pointer" style={{ transform: `rotate(${degrees}deg)` }} />
             <div
                 className="mfx-hardware-knob__arc"

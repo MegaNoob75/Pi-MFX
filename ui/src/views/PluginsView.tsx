@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
-import { arr, bool, num, str, objects, type JsonObject } from "../json";
+import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { isChainPlugin } from "./PluginBrowser";
 
 type PluginTab = "installed" | "install";
@@ -203,6 +203,51 @@ export function PluginsView({
     const [installingId, setInstallingId] = useState("");
     const prefetching = useRef(false);
     const listEndRef = useRef<HTMLDivElement | null>(null);
+    const scrollerRef = useRef<HTMLDivElement | null>(null);
+    const applyingSharedScroll = useRef(false);
+    const scrollPublishFrame = useRef<number | null>(null);
+    const pendingScrollRatio = useRef(0);
+    const sharedPlugins = obj(engine.uiSession.plugins);
+    const updateSharedPlugins = (patch: JsonObject) => {
+        engine.client.updateUiSession({
+            plugins: { ...obj(engine.client.snapshot.uiSession.plugins), ...patch }
+        });
+    };
+
+    useEffect(() => {
+        const sharedTab = str(sharedPlugins.tab) as PluginTab;
+        if ((sharedTab === "installed" || sharedTab === "install") && sharedTab !== tab) {
+            setTab(sharedTab);
+        }
+        if (typeof sharedPlugins.query === "string" && sharedPlugins.query !== installQuery) {
+            setInstallQuery(sharedPlugins.query);
+        }
+        const sharedSort = str(sharedPlugins.patchSort) as PatchSort;
+        if (["downloads", "alpha", "newest", "updated"].includes(sharedSort) && sharedSort !== patchSort) {
+            setPatchSort(sharedSort);
+        }
+    }, [engine.uiSession.plugins]);
+
+    const chooseTab = (next: PluginTab) => {
+        setTab(next);
+        updateSharedPlugins({ tab: next });
+    };
+
+    const changeInstallQuery = (query: string) => {
+        setInstallQuery(query);
+        updateSharedPlugins({ query });
+    };
+
+    const changePatchSort = (next: PatchSort) => {
+        setPatchSort(next);
+        updateSharedPlugins({ patchSort: next });
+    };
+
+    useEffect(() => () => {
+        if (scrollPublishFrame.current !== null) {
+            window.cancelAnimationFrame(scrollPublishFrame.current);
+        }
+    }, []);
 
     const mergePatches = (current: JsonObject[], incoming: JsonObject[]) => {
         const seen = new Set(current.map((patch) => num(patch.id)));
@@ -280,15 +325,6 @@ export function PluginsView({
                 await refreshAptInstalled().catch(() => undefined);
             }
         });
-    }, [engine.client]);
-
-    useEffect(() => {
-        void engine.client.request("plugins/github/list").then((next) => {
-            const listed = objects(next.recommended);
-            if (listed.length) {
-                setRecommended(listed);
-            }
-        }).catch(() => undefined);
     }, [engine.client]);
 
     const work = (label: string, task: () => Promise<void>) => {
@@ -382,6 +418,46 @@ export function PluginsView({
         return sortPatches(filtered, patchSort);
     }, [patches, needle, patchSort]);
 
+    const sharedScrollRatio = tab === "install"
+        ? sharedPlugins.installScrollRatio
+        : sharedPlugins.installedScrollRatio;
+    useEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller || typeof sharedScrollRatio !== "number") {
+            return;
+        }
+        const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const desired = Math.max(0, Math.min(1, sharedScrollRatio)) * range;
+        if (Math.abs(scroller.scrollTop - desired) < 2) {
+            return;
+        }
+        applyingSharedScroll.current = true;
+        scroller.scrollTop = desired;
+        const frame = window.requestAnimationFrame(() => {
+            applyingSharedScroll.current = false;
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [tab, sharedScrollRatio, visiblePackages.length, visiblePatches.length,
+        aptInstalled.length, bundles.length, hidden.length, engine.catalog.plugins]);
+
+    const shareScroll = () => {
+        const scroller = scrollerRef.current;
+        if (!scroller || applyingSharedScroll.current) {
+            return;
+        }
+        const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        pendingScrollRatio.current = range > 0 ? scroller.scrollTop / range : 0;
+        if (scrollPublishFrame.current !== null) {
+            return;
+        }
+        scrollPublishFrame.current = window.requestAnimationFrame(() => {
+            scrollPublishFrame.current = null;
+            updateSharedPlugins({
+                [tab === "install" ? "installScrollRatio" : "installedScrollRatio"]: pendingScrollRatio.current
+            });
+        });
+    };
+
     return (
         <div className="mfx-screen">
             <div className="mfx-screen-intro">
@@ -390,10 +466,10 @@ export function PluginsView({
                     Installed effects, Raspberry Pi OS packages, and PatchStorage. Hide unused plugins without breaking apt.
                 </div>
             </div>
-            <div className="page-scroll stack">
+            <div className="page-scroll stack" ref={scrollerRef} onScroll={shareScroll}>
                 <div className="row">
-                    <TabButton label="INSTALLED" active={tab === "installed"} onClick={() => setTab("installed")} />
-                    <TabButton label="INSTALL" active={tab === "install"} onClick={() => setTab("install")} />
+                    <TabButton label="INSTALLED" active={tab === "installed"} onClick={() => chooseTab("installed")} />
+                    <TabButton label="INSTALL" active={tab === "install"} onClick={() => chooseTab("install")} />
                 </div>
                 {busy && <div className="muted">{busy}</div>}
                 {tab === "installed" && (
@@ -470,8 +546,8 @@ export function PluginsView({
                         patchSort={patchSort}
                         installingId={installingId}
                         listEndRef={listEndRef}
-                        onQuery={setInstallQuery}
-                        onSort={setPatchSort}
+                        onQuery={changeInstallQuery}
+                        onSort={changePatchSort}
                         onReload={() => loadPatchStorage(true)}
                         onInstallApt={(name) => work(`Installing ${name}…`, async () => {
                             setInstallingId(name);

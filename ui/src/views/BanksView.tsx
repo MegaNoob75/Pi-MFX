@@ -39,6 +39,17 @@ export function BanksView({
     const selectedPresetId = cursorPreset || presetId;
     const bankIndex = banks.findIndex((bank) => str(bank.id) === bankId);
     const presetIndex = presets.findIndex((preset) => str(preset.id) === selectedPresetId);
+    const focusPane = (pane: "banks" | "presets") => {
+        setFocused(pane);
+        client.updateUiSession({ banksFocus: pane });
+    };
+
+    useEffect(() => {
+        const sharedFocus = str(engine.uiSession.banksFocus);
+        if ((sharedFocus === "banks" || sharedFocus === "presets") && sharedFocus !== focused) {
+            setFocused(sharedFocus);
+        }
+    }, [engine.uiSession.banksFocus]);
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
@@ -145,7 +156,8 @@ export function BanksView({
 
     return (
         <div className="split-panes">
-            <section className="split-pane" onPointerDown={() => setFocused("banks")}>
+            <section className={`split-pane${focused === "banks" ? " is-nav-focused" : ""}`}
+                onPointerDown={() => focusPane("banks")}>
                 <div className="split-pane-title">BANKS</div>
                 <div className="split-tools">
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={() => {
@@ -191,12 +203,13 @@ export function BanksView({
                     <button type="button" className="btn btn-danger" disabled={!activeBank || busy} onClick={() => setConfirm("bank")}>DELETE</button>
                     {busy && <span className="muted">Updating…</span>}
                 </div>
-                <div className="split-list">
+                <div className="split-list" data-mfx-nav-list="banks">
                     {banks.map((bank) => (
                         <button
                             key={str(bank.id)}
                             type="button"
                             data-bank-id={str(bank.id)}
+                            data-mfx-nav-key={`bank:${str(bank.id)}`}
                             className={`split-row${str(bank.id) === bankId || (focused === "banks" && str(bank.id) === bankId) ? " selected" : ""}`}
                             onClick={() => selectBank(str(bank.id))}
                         >
@@ -206,7 +219,8 @@ export function BanksView({
                 </div>
             </section>
 
-            <section className="split-pane" onPointerDown={() => setFocused("presets")}>
+            <section className={`split-pane${focused === "presets" ? " is-nav-focused" : ""}`}
+                onPointerDown={() => focusPane("presets")}>
                 <div className="split-pane-title">PRESETS</div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={!activePreset || busy} onClick={() => {
@@ -220,12 +234,13 @@ export function BanksView({
                     }}>↓</button>
                     <button type="button" className="btn btn-danger" disabled={!selectedPresetId || busy} onClick={() => setConfirm("preset")}>DELETE</button>
                 </div>
-                <div className="split-list">
+                <div className="split-list" data-mfx-nav-list="presets">
                     {presets.map((preset, index) => (
                         <div
                             key={str(preset.id)}
                             className={`split-row split-row-drag${str(preset.id) === selectedPresetId ? " selected" : ""}`}
                             data-preset-index={index}
+                            data-mfx-nav-key={`preset:${str(preset.id)}`}
                             onClick={() => setCursorPreset(str(preset.id))}
                             onDoubleClick={() => mutate(() => client.request("preset/select", {
                                 bankId,

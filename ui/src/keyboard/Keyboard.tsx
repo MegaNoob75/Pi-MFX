@@ -275,7 +275,7 @@ export function Keyboard({
                         </div>
                     )}
                 </div>
-                <div className="pimfx-keyboard-row">
+                <div className="pimfx-keyboard-row pimfx-keyboard-actions">
                     {session.layout === "text" && key(
                         layer === "letters" ? "123" : "ABC",
                         () => setLayer(layer === "letters" ? "symbols" : "letters"),

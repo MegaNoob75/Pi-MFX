@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { formatMs, isAnalogKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
+import { formatMs, isAnalogKind, isEncoderKind, isEncoderPushKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { analogMinSize, defaultSnapshotWidgets, defaultStatusWidgets, gridCellRect, snapshotLayoutSlots, snapshotWidgetsToJson, statusWidgetsToJson } from "../layout";
 import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } from "../uiBehavior";
 import { listenForKeyboardCommit } from "../keyboard/utils";
+import { updateUiSessionSection } from "../uiSession";
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
@@ -31,11 +32,11 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <div className="mfx-screen-intro-title">PI-MFX SETTINGS</div>
                 <div className="mfx-screen-intro-sub">Configure Pi-MFX without editing files</div>
             </div>
-            <div className="mfx-hub-grid">
+            <div className="mfx-hub-grid" data-mfx-nav-list="settings">
                 <HubCard title="CONTROLLER" subtitle="Switch layout, hardware inputs and actions" onClick={() => onOpen("controller")} />
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
-                <HubCard title="PI-MFX UI" subtitle="Backup, restore and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel, backup and interface options" onClick={() => onOpen("ui")} />
                 <HubCard title="MODEL LIBRARY" subtitle="TONE3000 API key and sign-in" onClick={() => onOpen("tone3000")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
@@ -56,9 +57,26 @@ function SystemHub({
     const [confirm, setConfirm] = useState<"reboot" | "shutdown" | null>(null);
     const [busy, setBusy] = useState<"reboot" | "shutdown" | null>(null);
     const [message, setMessage] = useState("");
+    const sharedSettings = obj(engine.uiSession.settings);
+
+    useEffect(() => {
+        setRealtime(str(sharedSettings.systemPage) === "realtime");
+        const nextConfirm = str(sharedSettings.systemConfirm);
+        setConfirm(nextConfirm === "reboot" || nextConfirm === "shutdown" ? nextConfirm : null);
+    }, [engine.uiSession.settings]);
+
+    const openRealtime = (open: boolean) => {
+        setRealtime(open);
+        updateUiSessionSection(engine.client, "settings", { systemPage: open ? "realtime" : "hub" });
+    };
+
+    const setPowerConfirm = (next: "reboot" | "shutdown" | null) => {
+        setConfirm(next);
+        updateUiSessionSection(engine.client, "settings", { systemConfirm: next ?? "" });
+    };
 
     const power = (action: "reboot" | "shutdown") => {
-        setConfirm(null);
+        setPowerConfirm(null);
         setBusy(action);
         setMessage(action === "reboot" ? "Rebooting…" : "Shutting down…");
         void run(async () => {
@@ -79,9 +97,9 @@ function SystemHub({
         return (
             <div className="mfx-screen">
                 <div className="mfx-screen-intro">
-                    <button type="button" className="btn" onClick={() => setRealtime(false)}>← SYSTEM</button>
+                    <button type="button" className="btn" onClick={() => openRealtime(false)}>← SYSTEM</button>
                 </div>
-                <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
+                <div className="page-scroll" data-mfx-sync-scroll="settings-system-realtime" style={{ flex: 1, minHeight: 0 }}>
                     <SystemSettings engine={engine} run={run} />
                 </div>
             </div>
@@ -93,17 +111,17 @@ function SystemHub({
                 <div className="mfx-screen-intro-title">SYSTEM</div>
                 <div className="mfx-screen-intro-sub">Audio device, Wi-Fi / hotspot and Pi realtime</div>
             </div>
-            <div className="mfx-hub-grid">
+            <div className="mfx-hub-grid" data-mfx-nav-list="settings">
                 <HubCard title="AUDIO" subtitle="Card, sample rate, period size and measured latency" onClick={() => onOpen?.("audio")} />
                 <HubCard title="WIFI / HOTSPOT" subtitle="Join a home network or host a tablet access point" onClick={() => onOpen?.("hotspot")} />
                 <HubCard title="UPDATES" subtitle="Check git and rebuild Pi-MFX on this Pi" onClick={() => onOpen?.("updates")} />
-                <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => setRealtime(true)} />
+                <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => openRealtime(true)} />
                 <div className="system-power">
                     <button
                         type="button"
                         className="btn system-power-btn"
                         disabled={busy !== null}
-                        onClick={() => setConfirm("reboot")}
+                        onClick={() => setPowerConfirm("reboot")}
                     >
                         {busy === "reboot" ? "REBOOTING..." : "REBOOT"}
                     </button>
@@ -111,7 +129,7 @@ function SystemHub({
                         type="button"
                         className="btn btn-danger system-power-btn"
                         disabled={busy !== null}
-                        onClick={() => setConfirm("shutdown")}
+                        onClick={() => setPowerConfirm("shutdown")}
                     >
                         {busy === "shutdown" ? "SHUTTING DOWN..." : "SHUT DOWN"}
                     </button>
@@ -123,7 +141,7 @@ function SystemHub({
                     title="REBOOT THIS PI?"
                     body="Audio stops. The touchscreen comes back after boot."
                     confirmLabel="REBOOT"
-                    onCancel={() => setConfirm(null)}
+                    onCancel={() => setPowerConfirm(null)}
                     onConfirm={() => power("reboot")}
                 />
             )}
@@ -133,7 +151,7 @@ function SystemHub({
                     body="Audio stops. Power the Pi back on to use it again."
                     confirmLabel="SHUT DOWN"
                     danger
-                    onCancel={() => setConfirm(null)}
+                    onCancel={() => setPowerConfirm(null)}
                     onConfirm={() => power("shutdown")}
                 />
             )}
@@ -150,17 +168,36 @@ function HubCard({ title, subtitle, onClick }: { title: string; subtitle: string
     );
 }
 
-const CONTROL_KIND_ORDER = ["momentary", "latching", "pot", "slider", "encoder", "expression"] as const;
+const CONTROL_KIND_ORDER = ["momentary", "latching", "pot", "slider", "encoder", "encoderPush", "expression"] as const;
 const CONTROL_LABEL_PREFIX: Record<string, string> = {
     momentary: "MOM",
     latching: "LAT",
     pot: "POT",
     slider: "SL",
     encoder: "ENC",
+    encoderPush: "ENC BTN",
     expression: "EXP"
 };
 const HARDWARE_ACTIONS = [
     "none",
+    "navigate",
+    "select",
+    "selectPreset",
+    "selectSnapshot",
+    "reloadPreset",
+    "presetUp",
+    "presetDown",
+    "bankUp",
+    "bankDown",
+    "snapshotMode",
+    "bypassAll",
+    "tapTempo",
+    "tuner"
+] as const;
+const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot"] as const;
+const ENCODER_PUSH_ACTIONS = [
+    "none",
+    "select",
     "selectPreset",
     "selectSnapshot",
     "reloadPreset",
@@ -176,6 +213,8 @@ const HARDWARE_ACTIONS = [
 
 const HARDWARE_ACTION_LABELS: Record<string, string> = {
     none: "None",
+    navigate: "Navigate menus",
+    select: "Select",
     selectPreset: "Preset",
     selectSnapshot: "Snapshot",
     reloadPreset: "Reload preset",
@@ -188,6 +227,13 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     tapTempo: "Tap tempo",
     tuner: "Tuner"
 };
+
+function kindListLabel(kind: string): string {
+    if (kind === "encoderPush") {
+        return "PUSH";
+    }
+    return kind.toUpperCase();
+}
 
 function controlPrefix(kind: string): string {
     return CONTROL_LABEL_PREFIX[kind] ?? kind.toUpperCase();
@@ -225,13 +271,28 @@ function nextLedLabel(leds: JsonObject[]): string {
 
 function groupedControls(controls: JsonObject[]): JsonObject[] {
     const grouped: JsonObject[] = [];
+    const used = new Set<string>();
+    const byId = new Map(controls.map((control) => [str(control.id), control]));
     for (const kind of CONTROL_KIND_ORDER) {
-        grouped.push(...controls.filter((control) => normalizeControlKind(str(control.kind, "momentary")) === kind));
+        if (kind === "encoderPush") {
+            continue;
+        }
+        for (const control of controls) {
+            if (normalizeControlKind(str(control.kind, "momentary")) !== kind) {
+                continue;
+            }
+            grouped.push(control);
+            used.add(str(control.id));
+            if (kind === "encoder") {
+                const pair = byId.get(str(control.pairId));
+                if (pair && isEncoderPushKind(normalizeControlKind(str(pair.kind)))) {
+                    grouped.push(pair);
+                    used.add(str(pair.id));
+                }
+            }
+        }
     }
-    grouped.push(...controls.filter((control) => {
-        const kind = normalizeControlKind(str(control.kind, "momentary"));
-        return !CONTROL_KIND_ORDER.includes(kind as (typeof CONTROL_KIND_ORDER)[number]);
-    }));
+    grouped.push(...controls.filter((control) => !used.has(str(control.id))));
     return grouped;
 }
 
@@ -253,7 +314,7 @@ export function SettingsPage({
         return <ControllerHub engine={engine} run={run} onOpenLayout={() => onOpen?.("layout")} />;
     }
     if (page === "keyboard") {
-        return <KeyboardSettingsView />;
+        return <KeyboardSettingsView engine={engine} />;
     }
     if (page === "ui" || page === "backup") {
         return <UiSettings engine={engine} run={run} />;
@@ -288,8 +349,9 @@ function AudioSettings({
     const [deviceError, setDeviceError] = useState("");
 
     useEffect(() => {
-        setDraft(obj(state.audio));
-    }, [state.audio]);
+        const sharedDraft = obj(obj(engine.uiSession.settings).audioDraft);
+        setDraft(Object.keys(sharedDraft).length > 0 ? sharedDraft : obj(state.audio));
+    }, [state.audio, engine.uiSession.settings]);
 
     const refreshDevices = () => {
         void client.request("audio/devices").then((result) => {
@@ -313,11 +375,15 @@ function AudioSettings({
     const guitarInput = Math.min(maxInputs, Math.max(1, num(draft.guitarInput, 2)));
 
     const set = (key: string, value: string | number | boolean) => {
-        setDraft((current) => ({ ...current, [key]: value }));
+        setDraft((current) => {
+            const next = { ...current, [key]: value };
+            updateUiSessionSection(client, "settings", { audioDraft: next });
+            return next;
+        });
     };
 
     return (
-        <div className="page-scroll stack">
+        <div className="page-scroll stack" data-mfx-sync-scroll="settings-audio">
             <div className="panel stack">
                 <h2>AUDIO DEVICE</h2>
                 {str(state.audioError) && <div className="danger">{str(state.audioError)}</div>}
@@ -415,14 +481,59 @@ function ControllerHub({
     onOpenLayout?: () => void;
 }) {
     const [page, setPage] = useState<"hub" | "hardware" | "diagnostics">("hub");
+    const [confirmResetLayout, setConfirmResetLayout] = useState(false);
     const { client } = engine;
     const controller = obj(engine.state.controller);
     const connected = bool(controller.connected);
+    useEffect(() => {
+        const sharedPage = str(obj(engine.uiSession.settings).controllerPage);
+        if (sharedPage === "hub" || sharedPage === "hardware" || sharedPage === "diagnostics") {
+            setPage(sharedPage);
+        }
+        setConfirmResetLayout(bool(obj(engine.uiSession.settings).controllerResetLayout));
+    }, [engine.uiSession.settings]);
+    const openPage = (next: "hub" | "hardware" | "diagnostics") => {
+        setPage(next);
+        updateUiSessionSection(client, "settings", { controllerPage: next });
+    };
+    const showResetLayoutConfirmation = (show: boolean) => {
+        setConfirmResetLayout(show);
+        updateUiSessionSection(client, "settings", { controllerResetLayout: show });
+    };
+    const restoreDefaultLayout = () => {
+        showResetLayoutConfirmation(false);
+        void run(() => client.request("controller/config", {
+            ...controller,
+            layoutMode: "freeform",
+            performanceLayout: {
+                elements: statusWidgetsToJson(defaultStatusWidgets()),
+                snapshotElements: snapshotWidgetsToJson(defaultSnapshotWidgets()),
+                unplacedControlIds: objects(controller.controls)
+                    .filter((control) => isEncoderPushKind(normalizeControlKind(str(control.kind, "momentary"))))
+                    .map((control) => str(control.id))
+                    .filter(Boolean),
+                groups: [],
+                snapshotGroups: [],
+                layoutName: str(obj(controller.performanceLayout).layoutName, "default")
+            },
+            controls: objects(controller.controls).map((control, index) => {
+                const rect = gridCellRect(index, 4, 2);
+                const min = analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
+                return {
+                    ...control,
+                    x: rect.x,
+                    y: rect.y,
+                    width: Math.max(min.width, 0.18),
+                    height: Math.max(min.height, 0.2)
+                };
+            })
+        }));
+    };
     if (page === "hardware") {
         return (
             <div className="hardware-setup">
                 <div className="split-toolbar">
-                    <button type="button" className="btn" onClick={() => setPage("hub")}>← CONTROLLER</button>
+                    <button type="button" className="btn" onClick={() => openPage("hub")}>← CONTROLLER</button>
                 </div>
                 <ControllerSettings engine={engine} run={run} />
             </div>
@@ -430,15 +541,21 @@ function ControllerHub({
     }
     if (page === "diagnostics") {
         return (
-            <div className="page-scroll stack">
+            <div className="page-scroll stack" data-mfx-sync-scroll="settings-controller-diagnostics">
                 <div className="row">
-                    <button type="button" className="btn" onClick={() => setPage("hub")}>← CONTROLLER</button>
+                    <button type="button" className="btn" onClick={() => openPage("hub")}>← CONTROLLER</button>
                 </div>
                 <div className="panel stack">
                     <h2>DIAGNOSTICS</h2>
                     <div className="list-item"><span>Connection</span><strong>{connected ? "CONNECTED" : "OFFLINE"}</strong></div>
                     <div className="list-item"><span>Name</span><strong>{str(controller.name, "—")}</strong></div>
                     <div className="list-item"><span>MIDI port</span><strong>{str(controller.activePort) || str(controller.midiPort) || "—"}</strong></div>
+                    <div className="list-item"><span>Firmware</span><strong>{str(controller.firmwareVersion, "UNKNOWN")}</strong></div>
+                    {connected && bool(controller.firmwareUpdateRequired) && (
+                        <div className="danger">
+                            New controller firmware {str(controller.requiredFirmwareVersion)} is available. Flash it manually for the controller to function properly.
+                        </div>
+                    )}
                     <div className="list-item"><span>Switches & pots</span><strong>{objects(controller.controls).length}</strong></div>
                     <div className="list-item"><span>LEDs</span><strong>{objects(controller.leds).length}</strong></div>
                     <div className="list-item"><span>Layout</span><strong>FREEFORM</strong></div>
@@ -448,7 +565,7 @@ function ControllerHub({
         );
     }
     return (
-        <div className="page-scroll stack">
+        <div className="page-scroll stack" data-mfx-sync-scroll="settings-controller-hub">
             <div className="panel">
                 <h2>CONTROLLER</h2>
                 <div className="muted">Configure hardware, arrange Performance View, and inspect controller status.</div>
@@ -458,12 +575,17 @@ function ControllerHub({
                     </strong>
                     <span className="muted">{str(controller.name, "NO CONTROLLER")}</span>
                 </div>
+                {connected && bool(controller.firmwareUpdateRequired) && (
+                    <div className="danger" style={{ marginTop: 10 }}>
+                        Controller firmware {str(controller.firmwareVersion)} is outdated. Flash version {str(controller.requiredFirmwareVersion)} manually for the controller to function properly.
+                    </div>
+                )}
             </div>
-            <div className="mfx-hub-grid">
+            <div className="mfx-hub-grid" data-mfx-nav-list="settings">
                 <HubCard
                     title="HARDWARE SETUP"
                     subtitle={`Add switches, pots and encoders; assign MIDI Learn and actions. ${objects(controller.controls).length} controls · ${objects(controller.leds).length} LEDs`}
-                    onClick={() => setPage("hardware")}
+                    onClick={() => openPage("hardware")}
                 />
                 <HubCard
                     title="PERFORMANCE LAYOUT"
@@ -473,7 +595,7 @@ function ControllerHub({
                 <HubCard
                     title="DIAGNOSTICS"
                     subtitle={`${connected ? "Connected" : "Offline"} · check MIDI, protocol and reported inputs`}
-                    onClick={() => setPage("diagnostics")}
+                    onClick={() => openPage("diagnostics")}
                 />
             </div>
             <div className="muted" style={{ padding: 16 }}>
@@ -483,38 +605,21 @@ function ControllerHub({
                 <button
                     type="button"
                     className="btn"
-                    onClick={() => {
-                        if (!window.confirm("Restore the default Performance layout?")) {
-                            return;
-                        }
-                        void run(() => client.request("controller/config", {
-                            ...controller,
-                            layoutMode: "freeform",
-                            performanceLayout: {
-                                elements: statusWidgetsToJson(defaultStatusWidgets()),
-                                snapshotElements: snapshotWidgetsToJson(defaultSnapshotWidgets()),
-                                unplacedControlIds: [],
-                                groups: [],
-                                snapshotGroups: [],
-                                layoutName: str(obj(controller.performanceLayout).layoutName, "default")
-                            },
-                            controls: objects(controller.controls).map((control, index) => {
-                                const rect = gridCellRect(index, 4, 2);
-                                const min = analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
-                                return {
-                                    ...control,
-                                    x: rect.x,
-                                    y: rect.y,
-                                    width: Math.max(min.width, 0.18),
-                                    height: Math.max(min.height, 0.2)
-                                };
-                            })
-                        }));
-                    }}
+                    onClick={() => showResetLayoutConfirmation(true)}
                 >
                     RESTORE DEFAULT LAYOUT
                 </button>
             </div>
+            {confirmResetLayout && (
+                <ConfirmDialog
+                    title="RESTORE DEFAULT LAYOUT?"
+                    body="This replaces the current Performance layout with the default arrangement."
+                    confirmLabel="RESTORE"
+                    danger
+                    onCancel={() => showResetLayoutConfirmation(false)}
+                    onConfirm={restoreDefaultLayout}
+                />
+            )}
         </div>
     );
 }
@@ -531,7 +636,12 @@ function ControllerSettings({
     const controllerRef = useRef(controller);
     controllerRef.current = controller;
     const controls = objects(controller.controls);
-    const grouped = groupedControls(controls);
+    const pairedPushIds = new Set(controls
+        .filter((control) => isEncoderKind(normalizeControlKind(str(control.kind))))
+        .map((control) => str(control.pairId)).filter(Boolean));
+    const grouped = groupedControls(controls).filter((control) =>
+        !isEncoderPushKind(normalizeControlKind(str(control.kind)))
+        || !pairedPushIds.has(str(control.id)));
     const controlsRef = useRef(controls);
     controlsRef.current = controls;
     const leds = objects(controller.leds);
@@ -539,7 +649,44 @@ function ControllerSettings({
     ledsRef.current = leds;
     const [ports, setPorts] = useState<JsonObject[]>([]);
     const [selectedId, setSelectedId] = useState("");
+    const [removeControlId, setRemoveControlId] = useState("");
     const selected = grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
+
+    useEffect(() => {
+        const sharedId = str(obj(engine.uiSession.settings).controllerSelectedId);
+        if (sharedId && grouped.some((item) => str(item.id) === sharedId)) {
+            setSelectedId(sharedId);
+        }
+        setRemoveControlId(str(obj(engine.uiSession.settings).removeControlId));
+    }, [engine.uiSession.settings, grouped]);
+
+    const selectControl = (id: string) => {
+        setSelectedId(id);
+        updateUiSessionSection(client, "settings", { controllerSelectedId: id });
+    };
+    const showRemoveControl = (id: string) => {
+        setRemoveControlId(id);
+        updateUiSessionSection(client, "settings", { removeControlId: id });
+    };
+    const removeControl = () => {
+        const target = controlsRef.current.find((item) => str(item.id) === removeControlId);
+        showRemoveControl("");
+        if (!target) {
+            return;
+        }
+        const id = str(target.id);
+        const pairId = str(target.pairId);
+        const next = groupedControls(controlsRef.current.filter((item) => {
+            const itemId = str(item.id);
+            if (itemId === id) {
+                return false;
+            }
+            return !(isEncoderKind(normalizeControlKind(str(target.kind))) && itemId === pairId);
+        }).map((item) => str(item.pairId) === id ? { ...item, pairId: "" } : item));
+        controlsRef.current = next;
+        selectControl(str(next[0]?.id));
+        save({ ...controllerRef.current, controls: next });
+    };
 
     const refreshPorts = () => {
         void client.request("midi/ports").then((result) => {
@@ -587,14 +734,24 @@ function ControllerSettings({
             }
         ]);
         controlsRef.current = next;
-        setSelectedId(nextId);
+        selectControl(nextId);
         save({ ...controller, controls: next });
     };
 
     const patch = (nextControl: JsonObject) => {
-        const next = groupedControls(controlsRef.current.map((item) => (
+        const previous = controlsRef.current.find((item) => str(item.id) === str(nextControl.id));
+        const wasEncoder = previous && isEncoderKind(normalizeControlKind(str(previous.kind)));
+        const stillEncoder = isEncoderKind(normalizeControlKind(str(nextControl.kind)));
+        let next = controlsRef.current.map((item) => (
             str(item.id) === str(nextControl.id) ? nextControl : item
-        )));
+        ));
+        if (wasEncoder && !stillEncoder) {
+            const pairId = str(previous?.pairId);
+            next = next
+                .filter((item) => str(item.id) !== pairId)
+                .map((item) => str(item.id) === str(nextControl.id) ? { ...item, pairId: "" } : item);
+        }
+        next = groupedControls(next);
         controlsRef.current = next;
         save({ ...controller, controls: next });
     };
@@ -649,6 +806,32 @@ function ControllerSettings({
                         <button type="button" className="btn" onClick={() => addControl("slider", { action: "none", min: 0, max: 1, inverted: false })}>ADD SLIDER</button>
                         <button type="button" className="btn" onClick={() => addControl("expression", { action: "none", min: 0, max: 1, inverted: false })}>ADD EXP</button>
                         <button type="button" className="btn" onClick={() => {
+                            const current = controlsRef.current;
+                            const encId = `ctl-${Date.now().toString(36)}-${current.length}`;
+                            const btnId = `${encId}-btn`;
+                            const label = nextControlLabel("encoder", current);
+                            const next = groupedControls([
+                                ...current,
+                                {
+                                    id: encId,
+                                    label,
+                                    kind: "encoder",
+                                    pairId: btnId,
+                                    binding: { action: "navigate", min: 0, max: 1, inverted: false }
+                                },
+                                {
+                                    id: btnId,
+                                    label: `${label} BTN`,
+                                    kind: "encoderPush",
+                                    pairId: encId,
+                                    binding: { action: "select", min: 0, max: 1, inverted: false }
+                                }
+                            ]);
+                            controlsRef.current = next;
+                            selectControl(encId);
+                            save({ ...controller, controls: next });
+                        }}>ADD ENCODER</button>
+                        <button type="button" className="btn" onClick={() => {
                             const current = ledsRef.current;
                             const next = [
                                 ...current,
@@ -664,43 +847,74 @@ function ControllerSettings({
                             save({ ...controller, leds: next });
                         }}>ADD LED</button>
                     </div>
-                    <div className="split-list">
+                    <div className="split-list" data-mfx-sync-scroll="settings-controller-controls">
                         {grouped.map((control) => (
                             <button
                                 key={str(control.id)}
                                 type="button"
                                 className={`split-row${str(control.id) === str(obj(selected).id) ? " selected" : ""}`}
-                                onClick={() => setSelectedId(str(control.id))}
+                                onClick={() => selectControl(str(control.id))}
                             >
                                 <MarqueeText
-                                    text={`${str(control.label).trim() || str(control.id)} · ${normalizeControlKind(str(control.kind, "momentary")).toUpperCase()}`}
+                                    text={`${str(control.label).trim() || str(control.id)} · ${kindListLabel(normalizeControlKind(str(control.kind, "momentary")))}`}
                                     align="left"
                                     fontWeight={800}
                                 />
                             </button>
                         ))}
-                        {grouped.length === 0 && <div className="muted">Add a switch or pot to edit it here.</div>}
+                        {grouped.length === 0 && <div className="muted">Add a switch, pot or encoder to edit it here.</div>}
                     </div>
                 </section>
                 <section className="split-pane">
                     <div className="split-pane-title">{selected ? (str(selected.label).trim() || "CONTROL") : "DETAIL"}</div>
-                    <div className="hardware-setup-detail">
+                    <div className="hardware-setup-detail" data-mfx-sync-scroll="settings-controller-detail">
                         {selected ? (
                             <HardwareControlDetail
                                 control={selected}
                                 controller={controller}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
-                                onRemove={() => {
-                                    if (!window.confirm(`Remove ${str(selected.label, str(selected.id))}?`)) {
+                                onRemove={() => showRemoveControl(str(selected.id))}
+                                onLearn={() => void run(() => client.request("controller/learn", { controlId: str(selected.id) }))}
+                                onLearnPair={() => {
+                                    const pairId = str(selected.pairId);
+                                    if (!pairId) {
                                         return;
                                     }
-                                    const next = groupedControls(controls.filter((item) => str(item.id) !== str(selected.id)));
+                                    void run(() => client.request("controller/learn", { controlId: pairId }));
+                                }}
+                                onTogglePushButton={(enabled) => {
+                                    const current = controlsRef.current;
+                                    const encoderId = str(selected.id);
+                                    if (enabled) {
+                                        if (current.some((item) => str(item.id) === str(selected.pairId)
+                                            && isEncoderPushKind(normalizeControlKind(str(item.kind))))) {
+                                            return;
+                                        }
+                                        const btnId = `${encoderId}-btn`;
+                                        const next = groupedControls([
+                                            ...current.map((item) => str(item.id) === encoderId
+                                                ? { ...item, pairId: btnId }
+                                                : item),
+                                            {
+                                                id: btnId,
+                                                label: `${str(selected.label, "ENC")} BTN`,
+                                                kind: "encoderPush",
+                                                pairId: encoderId,
+                                                binding: { action: "select", min: 0, max: 1, inverted: false }
+                                            }
+                                        ]);
+                                        controlsRef.current = next;
+                                        save({ ...controller, controls: next });
+                                        return;
+                                    }
+                                    const pairId = str(selected.pairId);
+                                    const next = groupedControls(current
+                                        .filter((item) => str(item.id) !== pairId)
+                                        .map((item) => str(item.id) === encoderId ? { ...item, pairId: "" } : item));
                                     controlsRef.current = next;
-                                    setSelectedId(str(next[0]?.id));
                                     save({ ...controller, controls: next });
                                 }}
-                                onLearn={() => void run(() => client.request("controller/learn", { controlId: str(selected.id) }))}
                             />
                         ) : (
                             <div className="muted">Select a control from the list.</div>
@@ -708,6 +922,16 @@ function ControllerSettings({
                     </div>
                 </section>
             </div>
+            {removeControlId && (
+                <ConfirmDialog
+                    title="REMOVE CONTROL?"
+                    body={`Remove ${str(controls.find((item) => str(item.id) === removeControlId)?.label, removeControlId)}?`}
+                    confirmLabel="REMOVE"
+                    danger
+                    onCancel={() => showRemoveControl("")}
+                    onConfirm={removeControl}
+                />
+            )}
         </>
     );
 }
@@ -718,7 +942,10 @@ function HardwareControlDetail({
     snapshotSlots,
     onPatch,
     onRemove,
-    onLearn
+    onLearn,
+    onLearnPair,
+    onTogglePushButton,
+    embeddedPush = false
 }: {
     control: JsonObject;
     controller: JsonObject;
@@ -726,26 +953,38 @@ function HardwareControlDetail({
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
     onLearn: () => void;
+    onLearnPair: () => void;
+    onTogglePushButton: (enabled: boolean) => void;
+    embeddedPush?: boolean;
 }) {
     const controlRef = useRef(control);
     controlRef.current = control;
     const binding = obj(control.binding);
     const kind = normalizeControlKind(str(control.kind, "momentary"));
     const analog = isAnalogKind(kind);
+    const encoder = isEncoderKind(kind);
+    const encoderPush = isEncoderPushKind(kind);
     const latching = isLatchingKind(kind);
+    const pair = objects(controller.controls).find((item) => str(item.id) === str(control.pairId));
+    const hasPushButton = Boolean(pair && isEncoderPushKind(normalizeControlKind(str(pair.kind))));
     const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
+    const functionActions = encoder
+        ? ENCODER_ACTIONS
+        : encoderPush
+            ? ENCODER_PUSH_ACTIONS
+            : HARDWARE_ACTIONS;
     const rawAction = str(binding.action, "none");
-    const action = (HARDWARE_ACTIONS as readonly string[]).includes(rawAction) ? rawAction : "none";
+    const action = (functionActions as readonly string[]).includes(rawAction) ? rawAction : "none";
     const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
     const doubleAction = str(binding.doubleAction) === "none" ? "" : str(binding.doubleAction);
     const assignedSnapshot = num(binding.snapshotSlot, -1);
-    const usesSnapshot = action === "selectSnapshot"
+    const usesSnapshot = (!encoder && action === "selectSnapshot")
         || holdAction === "selectSnapshot"
         || doubleAction === "selectSnapshot";
-    const actionOptions = (includeEmpty: boolean) => (
+    const actionOptions = (includeEmpty: boolean, actions: readonly string[] = functionActions) => (
         <>
             {includeEmpty && <option value="">None</option>}
-            {HARDWARE_ACTIONS.filter((item) => includeEmpty ? item !== "none" : true).map((item) => (
+            {actions.filter((item) => includeEmpty ? item !== "none" : true).map((item) => (
                 <option key={item} value={item}>{HARDWARE_ACTION_LABELS[item] ?? item}</option>
             ))}
         </>
@@ -754,14 +993,17 @@ function HardwareControlDetail({
         ? [...snapshotSlots, assignedSnapshot]
         : snapshotSlots;
     const withSnapshotSlot = (next: JsonObject, chosen: string) => {
-        if (chosen !== "selectSnapshot" || num(next.snapshotSlot, -1) >= 0) {
+        if (chosen !== "selectSnapshot" || num(next.snapshotSlot, -1) >= 0 || encoder) {
             return next;
         }
         return { ...next, snapshotSlot: snapshotSlots[0] ?? 0 };
     };
+    const learningThis = bool(controller.learning) && str(controller.learningControlId) === str(control.id);
+    const showSwitchTiming = !analog && !encoder && !latching;
     return (
         <div className="stack">
             <div className="hardware-field-grid">
+                {!embeddedPush && <>
                 <label className="field">
                     <span>Name</span>
                     <KeyboardCommitInput
@@ -786,20 +1028,27 @@ function HardwareControlDetail({
                             nextBinding.slotId = "";
                             nextBinding.portSymbol = "";
                         }
-                        if (isLatchingKind(nextKind)) {
+                        if (isEncoderKind(nextKind) && (!nextBinding.action || nextBinding.action === "none")) {
+                            nextBinding.action = "navigate";
+                        }
+                        if (isEncoderPushKind(nextKind) && (!nextBinding.action || nextBinding.action === "none")) {
+                            nextBinding.action = "select";
+                        }
+                        if (isLatchingKind(nextKind) || isEncoderKind(nextKind)) {
                             nextBinding.holdAction = "";
                             nextBinding.doubleAction = "";
                         }
                         onPatch({ ...control, kind: nextKind, label, binding: nextBinding });
                     }}>
-                        {CONTROL_KIND_ORDER.map((item) => (
-                            <option key={item} value={item}>{item}</option>
+                        {CONTROL_KIND_ORDER.filter((item) => item !== "encoderPush" || encoderPush).map((item) => (
+                            <option key={item} value={item}>{item === "encoderPush" ? "encoder push" : item}</option>
                         ))}
                     </select>
                 </label>
+                </>}
                 {!analog && (
                     <label className="field">
-                        <span>Main function</span>
+                        <span>{encoder ? "Turn function" : "Main function"}</span>
                         <select
                             value={action}
                             onChange={(event) => {
@@ -818,25 +1067,25 @@ function HardwareControlDetail({
                         </select>
                     </label>
                 )}
-                {!analog && !latching && (
+                {showSwitchTiming && (
                     <label className="field">
                         <span>Hold</span>
                         <select
                             value={holdAction}
                             onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, holdAction: event.target.value }, event.target.value))}
                         >
-                            {actionOptions(true)}
+                            {actionOptions(true, HARDWARE_ACTIONS)}
                         </select>
                     </label>
                 )}
-                {!analog && !latching && (
+                {showSwitchTiming && (
                     <label className="field">
                         <span>Double tap</span>
                         <select
                             value={doubleAction}
                             onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, doubleAction: event.target.value }, event.target.value))}
                         >
-                            {actionOptions(true)}
+                            {actionOptions(true, HARDWARE_ACTIONS)}
                         </select>
                     </label>
                 )}
@@ -852,6 +1101,30 @@ function HardwareControlDetail({
                                 <option key={slot} value={slot}>Snapshot {slot + 1}</option>
                             ))}
                         </select>
+                    </label>
+                )}
+                {(analog || encoder) && (
+                    <label className="field">
+                        <span>Reverse</span>
+                        <button
+                            type="button"
+                            className={`btn ${bool(binding.inverted) ? "btn-active" : ""}`}
+                            onClick={() => patchBinding({ ...binding, inverted: !bool(binding.inverted) })}
+                        >
+                            {bool(binding.inverted) ? "REVERSED" : "NORMAL"}
+                        </button>
+                    </label>
+                )}
+                {encoder && (
+                    <label className="field">
+                        <span>Push button</span>
+                        <button
+                            type="button"
+                            className={`btn ${hasPushButton ? "btn-active" : ""}`}
+                            onClick={() => onTogglePushButton(!hasPushButton)}
+                        >
+                            {hasPushButton ? "HAS BUTTON" : "NO BUTTON"}
+                        </button>
                     </label>
                 )}
                 <label className="field">
@@ -878,15 +1151,79 @@ function HardwareControlDetail({
                 </label>
             </div>
             <div className="muted">
-                Bind pots and effect toggles from the editor: hold a parameter name, or hold an effect LED.
+                {encoder
+                    ? "Learn rotation by turning the encoder. If it has a click, Learn button captures that separately. Reverse if clockwise is backwards."
+                    : analog
+                        ? "Bind pots from the editor: hold a parameter name. Reverse if the pot is wired backwards."
+                        : encoderPush
+                            ? "This is the click on the paired encoder. Assign Select to confirm a highlighted menu item."
+                            : "Bind pots and effect toggles from the editor: hold a parameter name, or hold an effect LED."}
             </div>
             <div className="row">
                 <button type="button" className="btn" onClick={onLearn}>
-                    {bool(controller.learning) && str(controller.learningControlId) === str(control.id) ? "LISTENING…" : "LEARN"}
+                    {learningThis
+                        ? "LISTENING…"
+                        : encoder ? "LEARN ROTATION" : encoderPush ? "LEARN BUTTON" : "LEARN"}
                 </button>
-                <button type="button" className="btn btn-danger" onClick={onRemove}>REMOVE</button>
+                {!embeddedPush && <button type="button" className="btn btn-danger" onClick={onRemove}>REMOVE</button>}
             </div>
+            {encoder && hasPushButton && pair && (
+                <section className="stack">
+                    <h3>Push button</h3>
+                    <HardwareControlDetail
+                        control={pair}
+                        controller={controller}
+                        snapshotSlots={snapshotSlots}
+                        onPatch={onPatch}
+                        onRemove={() => onTogglePushButton(false)}
+                        onLearn={onLearnPair}
+                        onLearnPair={() => undefined}
+                        onTogglePushButton={() => undefined}
+                        embeddedPush
+                    />
+                </section>
+            )}
         </div>
+    );
+}
+
+function EncoderPulsesInput({ value, onCommit }: {
+    value: number;
+    onCommit: (value: number) => void;
+}) {
+    const [draft, setDraft] = useState(String(value));
+    const ref = useRef<HTMLInputElement>(null);
+    const lastCommitted = useRef(value);
+    useEffect(() => {
+        lastCommitted.current = value;
+        setDraft(String(value));
+    }, [value]);
+    const commit = (text: string) => {
+        const parsed = Number(text);
+        if (text.trim() === "" || !Number.isFinite(parsed)) {
+            setDraft(String(lastCommitted.current));
+            return;
+        }
+        const next = Math.max(1, Math.min(8, Math.trunc(parsed)));
+        setDraft(String(next));
+        if (next !== lastCommitted.current) {
+            lastCommitted.current = next;
+            onCommit(next);
+        }
+    };
+    const commitRef = useRef(commit);
+    commitRef.current = commit;
+    useEffect(() => listenForKeyboardCommit(ref.current, (text) => commitRef.current(text)), []);
+    return (
+        <input ref={ref} type="number" min={1} max={8} step={1} value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={(event) => commit(event.target.value)}
+            onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                }
+            }} />
     );
 }
 
@@ -901,8 +1238,9 @@ function UiSettings({
     const save = (next: JsonObject) => {
         void run(() => engine.client.request("ui/settings", next));
     };
+    const encoderMode = str(ui.performanceEncoder, "browse");
     return (
-        <div className="page-scroll stack">
+        <div className="page-scroll stack" data-mfx-sync-scroll="settings-ui">
             <div className="panel stack">
                 <h2>ON-SCREEN SURFACE</h2>
                 <label className="field">
@@ -923,7 +1261,58 @@ function UiSettings({
                     <button type="button" className={`btn ${bool(ui.confirmPresetOverwrite, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...ui, confirmPresetOverwrite: !bool(ui.confirmPresetOverwrite, true) })}>CONFIRM SAVE</button>
                 </div>
-                <UiBehaviorEditor />
+                <UiBehaviorEditor engine={engine} />
+            </div>
+            <div className="panel stack">
+                <h2>PERFORMANCE ENCODER</h2>
+                <div className="muted">
+                    Turn clockwise for the next preset and counterclockwise for the previous. Browse every preset in bank-list order, then continue to the next bank and wrap around. Switch assignments do not change this order. Use Hardware Reverse only to correct reversed wiring.
+                </div>
+                <div className="row">
+                    <button type="button" className={`btn ${encoderMode === "browse" ? "btn-active" : ""}`}
+                        onClick={() => save({ ...ui, performanceEncoder: "browse" })}>
+                        BROWSE
+                    </button>
+                    <button type="button" className={`btn ${encoderMode === "live" ? "btn-active" : ""}`}
+                        onClick={() => save({ ...ui, performanceEncoder: "live" })}>
+                        LIVE
+                    </button>
+                    <button type="button" className={`btn ${encoderMode === "session" ? "btn-active" : ""}`}
+                        onClick={() => save({ ...ui, performanceEncoder: "session" })}>
+                        SESSION TILES
+                    </button>
+                </div>
+                <div className="muted">
+                    {encoderMode === "live"
+                        ? "Loads each preset as you turn so you can hear it. Encoder click is not required."
+                        : encoderMode === "session"
+                            ? "Turns the switch names for this session only. A reboot restores the saved assignments. Press a switch or the encoder to load."
+                            : "Highlights the next preset. Press the encoder to load that bank and preset."}
+                </div>
+            </div>
+            <div className="panel stack">
+                <h2>FLOORBOARD FEEL</h2>
+                <div className="muted">
+                    Hold time, double-tap, and reverse stay on each control in Hardware Setup. These are extra filters for noisy hardware.
+                </div>
+                <label className="field">
+                    <span>Encoder pulses per click</span>
+                    <EncoderPulsesInput value={num(ui.encoderStepsPerDetent, 1)}
+                        onCommit={(value) => save({ ...ui, encoderStepsPerDetent: value })} />
+                </label>
+                <div className="muted">The floorboard already sends one MIDI message per tactile click. Leave this at 1. Raise it only if one click still jumps several items.</div>
+                <label className="field">
+                    <span>Extra pot deadband (MIDI steps)</span>
+                    <input type="number" min={0} max={16} value={num(ui.analogDeadband, 0)}
+                        onChange={(event) => save({ ...ui, analogDeadband: Number(event.target.value) })} />
+                </label>
+                <div className="muted">Ignore wobble smaller than this. Use when cheap pots or interference make values jump.</div>
+                <label className="field">
+                    <span>Extra switch debounce (ms)</span>
+                    <input type="number" min={0} max={80} value={num(ui.switchDebounceMs, 0)}
+                        onChange={(event) => save({ ...ui, switchDebounceMs: Number(event.target.value) })} />
+                </label>
+                <div className="muted">Added on top of the firmware debounce. Leave at 0 unless a switch or encoder click double-fires.</div>
             </div>
             <BackupView engine={engine} run={run} embedded />
         </div>
@@ -938,7 +1327,7 @@ function LibrarySettings({
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
     return (
-        <div className="page-scroll stack">
+        <div className="page-scroll stack" data-mfx-sync-scroll="settings-library">
             <Tone3000View engine={engine} run={run} pane="settings" />
         </div>
     );
@@ -963,7 +1352,7 @@ function SystemSettings({
     };
 
     return (
-        <div className="page-scroll stack">
+        <div className="page-scroll stack" data-mfx-sync-scroll="settings-realtime">
             <div className="panel stack">
                 <h2>REALTIME</h2>
                 <div className="muted">
@@ -1000,11 +1389,32 @@ function SystemSettings({
     );
 }
 
-function UiBehaviorEditor() {
+function UiBehaviorEditor({
+    engine
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+}) {
     const [settings, setSettings] = useState(loadUiBehavior);
+    useEffect(() => {
+        const shared = obj(obj(engine.uiSession.settings).uiBehavior);
+        if (Object.keys(shared).length === 0) {
+            updateUiSessionSection(engine.client, "settings", {
+                uiBehavior: settings as unknown as JsonObject
+            });
+            return;
+        }
+        const next = { ...DEFAULT_UI_BEHAVIOR, ...shared, version: 1 } as UiBehavior;
+        saveUiBehavior(next);
+        setSettings(next);
+        // Local changes publish explicitly in apply().
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine.uiSession.settings, engine.client]);
     const apply = (next: UiBehavior) => {
         saveUiBehavior(next);
         setSettings(next);
+        updateUiSessionSection(engine.client, "settings", {
+            uiBehavior: next as unknown as JsonObject
+        });
     };
     return (
         <div className="stack">

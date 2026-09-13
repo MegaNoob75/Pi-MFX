@@ -70,7 +70,8 @@ The stock firmware uses:
 | Encoder push | CC 31, 0 / 127 |
 
 Learn in the UI captures whatever CC or note the board actually sends, so
-custom firmware does not need this table.
+custom firmware does not need this table. Hardware Setup can reverse a pot or
+encoder in software if it is wired or turning the wrong way.
 
 ## Device name
 

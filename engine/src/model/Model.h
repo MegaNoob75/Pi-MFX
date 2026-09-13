@@ -101,12 +101,13 @@ struct Bank {
 // ---------------------------------------------------------------------------
 
 enum class ControlKind {
-    Momentary,   ///< tap while pressed (typical footswitch)
-    Latching,    ///< stays ON/OFF with the physical toggle
-    Pot,         ///< rotary potentiometer
-    Slider,      ///< linear fader
-    Encoder,     ///< rotary encoder, relative
-    Expression   ///< expression pedal input
+    Momentary,    ///< tap while pressed (typical footswitch)
+    Latching,     ///< stays ON/OFF with the physical toggle
+    Pot,          ///< rotary potentiometer
+    Slider,       ///< linear fader
+    Encoder,      ///< rotary encoder, relative MIDI (63 CCW / 65 CW)
+    EncoderPush,  ///< optional click built into an encoder
+    Expression    ///< expression pedal input
 };
 
 std::string controlKindToString(ControlKind kind);
@@ -171,6 +172,8 @@ struct ControllerControl {
     double height = 0.18;
 
     std::string ledId;      ///< LED that follows this control, if any
+    /// Encoder turn ↔ encoder push. Empty when the control is unpaired.
+    std::string pairId;
     ControlBinding binding;
 
     Json toJson() const;
@@ -254,6 +257,18 @@ struct UiSettings {
     /// Number of on-screen performance switches when no physical controller is
     /// connected, so a tablet alone is still a complete control surface.
     int virtualSwitchCount = 8;
+    /// Performance encoder: browse (click to load), live (load while turning),
+    /// or session (remap switch tiles until reboot).
+    std::string performanceEncoder = "browse";
+    /// Firmware already groups quadrature pulses into one MIDI message per
+    /// tactile click. Leave at 1 unless an ungrouped encoder jumps items.
+    int encoderStepsPerDetent = 1;
+    /// Extra MIDI steps a pot must move before the value is accepted. 0 leaves
+    /// firmware hysteresis as the only filter.
+    int analogDeadband = 0;
+    /// Extra milliseconds to ignore after a switch or encoder click. Firmware
+    /// already debounces; this is for noisy MIDI or cheap switches.
+    int switchDebounceMs = 0;
 
     Json toJson() const;
     static UiSettings fromJson(const Json& json);

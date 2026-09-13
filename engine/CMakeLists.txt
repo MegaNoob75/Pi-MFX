@@ -95,13 +95,33 @@ if(WIN32)
     target_link_libraries(pimfx PRIVATE ws2_32)
 endif()
 
-execute_process(
-    COMMAND git rev-parse --short HEAD
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-    OUTPUT_VARIABLE PIMFX_GIT_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
+set(PIMFX_GIT_SHA "$ENV{PIMFX_GIT_SHA}")
+if(DEFINED PIMFX_BUILD_COMMIT AND NOT PIMFX_BUILD_COMMIT STREQUAL "")
+    set(PIMFX_GIT_SHA "${PIMFX_BUILD_COMMIT}")
+endif()
+string(STRIP "${PIMFX_GIT_SHA}" PIMFX_GIT_SHA)
+if(NOT PIMFX_GIT_SHA MATCHES "^[0-9a-fA-F]+(-local)?$")
+    set(PIMFX_GIT_SHA "")
+endif()
+if(NOT PIMFX_GIT_SHA)
+    execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        OUTPUT_VARIABLE PIMFX_GIT_SHA
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    execute_process(
+        COMMAND git status --porcelain --untracked-files=normal
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        OUTPUT_VARIABLE PIMFX_GIT_CHANGES
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(PIMFX_GIT_SHA AND PIMFX_GIT_CHANGES)
+        string(APPEND PIMFX_GIT_SHA "-local")
+    endif()
+endif()
 if(NOT PIMFX_GIT_SHA)
     set(PIMFX_GIT_SHA "unknown")
 endif()

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { EngineSnapshot } from "../api";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
+import { updateUiSessionSection } from "../uiSession";
 
 export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank";
 
@@ -284,6 +285,23 @@ export function LibraryJsonPicker({
     const [error, setError] = useState("");
 
     useEffect(() => {
+        const shared = obj(engine.uiSession.jsonPicker);
+        if (str(shared.kind) !== kind || str(shared.mode) !== mode) {
+            return;
+        }
+        if (typeof shared.name === "string") {
+            setName(shared.name);
+        }
+        if (typeof shared.selectedPath === "string") {
+            setSelectedPath(shared.selectedPath);
+        }
+    }, [engine.uiSession.jsonPicker, kind, mode]);
+
+    const updatePicker = (patch: JsonObject) => {
+        updateUiSessionSection(engine.client, "jsonPicker", { kind, mode, ...patch });
+    };
+
+    useEffect(() => {
         void engine.client.request("library/list", { kind, directory: "" }).then((result) => {
             setFiles(objects(obj(result).files));
         }).catch((item: unknown) => {
@@ -299,10 +317,13 @@ export function LibraryJsonPicker({
                 {mode === "save" && (
                     <label className="field">
                         <span>Name</span>
-                        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="My layout" />
+                        <input value={name} onChange={(event) => {
+                            setName(event.target.value);
+                            updatePicker({ name: event.target.value });
+                        }} placeholder="My layout" />
                     </label>
                 )}
-                <div className="library-picker-files">
+                <div className="library-picker-files" data-mfx-sync-scroll={`settings-picker-${kind}-${mode}`}>
                     {files.length === 0 && <div className="muted">No files yet.</div>}
                     {files.map((item) => (
                         <button
@@ -311,8 +332,11 @@ export function LibraryJsonPicker({
                             className={`btn ${selectedPath === str(item.path) ? "btn-active" : ""}`}
                             onClick={() => {
                                 setSelectedPath(str(item.path));
+                                updatePicker({ selectedPath: str(item.path) });
                                 if (mode === "save") {
-                                    setName(str(item.name).replace(/\.json$/i, ""));
+                                    const nextName = str(item.name).replace(/\.json$/i, "");
+                                    setName(nextName);
+                                    updatePicker({ name: nextName });
                                 }
                             }}
                         >

@@ -1,10 +1,19 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { findBank, findPreset, isAnalogKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
+import { findBank, findPreset, isAnalogKind, isEncoderKind, isEncoderPushKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
 import { bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
+import { hardwareNavBlocksPerformance } from "../hardwareNav";
+import {
+    buildPerformanceCatalog,
+    catalogIndexOf,
+    parsePerformanceEncoderMode,
+    performanceEncoderFeedback,
+    wrapIndex,
+    type PerformanceCatalogEntry
+} from "../performanceBrowse";
 import { NewPresetDialog } from "./NewPresetDialog";
 import {
     STATUS_WIDGET_IDS,
@@ -98,7 +107,6 @@ export function PerformanceView({
     const layout = obj(controller.performanceLayout);
     const widgets = readStatusWidgets(layout);
     const controls = objects(controller.controls);
-    const hidden = new Set(unplacedIds(layout));
     const presets = objects(obj(bank).presets);
     const snapshots = objects(obj(preset).snapshots);
     const snapshotWidgets = readSnapshotWidgets(layout);
@@ -129,7 +137,7 @@ export function PerformanceView({
     const [dropTargetId, setDropTargetId] = useState("");
     const [dragOverTrash, setDragOverTrash] = useState(false);
     const [feedback, setFeedback] = useState<AnalogFeedback | null>(null);
-    const [selectedPresetSlot, setSelectedPresetSlot] = useState(0);
+    const [browseIndex, setBrowseIndex] = useState(0);
     const dragRef = useRef<PresetDrag | null>(null);
     const toastTimer = useRef<number | null>(null);
     const feedbackTimer = useRef<number | null>(null);
@@ -142,7 +150,16 @@ export function PerformanceView({
     const physicalPopoutReady = useRef(false);
     const physicalPopoutTimer = useRef<number | null>(null);
     const [hardwarePopoutId, setHardwarePopoutId] = useState("");
+    const encoderDrivingRef = useRef(false);
+    const encoderDriveTimer = useRef<number | null>(null);
+    const browseNavRef = useRef({
+        catalog: [] as PerformanceCatalogEntry[],
+        browseIndex: 0,
+        encoderMode: "browse" as ReturnType<typeof parsePerformanceEncoderMode>,
+        blocked: false
+    });
     const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
+    const sharedPicker = str(engine.uiSession.performancePicker);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
         [state.activePresetId, chainSignature]
@@ -184,6 +201,9 @@ export function PerformanceView({
         }
         if (physicalPopoutTimer.current !== null) {
             window.clearTimeout(physicalPopoutTimer.current);
+        }
+        if (encoderDriveTimer.current !== null) {
+            window.clearTimeout(encoderDriveTimer.current);
         }
         menuArmCleanup.current?.();
     }, []);
@@ -402,7 +422,9 @@ export function PerformanceView({
             presetUp: "PRESET UP",
             presetDown: "PRESET DOWN",
             tapTempo: "TAP TEMPO",
-            tuner: "TUNER"
+            tuner: "TUNER",
+            navigate: "NAVIGATE",
+            select: "SELECT"
         };
         return labels[actionName]
             ?? formatMenuLabel(actionName).toUpperCase();
@@ -554,8 +576,51 @@ export function PerformanceView({
         abortPresetDrag();
     }, [snapshotMode]);
 
-    const visibleControls = controls.filter((control) => !hidden.has(str(control.id)));
+    const visibleControls = useMemo(() => {
+        const hiddenIds = new Set(unplacedIds(layout));
+        return objects(controller.controls).filter((control) => {
+            const id = str(control.id);
+            if (hiddenIds.has(id)) {
+                return false;
+            }
+            return !isEncoderPushKind(normalizeControlKind(str(control.kind, "momentary")));
+        });
+    }, [controller.controls, layout]);
     const useConfigured = visibleControls.length > 0 && (mirror || controls.length > 0);
+    const encoderMode = parsePerformanceEncoderMode(str(ui.performanceEncoder, "browse"));
+
+    const catalog = useMemo(() => buildPerformanceCatalog(banks), [banks]);
+    const navigationFeedback = performanceEncoderFeedback(
+        catalog, browseIndex, encoderMode, str(state.activeBankId), str(state.activePresetId)
+    );
+    const catalogSig = catalog.map((entry) => `${entry.bankId}:${entry.presetId}`).join("|");
+    const sessionPayload = useMemo(() => {
+        if (encoderMode !== "session" || snapshotMode || !useConfigured || catalog.length === 0) {
+            return { enabled: false, assignments: [] as { controlId: string; bankId: string; presetId: string }[] };
+        }
+        let slot = 0;
+        const assignments: { controlId: string; bankId: string; presetId: string }[] = [];
+        for (const control of visibleControls) {
+            const kind = normalizeControlKind(str(control.kind, "momentary"));
+            const analog = isAnalogKind(kind);
+            const encoder = isEncoderKind(kind);
+            const action = str(obj(control.binding).action, "selectPreset");
+            const canAssign = !analog && !encoder && (action === "selectPreset" || action === "none" || action === "");
+            if (!canAssign) {
+                continue;
+            }
+            const entry = catalog[wrapIndex(browseIndex + slot, catalog.length)];
+            slot += 1;
+            if (entry) {
+                assignments.push({
+                    controlId: str(control.id),
+                    bankId: entry.bankId,
+                    presetId: entry.presetId
+                });
+            }
+        }
+        return { enabled: true, assignments };
+    }, [encoderMode, snapshotMode, useConfigured, catalog, visibleControls, browseIndex]);
 
     const tiles: PerformanceTile[] = snapshotMode
         ? snapshotWidgets.map((widget) => {
@@ -601,29 +666,44 @@ export function PerformanceView({
             };
         })
         : useConfigured
-            ? visibleControls.map((control, index) => {
+            ? (() => {
+                let nextPresetSlot = 0;
+                const pending = catalog[browseIndex];
+                return visibleControls.map((control, index) => {
                 const binding = obj(control.binding);
                 const controlId = str(control.id);
                 const assignedPreset = assigned(controlId);
                 const action = str(binding.action, "selectPreset");
                 const kind = normalizeControlKind(str(control.kind, "momentary"));
                 const analog = isAnalogKind(kind);
+                const encoder = kind === "encoder";
                 const latching = isLatchingKind(kind);
                 const holdAction = str(binding.holdAction);
                 const doubleAction = str(binding.doubleAction);
                 const hasHoldAction = Boolean(holdAction && holdAction !== "none");
                 const hasDoubleAction = Boolean(doubleAction && doubleAction !== "none");
-                const canAssign = !analog && (action === "selectPreset" || action === "none" || action === "");
+                const canAssign = !analog && !encoder && (action === "selectPreset" || action === "none" || action === "");
                 const presetId = assignedPreset || str(binding.presetId);
-                const presetItem = presets.find((entry) => str(entry.id) === presetId);
+                const presetSlotIndex = canAssign ? nextPresetSlot++ : undefined;
+                const sessionEntry = encoderMode === "session" && presetSlotIndex != null && catalog.length > 0
+                    ? catalog[wrapIndex(browseIndex + presetSlotIndex, catalog.length)]
+                    : undefined;
+                const displayPresetId = sessionEntry?.presetId || presetId;
+                const displayBankId = sessionEntry?.bankId || str(obj(bank).id);
+                const presetItem = presets.find((entry) => str(entry.id) === displayPresetId)
+                    || objects(obj(banks.find((item) => str(item.id) === displayBankId)).presets)
+                        .find((entry) => str(entry.id) === displayPresetId);
                 const minSize = analogMinSize(kind);
-                const empty = canAssign && !presetId;
+                const empty = canAssign && !displayPresetId;
                 const presetBind = parameterBindings.find((item) => str(item.controlId) === controlId);
-                const analogInfo = analog ? analogFeedback(control, chain, presetBind) : null;
+                const analogInfo = analog || encoder ? analogFeedback(control, chain, presetBind) : null;
+                const analogAssigned = analog || (encoder && analogInfo?.parameter !== "UNASSIGNED");
+                const navigationEncoder = encoder && !analogAssigned && action === "navigate";
                 const toggleSlot = str(obj(presetBind).action) === "toggleEffect"
                     ? str(presetBind?.slotId)
                     : (action === "toggleEffect" ? str(binding.slotId) : "");
-                const active = presetId === str(state.activePresetId)
+                const active = (displayPresetId === str(state.activePresetId)
+                    && (!sessionEntry || displayBankId === str(state.activeBankId)))
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
                     || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
@@ -633,34 +713,52 @@ export function PerformanceView({
                         true
                     ));
                 const slotIndex = index;
+                const pairId = str(control.pairId);
+                const pushPressed = encoder && (
+                    pressedId === pairId
+                    || (pairId !== "" && num(positions[pairId]) >= 0.5)
+                );
+                const encoderSelected = encoderMode === "session"
+                    ? canAssign && presetSlotIndex === 0
+                    : Boolean(canAssign && pending
+                        && displayPresetId === pending.presetId
+                        && displayBankId === pending.bankId);
                 return {
                     id: controlId,
                     switchLabel: str(control.label, controlId),
-                    valueText: analog
+                    valueText: analogAssigned
                         ? analogInfo?.value || ""
-                        : valueForAction(action, str(obj(presetItem).name), empty),
-                    holdLabel: analog || latching ? undefined : actionLabelFor(holdAction),
-                    doubleLabel: analog || latching ? undefined : actionLabelFor(doubleAction),
+                        : valueForAction(action, sessionEntry?.presetName || str(obj(presetItem).name), empty),
+                    holdLabel: analog || encoder || latching ? undefined : actionLabelFor(holdAction),
+                    doubleLabel: analog || encoder || latching ? undefined : actionLabelFor(doubleAction),
                     empty,
-                    role: analog ? "utility" : roleForAction(action),
-                    lightState: action === "selectPreset" ? lightForPreset(active) : (active ? "active" : "inactive"),
+                    role: analog || encoder ? "utility" : roleForAction(action),
+                    lightState: action === "selectPreset" || sessionEntry
+                        ? lightForPreset(Boolean(active && displayPresetId === str(state.activePresetId)))
+                        : (active ? "active" : "inactive"),
                     active,
-                    analog,
+                    analog: analogAssigned,
                     analogSource: analogInfo?.source,
-                    analogFunction: analog && analogInfo
+                    analogFunction: navigationEncoder
+                        ? navigationFeedback.target
+                        : analogAssigned && analogInfo
                         ? (analogInfo.effect ? `${analogInfo.effect} · ${analogInfo.parameter}` : analogInfo.parameter)
-                        : undefined,
-                    analogValue: analogInfo?.value,
-                    assigned: analog ? analogInfo?.parameter !== "UNASSIGNED" : undefined,
+                        : (encoder ? actionLabelFor(action) : undefined),
+                    analogValue: navigationEncoder ? navigationFeedback.position : analogInfo?.value,
+                    assigned: analogAssigned ? analogInfo?.parameter !== "UNASSIGNED" : undefined,
                     kind,
-                    value: analog
+                    value: navigationEncoder
+                        ? navigationFeedback.range
+                        : analogAssigned
                         ? analogInfo?.range ?? 0
-                        : num(positions[controlId], active ? 1 : 0),
-                    presetSlotIndex: canAssign ? slotIndex : undefined,
+                        : encoder
+                            ? num(positions[controlId], 0.5)
+                            : num(positions[controlId], active ? 1 : 0),
+                    presetSlotIndex,
                     dropTarget: dropTargetId === String(slotIndex),
                     dragging: presetDrag?.controlId === controlId && presetDrag.dragging,
-                    pressed: pressedId === controlId,
-                    encoderSelected: canAssign && slotIndex === selectedPresetSlot,
+                    pressed: encoder ? pushPressed : pressedId === controlId,
+                    encoderSelected,
                     freeform: useFreeform,
                     rect: useFreeform
                         ? clampRect({
@@ -671,38 +769,48 @@ export function PerformanceView({
                         })
                         : gridCellRect(index, columns, rows),
                     onPress: () => {
+                        if (encoder) {
+                            return;
+                        }
                         if (empty) {
                             openPresetMenu(controlId, slotIndex, "", true);
                             return;
                         }
-                        if (analog) {
+                        if (analogAssigned) {
+                            return;
+                        }
+                        if (sessionEntry) {
+                            void run(() => client.request("preset/select", {
+                                bankId: sessionEntry.bankId,
+                                presetId: sessionEntry.presetId
+                            }));
                             return;
                         }
                         fireControl(controlId, "tap");
                     },
-                    onValue: analog
+                    onValue: analogAssigned
                         ? (value: number) => {
                             void client.request("controller/value", { controlId, value }).catch(() => undefined);
                         }
                         : undefined,
-                    onLongPress: analog || !hasHoldAction
+                    onLongPress: analog || encoder || !hasHoldAction
                         ? undefined
                         : () => {
                             abortPresetDrag();
                             fireControl(controlId, "hold");
                         },
                     onMenu: canAssign
-                        ? () => openPresetMenu(controlId, slotIndex, presetId, true)
+                        ? () => openPresetMenu(controlId, slotIndex, displayPresetId, true)
                         : undefined,
-                    onDoublePress: analog || latching || !hasDoubleAction
+                    onDoublePress: analog || encoder || latching || !hasDoubleAction
                         ? undefined
                         : () => {
                             abortPresetDrag();
                             fireControl(controlId, "double");
                         },
                     onCancelPress: canAssign ? abortPresetDrag : undefined,
-                    onFeedback: analog && feedbackOn ? showFeedback : undefined,
-                    onPresetPointerDown: canAssign && presetId
+                    onFeedback: analogAssigned && feedbackOn ? showFeedback : undefined,
+                    onPresetPointerDown: canAssign && displayPresetId && encoderMode !== "session"
                         ? (event) => {
                             setPressedId(controlId);
                             beginPresetDrag(
@@ -713,36 +821,46 @@ export function PerformanceView({
                             );
                         }
                         : undefined,
-                    onPresetPointerMove: canAssign && presetId ? movePresetDrag : undefined,
-                    onPresetPointerUp: canAssign && presetId
+                    onPresetPointerMove: canAssign && displayPresetId && encoderMode !== "session" ? movePresetDrag : undefined,
+                    onPresetPointerUp: canAssign && displayPresetId && encoderMode !== "session"
                         ? (event) => endPresetDrag(event)
                         : undefined,
                     hardwarePopout: analog && hardwarePopoutId === controlId
                 };
-            })
+                });
+            })()
             : Array.from({ length: Math.min(switchCount, rows * columns) }, (_, index) => {
-                const item = presets[index];
-                const presetId = item ? str(item.id) : "";
-                const empty = !item;
+                const pending = catalog[browseIndex];
+                const sessionEntry = encoderMode === "session" && catalog.length > 0
+                    ? catalog[wrapIndex(browseIndex + index, catalog.length)]
+                    : undefined;
+                const item = sessionEntry ? undefined : presets[index];
+                const presetId = sessionEntry?.presetId || (item ? str(item.id) : "");
+                const presetName = sessionEntry?.presetName || (item ? str(item.name) : "");
+                const empty = !presetId;
+                const bankId = sessionEntry?.bankId || str(obj(bank).id);
                 return {
-                    id: item ? str(item.id) : `empty-${index}`,
+                    id: presetId || `empty-${index}`,
                     switchLabel: `SW ${index + 1}`,
-                    valueText: empty ? "+" : str(item.name),
+                    valueText: empty ? "+" : presetName,
                     empty,
                     role: "preset" as const,
-                    lightState: lightForPreset(!empty && str(item.id) === str(state.activePresetId)),
-                    active: !!(!empty && str(item.id) === str(state.activePresetId)),
-                    encoderSelected: index === selectedPresetSlot,
+                    lightState: lightForPreset(!empty && presetId === str(state.activePresetId) && bankId === str(state.activeBankId)),
+                    active: !!(!empty && presetId === str(state.activePresetId) && bankId === str(state.activeBankId)),
+                    encoderSelected: encoderMode === "session"
+                        ? index === 0
+                        : Boolean(pending && presetId === pending.presetId && bankId === pending.bankId),
+                    presetSlotIndex: index,
                     rect: gridCellRect(index, columns, rows),
                     onPress: () => {
-                        if (item) {
+                        if (presetId) {
                             void run(() => client.request("preset/select", {
-                                bankId: str(obj(bank).id),
-                                presetId: str(item.id)
+                                bankId,
+                                presetId
                             }));
                         }
                     },
-                    onMenu: () => openPresetMenu(item ? str(item.id) : `empty-${index}`, index, presetId, false)
+                    onMenu: () => openPresetMenu(presetId || `empty-${index}`, index, presetId, false)
                 };
             });
 
@@ -893,6 +1011,7 @@ export function PerformanceView({
 
     const selectBankId = (id: string) => {
         setBankMenuOpen(false);
+        client.updateUiSession({ performancePicker: "" });
         const item = banks.find((entry) => str(entry.id) === id);
         if (!objects(obj(item).presets).length) {
             showToast(`“${str(obj(item).name, "This bank")}” has no presets`);
@@ -903,21 +1022,31 @@ export function PerformanceView({
 
     const selectPresetId = (id: string) => {
         setPresetMenuOpen(false);
+        client.updateUiSession({ performancePicker: "" });
         void run(() => client.request("preset/select", {
             bankId: str(obj(bank).id),
             presetId: id
         }));
     };
 
+    const pending = snapshotMode ? undefined : catalog[browseIndex];
+    const previewNav = Boolean(pending && encoderMode !== "live"
+        && (pending.presetId !== str(state.activePresetId) || pending.bankId !== str(state.activeBankId)));
+
     const bankPicker = (
         <NamePicker
             variant={useFreeform ? "freeform" : "grid-bank"}
             label="CURRENT BANK"
-            value={`${str(obj(bank).name, "No Bank")} \u25BE`}
+            preview={!bankMenuOpen && previewNav}
+            value={`${!bankMenuOpen && previewNav && pending
+                ? pending.bankName
+                : str(obj(bank).name, "No Bank")} \u25BE`}
             open={bankMenuOpen}
             onToggle={() => {
+                const next = bankMenuOpen ? "" : "bank";
                 setPresetMenuOpen(false);
-                setBankMenuOpen((open) => !open);
+                setBankMenuOpen(next === "bank");
+                client.updateUiSession({ performancePicker: next });
             }}
             options={banks.map((item) => ({
                 id: str(item.id),
@@ -932,11 +1061,16 @@ export function PerformanceView({
         <NamePicker
             variant={useFreeform ? "freeform" : "grid-preset"}
             label="ACTIVE PRESET"
-            value={`${str(obj(preset).name, "No Preset")} \u25BE`}
+            preview={!presetMenuOpen && previewNav}
+            value={`${!presetMenuOpen && previewNav && pending
+                ? pending.presetName
+                : str(obj(preset).name, "No Preset")} \u25BE`}
             open={presetMenuOpen}
             onToggle={() => {
+                const next = presetMenuOpen ? "" : "preset";
                 setBankMenuOpen(false);
-                setPresetMenuOpen((open) => !open);
+                setPresetMenuOpen(next === "preset");
+                client.updateUiSession({ performancePicker: next });
             }}
             options={presets.map((item) => ({
                 id: str(item.id),
@@ -947,21 +1081,95 @@ export function PerformanceView({
         />
     );
 
-    const presetSlotCount = snapshotMode
-        ? snapshotWidgets.length
-        : tiles.filter((tile) => tile.presetSlotIndex != null).length || tiles.length;
+    useEffect(() => {
+        const bankOpen = sharedPicker === "bank";
+        const presetOpen = sharedPicker === "preset";
+        if (bankOpen !== bankMenuOpen) setBankMenuOpen(bankOpen);
+        if (presetOpen !== presetMenuOpen) setPresetMenuOpen(presetOpen);
+    }, [sharedPicker]);
 
     useEffect(() => {
-        setSelectedPresetSlot((current) => Math.min(current, Math.max(0, presetSlotCount - 1)));
-    }, [presetSlotCount]);
+        if (!bankMenuOpen && !presetMenuOpen) {
+            return;
+        }
+        const releasePickerFocus = (event: PointerEvent) => {
+            const target = event.target;
+            if (target instanceof Element && target.closest(".identity-select")) {
+                return;
+            }
+            setBankMenuOpen(false);
+            setPresetMenuOpen(false);
+            client.updateUiSession({ performancePicker: "" });
+        };
+        document.addEventListener("pointerdown", releasePickerFocus, true);
+        return () => document.removeEventListener("pointerdown", releasePickerFocus, true);
+    }, [bankMenuOpen, presetMenuOpen, client]);
+
+    browseNavRef.current = {
+        catalog,
+        browseIndex,
+        encoderMode,
+        blocked: Boolean(menu || bankMenuOpen || presetMenuOpen || snapshotMode)
+    };
 
     useEffect(() => {
+        if ((encoderDrivingRef.current && encoderMode === "live") || catalog.length === 0) {
+            return;
+        }
+        setBrowseIndex(catalogIndexOf(catalog, str(state.activeBankId), str(state.activePresetId)));
+    }, [state.activeBankId, state.activePresetId, catalogSig, encoderMode]);
+
+    useEffect(() => {
+        const markDriving = () => {
+            encoderDrivingRef.current = true;
+            if (encoderDriveTimer.current !== null) {
+                window.clearTimeout(encoderDriveTimer.current);
+            }
+            encoderDriveTimer.current = window.setTimeout(() => {
+                encoderDriveTimer.current = null;
+                encoderDrivingRef.current = false;
+            }, 800);
+        };
+        const stepBrowse = (delta: number) => {
+            const current = browseNavRef.current;
+            if (current.blocked || current.catalog.length === 0) {
+                return;
+            }
+            markDriving();
+            setBrowseIndex((index) => {
+                const next = wrapIndex(index + delta, current.catalog.length);
+                const entry = current.catalog[next];
+                if (current.encoderMode === "live" && entry) {
+                    void run(() => client.request("preset/select", {
+                        bankId: entry.bankId,
+                        presetId: entry.presetId
+                    }));
+                }
+                client.updateUiSession({ performanceBrowseIndex: next });
+                return next;
+            });
+        };
+        const confirmBrowse = () => {
+            const current = browseNavRef.current;
+            if (current.blocked || current.catalog.length === 0) {
+                return;
+            }
+            const entry = current.catalog[current.browseIndex];
+            if (!entry) {
+                return;
+            }
+            markDriving();
+            void run(() => client.request("preset/select", {
+                bankId: entry.bankId,
+                presetId: entry.presetId
+            }));
+        };
         const onKey = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
             if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT")) {
                 return;
             }
-            if (menu || bankMenuOpen || presetMenuOpen) {
+            if (hardwareNavBlocksPerformance() || browseNavRef.current.blocked) {
                 return;
             }
             if (!["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) {
@@ -969,50 +1177,53 @@ export function PerformanceView({
             }
             event.preventDefault();
             if (event.key === "Escape") {
-                setSelectedPresetSlot(0);
+                setBrowseIndex(catalogIndexOf(
+                    browseNavRef.current.catalog,
+                    str(state.activeBankId),
+                    str(state.activePresetId)
+                ));
                 return;
             }
             if (event.key === "Enter" && !event.repeat) {
-                const tile = tiles.find((item) => item.presetSlotIndex === selectedPresetSlot) ?? tiles[selectedPresetSlot];
-                tile?.onPress();
+                confirmBrowse();
                 return;
             }
-            const direction = event.key === "ArrowDown" ? 1 : -1;
-            const next = selectedPresetSlot + direction;
-            if (next >= 0 && next < presetSlotCount) {
-                setSelectedPresetSlot(next);
-                return;
-            }
-            const bankIndex = banks.findIndex((item) => str(item.id) === str(obj(bank).id));
-            const neighbour = banks[bankIndex + direction];
-            if (!neighbour) {
-                return;
-            }
-            const neighbourPresets = objects(obj(neighbour).presets);
-            const pick = direction > 0 ? neighbourPresets[0] : neighbourPresets[neighbourPresets.length - 1];
-            if (!pick) {
-                return;
-            }
-            setSelectedPresetSlot(direction > 0 ? 0 : Math.max(0, presetSlotCount - 1));
-            void run(() => client.request("preset/select", {
-                bankId: str(neighbour.id),
-                presetId: str(pick.id)
-            }));
+            stepBrowse(event.key === "ArrowDown" ? 1 : -1);
         };
         window.addEventListener("keydown", onKey, true);
-        return () => window.removeEventListener("keydown", onKey, true);
-    }, [
-        menu,
-        bankMenuOpen,
-        presetMenuOpen,
-        tiles,
-        selectedPresetSlot,
-        presetSlotCount,
-        banks,
-        bank,
-        client,
-        run
-    ]);
+        const unsubscribe = client.subscribeUiNav((message) => {
+            if (hardwareNavBlocksPerformance() || browseNavRef.current.blocked) {
+                return;
+            }
+            if (bool(message.select)) {
+                confirmBrowse();
+                return true;
+            }
+            const delta = Math.trunc(num(message.delta));
+            if (delta !== 0) {
+                stepBrowse(delta > 0 ? 1 : -1);
+            }
+            return true;
+        });
+        return () => {
+            window.removeEventListener("keydown", onKey, true);
+            unsubscribe();
+        };
+    }, [client, run, state.activeBankId, state.activePresetId]);
+
+    useEffect(() => {
+        const sharedIndex = Math.trunc(num(engine.uiSession.performanceBrowseIndex, -1));
+        if (sharedIndex >= 0 && catalog.length > 0) {
+            setBrowseIndex(wrapIndex(sharedIndex, catalog.length));
+        }
+    }, [engine.uiSession.performanceBrowseIndex, catalogSig]);
+
+    useEffect(() => {
+        if (snapshotMode) {
+            return;
+        }
+        void client.request("controller/sessionPresets", sessionPayload).catch(() => undefined);
+    }, [client, snapshotMode, JSON.stringify(sessionPayload)]);
 
     return (
         <div className="performance">
@@ -1328,6 +1539,7 @@ function NamePicker({
     label,
     value,
     open,
+    preview,
     onToggle,
     options,
     onPick
@@ -1336,12 +1548,18 @@ function NamePicker({
     label: string;
     value: string;
     open: boolean;
+    preview?: boolean;
     onToggle: () => void;
     options: { id: string; name: string; selected: boolean }[];
     onPick: (id: string) => void;
 }) {
     const menu = open && (
-        <div className="identity-menu">
+        <div
+            className="identity-menu"
+            data-mfx-nav-list={variant === "grid-bank" || label === "CURRENT BANK"
+                ? "performance-banks"
+                : "performance-presets"}
+        >
             {options.map((item) => (
                 <button
                     key={item.id}
@@ -1357,9 +1575,10 @@ function NamePicker({
 
     if (variant === "grid-preset") {
         return (
-            <div className="identity-select performance-preset-inline">
+            <div className={`identity-select performance-preset-inline${preview ? " is-encoder-preview" : ""}`}>
                 <span className="mfx-performance-ui-label">Active Preset:</span>
-                <button type="button" className="identity-value mfx-performance-ui-value" onClick={onToggle}>
+                <button type="button" className="identity-value mfx-performance-ui-value"
+                    aria-expanded={open} onClick={onToggle}>
                     {value}
                 </button>
                 {menu}
@@ -1368,9 +1587,10 @@ function NamePicker({
     }
 
     return (
-        <div className={`identity-select${variant === "freeform" ? " performance-picker-freeform" : ""}`}>
+        <div className={`identity-select${variant === "freeform" ? " performance-picker-freeform" : ""}${preview ? " is-encoder-preview" : ""}`}>
             <div className="field-label mfx-performance-ui-label">{variant === "grid-bank" ? "Current Bank" : label}</div>
-            <button type="button" className="identity-value mfx-performance-ui-value" onClick={onToggle}>
+            <button type="button" className="identity-value mfx-performance-ui-value"
+                aria-expanded={open} onClick={onToggle}>
                 {value}
             </button>
             {menu}

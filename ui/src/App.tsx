@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEngine } from "./api";
-import { bool, num, obj } from "./json";
-import { AboutView } from "./views/AboutView";
+import { arr, bool, num, obj, str } from "./json";
+import { applyHardwareNavFocus, handleHardwareNav, watchHardwareNavFocus } from "./hardwareNav";
+import { AboutView, buildIdentity } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
 import { EditorView } from "./views/EditorView";
 import { PerformanceView } from "./views/PerformanceView";
 import { KeyboardProvider } from "./keyboard/KeyboardProvider";
 import { SettingsHub, SettingsPage as SettingsDetail, type SettingsPage } from "./views/SettingsView";
+import { updateUiSessionSection } from "./uiSession";
 import ThemeManagerView from "./views/ThemeManagerView";
 import { LayoutEditorView } from "./views/LayoutEditorView";
 import { SnapshotManagerView } from "./views/SnapshotManagerView";
@@ -60,11 +62,17 @@ const titles: Record<string, string> = {
     about: "ABOUT"
 };
 
+const viewNames = new Set<View>([
+    "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
+    "plugins", "files", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "tone3000", "backup", "system", "hotspot", "updates", "about"
+]);
+
 export function App() {
     const engine = useEngine();
     const [view, setView] = useState<View>("performance");
     const [menuOpen, setMenuOpen] = useState(false);
-    const [, setHistory] = useState<View[]>([]);
+    const [history, setHistory] = useState<View[]>([]);
     const [toast, setToast] = useState("");
     const [snapshotEditId, setSnapshotEditId] = useState("");
     const [editSubpage, setEditSubpage] = useState<EditSubpage>("chain");
@@ -77,7 +85,94 @@ export function App() {
     const [leaveLayout, setLeaveLayout] = useState<View | "back" | null>(null);
     const menuRef = useRef<HTMLElement | null>(null);
 
+    useEffect(() => {
+        const shared = engine.uiSession;
+        const sharedView = str(shared.view) as View;
+        if (viewNames.has(sharedView) && sharedView !== view) {
+            setView(sharedView);
+        }
+        const sharedMenuOpen = bool(shared.menuOpen);
+        if (sharedMenuOpen !== menuOpen) {
+            setMenuOpen(sharedMenuOpen);
+        }
+        const sharedSnapshotId = str(shared.snapshotEditId);
+        if (sharedSnapshotId !== snapshotEditId) {
+            setSnapshotEditId(sharedSnapshotId);
+        }
+        const sharedSubpage = str(shared.editSubpage) as EditSubpage;
+        if (["chain", "controls", "io"].includes(sharedSubpage) && sharedSubpage !== editSubpage) {
+            setEditSubpage(sharedSubpage);
+        }
+        const sharedHistory = arr(shared.viewHistory)
+            .filter((item): item is View => typeof item === "string" && viewNames.has(item as View));
+        if (JSON.stringify(sharedHistory) !== JSON.stringify(history)) {
+            setHistory(sharedHistory);
+        }
+    }, [engine.uiSession]);
+
     useEffect(() => installResponsiveSizing(), []);
+
+    useEffect(() => watchHardwareNavFocus(
+        () => engine.client.claimUiNavigation(),
+        (navFocus) => engine.client.updateUiSession({ navFocus })
+    ), [engine.client]);
+    useEffect(() => engine.client.subscribeUiNav(handleHardwareNav), [engine.client]);
+    useEffect(() => {
+        const frame = window.requestAnimationFrame(() => applyHardwareNavFocus(engine.uiSession.navFocus));
+        return () => window.cancelAnimationFrame(frame);
+    }, [engine.uiSession.navFocus, engine.uiSession.performancePicker, view, menuOpen]);
+
+    useEffect(() => {
+        let publishFrame = 0;
+        let pendingKey = "";
+        let pendingRatio = 0;
+        const onScroll = (event: Event) => {
+            const element = event.target instanceof HTMLElement ? event.target : null;
+            const key = element?.dataset.mfxSyncScroll;
+            if (!element || !key || element.dataset.mfxApplyingScroll === "1") {
+                return;
+            }
+            const range = element.scrollHeight - element.clientHeight;
+            pendingKey = key;
+            pendingRatio = range > 0 ? element.scrollTop / range : 0;
+            if (publishFrame) {
+                return;
+            }
+            publishFrame = window.requestAnimationFrame(() => {
+                publishFrame = 0;
+                updateUiSessionSection(engine.client, "scrolls", { [pendingKey]: pendingRatio });
+            });
+        };
+        document.addEventListener("scroll", onScroll, true);
+        return () => {
+            document.removeEventListener("scroll", onScroll, true);
+            if (publishFrame) {
+                window.cancelAnimationFrame(publishFrame);
+            }
+        };
+    }, [engine.client]);
+
+    useEffect(() => {
+        const shared = obj(engine.uiSession.scrolls);
+        const frame = window.requestAnimationFrame(() => {
+            document.querySelectorAll<HTMLElement>("[data-mfx-sync-scroll]").forEach((element) => {
+                const key = element.dataset.mfxSyncScroll ?? "";
+                const value = shared[key];
+                if (typeof value !== "number" || !Number.isFinite(value)) {
+                    return;
+                }
+                const range = element.scrollHeight - element.clientHeight;
+                const next = Math.max(0, Math.min(range, value * range));
+                if (Math.abs(element.scrollTop - next) < 1) {
+                    return;
+                }
+                element.dataset.mfxApplyingScroll = "1";
+                element.scrollTop = next;
+                window.requestAnimationFrame(() => delete element.dataset.mfxApplyingScroll);
+            });
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [engine.uiSession.scrolls, view]);
 
     const settingsPages: SettingsPage[] = [
         "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot", "updates"
@@ -89,14 +184,22 @@ export function App() {
     const navigateTo = (next: View) => {
         setMenuOpen(false);
         if (next === view) {
+            engine.client.updateUiSession({ menuOpen: false });
             return;
         }
+        const nextHistory = [...history, view];
         if (next === "edit") {
             setEditSubpage("chain");
             setEditEffectTitle(undefined);
         }
-        setHistory((stack) => [...stack, view]);
+        setHistory(nextHistory);
         setView(next);
+        engine.client.updateUiSession({
+            view: next,
+            menuOpen: false,
+            viewHistory: nextHistory,
+            ...(next === "edit" ? { editSubpage: "chain" } : {})
+        });
     };
 
     const goTo = (next: View) => {
@@ -120,8 +223,15 @@ export function App() {
     const finishBack = () => {
         setHistory((stack) => {
             const previous = stack[stack.length - 1];
-            setView(previous ?? "performance");
-            return stack.slice(0, -1);
+            const nextView = previous ?? "performance";
+            const nextHistory = stack.slice(0, -1);
+            setView(nextView);
+            engine.client.updateUiSession({
+                view: nextView,
+                menuOpen: false,
+                viewHistory: nextHistory
+            });
+            return nextHistory;
         });
     };
 
@@ -148,6 +258,12 @@ export function App() {
         if (view === "layout" && layoutDirty) {
             setLeaveLayout("back");
             return;
+        }
+        if (view === "controller") {
+            updateUiSessionSection(engine.client, "settings", {
+                controllerPage: "hub",
+                controllerResetLayout: false
+            });
         }
         finishBack();
     };
@@ -215,6 +331,7 @@ export function App() {
             event.stopPropagation();
             if (event.key === "Escape") {
                 setMenuOpen(false);
+                engine.client.updateUiSession({ menuOpen: false });
                 return;
             }
             const focused = buttons.findIndex((button) => button === document.activeElement);
@@ -232,9 +349,10 @@ export function App() {
             window.cancelAnimationFrame(frame);
             window.removeEventListener("keydown", onKey, true);
         };
-    }, [menuOpen]);
+    }, [menuOpen, engine.client]);
 
     const audioRunning = bool(engine.state.audioRunning);
+    const engineBuild = buildIdentity(engine.state);
     const title = useMemo(() => {
         if (view === "performance" && snapshotMode) {
             return "SNAPSHOTS";
@@ -251,6 +369,11 @@ export function App() {
     }, [view, snapshotMode, editSubpage, editEffectTitle]);
     const ui = obj(engine.state.ui);
     const shellBackVisible = view !== "performance" || snapshotMode;
+    const controllerState = obj(engine.state.controller);
+    const controllerFirmwareVersion = str(controllerState.firmwareVersion);
+    const requiredControllerFirmware = str(controllerState.requiredFirmwareVersion);
+    const showFirmwareWarning = bool(controllerState.connected) && bool(controllerState.firmwareUpdateRequired)
+        && str(engine.uiSession.dismissedFirmwareWarning) !== controllerFirmwareVersion;
 
     return (
         <div className="app mfx-app-root">
@@ -260,7 +383,11 @@ export function App() {
                     if (view === "snapshotEdit") {
                         return;
                     }
-                    setMenuOpen((open) => !open);
+                    setMenuOpen((open) => {
+                        const next = !open;
+                        engine.client.updateUiSession({ menuOpen: next });
+                        return next;
+                    });
                 }}>
                     PI-MFX
                 </button>
@@ -274,6 +401,10 @@ export function App() {
                     <div />
                 </div>
                 <div className="shell-actions">
+                    <span className="shell-build" title="Engine version and commit">
+                        <span>version {engineBuild.version}</span>
+                        {engineBuild.gitSha && <span>{engineBuild.gitSha}</span>}
+                    </span>
                     <span className={`status-dot${engine.connected && audioRunning ? " on" : ""}`} title={
                         engine.connected
                             ? audioRunning ? "engine connected, audio running" : "engine connected"
@@ -301,6 +432,16 @@ export function App() {
                 </div>
             </header>
 
+            {showFirmwareWarning && (
+                <div className="controller-firmware-alert" role="alert">
+                    <strong>CONTROLLER FIRMWARE {controllerFirmwareVersion} IS OUTDATED</strong>
+                    <span>Flash version {requiredControllerFirmware} for the controller to function properly.</span>
+                    <button type="button" className="btn" aria-label="Dismiss firmware warning" onClick={() => {
+                        engine.client.updateUiSession({ dismissedFirmwareWarning: controllerFirmwareVersion });
+                    }}>×</button>
+                </div>
+            )}
+
             <main className="page">
                 {view === "performance" && (
                     <PerformanceView
@@ -312,6 +453,7 @@ export function App() {
                         }}
                         onEditSnapshot={(snapshotId) => {
                             setSnapshotEditId(snapshotId);
+                            engine.client.updateUiSession({ snapshotEditId: snapshotId });
                             goTo("snapshotEdit");
                         }}
                     />
@@ -335,6 +477,7 @@ export function App() {
                         run={run}
                         onEdit={(snapshotId) => {
                             setSnapshotEditId(snapshotId);
+                            engine.client.updateUiSession({ snapshotEditId: snapshotId });
                             goTo("snapshotEdit");
                         }}
                     />
@@ -350,6 +493,11 @@ export function App() {
                             setSnapshotEditId("");
                             setHistory([]);
                             setView("performance");
+                            engine.client.updateUiSession({
+                                view: "performance",
+                                snapshotEditId: "",
+                                viewHistory: []
+                            });
                         }}
                     />
                 )}
@@ -395,7 +543,10 @@ export function App() {
 
             {menuOpen && (
                 <>
-                    <div className="menu-backdrop" onClick={() => setMenuOpen(false)} />
+                    <div className="menu-backdrop" onClick={() => {
+                        setMenuOpen(false);
+                        engine.client.updateUiSession({ menuOpen: false });
+                    }} />
                     <nav className="menu" ref={menuRef} data-mfx-shell-menu="true">
                         <div className="menu-brand">
                             <svg className="about-logo" viewBox="0 0 32 32" aria-hidden="true">

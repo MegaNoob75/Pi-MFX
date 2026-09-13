@@ -4,10 +4,19 @@ import { num, str, type JsonObject } from "../json";
 const MIT_URL = "https://opensource.org/licenses/MIT";
 const REPO_URL = "https://github.com/MegaNoob75/Pi-MFX";
 
+export function buildIdentity(state: JsonObject) {
+    const engineGitSha = str(state.gitSha);
+    return {
+        version: str(state.version, "0.1.0"),
+        gitSha: engineGitSha && engineGitSha !== "unknown"
+            ? engineGitSha
+            : import.meta.env.VITE_PIMFX_GIT_SHA || ""
+    };
+}
+
 export function AboutView({ state }: { state: JsonObject }) {
     const [legalOpen, setLegalOpen] = useState(false);
-    const version = str(state.version, "0.1.0");
-    const gitSha = str(state.gitSha);
+    const { version, gitSha } = buildIdentity(state);
 
     if (legalOpen) {
         return (

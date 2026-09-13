@@ -384,25 +384,12 @@ do_install() {
 }
 
 do_update() {
-    local user="${SUDO_USER:-}"
     local branch="${UPDATE_BRANCH:-dev}"
     case "$branch" in
         main|dev) ;;
         *) branch="dev" ;;
     esac
-    if [[ -n "$user" && "$user" != "root" ]]; then
-        log "Fetching origin/${branch} as ${user} (60s limit)"
-        if sudo -u "$user" env HOME="$(getent passwd "$user" | cut -d: -f6)" \
-            GIT_TERMINAL_PROMPT=0 SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
-            timeout 60 git -C "$REPO_DIR" fetch origin --progress
-        then
-            sudo -u "$user" git -C "$REPO_DIR" checkout "$branch"
-            sudo -u "$user" git -C "$REPO_DIR" reset --hard "origin/${branch}"
-        else
-            warn "GitHub fetch timed out or failed; rebuilding the files already on this Pi"
-        fi
-    fi
-    SKIP_PULL=1 run_script update.sh
+    PIMFX_BRANCH="$branch" run_script update.sh
 }
 
 do_rebuild() {
