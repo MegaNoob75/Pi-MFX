@@ -7,8 +7,9 @@
 .git/
 .github/
 
-# Block heavy binary image design assets and logo kits
+# Block heavy binary image design assets and logo kits completely
 branding/
+branding/**
 
 # 8. Documentation Assets (Keep .md files, block embedded image arrays)
 docs/images/
@@ -38,6 +39,9 @@ env/
 .pytest_cache/
 .tox/
 *.egg-info/
+*.pyc
+*.pyo
+*.pyd
 
 # 5. C/C++ Low-Latency Audio DSP Compilation Output
 *.o
@@ -53,6 +57,9 @@ build/
 dist/
 out/
 obj/
+.ninja_deps
+.ninja_log
+compile_commands.json
 
 # 6. Web Dashboard UI Dependencies (If any Node components exist)
 node_modules/
@@ -61,6 +68,10 @@ bower_components/
 .yarn/
 *.log
 *.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.eslintcache
 
 # 7. Heavy Media Assets & Packages
 *.png
@@ -71,3 +82,8 @@ bower_components/
 *.flac
 *.zip
 *.tar.gz
+
+# 9. Transient System Backups & Logs
+*.bak
+*.swp
+*~
