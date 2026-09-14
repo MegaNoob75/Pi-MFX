@@ -564,6 +564,7 @@ Json SystemSettings::toJson() const {
     json.set("lockMemory", lockMemory);
     json.set("holdCpuLatency", holdCpuLatency);
     json.set("sharedTransportEnabled", sharedTransportEnabled);
+    json.set("backingTracksEnabled", backingTracksEnabled);
     return json;
 }
 
@@ -575,7 +576,11 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     settings.workerThreadPriority = std::max(1, std::min(94, json["workerThreadPriority"].asInt(70)));
     settings.lockMemory = json["lockMemory"].asBool(true);
     settings.holdCpuLatency = json["holdCpuLatency"].asBool(true);
-    settings.sharedTransportEnabled = json["sharedTransportEnabled"].asBool(false);
+    // These compatibility fields may be false in settings saved while the
+    // milestones were under test. Completed services are now always enabled;
+    // Backing Tracks still reports unavailable when decoder libraries are absent.
+    settings.sharedTransportEnabled = true;
+    settings.backingTracksEnabled = true;
     return settings;
 }
 

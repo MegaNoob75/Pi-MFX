@@ -4,7 +4,7 @@ import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
 
-export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank";
+export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing";
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -51,6 +51,9 @@ export function libraryRootLabel(kind: LibraryKind): string {
     }
     if (kind === "bank") {
         return "bank-exports";
+    }
+    if (kind === "backing") {
+        return "backing-tracks";
     }
     return "models";
 }
@@ -493,6 +496,9 @@ export function LibraryBrowser({
     const work = (task: () => Promise<unknown>) => {
         void run(async () => {
             await task();
+            if (kind === "backing") {
+                await engine.client.request("backing/rescan");
+            }
             await refresh();
             await engine.client.request("library").catch(() => undefined);
         });
@@ -593,6 +599,10 @@ export function LibraryBrowser({
         }
         work(async () => {
             for (const file of list) {
+                if (kind === "backing") {
+                    await engine.client.uploadBackingTrack(file);
+                    continue;
+                }
                 const data = await readBase64(file);
                 await engine.client.request("library/upload", {
                     kind,
@@ -748,6 +758,11 @@ export function LibraryBrowser({
                     onSelect={setSelected}
                     onToggleChecked={toggleChecked}
                     onOpenFolder={setDirectory}
+                    onOpenFile={(item) => {
+                        if (kind === "backing") {
+                            work(() => engine.client.request("backing/load", { path: str(item.path) }));
+                        }
+                    }}
                     onMenu={openMenu}
                     onDropDirectory={dropOnDirectory}
                 />
@@ -768,6 +783,11 @@ export function LibraryBrowser({
                         onSelect={setSelected}
                         onToggleChecked={toggleChecked}
                         onOpenFolder={setRightDir}
+                        onOpenFile={(item) => {
+                            if (kind === "backing") {
+                                work(() => engine.client.request("backing/load", { path: str(item.path) }));
+                            }
+                        }}
                         onMenu={openMenu}
                         onDropDirectory={dropOnDirectory}
                     />
@@ -787,6 +807,12 @@ export function LibraryBrowser({
                     >
                         {menu.item && str(menu.item.type) === "dir" && (
                             <button type="button" onClick={() => { setActiveDirectory(str(menu.item!.relative)); setMenu(null); }}>OPEN</button>
+                        )}
+                        {menu.item && kind === "backing" && str(menu.item.type) === "file" && (
+                            <button type="button" disabled={!str(engine.backing.activeSetListId)} onClick={() => {
+                                work(() => engine.client.request("backing/setlist/add", { path: str(menu.item!.path) }));
+                                setMenu(null);
+                            }}>ADD TO SET LIST</button>
                         )}
                         {menu.item && (
                             <button type="button" onClick={() => { void renameItem(menu.item!); setMenu(null); }}>RENAME</button>
@@ -859,6 +885,7 @@ function ExplorerPane({
     onSelect,
     onToggleChecked,
     onOpenFolder,
+    onOpenFile,
     onMenu,
     onDropDirectory
 }: {
@@ -877,6 +904,7 @@ function ExplorerPane({
     onSelect: (item: LibraryItem) => void;
     onToggleChecked: (item: LibraryItem) => void;
     onOpenFolder: (directory: string) => void;
+    onOpenFile: (item: LibraryItem) => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem | null) => void;
     onDropDirectory: (destDir: string, event: DragEvent) => void;
 }) {
@@ -946,7 +974,15 @@ function ExplorerPane({
                             selected={selectedPath === str(file.path)}
                             checked={checkedPaths.includes(str(file.path))}
                             multiSelect={multiSelect}
-                            onSelect={() => (multiSelect ? onToggleChecked(file) : onSelect(file))}
+                            onSelect={() => {
+                                if (multiSelect) {
+                                    onToggleChecked(file);
+                                } else if (selectedPath === str(file.path)) {
+                                    onOpenFile(file);
+                                } else {
+                                    onSelect(file);
+                                }
+                            }}
                             onToggleChecked={() => onToggleChecked(file)}
                             onMenu={onMenu}
                         />

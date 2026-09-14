@@ -57,7 +57,12 @@ const ACTION_LABELS: Record<string, string> = {
     selectSnapshot: "Snapshot",
     reloadPreset: "Reload Preset",
     setParameter: "Set Parameter",
-    toggleEffect: "Toggle Effect"
+    toggleEffect: "Toggle Effect",
+    backingPlayPause: "Backing Play / Pause",
+    backingStop: "Backing Stop",
+    backingPrevious: "Backing Previous",
+    backingNext: "Backing Next",
+    backingView: "Open Backing Tracks"
 };
 
 function loadSnapPixels(): number {

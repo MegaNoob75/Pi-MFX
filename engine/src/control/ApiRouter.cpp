@@ -65,6 +65,18 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
 
     const std::string command = request.path.substr(5);
 
+    // Media is uploaded as its original binary representation. JSON/base64
+    // remains appropriate for small control payloads, but would inflate and
+    // duplicate backing-track files in memory.
+    if (command == "backing/import"
+        && request.method == "POST"
+        && request.header("content-type").find("application/octet-stream") != std::string::npos) {
+        std::string error;
+        const bool ok = engine_.backingImport(urlDecode(request.header("x-pimfx-filename")), request.body, error);
+        response.json(envelope(ok, error, engine_.backingState()).dump(), ok ? 200 : 400);
+        return true;
+    }
+
     Json payload;
     if (request.method == "GET" || request.method == "DELETE") {
         payload = queryToJson(request);
@@ -540,6 +552,16 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "tap") {
         engine_.tapTempo();
         return Json::object();
+    }
+    if (command == "backing/import") {
+        ok = false;
+        error = "backing tracks must be uploaded as their original binary file";
+        return engine_.backingState();
+    }
+    if (command == "backing/state") return engine_.backingState();
+    if (command.rfind("backing/", 0) == 0) {
+        ok = engine_.backingCommand(command.substr(8), payload, error);
+        return engine_.backingState();
     }
     if (command == "tuner") {
         engine_.setTunerEnabled(payload["enabled"].asBool(true));
