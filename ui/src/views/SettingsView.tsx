@@ -1369,6 +1369,13 @@ function SystemSettings({
                         onClick={() => save({ ...system, holdCpuLatency: !bool(system.holdCpuLatency, true) })}>
                         HOLD CPU LATENCY
                     </button>
+                    <button type="button" className={`btn ${bool(system.sharedTransportEnabled) ? "btn-active" : ""}`}
+                        onClick={() => save({ ...system, sharedTransportEnabled: !bool(system.sharedTransportEnabled) })}>
+                        TAP TEMPO CLOCK {bool(system.sharedTransportEnabled) ? "ON" : "OFF"}
+                    </button>
+                </div>
+                <div className="muted">
+                    Shares tap tempo, beat position, metronome and count-in with compatible effects.
                 </div>
             </div>
             <div className="panel">

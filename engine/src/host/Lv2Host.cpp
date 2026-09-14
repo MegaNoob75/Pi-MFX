@@ -1,4 +1,5 @@
 #include "host/Lv2Host.h"
+#include "transport/MusicalTransport.h"
 
 #include "core/Log.h"
 #include "core/SpscQueue.h"
@@ -21,6 +22,8 @@
 #include <lv2/options/options.h>
 #include <lv2/parameters/parameters.h>
 #include <lv2/patch/patch.h>
+#include <lv2/time/time.h>
+#include <lv2/units/units.h>
 #include <lv2/urid/urid.h>
 #include <lv2/worker/worker.h>
 #include <chrono>
@@ -49,6 +52,10 @@ Json PortInfo::toJson() const {
         if (!unit.empty()) {
             json.set("unit", unit);
         }
+        if (!unitUri.empty()) {
+            json.set("unitUri", unitUri);
+        }
+        json.set("tempoLinkCandidate", tempoLinkCandidate);
         if (!scalePoints.empty()) {
             Json points = Json::array();
             for (const ScalePoint& point : scalePoints) {
@@ -276,6 +283,9 @@ struct Lv2Catalog::Impl {
     LilvNode* atomPath = nullptr;
     LilvNode* atomSupports = nullptr;
     LilvNode* midiEvent = nullptr;
+    LilvNode* timePosition = nullptr;
+    LilvNode* unitsUnit = nullptr;
+    LilvNode* unitsSymbol = nullptr;
     LilvNode* fileTypeProperty = nullptr;
     LilvNode* modFileTypes = nullptr;
 
@@ -283,7 +293,8 @@ struct Lv2Catalog::Impl {
         LilvNode* nodes[] = {audioPort, controlPort, atomPort, cvPort, inputPort, outputPort,
                              toggled, integer, enumeration, logarithmic, patchWritable,
                              rdfsLabel, rdfsRange, rdfsComment, atomPath, atomSupports,
-                             midiEvent, fileTypeProperty, modFileTypes};
+                             midiEvent, timePosition, unitsUnit, unitsSymbol,
+                             fileTypeProperty, modFileTypes};
         for (LilvNode* node : nodes) {
             if (node) {
                 lilv_node_free(node);
@@ -381,6 +392,9 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.atomPath = lilv_new_uri(impl.world, LV2_ATOM__Path);
         impl.atomSupports = lilv_new_uri(impl.world, LV2_ATOM__supports);
         impl.midiEvent = lilv_new_uri(impl.world, LV2_MIDI__MidiEvent);
+        impl.timePosition = lilv_new_uri(impl.world, LV2_TIME__Position);
+        impl.unitsUnit = lilv_new_uri(impl.world, LV2_UNITS__unit);
+        impl.unitsSymbol = lilv_new_uri(impl.world, LV2_UNITS__symbol);
         impl.fileTypeProperty = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/patch#fileType");
         impl.modFileTypes = lilv_new_uri(impl.world, "http://moddevices.com/ns/mod#fileTypes");
     }
@@ -450,6 +464,9 @@ bool Lv2Catalog::rescan(std::string& error) {
                 && lilv_port_supports_event(plugin, port, impl.midiEvent)) {
                 info.hasMidiInput = true;
             }
+            if (portInfo.atom && portInfo.input) {
+                portInfo.supportsTimePosition = lilv_port_supports_event(plugin, port, impl.timePosition);
+            }
 
             if (portInfo.control) {
                 portInfo.minimum = minimums[index];
@@ -460,6 +477,34 @@ bool Lv2Catalog::rescan(std::string& error) {
                 portInfo.enumerated = lilv_port_has_property(plugin, port, impl.enumeration);
                 portInfo.logarithmic = lilv_port_has_property(plugin, port, impl.logarithmic);
                 portInfo.meter = !portInfo.input;
+
+                if (LilvNodes* units = lilv_port_get_value(plugin, port, impl.unitsUnit)) {
+                    if (const LilvNode* unit = lilv_nodes_get_first(units)) {
+                        if (lilv_node_is_uri(unit)) {
+                            portInfo.unitUri = lilv_node_as_uri(unit);
+                        }
+                        if (LilvNode* symbol = lilv_world_get(impl.world, unit, impl.unitsSymbol, nullptr)) {
+                            portInfo.unit = lilv_node_as_string(symbol);
+                            lilv_node_free(symbol);
+                        }
+                    }
+                    lilv_nodes_free(units);
+                }
+                const std::string unitSymbol = toLower(portInfo.unit);
+                if (portInfo.unitUri == LV2_UNITS__ms || unitSymbol == "ms") {
+                    portInfo.secondsPerUnit = 0.001;
+                    if (portInfo.unit.empty()) portInfo.unit = "ms";
+                } else if (portInfo.unitUri == LV2_UNITS__s || unitSymbol == "s") {
+                    portInfo.secondsPerUnit = 1.0;
+                    if (portInfo.unit.empty()) portInfo.unit = "s";
+                }
+
+                const std::string pluginText = info.name + " " + info.className + " " + info.uri;
+                const std::string portText = portInfo.name + " " + portInfo.symbol;
+                portInfo.tempoLinkCandidate = portInfo.input
+                    && portInfo.secondsPerUnit > 0.0
+                    && mentions(pluginText, {"delay", "echo"})
+                    && mentions(portText, {"delay", "time", "tap"});
 
                 if (LilvScalePoints* points = lilv_port_get_scale_points(plugin, port)) {
                     LILV_FOREACH(scale_points, pointIterator, points) {
@@ -620,6 +665,16 @@ struct PluginInstance::Impl {
         LV2_URID bufSequenceSize = 0;
         LV2_URID paramSampleRate = 0;
         LV2_URID unitsFrame = 0;
+        LV2_URID timePosition = 0;
+        LV2_URID timeFrame = 0;
+        LV2_URID timeSpeed = 0;
+        LV2_URID timeBar = 0;
+        LV2_URID timeBarBeat = 0;
+        LV2_URID timeBeat = 0;
+        LV2_URID timeBeatUnit = 0;
+        LV2_URID timeBeatsPerBar = 0;
+        LV2_URID timeBeatsPerMinute = 0;
+        LV2_URID timeFramesPerSecond = 0;
     } urids;
 
     float sampleRateValue = 48000.0f;
@@ -669,7 +724,7 @@ struct PluginInstance::Impl {
 
     void runCycle(const float* const* inputs, unsigned inputCount,
                   float* const* outputs, unsigned outputCount,
-                  unsigned frames);
+                  unsigned frames, const TransportBlock* transport);
 };
 
 namespace {
@@ -746,6 +801,16 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.urids.bufSequenceSize = urids.map(LV2_BUF_SIZE__sequenceSize);
     impl.urids.paramSampleRate = urids.map(LV2_PARAMETERS__sampleRate);
     impl.urids.unitsFrame = urids.map("http://lv2plug.in/ns/extensions/units#frame");
+    impl.urids.timePosition = urids.map(LV2_TIME__Position);
+    impl.urids.timeFrame = urids.map(LV2_TIME__frame);
+    impl.urids.timeSpeed = urids.map(LV2_TIME__speed);
+    impl.urids.timeBar = urids.map(LV2_TIME__bar);
+    impl.urids.timeBarBeat = urids.map(LV2_TIME__barBeat);
+    impl.urids.timeBeat = urids.map(LV2_TIME__beat);
+    impl.urids.timeBeatUnit = urids.map(LV2_TIME__beatUnit);
+    impl.urids.timeBeatsPerBar = urids.map(LV2_TIME__beatsPerBar);
+    impl.urids.timeBeatsPerMinute = urids.map(LV2_TIME__beatsPerMinute);
+    impl.urids.timeFramesPerSecond = urids.map(LV2_TIME__framesPerSecond);
 
     impl.uridMap.handle = &urids;
     impl.uridMap.map = uridMapCallback;
@@ -812,7 +877,9 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
             }
         } else if (port.atom) {
             if (port.input) {
-                impl.atomInputPort = static_cast<int>(port.index);
+                if (impl.atomInputPort < 0 || port.supportsTimePosition) {
+                    impl.atomInputPort = static_cast<int>(port.index);
+                }
             } else {
                 impl.atomOutputPort = static_cast<int>(port.index);
             }
@@ -962,7 +1029,7 @@ std::string PluginInstance::property(const std::string& propertyUri) const {
 
 void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
                                     float* const* outputs, unsigned outputCount,
-                                    unsigned frames) {
+                                    unsigned frames, const TransportBlock* transport) {
     for (size_t i = 0; i < audioInputPorts.size(); ++i) {
         const float* source = i < inputCount ? inputs[i] : silentInputs[i].data();
         lilv_instance_connect_port(instance, audioInputPorts[i], const_cast<float*>(source));
@@ -976,6 +1043,31 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
         lv2_atom_forge_set_buffer(&forge, atomInput.data(), atomInput.size());
         LV2_Atom_Forge_Frame sequenceFrame;
         lv2_atom_forge_sequence_head(&forge, &sequenceFrame, urids.unitsFrame);
+
+        if (transport) {
+            LV2_Atom_Forge_Frame positionFrame;
+            lv2_atom_forge_frame_time(&forge, 0);
+            lv2_atom_forge_object(&forge, &positionFrame, 0, urids.timePosition);
+            lv2_atom_forge_key(&forge, urids.timeFrame);
+            lv2_atom_forge_long(&forge, transport->frame);
+            lv2_atom_forge_key(&forge, urids.timeSpeed);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->speed));
+            lv2_atom_forge_key(&forge, urids.timeBar);
+            lv2_atom_forge_long(&forge, transport->bar);
+            lv2_atom_forge_key(&forge, urids.timeBarBeat);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->barBeat));
+            lv2_atom_forge_key(&forge, urids.timeBeat);
+            lv2_atom_forge_double(&forge, transport->beat);
+            lv2_atom_forge_key(&forge, urids.timeBeatUnit);
+            lv2_atom_forge_int(&forge, transport->beatUnit);
+            lv2_atom_forge_key(&forge, urids.timeBeatsPerBar);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->beatsPerBar));
+            lv2_atom_forge_key(&forge, urids.timeBeatsPerMinute);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->bpm));
+            lv2_atom_forge_key(&forge, urids.timeFramesPerSecond);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->framesPerSecond));
+            lv2_atom_forge_pop(&forge, &positionFrame);
+        }
 
         MidiMessage midi;
         while (midiQueue.pop(midi)) {
@@ -1024,7 +1116,7 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
 
 void PluginInstance::process(const float* const* inputs, unsigned inputCount,
                              float* const* outputs, unsigned outputCount,
-                             unsigned frames) {
+                             unsigned frames, const TransportBlock* transport) {
     Impl& impl = *impl_;
     if (!impl.instance) {
         return;
@@ -1036,7 +1128,7 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
         }
     }
 
-    impl.runCycle(inputs, inputCount, outputs, outputCount, frames);
+    impl.runCycle(inputs, inputCount, outputs, outputCount, frames, transport);
 }
 
 Json PluginInstance::saveState() const {
@@ -1116,7 +1208,8 @@ bool PluginInstance::setProperty(const std::string&, const std::string&, std::st
     return false;
 }
 std::string PluginInstance::property(const std::string&) const { return std::string(); }
-void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned) {}
+void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned,
+                             const TransportBlock*) {}
 Json PluginInstance::saveState() const { return Json::object(); }
 void PluginInstance::loadState(const Json&) {}
 

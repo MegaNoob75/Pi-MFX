@@ -8,6 +8,7 @@ export interface EngineSnapshot {
     catalog: JsonObject;
     library: JsonObject;
     meters: JsonObject;
+    transport: JsonObject;
     uiSession: JsonObject;
 }
 
@@ -18,6 +19,7 @@ const emptySnapshot = (): EngineSnapshot => ({
     catalog: {},
     library: {},
     meters: {},
+    transport: {},
     uiSession: {}
 });
 
@@ -142,7 +144,11 @@ export class EngineClient {
     private ingest(message: JsonObject): void {
         const type = str(message.type);
         if (type === "state") {
-            this.patch({ state: message, lastError: str(message.audioError) });
+            this.patch({
+                state: message,
+                transport: isObj(message.transport as Json) ? message.transport as JsonObject : this.snapshot.transport,
+                lastError: str(message.audioError)
+            });
             return;
         }
         if (type === "catalog") {
@@ -158,6 +164,10 @@ export class EngineClient {
             for (const listener of this.meterListeners) {
                 listener(message);
             }
+            return;
+        }
+        if (type === "transport") {
+            this.patch({ transport: message });
             return;
         }
         if (type === "uiNav") {

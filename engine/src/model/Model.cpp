@@ -22,6 +22,9 @@ Json EffectSlot::toJson() const {
     json.set("name", name);
     json.set("enabled", enabled);
     json.set("state", state);
+    if (tempoLinks.isObject() && tempoLinks.size() > 0) {
+        json.set("tempoLinks", tempoLinks);
+    }
     return json;
 }
 
@@ -32,6 +35,7 @@ EffectSlot EffectSlot::fromJson(const Json& json) {
     slot.name = json["name"].asString();
     slot.enabled = json["enabled"].asBool(true);
     slot.state = json["state"].isObject() ? json["state"] : Json::object();
+    slot.tempoLinks = json["tempoLinks"].isObject() ? json["tempoLinks"] : Json::object();
     return slot;
 }
 
@@ -559,6 +563,7 @@ Json SystemSettings::toJson() const {
     json.set("workerThreadPriority", workerThreadPriority);
     json.set("lockMemory", lockMemory);
     json.set("holdCpuLatency", holdCpuLatency);
+    json.set("sharedTransportEnabled", sharedTransportEnabled);
     return json;
 }
 
@@ -570,15 +575,39 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     settings.workerThreadPriority = std::max(1, std::min(94, json["workerThreadPriority"].asInt(70)));
     settings.lockMemory = json["lockMemory"].asBool(true);
     settings.holdCpuLatency = json["holdCpuLatency"].asBool(true);
+    settings.sharedTransportEnabled = json["sharedTransportEnabled"].asBool(false);
+    return settings;
+}
+
+Json TransportSettings::toJson() const {
+    Json json = Json::object();
+    json.set("beatsPerBar", beatsPerBar);
+    json.set("beatUnit", beatUnit);
+    json.set("countInBars", countInBars);
+    json.set("metronomeEnabled", metronomeEnabled);
+    json.set("quantizationEnabled", quantizationEnabled);
+    return json;
+}
+
+TransportSettings TransportSettings::fromJson(const Json& json) {
+    TransportSettings settings;
+    settings.beatsPerBar = std::max(1, std::min(32, json["beatsPerBar"].asInt(4)));
+    const int unit = json["beatUnit"].asInt(4);
+    settings.beatUnit = unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16 || unit == 32
+        ? unit : 4;
+    settings.countInBars = std::max(0, std::min(8, json["countInBars"].asInt(0)));
+    settings.metronomeEnabled = json["metronomeEnabled"].asBool(false);
+    settings.quantizationEnabled = json["quantizationEnabled"].asBool(false);
     return settings;
 }
 
 Json Settings::toJson() const {
     Json json = Json::object();
-    json.set("version", 1);
+    json.set("version", 2);
     json.set("audio", audioSettingsToJson(audio));
     json.set("ui", ui.toJson());
     json.set("system", system.toJson());
+    json.set("transport", transport.toJson());
     json.set("controller", controller.toJson());
     json.set("activeBankId", activeBankId);
     json.set("activePresetId", activePresetId);
@@ -590,6 +619,7 @@ Settings Settings::fromJson(const Json& json) {
     settings.audio = audioSettingsFromJson(json["audio"], AudioSettings());
     settings.ui = UiSettings::fromJson(json["ui"]);
     settings.system = SystemSettings::fromJson(json["system"]);
+    settings.transport = TransportSettings::fromJson(json["transport"]);
     settings.controller = ControllerConfig::fromJson(json["controller"]);
     settings.activeBankId = json["activeBankId"].asString();
     settings.activePresetId = json["activePresetId"].asString();

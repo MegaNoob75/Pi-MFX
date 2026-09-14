@@ -406,6 +406,9 @@ export function PerformanceView({
         if (action === "reloadPreset") {
             return "RELOAD PRESET";
         }
+        if (action === "tapTempo") {
+            return `${num(state.tempo, num(obj(preset).tempo, 120)).toFixed(1)} BPM`;
+        }
         return action.toUpperCase();
     };
 
@@ -708,6 +711,7 @@ export function PerformanceView({
                     && (!sessionEntry || displayBankId === str(state.activeBankId)))
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
+                    || (action === "tapTempo" && bool(engine.transport.beatPulse))
                     || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
                         && num(binding.snapshotSlot, -1) >= 0)
                     || (toggleSlot !== "" && bool(

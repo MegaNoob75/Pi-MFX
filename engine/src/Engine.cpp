@@ -24,6 +24,35 @@ float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
 }
 
+bool tempoLinkedPortValue(const PortInfo& port, double quarterNoteBeats,
+                          double bpm, float& value) {
+    if (!port.tempoLinkCandidate || port.secondsPerUnit <= 0.0
+        || !std::isfinite(quarterNoteBeats) || quarterNoteBeats <= 0.0
+        || !std::isfinite(bpm) || bpm <= 0.0) {
+        return false;
+    }
+    const double seconds = 60.0 * quarterNoteBeats / bpm;
+    value = static_cast<float>(std::max<double>(port.minimum,
+        std::min<double>(port.maximum, seconds / port.secondsPerUnit)));
+    return true;
+}
+
+void applyTempoLinksToPlugin(const EffectSlot& slot, PluginInstance& plugin, double bpm) {
+    if (!slot.tempoLinks.isObject()) {
+        return;
+    }
+    for (const Json::Member& link : slot.tempoLinks.members()) {
+        for (const PortInfo& port : plugin.info().ports) {
+            float value = 0.0f;
+            if (port.symbol == link.first
+                && tempoLinkedPortValue(port, link.second.asDouble(), bpm, value)) {
+                plugin.setControl(port.index, value);
+                break;
+            }
+        }
+    }
+}
+
 std::string sanitizeRelDir(const std::string& text) {
     std::filesystem::path out;
     for (const auto& part : std::filesystem::path(text)) {
@@ -347,6 +376,15 @@ bool Engine::start(std::string& error) {
         }
     }
 
+    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
+    transport_.setCountInBars(settings_.transport.countInBars);
+    transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
+    transport_.setQuantizationEnabled(settings_.transport.quantizationEnabled);
+    if (const Preset* preset = activePreset()) {
+        transport_.setBpm(preset->tempo);
+    }
+
     std::string catalogError;
     catalog_.setUserBundleDirectory(storage_.paths().lv2Dir);
     if (!catalog_.rescan(catalogError)) {
@@ -521,7 +559,18 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
 
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const bool wasTransportEnabled = transportEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
+    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    if (!settings_.system.sharedTransportEnabled) {
+        transport_.stop();
+    } else if (!wasTransportEnabled) {
+        transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
+        transport_.setCountInBars(settings_.transport.countInBars);
+        transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
+        transport_.setQuantizationEnabled(settings_.transport.quantizationEnabled);
+        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
+    }
 
     if (settings_.system.holdCpuLatency && !latencyGuard_) {
         latencyGuard_ = std::make_unique<rt::CpuLatencyGuard>();
@@ -540,6 +589,57 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     return error.empty();
 }
 
+bool Engine::applyTransportSettings(const Json& json, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    TransportSettings next = TransportSettings::fromJson(json);
+    const double nextBpm = json.has("bpm") ? json["bpm"].asDouble(transport_.bpm()) : transport_.bpm();
+    settings_.transport = next;
+    transport_.setBpm(nextBpm);
+    transport_.setTimeSignature(next.beatsPerBar, next.beatUnit);
+    transport_.setCountInBars(next.countInBars);
+    transport_.setMetronomeEnabled(next.metronomeEnabled);
+    transport_.setQuantizationEnabled(next.quantizationEnabled);
+    if (Preset* preset = activePreset()) {
+        preset->tempo = transport_.bpm();
+        applyTempoLinksUnlocked(*preset);
+        requestBankPersist(false);
+    }
+    persistSettings();
+    notifyPerformance();
+    return true;
+}
+
+bool Engine::transportPlay(bool restart, std::string& error) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    transport_.play(restart);
+    return true;
+}
+
+bool Engine::transportStop(std::string& error) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    transport_.stop();
+    return true;
+}
+
+bool Engine::transportRestart(std::string& error) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    transport_.restart();
+    return true;
+}
+
 void Engine::resetMeters() {
     metrics_.xruns.store(0, std::memory_order_relaxed);
     metrics_.dspLoadPeak.store(0.0f, std::memory_order_relaxed);
@@ -548,6 +648,7 @@ void Engine::resetMeters() {
 void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     sampleRate_.store(sampleRate, std::memory_order_release);
     maxFrames_.store(maxFrames, std::memory_order_release);
+    transport_.setSampleRate(sampleRate);
 }
 
 void Engine::releaseResources() {}
@@ -556,6 +657,10 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                           float* const* outputs, unsigned outputChannels,
                           unsigned frames) {
     audioGeneration_.fetch_add(1, std::memory_order_release);
+
+    const bool transportEnabled = transportEnabled_.load(std::memory_order_acquire);
+    const TransportBlock transportBlock = transportEnabled
+        ? transport_.beginAudioBlock(frames) : TransportBlock{};
 
     Chain* chain = activeChain_.load(std::memory_order_acquire);
 
@@ -603,6 +708,11 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             } else {
                 std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
             }
+            if (transportEnabled) {
+                for (unsigned frame = 0; frame < frames; ++frame) {
+                    outputs[channel][frame] += transport_.metronomeSample(transportBlock, frame);
+                }
+            }
         }
         return;
     }
@@ -639,7 +749,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                                   std::min(pluginInputs, channels),
                                   destination->data(),
                                   std::min(pluginOutputs, channels),
-                                  frames);
+                                  frames, transportEnabled ? &transportBlock : nullptr);
 
             // A mono plugin in a stereo chain feeds both sides rather than
             // silencing the right channel.
@@ -667,7 +777,8 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         gain += step;
         for (unsigned channel = 0; channel < outputChannels; ++channel) {
             const unsigned sourceChannel = std::min(channel, channels - 1);
-            outputs[channel][frame] = (*rendered)[sourceChannel][frame] * gain;
+            const float click = transportEnabled ? transport_.metronomeSample(transportBlock, frame) : 0.0f;
+            outputs[channel][frame] = (*rendered)[sourceChannel][frame] * gain + click;
         }
     }
     outputGain_.store(target, std::memory_order_relaxed);
@@ -707,6 +818,9 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             continue;
         }
         plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
+        if (transportEnabled_.load(std::memory_order_acquire)) {
+            applyTempoLinksToPlugin(slot, *plugin, preset.tempo);
+        }
 
         auto chainSlot = std::make_unique<ChainSlot>();
         chainSlot->id = slot.id;
@@ -964,6 +1078,9 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
     bank->lastPresetId = target->id;
+    if (transportEnabled_.load(std::memory_order_acquire)) {
+        transport_.setBpm(target->tempo);
+    }
 
     std::string chainError;
     std::unique_ptr<Chain> chain = buildChain(*target, chainError);
@@ -1723,12 +1840,21 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
                 slot.plugin->setControl(port.index, clamped);
             }
+            bool clearedTempoLink = false;
             if (persist) {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 writeStoredControlUnlocked(slotId, portSymbol, clamped);
+                if (Preset* preset = activePreset(); preset && preset->activeSnapshot < 0) {
+                    if (EffectSlot* stored = preset->findSlot(slotId);
+                        stored && stored->tempoLinks.has(portSymbol)) {
+                        stored->tempoLinks.remove(portSymbol);
+                        clearedTempoLink = true;
+                    }
+                }
                 requestBankPersist(false);
             }
-            notifyPerformance();
+            if (clearedTempoLink) notify();
+            else notifyPerformance();
             return true;
         }
         error = "no such control on this effect";
@@ -1736,6 +1862,82 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
     }
     error = "no such effect";
     return false;
+}
+
+bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymbol,
+                          double quarterNoteBeats, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "Tap Tempo Clock is disabled";
+        return false;
+    }
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    if (preset->activeSnapshot >= 0) {
+        error = "return to the base preset before changing Tempo Link";
+        return false;
+    }
+    EffectSlot* stored = preset->findSlot(slotId);
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!stored || !chain) {
+        error = "no such effect";
+        return false;
+    }
+    for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
+        ChainSlot& live = *chain->slots[slotIndex];
+        if (live.id != slotId || !live.plugin) continue;
+        for (const PortInfo& port : live.plugin->info().ports) {
+            if (port.symbol != portSymbol || !port.control || !port.input) continue;
+            if (quarterNoteBeats <= 0.0) {
+                writeStoredControlUnlocked(slotId, portSymbol, live.plugin->control(port.index));
+                stored->tempoLinks.remove(portSymbol);
+            } else {
+                float value = 0.0f;
+                if (!tempoLinkedPortValue(port, quarterNoteBeats, transport_.bpm(), value)) {
+                    error = "that control does not provide compatible LV2 time units";
+                    return false;
+                }
+                stored->tempoLinks.set(portSymbol, Json(quarterNoteBeats));
+                if (!controlUpdates_.push({static_cast<uint32_t>(slotIndex), port.index, value})) {
+                    live.plugin->setControl(port.index, value);
+                }
+            }
+            requestBankPersist(true);
+            notify();
+            return true;
+        }
+        error = "no such control on this effect";
+        return false;
+    }
+    error = "no such effect";
+    return false;
+}
+
+void Engine::applyTempoLinksUnlocked(Preset& preset) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) return;
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain) return;
+    const double bpm = transport_.bpm();
+    for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
+        ChainSlot& live = *chain->slots[slotIndex];
+        const EffectSlot* stored = preset.findSlot(live.id);
+        if (!stored || !live.plugin || !stored->tempoLinks.isObject()) continue;
+        for (const Json::Member& link : stored->tempoLinks.members()) {
+            for (const PortInfo& port : live.plugin->info().ports) {
+                float value = 0.0f;
+                if (port.symbol == link.first
+                    && tempoLinkedPortValue(port, link.second.asDouble(), bpm, value)) {
+                    if (!controlUpdates_.push({static_cast<uint32_t>(slotIndex), port.index, value})) {
+                        live.plugin->setControl(port.index, value);
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& error) {
@@ -1901,6 +2103,7 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
         slot->plugin->loadState(rewritePluginStateFiles(storage_, stored->state));
         slot->enabled.store(stored->enabled, std::memory_order_relaxed);
     }
+    applyTempoLinksUnlocked(preset);
     preset.activeSnapshot = -1;
     armAnalogCatchUnlocked();
 }
@@ -1984,6 +2187,7 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
         slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_));
         slot->enabled.store(state["enabled"].asBool(true), std::memory_order_relaxed);
     }
+    if (Preset* preset = activePreset()) applyTempoLinksUnlocked(*preset);
     armAnalogCatchUnlocked();
 }
 
@@ -2784,6 +2988,10 @@ void Engine::refreshLeds() {
             } else if (control.binding.action == "bypassAll") {
                 state.on = bypassAll_.load(std::memory_order_relaxed);
                 colourRole = "bypass";
+            } else if (control.binding.action == "tapTempo"
+                       && transportEnabled_.load(std::memory_order_acquire)) {
+                state.on = transport_.beatPulse();
+                colourRole = "utility";
             }
             break;
         }
@@ -3101,35 +3309,15 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
 }
 
 void Engine::tapTempo() {
-    std::lock_guard<std::mutex> lock(tapMutex_);
-    const auto now = std::chrono::steady_clock::now();
-
-    // Taps more than two seconds apart start a new count rather than averaging
-    // across a pause.
-    if (!tapTimes_.empty()
-        && std::chrono::duration_cast<std::chrono::milliseconds>(now - tapTimes_.back()).count() > 2000) {
-        tapTimes_.clear();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
     }
-    tapTimes_.push_back(now);
-    if (tapTimes_.size() > 4) {
-        tapTimes_.erase(tapTimes_.begin());
-    }
-    if (tapTimes_.size() < 2) {
-        return;
-    }
-
-    double total = 0.0;
-    for (size_t i = 1; i < tapTimes_.size(); ++i) {
-        total += std::chrono::duration<double>(tapTimes_[i] - tapTimes_[i - 1]).count();
-    }
-    const double average = total / static_cast<double>(tapTimes_.size() - 1);
-    if (average <= 0.0) {
-        return;
-    }
-
-    const double bpm = std::max(30.0, std::min(300.0, 60.0 / average));
+    const double bpm = transport_.tap();
     if (Preset* preset = activePreset()) {
         preset->tempo = bpm;
+        applyTempoLinksUnlocked(*preset);
+        requestBankPersist(false);
     }
     notifyPerformance();
 }
@@ -3184,7 +3372,11 @@ void Engine::housekeepingThread() {
             std::lock_guard<std::mutex> lock(listenerMutex_);
             if (listener_) {
                 listener_(meterState());
+                if (transportEnabled_.load(std::memory_order_acquire)) {
+                    listener_(transportState());
+                }
             }
+            if (transportEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3278,6 +3470,9 @@ Json Engine::fullState() const {
     json.set("audio", audioSettingsToJson(settings_.audio));
     json.set("ui", settings_.ui.toJson());
     json.set("system", settings_.system.toJson());
+    json.set("transportSettings", settings_.transport.toJson());
+    json.set("transportFeatureEnabled", transportEnabled_.load(std::memory_order_acquire));
+    if (transportEnabled_.load(std::memory_order_acquire)) json.set("transport", transport_.state());
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -3309,6 +3504,7 @@ Json Engine::fullState() const {
             if (const Preset* preset = activePreset()) {
                 if (const EffectSlot* stored = preset->findSlot(slot->id)) {
                     slotJson.set("name", stored->name);
+                    slotJson.set("tempoLinks", stored->tempoLinks);
                 }
             }
             slotJson.set("plugin", slot->plugin->info().toJson(true));
@@ -3347,7 +3543,7 @@ Json Engine::performanceState() const {
     json.set("presetReloadCount", presetReloadCount_);
 
     if (const Preset* preset = activePreset()) {
-        json.set("tempo", preset->tempo);
+        json.set("tempo", transportEnabled_.load(std::memory_order_acquire) ? transport_.bpm() : preset->tempo);
         json.set("activeSnapshot", preset->activeSnapshot);
     }
 
@@ -3371,6 +3567,10 @@ Json Engine::performanceState() const {
     }
     json.set("controlPositions", positions);
     return json;
+}
+
+Json Engine::transportState() const {
+    return transport_.state();
 }
 
 Json Engine::meterState() const {

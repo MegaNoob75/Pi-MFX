@@ -9,6 +9,21 @@ import { NewPresetDialog } from "./NewPresetDialog";
 
 type EditPage = "chain" | "controls" | "io";
 
+const NOTE_DIVISIONS = [
+    { beats: 4, label: "1/1" },
+    { beats: 3, label: "1/2 D" },
+    { beats: 2, label: "1/2" },
+    { beats: 1.5, label: "1/4 D" },
+    { beats: 1, label: "1/4" },
+    { beats: 0.75, label: "1/8 D" },
+    { beats: 2 / 3, label: "1/4 T" },
+    { beats: 0.5, label: "1/8" },
+    { beats: 1 / 3, label: "1/8 T" },
+    { beats: 0.375, label: "1/16 D" },
+    { beats: 0.25, label: "1/16" },
+    { beats: 1 / 6, label: "1/16 T" }
+];
+
 type BindTarget =
     | { mode: "parameter"; slotId: string; portSymbol: string; name: string; min: number; max: number }
     | { mode: "bypass"; slotId: string; name: string };
@@ -531,6 +546,8 @@ export function EditorView({
                                 client={client}
                                 controls={controls}
                                 bindings={parameterBindings}
+                                bpm={num(obj(state.transport).bpm, num(obj(preset).tempo, 120))}
+                                tempoEnabled={bool(state.transportFeatureEnabled)}
                                 onBindParameter={(port) => setBindTarget({
                                     mode: "parameter",
                                     slotId: str(selected.id),
@@ -903,6 +920,8 @@ export function EffectControls({
     client,
     controls = [],
     bindings = [],
+    bpm = 120,
+    tempoEnabled = false,
     onBindParameter
 }: {
     selected: JsonObject;
@@ -916,9 +935,12 @@ export function EffectControls({
     client: import("../api").EngineClient;
     controls?: JsonObject[];
     bindings?: JsonObject[];
+    bpm?: number;
+    tempoEnabled?: boolean;
     onBindParameter?: (port: JsonObject) => void;
 }) {
     const slotId = str(selected.id);
+    const tempoLinks = obj(selected.tempoLinks);
     const boundFor = (symbol: string) => bindings.find((binding) =>
         str(binding.action) === "setParameter"
         && str(binding.slotId) === slotId
@@ -946,6 +968,8 @@ export function EffectControls({
                     const min = num(port.min, 0);
                     const max = num(port.max, 1);
                     const value = controlValue(selected, symbol, num(port.default, min));
+                    const linkedBeats = num(tempoLinks[symbol], 0);
+                    const tempoLinkCandidate = bool(port.tempoLinkCandidate);
                     const stepped = bool(port.integer) || bool(port.toggled);
                     const apply = (next: number) => {
                         const clamped = clampPortValue(next, min, max, stepped);
@@ -973,7 +997,7 @@ export function EffectControls({
                         })();
                     };
                     return (
-                        <div key={symbol} className={`control-card field${boundFor(symbol) ? " bound" : ""}`}>
+                        <div key={symbol} className={`control-card field${boundFor(symbol) ? " bound" : ""}${tempoEnabled && linkedBeats > 0 ? " tempo-linked" : ""}`}>
                             <div className="control-card-head">
                                 <span
                                     onPointerDown={(event) => {
@@ -1025,6 +1049,28 @@ export function EffectControls({
                                     {bool(obj(boundFor(symbol)).inverted) ? " · REV" : ""}
                                 </div>
                             )}
+                            {tempoLinkCandidate && (
+                                <label className="tempo-link-row">
+                                    <span>TEMPO LINK</span>
+                                    <select
+                                        value={linkedBeats > 0 ? String(linkedBeats) : "0"}
+                                        disabled={!tempoEnabled}
+                                        title={tempoEnabled ? "Follow Tap Tempo" : "Enable Tap Tempo Clock in System settings"}
+                                        onChange={(event) => void run(() => client.request("chain/tempo-link", {
+                                            slotId,
+                                            port: symbol,
+                                            beats: Number(event.target.value)
+                                        }))}
+                                    >
+                                        <option value="0">MANUAL {str(port.unit, "TIME").toUpperCase()}</option>
+                                        {NOTE_DIVISIONS.map((division) => (
+                                            <option key={division.label} value={division.beats}>
+                                                {division.label} · {formatTempoLinkedValue(division.beats, bpm, port)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                            )}
                             {bool(port.toggled) ? (
                                 <button
                                     type="button"
@@ -1060,6 +1106,7 @@ export function EffectControls({
                                     step={stepped ? 1 : "any"}
                                     value={value}
                                     aria-label={name}
+                                    disabled={tempoEnabled && linkedBeats > 0}
                                     onChange={(event) => apply(Number(event.target.value))}
                                 />
                             )}
@@ -1230,6 +1277,14 @@ function formatEditableValue(value: number, port: JsonObject): string {
         return String(Math.round(value));
     }
     return String(Number(value.toFixed(4)));
+}
+
+function formatTempoLinkedValue(beats: number, bpm: number, port: JsonObject): string {
+    const safeBpm = Math.max(30, Math.min(300, bpm));
+    const seconds = 60 * beats / safeBpm;
+    const converted = str(port.unitUri).endsWith("#ms") ? seconds * 1000 : seconds;
+    const value = Math.max(num(port.min, converted), Math.min(num(port.max, converted), converted));
+    return formatControl(value, port);
 }
 
 function clampPortValue(value: number, min: number, max: number, integer: boolean): number {
