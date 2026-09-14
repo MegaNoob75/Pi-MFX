@@ -10,6 +10,8 @@
 
 namespace pimfx {
 
+struct TransportBlock;
+
 /// One point on a control's scale that the plugin gave a name to, e.g. the
 /// positions of a mode switch. The UI renders these as a picker instead of a
 /// meaningless 0-4 knob.
@@ -23,12 +25,14 @@ struct PortInfo {
     std::string symbol;
     std::string name;
     std::string unit;
+    std::string unitUri;
 
     bool input = true;
     bool control = false;
     bool audio = false;
     bool atom = false;
     bool cv = false;
+    bool supportsTimePosition = false;
 
     float minimum = 0.0f;
     float maximum = 1.0f;
@@ -41,6 +45,11 @@ struct PortInfo {
     /// Ports the plugin marks as output-only meters: level, gain reduction,
     /// tuner pitch. The UI polls these instead of trying to edit them.
     bool meter = false;
+    /// True for delay-like time inputs whose LV2 unit can be converted from
+    /// musical note lengths without plugin-specific code.
+    bool tempoLinkCandidate = false;
+    /// Number of seconds represented by one port unit (0.001 for ms, 1 for s).
+    double secondsPerUnit = 0.0;
 
     std::vector<ScalePoint> scalePoints;
 
@@ -159,7 +168,7 @@ public:
     /// unconnected plugin inputs receive silence and extra outputs are ignored.
     void process(const float* const* inputs, unsigned inputCount,
                  float* const* outputs, unsigned outputCount,
-                 unsigned frames);
+                 unsigned frames, const TransportBlock* transport = nullptr);
 
     unsigned audioInputs() const { return info_.audioInputs; }
     unsigned audioOutputs() const { return info_.audioOutputs; }

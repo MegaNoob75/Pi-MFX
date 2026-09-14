@@ -22,6 +22,9 @@ struct EffectSlot {
     std::string name;      ///< user-visible name, defaults to the plugin's own
     bool enabled = true;
     Json state = Json::object();
+    /// Port symbol -> duration in quarter-note beats. Missing means the port
+    /// remains in its native millisecond/second mode.
+    Json tempoLinks = Json::object();
 
     Json toJson() const;
     static EffectSlot fromJson(const Json& json);
@@ -286,15 +289,29 @@ struct SystemSettings {
     int workerThreadPriority = 70;
     bool lockMemory = true;
     bool holdCpuLatency = true;
+    /// Keeps Milestone 0 isolated until it has been verified on the Pi.
+    bool sharedTransportEnabled = false;
 
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
+};
+
+struct TransportSettings {
+    int beatsPerBar = 4;
+    int beatUnit = 4;
+    int countInBars = 0;
+    bool metronomeEnabled = false;
+    bool quantizationEnabled = false;
+
+    Json toJson() const;
+    static TransportSettings fromJson(const Json& json);
 };
 
 struct Settings {
     AudioSettings audio;
     UiSettings ui;
     SystemSettings system;
+    TransportSettings transport;
     ControllerConfig controller;
 
     std::string activeBankId;

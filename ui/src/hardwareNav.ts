@@ -147,6 +147,13 @@ function publishCurrentFocus(): void {
 }
 
 function setCursor(element: HTMLElement | undefined, publish = true): void {
+    // Shared session updates can repeatedly re-apply the same cursor. Do not
+    // scroll it into view again: that fights touch/mouse scrolling in long
+    // lists such as TONE3000 and makes the page appear to bounce or stick.
+    if (element && cursorEl === element && element.getAttribute(CURSOR_ATTR) === "true") {
+        if (publish) publishCurrentFocus();
+        return;
+    }
     clearCursor();
     if (!element) {
         if (publish) publishFocus?.(null);

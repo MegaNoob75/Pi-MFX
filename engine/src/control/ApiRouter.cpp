@@ -100,6 +100,9 @@ void ApiRouter::handleSocketOpen(uint64_t clientId) {
     server_.sendTo(clientId, visibleCatalog(false).dump());
     server_.sendTo(clientId, engine_.libraryState().dump());
     server_.sendTo(clientId, engine_.meterState().dump());
+    if (engine_.settings().system.sharedTransportEnabled) {
+        server_.sendTo(clientId, engine_.transportState().dump());
+    }
     {
         std::lock_guard<std::mutex> lock(uiSessionMutex_);
         server_.sendTo(clientId, uiSession_.dump());
@@ -365,6 +368,12 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                      payload["value"].asFloat(0.0f), error);
         return Json::object();
     }
+    if (command == "chain/tempo-link") {
+        ok = engine_.setTempoLink(payload["slotId"].asString(),
+                                  payload["port"].asString(),
+                                  payload["beats"].asDouble(0.0), error);
+        return Json::object();
+    }
     if (command == "chain/property") {
         ok = engine_.setEffectProperty(payload["slotId"].asString(),
                                        payload["property"].asString(),
@@ -454,6 +463,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                             payload["value"].asFloat(0.0f), error);
         return Json::object();
     }
+    if (command == "controller/turn") {
+        ok = engine_.turnVirtualEncoder(payload["controlId"].asString(),
+                                        payload["delta"].asInt(1), error);
+        return Json::object();
+    }
 
     // --- library -----------------------------------------------------------
     if (command == "library/upload") {
@@ -507,6 +521,22 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- performance -------------------------------------------------------
+    if (command == "transport/settings") {
+        ok = engine_.applyTransportSettings(payload, error);
+        return engine_.transportState();
+    }
+    if (command == "transport/play") {
+        ok = engine_.transportPlay(payload["restart"].asBool(false), error);
+        return engine_.transportState();
+    }
+    if (command == "transport/stop") {
+        ok = engine_.transportStop(error);
+        return engine_.transportState();
+    }
+    if (command == "transport/restart") {
+        ok = engine_.transportRestart(error);
+        return engine_.transportState();
+    }
     if (command == "tap") {
         engine_.tapTempo();
         return Json::object();

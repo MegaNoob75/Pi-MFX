@@ -37,6 +37,7 @@ target_sources(pimfx PRIVATE
     src/control/ApiRouter.cpp
     src/midi/Mapping.cpp
     src/midi/MidiInput.cpp
+    src/transport/MusicalTransport.cpp
     src/library/Tone3000.cpp
     src/library/PluginStore.cpp
 )
@@ -132,3 +133,15 @@ target_compile_definitions(pimfx PRIVATE
 )
 
 install(TARGETS pimfx RUNTIME DESTINATION bin)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(pimfx_transport_test
+        tests/MusicalTransportTest.cpp
+        src/transport/MusicalTransport.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(pimfx_transport_test PRIVATE src)
+    target_link_libraries(pimfx_transport_test PRIVATE Threads::Threads)
+    add_test(NAME musical_transport COMMAND pimfx_transport_test)
+endif()

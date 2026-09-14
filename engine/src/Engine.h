@@ -8,6 +8,7 @@
 #include "midi/Mapping.h"
 #include "midi/MidiInput.h"
 #include "model/Storage.h"
+#include "transport/MusicalTransport.h"
 
 #include <atomic>
 #include <chrono>
@@ -58,6 +59,7 @@ public:
     Json fullState() const;
     Json performanceState() const;   ///< the small, frequent update
     Json meterState() const;
+    Json transportState() const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
@@ -68,6 +70,10 @@ public:
     bool applyAudioSettings(const Json& json, std::string& error);
     bool applySystemSettings(const Json& json, std::string& error);
     void resetMeters();
+    bool applyTransportSettings(const Json& json, std::string& error);
+    bool transportPlay(bool restart, std::string& error);
+    bool transportStop(std::string& error);
+    bool transportRestart(std::string& error);
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
@@ -100,6 +106,8 @@ public:
     bool setEffectName(const std::string& slotId, const std::string& name, std::string& error);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
+    bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
+                      double quarterNoteBeats, std::string& error);
     bool setEffectProperty(const std::string& slotId, const std::string& propertyUri,
                            const std::string& path, std::string& error);
     bool setBypassAll(bool bypassed);
@@ -131,6 +139,7 @@ public:
     /// Sets a pot, slider or expression pedal from the screen. `value` is 0-1
     /// as the on-screen control is pointing.
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
+    bool turnVirtualEncoder(const std::string& controlId, int delta, std::string& error);
     /// Binds a hardware control to a parameter or bypass of the active preset.
     bool bindPresetControl(const Json& json, std::string& error);
     /// Session-only switch→preset map used by Performance encoder "session"
@@ -244,6 +253,7 @@ private:
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
     void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
+    void applyTempoLinksUnlocked(Preset& preset);
     void refreshLeds();
     Json describeControllerRuntime() const;
 
@@ -302,9 +312,8 @@ private:
 
     std::atomic<unsigned> sampleRate_{48000};
     std::atomic<unsigned> maxFrames_{64};
-
-    std::vector<std::chrono::steady_clock::time_point> tapTimes_;
-    std::mutex tapMutex_;
+    MusicalTransport transport_;
+    std::atomic<bool> transportEnabled_{false};
 
     struct AnalogCatch {
         bool waiting = true;

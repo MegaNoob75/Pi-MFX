@@ -18,7 +18,7 @@ function load(file, cache = new Map()) {
 class Element {
     constructor(tag = 'div', classes = '', attrs = {}) {
         this.tag = tag; this.classes = classes.split(' '); this.attrs = attrs;
-        this.children = []; this.connected = true; this.zIndex = 0; this.clicks = 0;
+        this.children = []; this.connected = true; this.zIndex = 0; this.clicks = 0; this.scrolls = 0;
         this.classList = { contains: name => this.classes.includes(name), remove: name => {
             this.classes = this.classes.filter(item => item !== name);
         }};
@@ -47,7 +47,7 @@ class Element {
     getAttribute(name) { return this.attrs[name]; }
     setAttribute(name, value) { this.attrs[name] = value; }
     removeAttribute(name) { delete this.attrs[name]; }
-    scrollIntoView() {}
+    scrollIntoView() { this.scrolls++; }
     click() { this.clicks++; this.onClick?.(); }
     focus() { document.activeElement = this; document.events.focusin?.({target: this}); }
 }
@@ -118,6 +118,14 @@ test('local focus publishes a stable named list and remote focus only moves the 
     assert.equal(shared.scopeName,'shared-list');assert.equal(shared.itemIndex,1);
     assert.equal(shared.itemKey,'second');
     nav.applyHardwareNavFocus({...shared,itemKey:'first',itemIndex:1});assert(marked(first));assert.equal(first.clicks,0);assert.equal(second.clicks,0);
+});
+test('repeated shared focus does not pull a locally scrolled list back to the same item',()=>{
+    const {nav,root}=setup();
+    const list=root.add(new Element('div','t3k-grid',{'data-mfx-nav-list':'tone-results'}));
+    const first=list.add(button());first.attrs['data-mfx-nav-key']='first';
+    const location={scopeName:'tone-results',scopeKind:'.t3k-grid',scopeOrdinal:0,scopeIndex:0,itemKey:'first',itemIndex:0};
+    nav.applyHardwareNavFocus(location);assert.equal(first.scrolls,1);
+    nav.applyHardwareNavFocus(location);assert.equal(first.scrolls,1);
 });
 test('touching blank list space shares that list and starts from its selected row',()=>{
     global.document = new Element(); document.events = {};

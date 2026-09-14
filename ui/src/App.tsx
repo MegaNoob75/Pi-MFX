@@ -21,6 +21,7 @@ import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
 import { saveCustomMultiFXTheme, themeLedColors } from "./theme/theme";
 import { MarqueeText } from "./views/MarqueeText";
 import { ConfirmDialog } from "./views/ConfirmDialog";
+import { TransportView } from "./views/TransportView";
 import { installResponsiveSizing } from "./responsive";
 
 export type View =
@@ -34,12 +35,14 @@ export type View =
     | "plugins"
     | "files"
     | SettingsPage
+    | "transport"
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
 
 const titles: Record<string, string> = {
     performance: "PERFORMANCE",
+    transport: "TAP TEMPO",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
@@ -64,7 +67,7 @@ const titles: Record<string, string> = {
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
-    "plugins", "files", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "plugins", "files", "transport", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
@@ -86,6 +89,15 @@ export function App() {
     const menuRef = useRef<HTMLElement | null>(null);
     const engineWasConnected = useRef(false);
     const engineRestarted = useRef(false);
+    const transportEnabled = bool(engine.state.transportFeatureEnabled);
+
+    useEffect(() => {
+        if (!transportEnabled && view === "transport") {
+            setView("performance");
+            setHistory([]);
+            engine.client.updateUiSession({ view: "performance", viewHistory: [] });
+        }
+    }, [transportEnabled, view, engine.client]);
 
     useEffect(() => {
         if (!engine.connected) {
@@ -480,6 +492,7 @@ export function App() {
                         }}
                     />
                 )}
+                {view === "transport" && transportEnabled && <TransportView engine={engine} run={run} />}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && (
                     <EditorView
@@ -581,6 +594,10 @@ export function App() {
                         </div>
                         <MenuButton label="PERFORMANCE" subtitle="Preset and foot-controller view"
                             active={view === "performance"} onClick={openPerformance} />
+                        {transportEnabled && (
+                            <MenuButton label="TAP TEMPO" subtitle="Set tempo, metronome and count-in"
+                                active={view === "transport"} onClick={() => goTo("transport")} />
+                        )}
                         <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
