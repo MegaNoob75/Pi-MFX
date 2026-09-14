@@ -87,12 +87,16 @@ std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
     if (kind == "bank") {
         return paths.bankExportsDir;
     }
+    if (kind == "backing") {
+        return paths.backingTracksDir;
+    }
     return paths.modelsDir;
 }
 
 std::string libraryKindName(const std::string& kind) {
     if (kind == "ir" || kind == "aidax" || kind == "plugin"
-        || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank") {
+        || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank"
+        || kind == "backing") {
         return kind;
     }
     return "model";
@@ -106,7 +110,8 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
     }
     for (const std::string& root : {
              paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir,
-             paths.layoutsDir, paths.backupsDir, paths.bankExportsDir, paths.themesDir()}) {
+             paths.layoutsDir, paths.backupsDir, paths.bankExportsDir,
+             paths.backingTracksDir, paths.themesDir()}) {
         std::error_code rootEc;
         const auto base = std::filesystem::weakly_canonical(std::filesystem::path(root), rootEc);
         if (!rootEc && candidate == base) {
@@ -347,7 +352,8 @@ bool latchOn(const ActionRequest& request) {
 
 Engine::Engine(Paths paths)
     : storage_(std::move(paths)),
-      tunerRing_(kTunerRingSize, 0.0f) {}
+      tunerRing_(kTunerRingSize, 0.0f),
+      backing_(std::make_unique<BackingTrackPlayer>(storage_.paths().backingTracksDir)) {}
 
 Engine::~Engine() {
     stop();
@@ -360,6 +366,8 @@ void Engine::setStateListener(StateListener listener) {
 
 bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
+    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
     banks_ = storage_.loadBanks();
     brokenBankFiles_ = storage_.brokenBankFiles();
 
@@ -452,6 +460,7 @@ bool Engine::start(std::string& error) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
+    if (backing_) backing_->stop();
     if (tunerThread_.joinable()) {
         tunerThread_.join();
     }
@@ -560,8 +569,16 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const bool wasTransportEnabled = transportEnabled_.load(std::memory_order_acquire);
+    const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
     transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    if (backingEnabled_.load(std::memory_order_acquire) && !wasBackingEnabled) {
+        backing_->start();
+    } else if (!backingEnabled_.load(std::memory_order_acquire) && wasBackingEnabled) {
+        backing_->stopPlayback();
+        backing_->stop();
+    }
     if (!settings_.system.sharedTransportEnabled) {
         transport_.stop();
     } else if (!wasTransportEnabled) {
@@ -649,6 +666,7 @@ void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     sampleRate_.store(sampleRate, std::memory_order_release);
     maxFrames_.store(maxFrames, std::memory_order_release);
     transport_.setSampleRate(sampleRate);
+    if (backing_) backing_->prepare(sampleRate);
 }
 
 void Engine::releaseResources() {}
@@ -714,6 +732,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                 }
             }
         }
+        if (backingEnabled_.load(std::memory_order_relaxed)) backing_->render(outputs, outputChannels, frames);
         return;
     }
 
@@ -782,6 +801,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         }
     }
     outputGain_.store(target, std::memory_order_relaxed);
+    if (backingEnabled_.load(std::memory_order_relaxed)) backing_->render(outputs, outputChannels, frames);
 }
 
 // ---------------------------------------------------------------------------
@@ -2019,6 +2039,7 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             requestBankPersist(true);
         }
+        if (backing_) backing_->refreshPlaylist();
         notify();
         return true;
     }
@@ -2768,6 +2789,11 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "bypassAll" && request.action != "tapTempo"
         && request.action != "tuner" && request.action != "toggleEffect"
         && request.action != "reloadPreset"
+        && request.action != "backingPlayPause"
+        && request.action != "backingStop"
+        && request.action != "backingPrevious"
+        && request.action != "backingNext"
+        && request.action != "backingView"
         && request.action != "navigate"
         && request.action != "select") {
         if (binding.snapshotSlot >= 0) {
@@ -2898,6 +2924,23 @@ void Engine::runAction(const ActionRequest& incoming) {
             setTunerEnabled(!tunerEnabled_.load(std::memory_order_relaxed));
         }
         notify();
+    } else if (request.action == "backingPlayPause") {
+        if (backingEnabled_.load(std::memory_order_acquire)) {
+            if (backing_->state()["playing"].asBool()) backing_->pause(); else backing_->play();
+            refreshLeds();
+        }
+    } else if (request.action == "backingStop") {
+        if (backingEnabled_.load(std::memory_order_acquire)) { backing_->stopPlayback(); refreshLeds(); }
+    } else if (request.action == "backingNext") {
+        if (backingEnabled_.load(std::memory_order_acquire)) {
+            if (request.kind == ControlKind::Encoder && encoderDelta < 0) backing_->previous(); else backing_->next();
+        }
+    } else if (request.action == "backingPrevious") {
+        if (backingEnabled_.load(std::memory_order_acquire)) {
+            if (request.kind == ControlKind::Encoder && encoderDelta < 0) backing_->next(); else backing_->previous();
+        }
+    } else if (request.action == "backingView") {
+        if (backingEnabled_.load(std::memory_order_acquire)) notifyUiView("backingTracks");
     } else if (request.action == "none") {
         return;
     }
@@ -2991,6 +3034,10 @@ void Engine::refreshLeds() {
             } else if (control.binding.action == "tapTempo"
                        && transportEnabled_.load(std::memory_order_acquire)) {
                 state.on = transport_.beatPulse();
+                colourRole = "utility";
+            } else if (control.binding.action == "backingPlayPause"
+                       && backingEnabled_.load(std::memory_order_acquire)) {
+                state.on = backing_->state()["playing"].asBool(false);
                 colourRole = "utility";
             }
             break;
@@ -3098,6 +3145,10 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
 bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
                               const std::string& contents, const std::string& directory,
                               std::string& storedPath, std::string& error) {
+    if (kind == "backing") {
+        error = "backing tracks must use the binary import endpoint";
+        return false;
+    }
     const std::string root = libraryRootForKind(storage_.paths(), kind);
 
     const std::string safeName = sanitizeFileName(name);
@@ -3170,6 +3221,10 @@ bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
         error = "could not delete the file";
         return false;
     }
+    if (backing_) {
+        backing_->fileDeleted(path);
+        backing_->refreshPlaylist();
+    }
     notify();
     return true;
 }
@@ -3207,6 +3262,13 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             item.set("type", "dir");
             folders.push(item);
         } else if (entry.is_regular_file(ec)) {
+            if (kind == "backing") {
+                const std::string extension = lowerCopy(entry.path().extension().string());
+                if (extension != ".wav" && extension != ".flac"
+                    && extension != ".mp3" && extension != ".ogg") {
+                    continue;
+                }
+            }
             item.set("type", "file");
             item.set("bytes", static_cast<int64_t>(std::filesystem::file_size(entry.path(), ec)));
             files.push(item);
@@ -3276,6 +3338,7 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
         error = "could not rename that";
         return false;
     }
+    if (backing_) backing_->fileMoved(path, dest);
     notify();
     return true;
 }
@@ -3304,6 +3367,7 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         error = "could not move that";
         return false;
     }
+    if (backing_) backing_->fileMoved(path, dest);
     notify();
     return true;
 }
@@ -3375,8 +3439,12 @@ void Engine::housekeepingThread() {
                 if (transportEnabled_.load(std::memory_order_acquire)) {
                     listener_(transportState());
                 }
+                if (backingEnabled_.load(std::memory_order_acquire)) {
+                    listener_(backing_->state());
+                }
             }
-            if (transportEnabled_.load(std::memory_order_acquire)) refreshLeds();
+            if (transportEnabled_.load(std::memory_order_acquire)
+                || backingEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3473,6 +3541,8 @@ Json Engine::fullState() const {
     json.set("transportSettings", settings_.transport.toJson());
     json.set("transportFeatureEnabled", transportEnabled_.load(std::memory_order_acquire));
     if (transportEnabled_.load(std::memory_order_acquire)) json.set("transport", transport_.state());
+    json.set("backingTrackFeatureEnabled", backingEnabled_.load(std::memory_order_acquire));
+    if (backingEnabled_.load(std::memory_order_acquire)) json.set("backing", backing_->state());
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -3571,6 +3641,45 @@ Json Engine::performanceState() const {
 
 Json Engine::transportState() const {
     return transport_.state();
+}
+
+void Engine::notifyUiView(const std::string& view) {
+    std::lock_guard<std::mutex> lock(listenerMutex_);
+    if (!listener_) return;
+    Json json = Json::object();
+    json.set("type", "uiView");
+    json.set("view", view);
+    listener_(json);
+}
+
+Json Engine::backingState() const { return backing_ ? backing_->state() : Json::object(); }
+
+bool Engine::backingImport(const std::string& name, const std::string& bytes, std::string& error) {
+    if (!backingEnabled_.load(std::memory_order_acquire)) { error = "backing tracks are disabled"; return false; }
+    return backing_->importFile(name, bytes, error);
+}
+
+bool Engine::backingCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!backingEnabled_.load(std::memory_order_acquire)) { error = "backing tracks are disabled"; return false; }
+    if (command == "play") backing_->play();
+    else if (command == "pause") backing_->pause();
+    else if (command == "stop") backing_->stopPlayback();
+    else if (command == "restart") backing_->restart();
+    else if (command == "seek") backing_->seek(payload["seconds"].asDouble(0.0));
+    else if (command == "level") return backing_->updateTrackSettings(Json::object({{"level", payload["level"]}}), error);
+    else if (command == "bpm") return backing_->updateTrackSettings(Json::object({{"bpm", payload["bpm"]}}), error);
+    else if (command == "loop") return backing_->updateTrackSettings(Json::object({
+        {"loopEnabled", payload["enabled"]}, {"loopStart", payload["start"]}, {"loopEnd", payload["end"]}
+    }), error);
+    else if (command == "metadata") return backing_->updateTrackSettings(payload, error);
+    else if (command == "next") backing_->next();
+    else if (command == "previous") backing_->previous();
+    else if (command == "rescan") backing_->refreshPlaylist();
+    else if (command == "load") return backing_->load(payload["path"].asString(), error);
+    else if (command == "setlist/load") return backing_->loadSetListEntry(payload["index"].asInt(-1), error);
+    else if (command.rfind("setlist/", 0) == 0) return backing_->setListCommand(command.substr(8), payload, error);
+    else { error = "unknown backing-track command"; return false; }
+    return true;
 }
 
 Json Engine::meterState() const {

@@ -192,9 +192,14 @@ const HARDWARE_ACTIONS = [
     "snapshotMode",
     "bypassAll",
     "tapTempo",
-    "tuner"
+    "tuner",
+    "backingPlayPause",
+    "backingStop",
+    "backingPrevious",
+    "backingNext",
+    "backingView"
 ] as const;
-const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot"] as const;
+const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext"] as const;
 const ENCODER_PUSH_ACTIONS = [
     "none",
     "select",
@@ -208,7 +213,12 @@ const ENCODER_PUSH_ACTIONS = [
     "snapshotMode",
     "bypassAll",
     "tapTempo",
-    "tuner"
+    "tuner",
+    "backingPlayPause",
+    "backingStop",
+    "backingPrevious",
+    "backingNext",
+    "backingView"
 ] as const;
 
 const HARDWARE_ACTION_LABELS: Record<string, string> = {
@@ -225,7 +235,12 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     snapshotMode: "Snapshot mode",
     bypassAll: "Chain bypass",
     tapTempo: "Tap tempo",
-    tuner: "Tuner"
+    tuner: "Tuner",
+    backingPlayPause: "Backing play / pause",
+    backingStop: "Backing stop",
+    backingPrevious: "Backing previous",
+    backingNext: "Backing next",
+    backingView: "Open backing tracks"
 };
 
 function kindListLabel(kind: string): string {
@@ -872,6 +887,7 @@ function ControllerSettings({
                             <HardwareControlDetail
                                 control={selected}
                                 controller={controller}
+                                backingEnabled={bool(engine.state.backingTrackFeatureEnabled)}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => showRemoveControl(str(selected.id))}
@@ -939,6 +955,7 @@ function ControllerSettings({
 function HardwareControlDetail({
     control,
     controller,
+    backingEnabled,
     snapshotSlots,
     onPatch,
     onRemove,
@@ -949,6 +966,7 @@ function HardwareControlDetail({
 }: {
     control: JsonObject;
     controller: JsonObject;
+    backingEnabled: boolean;
     snapshotSlots: number[];
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
@@ -968,11 +986,12 @@ function HardwareControlDetail({
     const pair = objects(controller.controls).find((item) => str(item.id) === str(control.pairId));
     const hasPushButton = Boolean(pair && isEncoderPushKind(normalizeControlKind(str(pair.kind))));
     const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
-    const functionActions = encoder
+    const allFunctionActions = encoder
         ? ENCODER_ACTIONS
         : encoderPush
             ? ENCODER_PUSH_ACTIONS
             : HARDWARE_ACTIONS;
+    const functionActions = allFunctionActions.filter((item) => backingEnabled || !item.startsWith("backing"));
     const rawAction = str(binding.action, "none");
     const action = (functionActions as readonly string[]).includes(rawAction) ? rawAction : "none";
     const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
@@ -1173,6 +1192,7 @@ function HardwareControlDetail({
                     <HardwareControlDetail
                         control={pair}
                         controller={controller}
+                        backingEnabled={backingEnabled}
                         snapshotSlots={snapshotSlots}
                         onPatch={onPatch}
                         onRemove={() => onTogglePushButton(false)}
@@ -1369,13 +1389,6 @@ function SystemSettings({
                         onClick={() => save({ ...system, holdCpuLatency: !bool(system.holdCpuLatency, true) })}>
                         HOLD CPU LATENCY
                     </button>
-                    <button type="button" className={`btn ${bool(system.sharedTransportEnabled) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...system, sharedTransportEnabled: !bool(system.sharedTransportEnabled) })}>
-                        TAP TEMPO CLOCK {bool(system.sharedTransportEnabled) ? "ON" : "OFF"}
-                    </button>
-                </div>
-                <div className="muted">
-                    Shares tap tempo, beat position, metronome and count-in with compatible effects.
                 </div>
             </div>
             <div className="panel">

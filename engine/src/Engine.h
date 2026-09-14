@@ -9,6 +9,7 @@
 #include "midi/MidiInput.h"
 #include "model/Storage.h"
 #include "transport/MusicalTransport.h"
+#include "backing/BackingTrackPlayer.h"
 
 #include <atomic>
 #include <chrono>
@@ -60,6 +61,7 @@ public:
     Json performanceState() const;   ///< the small, frequent update
     Json meterState() const;
     Json transportState() const;
+    Json backingState() const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
@@ -74,6 +76,8 @@ public:
     bool transportPlay(bool restart, std::string& error);
     bool transportStop(std::string& error);
     bool transportRestart(std::string& error);
+    bool backingImport(const std::string& name, const std::string& bytes, std::string& error);
+    bool backingCommand(const std::string& command, const Json& payload, std::string& error);
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
@@ -243,6 +247,7 @@ private:
     void notify();
     void notifyPerformance();
     void notifyUiNav(int delta, bool select);
+    void notifyUiView(const std::string& view);
 
     void handleMidiMessage(const MidiMessage& message);
     void handleSysEx(const std::vector<uint8_t>& sysex);
@@ -314,6 +319,8 @@ private:
     std::atomic<unsigned> maxFrames_{64};
     MusicalTransport transport_;
     std::atomic<bool> transportEnabled_{false};
+    std::unique_ptr<BackingTrackPlayer> backing_;
+    std::atomic<bool> backingEnabled_{false};
 
     struct AnalogCatch {
         bool waiting = true;

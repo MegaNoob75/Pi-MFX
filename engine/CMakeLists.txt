@@ -38,6 +38,7 @@ target_sources(pimfx PRIVATE
     src/midi/Mapping.cpp
     src/midi/MidiInput.cpp
     src/transport/MusicalTransport.cpp
+    src/backing/BackingTrackPlayer.cpp
     src/library/Tone3000.cpp
     src/library/PluginStore.cpp
 )
@@ -79,9 +80,13 @@ if(PkgConfig_FOUND)
     endif()
 
     pkg_check_modules(SNDFILE IMPORTED_TARGET sndfile)
-    if(SNDFILE_FOUND)
+    pkg_check_modules(SAMPLERATE IMPORTED_TARGET samplerate)
+    if(SNDFILE_FOUND AND SAMPLERATE_FOUND)
         target_link_libraries(pimfx PRIVATE PkgConfig::SNDFILE)
-        target_compile_definitions(pimfx PRIVATE PIMFX_HAVE_SNDFILE=1)
+        target_link_libraries(pimfx PRIVATE PkgConfig::SAMPLERATE)
+        target_compile_definitions(pimfx PRIVATE PIMFX_HAVE_SNDFILE=1 PIMFX_HAVE_SAMPLERATE=1)
+    else()
+        message(STATUS "pimfx: libsndfile/libsamplerate not found; backing-track playback disabled")
     endif()
 endif()
 
@@ -144,4 +149,21 @@ if(BUILD_TESTING)
     target_include_directories(pimfx_transport_test PRIVATE src)
     target_link_libraries(pimfx_transport_test PRIVATE Threads::Threads)
     add_test(NAME musical_transport COMMAND pimfx_transport_test)
+    if(SNDFILE_FOUND AND SAMPLERATE_FOUND)
+        add_executable(pimfx_backing_track_test
+            tests/BackingTrackPlayerTest.cpp
+            src/backing/BackingTrackPlayer.cpp
+            src/core/Json.cpp
+            src/core/Paths.cpp
+            src/core/Log.cpp
+        )
+        target_include_directories(pimfx_backing_track_test PRIVATE src)
+        target_compile_definitions(pimfx_backing_track_test PRIVATE PIMFX_HAVE_SNDFILE=1 PIMFX_HAVE_SAMPLERATE=1)
+        target_compile_options(pimfx_backing_track_test PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+        )
+        target_link_libraries(pimfx_backing_track_test PRIVATE PkgConfig::SNDFILE PkgConfig::SAMPLERATE Threads::Threads)
+        add_test(NAME backing_track_player COMMAND pimfx_backing_track_test)
+    endif()
 endif()

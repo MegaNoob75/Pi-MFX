@@ -21,6 +21,7 @@ struct Paths {
     std::string layoutsDir;   ///< named Performance layout JSON
     std::string backupsDir;   ///< UI backup JSON
     std::string bankExportsDir; ///< exported bank JSON copies
+    std::string backingTracksDir; ///< imported backing-track audio and set lists
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 

@@ -35,7 +35,8 @@ namespace pimfx {
 namespace {
 
 constexpr const char* kWebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-constexpr size_t kMaxRequestBytes = 8 * 1024 * 1024; // generous, for theme imports
+// Keep binary backing-track imports bounded while allowing ordinary song files.
+constexpr size_t kMaxRequestBytes = 64 * 1024 * 1024 + 64 * 1024;
 
 std::string trim(const std::string& text) {
     size_t start = 0;
