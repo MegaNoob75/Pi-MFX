@@ -7,8 +7,9 @@
 .git/
 .github/
 
-# Block heavy binary image design assets and logo kits
+# Block heavy binary image design assets and logo kits completely
 branding/
+branding/**
 
 # 8. Documentation Assets (Keep .md files, block embedded image arrays)
 docs/images/
