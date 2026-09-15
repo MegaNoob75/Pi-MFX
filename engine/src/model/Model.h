@@ -293,9 +293,6 @@ struct SystemSettings {
     /// workstation services are enabled automatically rather than by debug UI.
     bool sharedTransportEnabled = true;
     bool backingTracksEnabled = true;
-    /// Development gate for the current workstation milestone.
-    bool stereoLooperEnabled = false;
-
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
 };

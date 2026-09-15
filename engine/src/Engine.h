@@ -328,7 +328,6 @@ private:
     std::unique_ptr<BackingTrackPlayer> backing_;
     std::atomic<bool> backingEnabled_{false};
     std::unique_ptr<StereoLooper> looper_;
-    std::atomic<bool> looperEnabled_{false};
 
     struct AnalogCatch {
         bool waiting = true;
