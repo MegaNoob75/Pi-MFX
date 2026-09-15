@@ -1365,7 +1365,7 @@ function roleForAction(action: string): SwitchRole {
     if (action === "bypassAll") {
         return "bypass";
     }
-    if (action === "looperRecord" || action === "looperClear") {
+    if (action === "looperRecord" || action === "looperClear" || action === "recorderToggle") {
         return "bypass";
     }
     if (action === "looperOverdub") {

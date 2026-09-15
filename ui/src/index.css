@@ -452,6 +452,84 @@
     }
 }
 
+.recorder-view {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow: hidden;
+}
+
+.recorder-status {
+    display: grid;
+    grid-template-columns: 1.3fr 2fr repeat(4, 1fr);
+    gap: 10px;
+}
+
+.recorder-status > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.recorder-status strong { overflow: hidden; font-size: clamp(.95rem, 2.2vw, 1.45rem); text-overflow: ellipsis; white-space: nowrap; }
+.recorder-status.recording { border-color: var(--mfx-danger); box-shadow: 0 0 20px color-mix(in srgb, var(--mfx-danger) 45%, transparent); }
+.recorder-status.recording > div:first-child strong { color: var(--mfx-danger); }
+
+.recorder-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.recorder-playback { display: grid; grid-template-columns: auto auto minmax(140px, 1fr) auto auto; align-items: center; gap: 7px; }
+.recorder-playback .btn { min-height: 44px; }
+.recorder-playback input { width: 100%; }
+.recorder-tab { flex: 1 1 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.recorder-empty { display: grid; place-items: center; align-content: center; min-height: 180px; gap: 12px; text-align: center; }
+.recorder-main-actions { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)) minmax(260px, 2fr); align-items: center; gap: 10px; }
+.recorder-main-actions .btn { min-height: 54px; }
+.recorder-add-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.recorder-track-list { display: grid; gap: 6px; min-height: 0; }
+.recorder-track { display: grid; grid-template-columns: auto minmax(150px, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 7px; border: 1px solid var(--mfx-border); border-radius: var(--mfx-radius); }
+.recorder-track > div { display: grid; min-width: 0; }
+.recorder-track strong, .recorder-project-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recorder-arm { min-width: 76px; }
+
+.recorder-mixer { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; align-items: stretch; }
+.recorder-strip { display: grid; align-content: start; gap: 7px; padding: 10px; border: 1px solid var(--mfx-border); border-radius: var(--mfx-radius); background: var(--mfx-surface); }
+.recorder-strip-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.recorder-strip .field { gap: 2px; }
+
+.recorder-editor { display: grid; grid-template-rows: minmax(100px, 1fr) auto; gap: 8px; }
+.recorder-timeline { display: grid; align-content: start; gap: 5px; overflow: auto; }
+.recorder-lane { display: grid; grid-template-columns: minmax(88px, 18%) 1fr; min-height: 48px; align-items: center; gap: 6px; }
+.recorder-lane > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recorder-lane-clips { position: relative; height: 42px; overflow: hidden; border: 1px solid var(--mfx-border); border-radius: 5px; background: var(--mfx-surface); }
+.recorder-clip { position: absolute; top: 3px; bottom: 3px; min-width: 40px; overflow: hidden; border: 1px solid var(--mfx-cyan); border-radius: 4px; background: color-mix(in srgb, var(--mfx-cyan) 22%, var(--mfx-surface)); color: var(--mfx-text); font-weight: 800; }
+.recorder-clip.selected { border: 2px solid var(--mfx-selected); background: color-mix(in srgb, var(--mfx-selected) 30%, var(--mfx-surface)); }
+.recorder-edit-controls { display: grid; grid-template-columns: minmax(150px, 1.4fr) repeat(5, minmax(90px, 1fr)) repeat(2, auto); align-items: end; gap: 6px; overflow-x: auto; }
+.recorder-edit-controls .btn { min-height: 44px; white-space: nowrap; }
+.recorder-project-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--mfx-border); }
+.recorder-file-actions { flex-wrap: wrap; }
+
+@media (max-height: 620px) and (min-width: 761px) {
+    .page-scroll.recorder-view, .recorder-view .panel { padding: 7px; }
+    .recorder-view { gap: 6px; }
+    .recorder-status { gap: 6px; }
+    .recorder-status strong { font-size: .95rem; }
+    .recorder-tabs .btn, .recorder-track .btn, .recorder-add-row .btn, .recorder-playback .btn { min-height: 42px; padding: 5px 7px; }
+    .recorder-main-actions .btn { min-height: 46px; }
+    .recorder-add-row { grid-template-columns: repeat(5, 1fr); }
+    .recorder-track { padding: 4px; }
+    .recorder-strip { padding: 7px; }
+}
+
+@media (max-width: 760px) {
+    .recorder-view { overflow: auto; }
+    .recorder-status { grid-template-columns: repeat(2, 1fr); }
+    .recorder-status > div:nth-child(2) { grid-column: 1 / -1; grid-row: 1; }
+    .recorder-tab { overflow: visible; }
+    .recorder-add-row { grid-template-columns: repeat(2, 1fr); }
+    .recorder-track { grid-template-columns: auto 1fr auto; }
+    .recorder-track > .btn:nth-last-child(-n+2) { display: none; }
+    .recorder-main-actions { grid-template-columns: 1fr; }
+    .recorder-playback { grid-template-columns: auto auto 1fr; }
+    .recorder-playback span { display: none; }
+    .recorder-playback .btn:last-child { grid-column: 1 / -1; }
+    .recorder-edit-controls { grid-template-columns: repeat(2, minmax(120px, 1fr)); overflow: visible; }
+    .recorder-edit-controls > strong { grid-column: 1 / -1; }
+}
+
 * {
     box-sizing: border-box;
 }

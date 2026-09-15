@@ -523,6 +523,22 @@ void BackingTrackPlayer::restart() {
     std::lock_guard<std::mutex> lock(stateMutex_); state_.set("status", "seeking");
 }
 
+void BackingTrackPlayer::prepareRestart() {
+    if (!loaded_.load(std::memory_order_acquire)) return;
+    playing_.store(false, std::memory_order_release);
+    playbackStarted_.store(false, std::memory_order_release);
+    enqueue(Command{CommandType::Restart, {}, 0.0});
+    std::lock_guard<std::mutex> lock(stateMutex_); state_.set("status", "seeking");
+}
+
+bool BackingTrackPlayer::bufferedToPlay() const {
+    if (!loaded_.load(std::memory_order_acquire)
+        || bufferResetting_.load(std::memory_order_acquire)
+        || readFrame_.load(std::memory_order_acquire) == writeFrame_.load(std::memory_order_acquire)) return false;
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    return state_["status"].asString() == "ready";
+}
+
 void BackingTrackPlayer::seek(double seconds) {
     if (!loaded_.load(std::memory_order_acquire) && !loadPending_.load(std::memory_order_acquire)) return;
     const double bounded = std::max(0.0, std::min(fromMilli(durationMillis_.load(std::memory_order_acquire)), seconds));
@@ -582,7 +598,13 @@ size_t BackingTrackPlayer::writeStereo(const float* stereo, size_t frames) {
     return count;
 }
 
-void BackingTrackPlayer::render(float* const* outputs, unsigned channels, unsigned frames) {
+void BackingTrackPlayer::render(float* const* outputs, unsigned channels, unsigned frames,
+                                float* const* sourceTap, unsigned tapChannels) {
+    if (sourceTap) {
+        for (unsigned channel = 0; channel < tapChannels; ++channel) {
+            std::fill(sourceTap[channel], sourceTap[channel] + frames, 0.0f);
+        }
+    }
     const uint32_t generation = bufferGeneration_.load(std::memory_order_acquire);
     if (generation != realtimeGeneration_) {
         realtimeGeneration_ = generation;
@@ -601,8 +623,12 @@ void BackingTrackPlayer::render(float* const* outputs, unsigned channels, unsign
     const float gain = static_cast<float>(fromMilli(levelMilli_.load(std::memory_order_relaxed)));
     while (consumed < frames && read != write) {
         const size_t index = read * 2;
-        if (channels > 0) outputs[0][consumed] += ring_[index] * gain;
-        if (channels > 1) outputs[1][consumed] += ring_[index + 1] * gain;
+        const float left = ring_[index] * gain;
+        const float right = ring_[index + 1] * gain;
+        if (channels > 0) outputs[0][consumed] += left;
+        if (channels > 1) outputs[1][consumed] += right;
+        if (sourceTap && tapChannels > 0) sourceTap[0][consumed] = left;
+        if (sourceTap && tapChannels > 1) sourceTap[1][consumed] = right;
         read = (read + 1) & ringFrameMask_;
         ++consumed;
     }

@@ -15,6 +15,7 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fno-math-errno -fno-trapping-math")
 
 option(PIMFX_NATIVE_ARCH "Tune for the build machine (leave OFF for portable builds)" OFF)
+option(PIMFX_ENABLE_MULTITRACK_RECORDER "Build the Milestone 3 multitrack recorder" ON)
 
 add_executable(pimfx)
 
@@ -40,6 +41,7 @@ target_sources(pimfx PRIVATE
     src/transport/MusicalTransport.cpp
     src/backing/BackingTrackPlayer.cpp
     src/looper/StereoLooper.cpp
+    src/recorder/MultitrackRecorder.cpp
     src/library/Tone3000.cpp
     src/library/PluginStore.cpp
 )
@@ -138,6 +140,10 @@ target_compile_definitions(pimfx PRIVATE
     PIMFX_GIT_SHA="${PIMFX_GIT_SHA}"
 )
 
+if(PIMFX_ENABLE_MULTITRACK_RECORDER)
+    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_MULTITRACK_RECORDER=1)
+endif()
+
 install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
@@ -164,6 +170,20 @@ if(BUILD_TESTING)
     )
     target_link_libraries(pimfx_stereo_looper_test PRIVATE Threads::Threads)
     add_test(NAME stereo_looper COMMAND pimfx_stereo_looper_test)
+    add_executable(pimfx_multitrack_recorder_test
+        tests/MultitrackRecorderTest.cpp
+        src/recorder/MultitrackRecorder.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_multitrack_recorder_test PRIVATE src)
+    target_compile_options(pimfx_multitrack_recorder_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_multitrack_recorder_test PRIVATE Threads::Threads)
+    add_test(NAME multitrack_recorder COMMAND pimfx_multitrack_recorder_test)
     if(SNDFILE_FOUND AND SAMPLERATE_FOUND)
         add_executable(pimfx_backing_track_test
             tests/BackingTrackPlayerTest.cpp

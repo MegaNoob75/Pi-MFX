@@ -354,7 +354,12 @@ Engine::Engine(Paths paths)
     : storage_(std::move(paths)),
       tunerRing_(kTunerRingSize, 0.0f),
       backing_(std::make_unique<BackingTrackPlayer>(storage_.paths().backingTracksDir)),
-      looper_(std::make_unique<StereoLooper>(storage_.paths().loopsDir)) {}
+      looper_(std::make_unique<StereoLooper>(storage_.paths().loopsDir)) {
+#ifdef PIMFX_ENABLE_MULTITRACK_RECORDER
+    recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
+    recorderEnabled_.store(true, std::memory_order_relaxed);
+#endif
+}
 
 Engine::~Engine() {
     stop();
@@ -372,6 +377,7 @@ bool Engine::start(std::string& error) {
     looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
                        settings_.looper.level, settings_.looper.feedback);
     looper_->start();
+    if (recorder_) recorder_->start();
     banks_ = storage_.loadBanks();
     brokenBankFiles_ = storage_.brokenBankFiles();
 
@@ -466,6 +472,7 @@ void Engine::stop() {
     shuttingDown_.store(true);
     if (backing_) backing_->stop();
     if (looper_) looper_->stop();
+    if (recorder_) recorder_->stop();
     if (tunerThread_.joinable()) {
         tunerThread_.join();
     }
@@ -578,6 +585,8 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     settings_.system = SystemSettings::fromJson(json);
     transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
     backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    if (recorder_) recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
+        backingEnabled_.load(std::memory_order_acquire));
     if (backingEnabled_.load(std::memory_order_acquire) && !wasBackingEnabled) {
         backing_->start();
     } else if (!backingEnabled_.load(std::memory_order_acquire) && wasBackingEnabled) {
@@ -673,6 +682,14 @@ void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     transport_.setSampleRate(sampleRate);
     if (backing_) backing_->prepare(sampleRate);
     looper_->prepare(sampleRate);
+    if (recorder_) {
+        recorder_->prepare(sampleRate, maxFrames);
+        recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
+            backingEnabled_.load(std::memory_order_acquire));
+        recorderBackingBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
+        recorderBackingPointers_.clear();
+        for (auto& channel : recorderBackingBus_) recorderBackingPointers_.push_back(channel.data());
+    }
 }
 
 void Engine::releaseResources() {}
@@ -704,6 +721,13 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         guitar = inputChannels - 1;
     }
 
+    const bool recorderCapturing = recorder_ && recorderEnabled_.load(std::memory_order_relaxed)
+        && recorder_->beginCapture(frames, transportEnabled ? transportBlock.timelineFrame : 0);
+    if (recorderCapturing && inputChannels > 0) {
+        const float* rawInput = inputs[guitar];
+        recorder_->captureSource(MultitrackRecorder::Source::Raw, &rawInput, 1, frames);
+    }
+
     const auto copyGuitar = [&](float* destination) {
         const float* source = inputs[guitar];
         for (unsigned frame = 0; frame < frames; ++frame) {
@@ -733,6 +757,10 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                 std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
             }
         }
+        if (recorderCapturing) {
+            recorder_->captureSource(MultitrackRecorder::Source::Processed,
+                reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+        }
         looper_->process(reinterpret_cast<const float* const*>(outputs), outputChannels,
                          outputs, outputChannels, frames,
                          transportEnabled ? &transportBlock : nullptr);
@@ -743,7 +771,22 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                 }
             }
         }
-        if (backingEnabled_.load(std::memory_order_relaxed)) backing_->render(outputs, outputChannels, frames);
+        if (backingEnabled_.load(std::memory_order_relaxed)) {
+            backing_->render(outputs, outputChannels, frames,
+                recorderCapturing ? recorderBackingPointers_.data() : nullptr,
+                recorderCapturing ? static_cast<unsigned>(recorderBackingPointers_.size()) : 0);
+            if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
+                reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
+                static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+        }
+        if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
+            recorder_->renderPlayback(outputs, outputChannels, frames);
+        }
+        if (recorderCapturing) {
+            recorder_->captureSource(MultitrackRecorder::Source::Master,
+                reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+            recorder_->finishCapture();
+        }
         return;
     }
 
@@ -811,6 +854,10 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         }
     }
     outputGain_.store(target, std::memory_order_relaxed);
+    if (recorderCapturing) {
+        recorder_->captureSource(MultitrackRecorder::Source::Processed,
+            reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+    }
     looper_->process(reinterpret_cast<const float* const*>(rendered->data()), channels,
                      outputs, outputChannels, frames,
                      transportEnabled ? &transportBlock : nullptr);
@@ -821,7 +868,22 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             }
         }
     }
-    if (backingEnabled_.load(std::memory_order_relaxed)) backing_->render(outputs, outputChannels, frames);
+    if (backingEnabled_.load(std::memory_order_relaxed)) {
+        backing_->render(outputs, outputChannels, frames,
+            recorderCapturing ? recorderBackingPointers_.data() : nullptr,
+            recorderCapturing ? static_cast<unsigned>(recorderBackingPointers_.size()) : 0);
+        if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
+            reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
+            static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+    }
+    if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
+        recorder_->renderPlayback(outputs, outputChannels, frames);
+    }
+    if (recorderCapturing) {
+        recorder_->captureSource(MultitrackRecorder::Source::Master,
+            reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+        recorder_->finishCapture();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2826,6 +2888,9 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "looperRedo"
         && request.action != "looperClear"
         && request.action != "looperView"
+        && request.action != "recorderToggle"
+        && request.action != "recorderStop"
+        && request.action != "recorderView"
         && request.action != "navigate"
         && request.action != "select") {
         if (binding.snapshotSlot >= 0) {
@@ -2998,6 +3063,16 @@ void Engine::runAction(const ActionRequest& incoming) {
                 error = "looper clear must be assigned as a hold action";
             }
         }
+    } else if (request.action.rfind("recorder", 0) == 0 && recorder_) {
+        if (request.action == "recorderView") {
+            notifyUiView("recorder");
+        } else {
+            const bool active = recorder_->recording();
+            const std::string command = request.action == "recorderStop"
+                ? "record/stop" : active ? "record/stop" : "record/start";
+            recorderCommand(command, Json::object(), error);
+            refreshLeds();
+        }
     } else if (request.action == "none") {
         return;
     }
@@ -3128,6 +3203,10 @@ void Engine::refreshLeds() {
                     state.on = looperState["hasLoop"].asBool(false);
                     colourRole = "danger";
                 }
+            } else if (control.binding.action.rfind("recorder", 0) == 0 && recorder_) {
+                const bool active = recorder_->recording();
+                state.on = control.binding.action == "recorderStop" ? !active : active;
+                colourRole = active ? "danger" : "utility";
             }
             break;
         }
@@ -3518,6 +3597,16 @@ void Engine::housekeepingThread() {
         }
         collectRetiredChains();
         flushBankPersistIfDue();
+        if (recorderOwnsTransport_.load(std::memory_order_acquire) && recorder_
+            && !recorder_->recording() && !recorder_->playing()) {
+            transport_.stop();
+            recorderOwnsTransport_.store(false, std::memory_order_release);
+        }
+        if (recorderOwnsBacking_.load(std::memory_order_acquire) && recorder_
+            && !recorder_->recording()) {
+            backing_->stopPlayback();
+            recorderOwnsBacking_.store(false, std::memory_order_release);
+        }
 
         // Meters update several times a second; the full state only changes
         // when something actually changes, so it is not sent on a timer.
@@ -3532,9 +3621,13 @@ void Engine::housekeepingThread() {
                     listener_(backing_->state());
                 }
                 listener_(looperState());
+                if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
+                    listener_(recorderState());
+                }
             }
             if (transportEnabled_.load(std::memory_order_acquire)
-                || backingEnabled_.load(std::memory_order_acquire)) refreshLeds();
+                || backingEnabled_.load(std::memory_order_acquire)
+                || recorderEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3634,6 +3727,8 @@ Json Engine::fullState() const {
     json.set("backingTrackFeatureEnabled", backingEnabled_.load(std::memory_order_acquire));
     if (backingEnabled_.load(std::memory_order_acquire)) json.set("backing", backing_->state());
     json.set("looper", looperState());
+    json.set("recorderFeatureEnabled", recorderEnabled_.load(std::memory_order_acquire));
+    if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -3865,6 +3960,81 @@ bool Engine::looperExport(const std::string& requestedName, std::string& content
     }
     name = fileName(path);
     return true;
+}
+
+Json Engine::recorderState() const {
+    if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
+        Json state = Json::object();
+        state.set("type", "recorder");
+        state.set("status", "disabled");
+        return state;
+    }
+    Json state = recorder_->state();
+    if (backingEnabled_.load(std::memory_order_acquire) && backing_) {
+        const Json backing = backing_->state();
+        state.set("backingAvailable", backing["available"]);
+        state.set("backingLoaded", backing["loaded"]);
+        state.set("backingPlaying", backing["playing"]);
+        state.set("backingName", backing["name"]);
+    }
+    return state;
+}
+
+bool Engine::recorderCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
+        error = "multitrack recorder is disabled";
+        return false;
+    }
+    const bool transportWasPlaying = transport_.playing();
+    const bool recordWithBacking = command == "record/start" && payload["playBacking"].asBool();
+    if (recordWithBacking) {
+        if (!backingEnabled_.load(std::memory_order_acquire) || !backing_) {
+            error = "backing tracks are disabled";
+            return false;
+        }
+        if (!backing_->state()["loaded"].asBool()) {
+            error = "load a backing track before using Record With Backing";
+            return false;
+        }
+        backing_->prepareRestart();
+        for (int attempt = 0; attempt < 150 && !backing_->bufferedToPlay(); ++attempt)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (!backing_->bufferedToPlay()) {
+            error = "backing track did not become ready in time";
+            return false;
+        }
+    }
+    const bool ok = recorder_->command(command, payload, error);
+    if (!ok) return false;
+    if (recordWithBacking) {
+        backing_->play();
+        recorderOwnsBacking_.store(true, std::memory_order_release);
+    }
+    if ((command == "record/start" || command == "playback/play")
+        && transportEnabled_.load(std::memory_order_acquire) && !transportWasPlaying) {
+        transport_.play(false);
+        recorderOwnsTransport_.store(true, std::memory_order_release);
+    }
+    if ((command == "record/stop" || command == "playback/pause" || command == "playback/stop")
+        && recorderOwnsTransport_.load(std::memory_order_acquire)
+        && !recorder_->recording() && !recorder_->playing()) {
+        transport_.stop();
+        recorderOwnsTransport_.store(false, std::memory_order_release);
+    }
+    if (command == "record/stop" && recorderOwnsBacking_.load(std::memory_order_acquire)) {
+        backing_->stopPlayback();
+        recorderOwnsBacking_.store(false, std::memory_order_release);
+    }
+    return true;
+}
+
+bool Engine::recorderExport(const std::string& kind, const std::string& trackId,
+                            std::string& path, std::string& name, std::string& error) {
+    if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
+        error = "multitrack recorder is disabled";
+        return false;
+    }
+    return recorder_->exportFile(kind, trackId, path, name, error);
 }
 
 Json Engine::meterState() const {
