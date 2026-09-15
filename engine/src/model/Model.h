@@ -293,6 +293,8 @@ struct SystemSettings {
     /// workstation services are enabled automatically rather than by debug UI.
     bool sharedTransportEnabled = true;
     bool backingTracksEnabled = true;
+    /// Development gate for the current workstation milestone.
+    bool stereoLooperEnabled = false;
 
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
@@ -309,11 +311,22 @@ struct TransportSettings {
     static TransportSettings fromJson(const Json& json);
 };
 
+struct LooperSettings {
+    std::string quantization = "free";
+    bool countIn = false;
+    float level = 1.0f;
+    float feedback = 1.0f;
+
+    Json toJson() const;
+    static LooperSettings fromJson(const Json& json);
+};
+
 struct Settings {
     AudioSettings audio;
     UiSettings ui;
     SystemSettings system;
     TransportSettings transport;
+    LooperSettings looper;
     ControllerConfig controller;
 
     std::string activeBankId;

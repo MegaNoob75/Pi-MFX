@@ -23,6 +23,7 @@ import { MarqueeText } from "./views/MarqueeText";
 import { ConfirmDialog } from "./views/ConfirmDialog";
 import { TransportView } from "./views/TransportView";
 import { BackingTracksView } from "./views/BackingTracksView";
+import { LooperView } from "./views/LooperView";
 import { installResponsiveSizing } from "./responsive";
 
 export type View =
@@ -38,6 +39,7 @@ export type View =
     | SettingsPage
     | "transport"
     | "backingTracks"
+    | "looper"
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
@@ -46,6 +48,7 @@ const titles: Record<string, string> = {
     performance: "PERFORMANCE",
     transport: "TAP TEMPO",
     backingTracks: "BACKING TRACKS",
+    looper: "LOOPER",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
@@ -70,7 +73,7 @@ const titles: Record<string, string> = {
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
-    "plugins", "files", "transport", "backingTracks", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "plugins", "files", "transport", "backingTracks", "looper", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
@@ -94,6 +97,7 @@ export function App() {
     const engineRestarted = useRef(false);
     const transportEnabled = bool(engine.state.transportFeatureEnabled);
     const backingEnabled = bool(engine.state.backingTrackFeatureEnabled);
+    const looperEnabled = bool(engine.state.looperFeatureEnabled);
 
     useEffect(() => {
         if (!transportEnabled && view === "transport") {
@@ -103,6 +107,7 @@ export function App() {
         }
     }, [transportEnabled, view, engine.client]);
     useEffect(() => { if (!backingEnabled && view === "backingTracks") { setView("performance"); setHistory([]); } }, [backingEnabled, view]);
+    useEffect(() => { if (!looperEnabled && view === "looper") { setView("performance"); setHistory([]); } }, [looperEnabled, view]);
 
     useEffect(() => {
         if (!engine.connected) {
@@ -261,7 +266,8 @@ export function App() {
 
     useEffect(() => engine.client.subscribeUiView((message) => {
         if (str(message.view) === "backingTracks" && backingEnabled) goTo("backingTracks");
-    }), [engine.client, backingEnabled, view]);
+        if (str(message.view) === "looper" && looperEnabled) goTo("looper");
+    }), [engine.client, backingEnabled, looperEnabled, view]);
 
     const finishBack = () => {
         setHistory((stack) => {
@@ -503,6 +509,7 @@ export function App() {
                 )}
                 {view === "transport" && transportEnabled && <TransportView engine={engine} run={run} />}
                 {view === "backingTracks" && backingEnabled && <BackingTracksView engine={engine} run={run} />}
+                {view === "looper" && looperEnabled && <LooperView engine={engine} run={run} />}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && (
                     <EditorView
@@ -609,6 +616,7 @@ export function App() {
                                 active={view === "transport"} onClick={() => goTo("transport")} />
                         )}
                         {backingEnabled && <MenuButton label="BACKING TRACKS" subtitle="Import and play independent tracks" active={view === "backingTracks"} onClick={() => goTo("backingTracks")} />}
+                        {looperEnabled && <MenuButton label="LOOPER" subtitle="Record and overdub one stereo loop" active={view === "looper"} onClick={() => goTo("looper")} />}
                         <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"

@@ -76,6 +76,20 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
         response.json(envelope(ok, error, engine_.backingState()).dump(), ok ? 200 : 400);
         return true;
     }
+    if (command == "looper/export" && request.method == "GET") {
+        std::string contents;
+        std::string name;
+        std::string error;
+        if (!engine_.looperExport(request.queryValue("name"), contents, name, error)) {
+            response.error(400, error);
+        } else {
+            response.status = 200;
+            response.contentType = "audio/wav";
+            response.body = std::move(contents);
+            response.extraHeaders.emplace_back("Content-Disposition", "attachment; filename=\"" + name + "\"");
+        }
+        return true;
+    }
 
     Json payload;
     if (request.method == "GET" || request.method == "DELETE") {
@@ -114,6 +128,9 @@ void ApiRouter::handleSocketOpen(uint64_t clientId) {
     server_.sendTo(clientId, engine_.meterState().dump());
     if (engine_.settings().system.sharedTransportEnabled) {
         server_.sendTo(clientId, engine_.transportState().dump());
+    }
+    if (engine_.settings().system.stereoLooperEnabled) {
+        server_.sendTo(clientId, engine_.looperState().dump());
     }
     {
         std::lock_guard<std::mutex> lock(uiSessionMutex_);
@@ -562,6 +579,15 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command.rfind("backing/", 0) == 0) {
         ok = engine_.backingCommand(command.substr(8), payload, error);
         return engine_.backingState();
+    }
+    if (command == "looper/settings") {
+        ok = engine_.applyLooperSettings(payload, error);
+        return engine_.looperState();
+    }
+    if (command == "looper/state") return engine_.looperState();
+    if (command.rfind("looper/", 0) == 0) {
+        ok = engine_.looperCommand(command.substr(7), payload, error);
+        return engine_.looperState();
     }
     if (command == "tuner") {
         engine_.setTunerEnabled(payload["enabled"].asBool(true));

@@ -22,6 +22,7 @@ struct Paths {
     std::string backupsDir;   ///< UI backup JSON
     std::string bankExportsDir; ///< exported bank JSON copies
     std::string backingTracksDir; ///< imported backing-track audio and set lists
+    std::string loopsDir;      ///< safely saved stereo looper WAV files
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 

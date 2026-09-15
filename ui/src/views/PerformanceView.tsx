@@ -378,6 +378,12 @@ export function PerformanceView({
         if (action === "bypassAll") {
             return "bypass";
         }
+        if (action === "looperRecord" || action === "looperClear") {
+            return "bypass";
+        }
+        if (action === "looperOverdub") {
+            return "snapshot";
+        }
         return "utility";
     };
 
@@ -409,6 +415,9 @@ export function PerformanceView({
         if (action === "tapTempo") {
             return `${num(state.tempo, num(obj(preset).tempo, 120)).toFixed(1)} BPM`;
         }
+        if (action.startsWith("looper")) {
+            return str(engine.looper.status, "empty").toUpperCase();
+        }
         return action.toUpperCase();
     };
 
@@ -423,6 +432,18 @@ export function PerformanceView({
             snapshotMode: "SNAPSHOT MODE",
             selectPreset: "PRESET",
             selectSnapshot: "SNAPSHOT",
+            looperRecord: "LOOP RECORD",
+            looperToggle: "LOOP REC / PLAY / DUB",
+            looperPlay: "LOOP PLAY",
+            looperPlayStop: "LOOP PLAY / STOP",
+            looperOverdub: "LOOP OVERDUB",
+            looperStop: "LOOP STOP",
+            looperRestart: "LOOP RESTART",
+            looperMute: "LOOP MUTE",
+            looperUndo: "LOOP UNDO",
+            looperRedo: "LOOP REDO",
+            looperClear: "CLEAR LOOP",
+            looperView: "OPEN LOOPER",
             reloadPreset: "RELOAD PRESET",
             presetUp: "PRESET UP",
             presetDown: "PRESET DOWN",
@@ -712,6 +733,17 @@ export function PerformanceView({
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
                     || (action === "tapTempo" && bool(engine.transport.beatPulse))
+                    || (action === "looperRecord" && ["armed", "recording"].includes(str(engine.looper.status)))
+                    || (action === "looperToggle" && ["armed", "recording", "playing", "overdubbing"].includes(str(engine.looper.status)))
+                    || (action === "looperPlay" && ["playing", "overdubbing"].includes(str(engine.looper.status)))
+                    || (action === "looperPlayStop" && ["playing", "overdubbing"].includes(str(engine.looper.status)))
+                    || (action === "looperOverdub" && str(engine.looper.status) === "overdubbing")
+                    || (action === "looperStop" && str(engine.looper.status) === "stopped")
+                    || (action === "looperRestart" && bool(engine.looper.hasLoop))
+                    || (action === "looperMute" && bool(engine.looper.muted))
+                    || (action === "looperUndo" && bool(engine.looper.canUndo))
+                    || (action === "looperRedo" && bool(engine.looper.canRedo))
+                    || (action === "looperClear" && bool(engine.looper.hasLoop))
                     || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
                         && num(binding.snapshotSlot, -1) >= 0)
                     || (toggleSlot !== "" && bool(
@@ -1029,7 +1061,8 @@ export function PerformanceView({
         bank: str(obj(bank).name, "—"),
         preset: str(obj(preset).name, "—"),
         bypass: bypassAll ? "ON" : "OFF",
-        snaps: snapshotStatus
+        snaps: snapshotStatus,
+        looper: str(engine.looper.status, "empty").toUpperCase()
     };
 
     const selectBankId = (id: string) => {
@@ -1676,6 +1709,7 @@ function widgetText(id: string, values: Record<string, string>): string {
         case "chainBypassStatus": return values.bypass;
         case "snapshotModeStatus": return values.snaps;
         case "tuner": return values.tuner;
+        case "looperStatus": return values.looper;
         default: return "—";
     }
 }

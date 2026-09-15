@@ -10,6 +10,7 @@
 #include "model/Storage.h"
 #include "transport/MusicalTransport.h"
 #include "backing/BackingTrackPlayer.h"
+#include "looper/StereoLooper.h"
 
 #include <atomic>
 #include <chrono>
@@ -62,6 +63,7 @@ public:
     Json meterState() const;
     Json transportState() const;
     Json backingState() const;
+    Json looperState() const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
@@ -78,6 +80,10 @@ public:
     bool transportRestart(std::string& error);
     bool backingImport(const std::string& name, const std::string& bytes, std::string& error);
     bool backingCommand(const std::string& command, const Json& payload, std::string& error);
+    bool applyLooperSettings(const Json& json, std::string& error);
+    bool looperCommand(const std::string& command, const Json& payload, std::string& error);
+    bool looperExport(const std::string& requestedName, std::string& contents,
+                      std::string& name, std::string& error) const;
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
@@ -321,6 +327,8 @@ private:
     std::atomic<bool> transportEnabled_{false};
     std::unique_ptr<BackingTrackPlayer> backing_;
     std::atomic<bool> backingEnabled_{false};
+    std::unique_ptr<StereoLooper> looper_;
+    std::atomic<bool> looperEnabled_{false};
 
     struct AnalogCatch {
         bool waiting = true;

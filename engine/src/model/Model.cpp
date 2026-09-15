@@ -565,6 +565,7 @@ Json SystemSettings::toJson() const {
     json.set("holdCpuLatency", holdCpuLatency);
     json.set("sharedTransportEnabled", sharedTransportEnabled);
     json.set("backingTracksEnabled", backingTracksEnabled);
+    json.set("stereoLooperEnabled", stereoLooperEnabled);
     return json;
 }
 
@@ -581,6 +582,7 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     // Backing Tracks still reports unavailable when decoder libraries are absent.
     settings.sharedTransportEnabled = true;
     settings.backingTracksEnabled = true;
+    settings.stereoLooperEnabled = json["stereoLooperEnabled"].asBool(false);
     return settings;
 }
 
@@ -606,13 +608,33 @@ TransportSettings TransportSettings::fromJson(const Json& json) {
     return settings;
 }
 
+Json LooperSettings::toJson() const {
+    Json json = Json::object();
+    json.set("quantization", quantization);
+    json.set("countIn", countIn);
+    json.set("level", level);
+    json.set("feedback", feedback);
+    return json;
+}
+
+LooperSettings LooperSettings::fromJson(const Json& json) {
+    LooperSettings settings;
+    const std::string quantization = json["quantization"].asString("free");
+    settings.quantization = quantization == "beat" || quantization == "bar" ? quantization : "free";
+    settings.countIn = json["countIn"].asBool(false);
+    settings.level = std::max(0.0f, std::min(1.5f, json["level"].asFloat(1.0f)));
+    settings.feedback = std::max(0.0f, std::min(1.0f, json["feedback"].asFloat(1.0f)));
+    return settings;
+}
+
 Json Settings::toJson() const {
     Json json = Json::object();
-    json.set("version", 2);
+    json.set("version", 3);
     json.set("audio", audioSettingsToJson(audio));
     json.set("ui", ui.toJson());
     json.set("system", system.toJson());
     json.set("transport", transport.toJson());
+    json.set("looper", looper.toJson());
     json.set("controller", controller.toJson());
     json.set("activeBankId", activeBankId);
     json.set("activePresetId", activePresetId);
@@ -625,6 +647,7 @@ Settings Settings::fromJson(const Json& json) {
     settings.ui = UiSettings::fromJson(json["ui"]);
     settings.system = SystemSettings::fromJson(json["system"]);
     settings.transport = TransportSettings::fromJson(json["transport"]);
+    settings.looper = LooperSettings::fromJson(json["looper"]);
     settings.controller = ControllerConfig::fromJson(json["controller"]);
     settings.activeBankId = json["activeBankId"].asString();
     settings.activePresetId = json["activePresetId"].asString();

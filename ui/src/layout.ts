@@ -10,7 +10,8 @@ export const STATUS_WIDGET_IDS = [
     "snapshotModeStatus",
     "tuner",
     "inputMeter",
-    "outputMeter"
+    "outputMeter",
+    "looperStatus"
 ] as const;
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
@@ -25,7 +26,8 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     snapshotModeStatus: "Snapshots",
     tuner: "Tuner",
     inputMeter: "Input Gain",
-    outputMeter: "Output Gain"
+    outputMeter: "Output Gain",
+    looperStatus: "Looper"
 };
 
 export function isMeterWidget(id: string): boolean {

@@ -54,6 +54,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.backupsDir = joinPath(root, "backups");
     paths.bankExportsDir = joinPath(root, "bank-exports");
     paths.backingTracksDir = joinPath(root, "backing-tracks");
+    paths.loopsDir = joinPath(root, "loops");
 
     paths.webRoot = environment("PIMFX_WEB_ROOT");
     if (paths.webRoot.empty()) {
@@ -77,6 +78,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.backupsDir);
     makeDirectories(paths.bankExportsDir);
     makeDirectories(paths.backingTracksDir);
+    makeDirectories(paths.loopsDir);
     return paths;
 }
 
