@@ -197,7 +197,18 @@ const HARDWARE_ACTIONS = [
     "backingStop",
     "backingPrevious",
     "backingNext",
-    "backingView"
+    "backingView",
+    "looperRecord",
+    "looperToggle",
+    "looperPlay",
+    "looperPlayStop",
+    "looperOverdub",
+    "looperStop",
+    "looperRestart",
+    "looperMute",
+    "looperUndo",
+    "looperRedo",
+    "looperView"
 ] as const;
 const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext"] as const;
 const ENCODER_PUSH_ACTIONS = [
@@ -218,8 +229,20 @@ const ENCODER_PUSH_ACTIONS = [
     "backingStop",
     "backingPrevious",
     "backingNext",
-    "backingView"
+    "backingView",
+    "looperRecord",
+    "looperToggle",
+    "looperPlay",
+    "looperPlayStop",
+    "looperOverdub",
+    "looperStop",
+    "looperRestart",
+    "looperMute",
+    "looperUndo",
+    "looperRedo",
+    "looperView"
 ] as const;
+const HOLD_ACTIONS = [...HARDWARE_ACTIONS, "looperClear"] as const;
 
 const HARDWARE_ACTION_LABELS: Record<string, string> = {
     none: "None",
@@ -240,7 +263,19 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     backingStop: "Backing stop",
     backingPrevious: "Backing previous",
     backingNext: "Backing next",
-    backingView: "Open backing tracks"
+    backingView: "Open backing tracks",
+    looperRecord: "Looper record",
+    looperToggle: "Looper record / play / overdub",
+    looperPlay: "Looper play",
+    looperPlayStop: "Looper play / stop",
+    looperOverdub: "Looper overdub",
+    looperStop: "Looper stop",
+    looperRestart: "Looper restart",
+    looperMute: "Looper mute",
+    looperUndo: "Looper undo",
+    looperRedo: "Looper redo",
+    looperClear: "Looper clear (hold)",
+    looperView: "Open looper"
 };
 
 function kindListLabel(kind: string): string {
@@ -888,6 +923,7 @@ function ControllerSettings({
                                 control={selected}
                                 controller={controller}
                                 backingEnabled={bool(engine.state.backingTrackFeatureEnabled)}
+                                looperEnabled={bool(engine.state.looperFeatureEnabled)}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => showRemoveControl(str(selected.id))}
@@ -956,6 +992,7 @@ function HardwareControlDetail({
     control,
     controller,
     backingEnabled,
+    looperEnabled,
     snapshotSlots,
     onPatch,
     onRemove,
@@ -967,6 +1004,7 @@ function HardwareControlDetail({
     control: JsonObject;
     controller: JsonObject;
     backingEnabled: boolean;
+    looperEnabled: boolean;
     snapshotSlots: number[];
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
@@ -991,7 +1029,10 @@ function HardwareControlDetail({
         : encoderPush
             ? ENCODER_PUSH_ACTIONS
             : HARDWARE_ACTIONS;
-    const functionActions = allFunctionActions.filter((item) => backingEnabled || !item.startsWith("backing"));
+    const functionActions = allFunctionActions.filter((item) => (backingEnabled || !item.startsWith("backing"))
+        && (looperEnabled || !item.startsWith("looper")));
+    const holdActions = HOLD_ACTIONS.filter((item) => (backingEnabled || !item.startsWith("backing"))
+        && (looperEnabled || !item.startsWith("looper")));
     const rawAction = str(binding.action, "none");
     const action = (functionActions as readonly string[]).includes(rawAction) ? rawAction : "none";
     const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
@@ -1093,7 +1134,7 @@ function HardwareControlDetail({
                             value={holdAction}
                             onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, holdAction: event.target.value }, event.target.value))}
                         >
-                            {actionOptions(true, HARDWARE_ACTIONS)}
+                            {actionOptions(true, holdActions)}
                         </select>
                     </label>
                 )}
@@ -1104,7 +1145,7 @@ function HardwareControlDetail({
                             value={doubleAction}
                             onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, doubleAction: event.target.value }, event.target.value))}
                         >
-                            {actionOptions(true, HARDWARE_ACTIONS)}
+                            {actionOptions(true, functionActions)}
                         </select>
                     </label>
                 )}
@@ -1193,6 +1234,7 @@ function HardwareControlDetail({
                         control={pair}
                         controller={controller}
                         backingEnabled={backingEnabled}
+                        looperEnabled={looperEnabled}
                         snapshotSlots={snapshotSlots}
                         onPatch={onPatch}
                         onRemove={() => onTogglePushButton(false)}
@@ -1388,6 +1430,16 @@ function SystemSettings({
                     <button type="button" className={`btn ${bool(system.holdCpuLatency, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...system, holdCpuLatency: !bool(system.holdCpuLatency, true) })}>
                         HOLD CPU LATENCY
+                    </button>
+                </div>
+            </div>
+            <div className="panel stack">
+                <h2>WORKSTATION FEATURES</h2>
+                <div className="muted">Milestone 2 remains isolated until it passes Raspberry Pi testing.</div>
+                <div className="row">
+                    <button type="button" className={`btn ${bool(system.stereoLooperEnabled) ? "btn-active" : ""}`}
+                        onClick={() => save({ ...system, stereoLooperEnabled: !bool(system.stereoLooperEnabled) })}>
+                        STEREO LOOPER {bool(system.stereoLooperEnabled) ? "ON" : "OFF"}
                     </button>
                 </div>
             </div>

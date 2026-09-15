@@ -2169,6 +2169,186 @@ button.list-item {
     align-content: stretch;
 }
 
+.looper-state {
+    display: grid;
+    grid-template-columns: 2fr repeat(4, 1fr);
+    gap: 12px;
+    border-color: var(--mfx-border);
+}
+
+.looper-view {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 8px;
+    overflow: hidden;
+}
+
+.looper-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.looper-tab-content {
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+}
+
+.looper-state > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.looper-state strong {
+    font-size: clamp(1.2rem, 3vw, 2.4rem);
+    letter-spacing: 0.08em;
+}
+
+.looper-state.recording,
+.looper-state.armed {
+    border-color: var(--mfx-danger);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--mfx-danger) 45%, transparent);
+}
+
+.looper-state.recording strong,
+.looper-state.armed strong {
+    color: var(--mfx-danger);
+}
+
+.looper-state.overdubbing strong {
+    color: var(--mfx-selected);
+}
+
+.looper-waveform {
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 12px;
+    overflow: hidden;
+    border: 1px solid var(--mfx-border);
+    border-radius: var(--mfx-radius);
+    background: var(--mfx-surface);
+}
+
+.looper-performance {
+    display: grid;
+    grid-template-rows: minmax(58px, 1fr) auto auto;
+    gap: 8px;
+    overflow: hidden;
+}
+
+.looper-waveform i {
+    flex: 1 1 2px;
+    min-width: 2px;
+    max-width: 10px;
+    border-radius: 2px;
+    background: var(--mfx-cyan);
+}
+
+.looper-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.looper-actions .btn {
+    min-height: 50px;
+}
+
+.looper-overdub {
+    border-color: var(--mfx-selected);
+}
+
+.looper-settings {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+    gap: 14px;
+}
+
+.looper-save-actions {
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.looper-library-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-top: 1px solid var(--mfx-border);
+}
+
+.looper-library-row strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+    .looper-settings { grid-template-columns: repeat(2, 1fr); }
+    .looper-library-row { grid-template-columns: 1fr auto; }
+}
+
+@media (max-height: 620px) and (min-width: 761px) {
+    .page-scroll.looper-view,
+    .looper-view .panel {
+        padding: 8px;
+    }
+
+    .looper-state {
+        gap: 8px;
+    }
+
+    .looper-state > div {
+        gap: 1px;
+    }
+
+    .looper-state strong {
+        font-size: clamp(1rem, 2.2vw, 1.45rem);
+    }
+
+    .looper-tabs .btn,
+    .looper-actions .btn {
+        min-height: 44px;
+    }
+
+    .looper-waveform {
+        padding: 6px;
+    }
+
+    .looper-settings,
+    .looper-options {
+        gap: 8px;
+    }
+}
+
+@media (max-width: 760px) {
+    .looper-view {
+        overflow: auto;
+    }
+
+    .looper-tab-content {
+        overflow: visible;
+    }
+
+    .looper-state {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .looper-state > div:first-child {
+        grid-column: 1 / -1;
+    }
+
+    .looper-actions {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
 .layout-measurement {
     position: fixed;
     z-index: 80;
