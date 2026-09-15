@@ -11,6 +11,7 @@ export interface EngineSnapshot {
     transport: JsonObject;
     backing: JsonObject;
     looper: JsonObject;
+    recorder: JsonObject;
     uiSession: JsonObject;
 }
 
@@ -24,6 +25,7 @@ const emptySnapshot = (): EngineSnapshot => ({
     transport: {},
     backing: {},
     looper: {},
+    recorder: {},
     uiSession: {}
 });
 
@@ -189,6 +191,7 @@ export class EngineClient {
                 transport: isObj(message.transport as Json) ? message.transport as JsonObject : this.snapshot.transport,
                 backing: isObj(message.backing as Json) ? message.backing as JsonObject : this.snapshot.backing,
                 looper: isObj(message.looper as Json) ? message.looper as JsonObject : this.snapshot.looper,
+                recorder: isObj(message.recorder as Json) ? message.recorder as JsonObject : this.snapshot.recorder,
                 lastError: str(message.audioError)
             });
             return;
@@ -218,6 +221,10 @@ export class EngineClient {
         }
         if (type === "looper") {
             this.patch({ looper: message });
+            return;
+        }
+        if (type === "recorder") {
+            this.patch({ recorder: message });
             return;
         }
         if (type === "uiNav") {

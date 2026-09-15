@@ -378,7 +378,7 @@ export function PerformanceView({
         if (action === "bypassAll") {
             return "bypass";
         }
-        if (action === "looperRecord" || action === "looperClear") {
+        if (action === "looperRecord" || action === "looperClear" || action === "recorderToggle") {
             return "bypass";
         }
         if (action === "looperOverdub") {
@@ -418,6 +418,9 @@ export function PerformanceView({
         if (action.startsWith("looper")) {
             return str(engine.looper.status, "empty").toUpperCase();
         }
+        if (action.startsWith("recorder")) {
+            return str(engine.recorder.status, "stopped").toUpperCase();
+        }
         return action.toUpperCase();
     };
 
@@ -444,6 +447,9 @@ export function PerformanceView({
             looperRedo: "LOOP REDO",
             looperClear: "CLEAR LOOP",
             looperView: "OPEN LOOPER",
+            recorderToggle: "REC / STOP",
+            recorderStop: "STOP RECORDING",
+            recorderView: "OPEN RECORDER",
             reloadPreset: "RELOAD PRESET",
             presetUp: "PRESET UP",
             presetDown: "PRESET DOWN",
@@ -744,6 +750,8 @@ export function PerformanceView({
                     || (action === "looperUndo" && bool(engine.looper.canUndo))
                     || (action === "looperRedo" && bool(engine.looper.canRedo))
                     || (action === "looperClear" && bool(engine.looper.hasLoop))
+                    || (action === "recorderToggle" && str(engine.recorder.status) === "recording")
+                    || (action === "recorderStop" && str(engine.recorder.status) === "stopped")
                     || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
                         && num(binding.snapshotSlot, -1) >= 0)
                     || (toggleSlot !== "" && bool(

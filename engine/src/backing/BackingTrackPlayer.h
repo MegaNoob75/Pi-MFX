@@ -36,13 +36,16 @@ public:
     void pause();
     void stopPlayback();
     void restart();
+    void prepareRestart();
+    bool bufferedToPlay() const;
     void seek(double seconds);
     void setLevel(float level);
     void setManualBpm(double bpm);
     void setLoop(bool enabled, double start, double end);
 
     /// Realtime callback entry: atomics and preallocated memory only.
-    void render(float* const* outputs, unsigned channels, unsigned frames);
+    void render(float* const* outputs, unsigned channels, unsigned frames,
+                float* const* sourceTap = nullptr, unsigned tapChannels = 0);
     Json state() const;
     bool available() const;
 

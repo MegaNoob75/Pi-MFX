@@ -11,6 +11,7 @@
 #include "transport/MusicalTransport.h"
 #include "backing/BackingTrackPlayer.h"
 #include "looper/StereoLooper.h"
+#include "recorder/MultitrackRecorder.h"
 
 #include <atomic>
 #include <chrono>
@@ -64,6 +65,7 @@ public:
     Json transportState() const;
     Json backingState() const;
     Json looperState() const;
+    Json recorderState() const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
@@ -84,6 +86,9 @@ public:
     bool looperCommand(const std::string& command, const Json& payload, std::string& error);
     bool looperExport(const std::string& requestedName, std::string& contents,
                       std::string& name, std::string& error) const;
+    bool recorderCommand(const std::string& command, const Json& payload, std::string& error);
+    bool recorderExport(const std::string& kind, const std::string& trackId,
+                        std::string& path, std::string& name, std::string& error);
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
@@ -328,6 +333,12 @@ private:
     std::unique_ptr<BackingTrackPlayer> backing_;
     std::atomic<bool> backingEnabled_{false};
     std::unique_ptr<StereoLooper> looper_;
+    std::unique_ptr<MultitrackRecorder> recorder_;
+    std::atomic<bool> recorderEnabled_{false};
+    std::atomic<bool> recorderOwnsTransport_{false};
+    std::atomic<bool> recorderOwnsBacking_{false};
+    std::vector<std::vector<float>> recorderBackingBus_;
+    std::vector<float*> recorderBackingPointers_;
 
     struct AnalogCatch {
         bool waiting = true;

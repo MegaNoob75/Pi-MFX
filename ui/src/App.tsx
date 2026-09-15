@@ -24,6 +24,7 @@ import { ConfirmDialog } from "./views/ConfirmDialog";
 import { TransportView } from "./views/TransportView";
 import { BackingTracksView } from "./views/BackingTracksView";
 import { LooperView } from "./views/LooperView";
+import { RecorderView } from "./views/RecorderView";
 import { installResponsiveSizing } from "./responsive";
 
 export type View =
@@ -40,6 +41,7 @@ export type View =
     | "transport"
     | "backingTracks"
     | "looper"
+    | "recorder"
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
@@ -49,6 +51,7 @@ const titles: Record<string, string> = {
     transport: "TAP TEMPO",
     backingTracks: "BACKING TRACKS",
     looper: "LOOPER",
+    recorder: "RECORDER",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
@@ -73,7 +76,7 @@ const titles: Record<string, string> = {
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
-    "plugins", "files", "transport", "backingTracks", "looper", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
@@ -97,6 +100,7 @@ export function App() {
     const engineRestarted = useRef(false);
     const transportEnabled = bool(engine.state.transportFeatureEnabled);
     const backingEnabled = bool(engine.state.backingTrackFeatureEnabled);
+    const recorderEnabled = bool(engine.state.recorderFeatureEnabled);
 
     useEffect(() => {
         if (!transportEnabled && view === "transport") {
@@ -106,6 +110,7 @@ export function App() {
         }
     }, [transportEnabled, view, engine.client]);
     useEffect(() => { if (!backingEnabled && view === "backingTracks") { setView("performance"); setHistory([]); } }, [backingEnabled, view]);
+    useEffect(() => { if (!recorderEnabled && view === "recorder") { setView("performance"); setHistory([]); } }, [recorderEnabled, view]);
 
     useEffect(() => {
         if (!engine.connected) {
@@ -265,7 +270,8 @@ export function App() {
     useEffect(() => engine.client.subscribeUiView((message) => {
         if (str(message.view) === "backingTracks" && backingEnabled) goTo("backingTracks");
         if (str(message.view) === "looper") goTo("looper");
-    }), [engine.client, backingEnabled, view]);
+        if (str(message.view) === "recorder" && recorderEnabled) goTo("recorder");
+    }), [engine.client, backingEnabled, recorderEnabled, view]);
 
     const finishBack = () => {
         setHistory((stack) => {
@@ -508,6 +514,7 @@ export function App() {
                 {view === "transport" && transportEnabled && <TransportView engine={engine} run={run} />}
                 {view === "backingTracks" && backingEnabled && <BackingTracksView engine={engine} run={run} />}
                 {view === "looper" && <LooperView engine={engine} run={run} />}
+                {view === "recorder" && recorderEnabled && <RecorderView engine={engine} run={run} />}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && (
                     <EditorView
@@ -615,6 +622,7 @@ export function App() {
                         )}
                         {backingEnabled && <MenuButton label="BACKING TRACKS" subtitle="Import and play independent tracks" active={view === "backingTracks"} onClick={() => goTo("backingTracks")} />}
                         <MenuButton label="LOOPER" subtitle="Record and overdub one stereo loop" active={view === "looper"} onClick={() => goTo("looper")} />
+                        {recorderEnabled && <MenuButton label="RECORDER" subtitle="Capture and mix multitrack performances" active={view === "recorder"} onClick={() => goTo("recorder")} />}
                         <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"

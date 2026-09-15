@@ -208,7 +208,10 @@ const HARDWARE_ACTIONS = [
     "looperMute",
     "looperUndo",
     "looperRedo",
-    "looperView"
+    "looperView",
+    "recorderToggle",
+    "recorderStop",
+    "recorderView"
 ] as const;
 const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext"] as const;
 const ENCODER_PUSH_ACTIONS = [
@@ -240,7 +243,10 @@ const ENCODER_PUSH_ACTIONS = [
     "looperMute",
     "looperUndo",
     "looperRedo",
-    "looperView"
+    "looperView",
+    "recorderToggle",
+    "recorderStop",
+    "recorderView"
 ] as const;
 const HOLD_ACTIONS = [...HARDWARE_ACTIONS, "looperClear"] as const;
 
@@ -275,7 +281,10 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     looperUndo: "Looper undo",
     looperRedo: "Looper redo",
     looperClear: "Looper clear (hold)",
-    looperView: "Open looper"
+    looperView: "Open looper",
+    recorderToggle: "Recorder record / stop",
+    recorderStop: "Recorder stop",
+    recorderView: "Open recorder"
 };
 
 function kindListLabel(kind: string): string {

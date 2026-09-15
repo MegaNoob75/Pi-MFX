@@ -4,6 +4,7 @@
 #include "core/Log.h"
 
 #include <set>
+#include <filesystem>
 #include <unordered_set>
 
 namespace pimfx {
@@ -86,6 +87,26 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
             response.status = 200;
             response.contentType = "audio/wav";
             response.body = std::move(contents);
+            response.extraHeaders.emplace_back("Content-Disposition", "attachment; filename=\"" + name + "\"");
+        }
+        return true;
+    }
+    if (command == "recorder/export" && request.method == "GET") {
+        std::string path;
+        std::string name;
+        std::string error;
+        if (!engine_.recorderExport(request.queryValue("kind", "mix"), request.queryValue("track"), path, name, error)) {
+            response.error(400, error);
+        } else {
+            response.status = 200;
+            response.contentType = "audio/wav";
+            response.filePath = std::move(path);
+            std::error_code sizeError;
+            response.fileSize = std::filesystem::file_size(response.filePath, sizeError);
+            if (sizeError) {
+                response.error(500, "could not inspect recorder export");
+                response.filePath.clear();
+            }
             response.extraHeaders.emplace_back("Content-Disposition", "attachment; filename=\"" + name + "\"");
         }
         return true;
@@ -586,6 +607,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command.rfind("looper/", 0) == 0) {
         ok = engine_.looperCommand(command.substr(7), payload, error);
         return engine_.looperState();
+    }
+    if (command == "recorder/state") return engine_.recorderState();
+    if (command.rfind("recorder/", 0) == 0) {
+        ok = engine_.recorderCommand(command.substr(9), payload, error);
+        return engine_.recorderState();
     }
     if (command == "tuner") {
         engine_.setTunerEnabled(payload["enabled"].asBool(true));

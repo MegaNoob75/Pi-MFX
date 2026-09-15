@@ -6,6 +6,7 @@
 #include "core/Paths.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -279,7 +280,7 @@ void HttpServer::run() {
             std::lock_guard<std::mutex> lock(clientMutex_);
             for (const Client& client : clients_) {
                 short events = POLLIN;
-                if (!client.outbox.empty()) {
+                if (!client.outbox.empty() || client.responseFile.is_open()) {
                     events |= POLLOUT;
                 }
                 descriptors.push_back({static_cast<SocketHandle>(client.fd), events, 0});
@@ -483,8 +484,8 @@ bool HttpServer::handleHttp(Client& client) {
         std::string out = "HTTP/1.1 " + std::to_string(response.status) + " "
                         + statusText(response.status) + "\r\n";
         out += "Content-Type: " + response.contentType + "\r\n";
-        out += "Content-Length: " + std::to_string(response.body.size()) + "\r\n";
-        out += "Connection: keep-alive\r\n";
+        out += "Content-Length: " + std::to_string(response.filePath.empty() ? response.body.size() : response.fileSize) + "\r\n";
+        out += response.filePath.empty() ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
         // The UI is served from the same origin, so no cross-origin access is
         // granted. State changes go through the API, and the API is only
         // reachable from this origin.
@@ -493,7 +494,16 @@ bool HttpServer::handleHttp(Client& client) {
             out += header.first + ": " + header.second + "\r\n";
         }
         out += "\r\n";
-        out += response.body;
+        if (response.filePath.empty()) {
+            out += response.body;
+        } else {
+            client.responseFile.open(response.filePath, std::ios::binary);
+            if (!client.responseFile) {
+                client.closing = true;
+                return false;
+            }
+            client.closing = true;
+        }
 
         client.outbox += out;
         flush(client);
@@ -636,7 +646,15 @@ void HttpServer::queueFrame(Client& client, const std::string& payload, int opco
 }
 
 void HttpServer::flush(Client& client) {
-    while (!client.outbox.empty()) {
+    while (true) {
+        if (client.outbox.empty() && client.responseFile.is_open()) {
+            std::array<char, 64 * 1024> chunk{};
+            client.responseFile.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+            const std::streamsize count = client.responseFile.gcount();
+            if (count > 0) client.outbox.assign(chunk.data(), static_cast<size_t>(count));
+            if (count == 0 || client.responseFile.eof()) client.responseFile.close();
+        }
+        if (client.outbox.empty()) return;
         const int sent = static_cast<int>(::send(static_cast<SocketHandle>(client.fd),
                                                  client.outbox.data(),
 #if defined(_WIN32)
