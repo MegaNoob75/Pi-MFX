@@ -923,7 +923,6 @@ function ControllerSettings({
                                 control={selected}
                                 controller={controller}
                                 backingEnabled={bool(engine.state.backingTrackFeatureEnabled)}
-                                looperEnabled={bool(engine.state.looperFeatureEnabled)}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => showRemoveControl(str(selected.id))}
@@ -992,7 +991,6 @@ function HardwareControlDetail({
     control,
     controller,
     backingEnabled,
-    looperEnabled,
     snapshotSlots,
     onPatch,
     onRemove,
@@ -1004,7 +1002,6 @@ function HardwareControlDetail({
     control: JsonObject;
     controller: JsonObject;
     backingEnabled: boolean;
-    looperEnabled: boolean;
     snapshotSlots: number[];
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
@@ -1029,10 +1026,8 @@ function HardwareControlDetail({
         : encoderPush
             ? ENCODER_PUSH_ACTIONS
             : HARDWARE_ACTIONS;
-    const functionActions = allFunctionActions.filter((item) => (backingEnabled || !item.startsWith("backing"))
-        && (looperEnabled || !item.startsWith("looper")));
-    const holdActions = HOLD_ACTIONS.filter((item) => (backingEnabled || !item.startsWith("backing"))
-        && (looperEnabled || !item.startsWith("looper")));
+    const functionActions = allFunctionActions.filter((item) => backingEnabled || !item.startsWith("backing"));
+    const holdActions = HOLD_ACTIONS.filter((item) => backingEnabled || !item.startsWith("backing"));
     const rawAction = str(binding.action, "none");
     const action = (functionActions as readonly string[]).includes(rawAction) ? rawAction : "none";
     const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
@@ -1234,7 +1229,6 @@ function HardwareControlDetail({
                         control={pair}
                         controller={controller}
                         backingEnabled={backingEnabled}
-                        looperEnabled={looperEnabled}
                         snapshotSlots={snapshotSlots}
                         onPatch={onPatch}
                         onRemove={() => onTogglePushButton(false)}
@@ -1430,16 +1424,6 @@ function SystemSettings({
                     <button type="button" className={`btn ${bool(system.holdCpuLatency, true) ? "btn-active" : ""}`}
                         onClick={() => save({ ...system, holdCpuLatency: !bool(system.holdCpuLatency, true) })}>
                         HOLD CPU LATENCY
-                    </button>
-                </div>
-            </div>
-            <div className="panel stack">
-                <h2>WORKSTATION FEATURES</h2>
-                <div className="muted">Milestone 2 remains isolated until it passes Raspberry Pi testing.</div>
-                <div className="row">
-                    <button type="button" className={`btn ${bool(system.stereoLooperEnabled) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...system, stereoLooperEnabled: !bool(system.stereoLooperEnabled) })}>
-                        STEREO LOOPER {bool(system.stereoLooperEnabled) ? "ON" : "OFF"}
                     </button>
                 </div>
             </div>

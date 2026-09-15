@@ -129,9 +129,7 @@ void ApiRouter::handleSocketOpen(uint64_t clientId) {
     if (engine_.settings().system.sharedTransportEnabled) {
         server_.sendTo(clientId, engine_.transportState().dump());
     }
-    if (engine_.settings().system.stereoLooperEnabled) {
-        server_.sendTo(clientId, engine_.looperState().dump());
-    }
+    server_.sendTo(clientId, engine_.looperState().dump());
     {
         std::lock_guard<std::mutex> lock(uiSessionMutex_);
         server_.sendTo(clientId, uiSession_.dump());

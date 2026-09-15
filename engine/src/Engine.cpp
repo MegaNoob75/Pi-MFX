@@ -369,10 +369,9 @@ bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
     backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
-    looperEnabled_.store(settings_.system.stereoLooperEnabled, std::memory_order_release);
     looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
                        settings_.looper.level, settings_.looper.feedback);
-    if (looperEnabled_.load(std::memory_order_acquire)) looper_->start();
+    looper_->start();
     banks_ = storage_.loadBanks();
     brokenBankFiles_ = storage_.brokenBankFiles();
 
@@ -576,23 +575,14 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const bool wasTransportEnabled = transportEnabled_.load(std::memory_order_acquire);
     const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
-    const bool wasLooperEnabled = looperEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
     transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
     backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
-    looperEnabled_.store(settings_.system.stereoLooperEnabled, std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire) && !wasBackingEnabled) {
         backing_->start();
     } else if (!backingEnabled_.load(std::memory_order_acquire) && wasBackingEnabled) {
         backing_->stopPlayback();
         backing_->stop();
-    }
-    if (looperEnabled_.load(std::memory_order_acquire) && !wasLooperEnabled) {
-        looper_->start();
-    } else if (!looperEnabled_.load(std::memory_order_acquire) && wasLooperEnabled) {
-        std::string ignored;
-        looper_->enqueue(StereoLooper::Action::Stop, ignored);
-        looper_->stop();
     }
     if (!settings_.system.sharedTransportEnabled) {
         transport_.stop();
@@ -682,7 +672,7 @@ void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     maxFrames_.store(maxFrames, std::memory_order_release);
     transport_.setSampleRate(sampleRate);
     if (backing_) backing_->prepare(sampleRate);
-    if (looperEnabled_.load(std::memory_order_acquire) && looper_) looper_->prepare(sampleRate);
+    looper_->prepare(sampleRate);
 }
 
 void Engine::releaseResources() {}
@@ -743,11 +733,9 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                 std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
             }
         }
-        if (looperEnabled_.load(std::memory_order_relaxed)) {
-            looper_->process(reinterpret_cast<const float* const*>(outputs), outputChannels,
-                             outputs, outputChannels, frames,
-                             transportEnabled ? &transportBlock : nullptr);
-        }
+        looper_->process(reinterpret_cast<const float* const*>(outputs), outputChannels,
+                         outputs, outputChannels, frames,
+                         transportEnabled ? &transportBlock : nullptr);
         if (transportEnabled) {
             for (unsigned channel = 0; channel < outputChannels; ++channel) {
                 for (unsigned frame = 0; frame < frames; ++frame) {
@@ -823,11 +811,9 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         }
     }
     outputGain_.store(target, std::memory_order_relaxed);
-    if (looperEnabled_.load(std::memory_order_relaxed)) {
-        looper_->process(reinterpret_cast<const float* const*>(rendered->data()), channels,
-                         outputs, outputChannels, frames,
-                         transportEnabled ? &transportBlock : nullptr);
-    }
+    looper_->process(reinterpret_cast<const float* const*>(rendered->data()), channels,
+                     outputs, outputChannels, frames,
+                     transportEnabled ? &transportBlock : nullptr);
     if (transportEnabled) {
         for (unsigned channel = 0; channel < outputChannels; ++channel) {
             for (unsigned frame = 0; frame < frames; ++frame) {
@@ -2989,7 +2975,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         if (backingEnabled_.load(std::memory_order_acquire)) notifyUiView("backingTracks");
     } else if (request.action.rfind("looper", 0) == 0) {
         if (request.action == "looperView") {
-            if (looperEnabled_.load(std::memory_order_acquire)) notifyUiView("looper");
+            notifyUiView("looper");
         } else {
             std::string command;
             if (request.action == "looperRecord") command = "record";
@@ -3110,8 +3096,7 @@ void Engine::refreshLeds() {
                        && backingEnabled_.load(std::memory_order_acquire)) {
                 state.on = backing_->state()["playing"].asBool(false);
                 colourRole = "utility";
-            } else if (control.binding.action.rfind("looper", 0) == 0
-                       && looperEnabled_.load(std::memory_order_acquire)) {
+            } else if (control.binding.action.rfind("looper", 0) == 0) {
                 const Json looperState = looper_->state();
                 const std::string looperStatus = looperState["status"].asString("empty");
                 if (control.binding.action == "looperRecord" || control.binding.action == "looperToggle") {
@@ -3546,13 +3531,10 @@ void Engine::housekeepingThread() {
                 if (backingEnabled_.load(std::memory_order_acquire)) {
                     listener_(backing_->state());
                 }
-                if (looperEnabled_.load(std::memory_order_acquire)) {
-                    listener_(looperState());
-                }
+                listener_(looperState());
             }
             if (transportEnabled_.load(std::memory_order_acquire)
-                || backingEnabled_.load(std::memory_order_acquire)
-                || looperEnabled_.load(std::memory_order_acquire)) refreshLeds();
+                || backingEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3651,8 +3633,7 @@ Json Engine::fullState() const {
     if (transportEnabled_.load(std::memory_order_acquire)) json.set("transport", transport_.state());
     json.set("backingTrackFeatureEnabled", backingEnabled_.load(std::memory_order_acquire));
     if (backingEnabled_.load(std::memory_order_acquire)) json.set("backing", backing_->state());
-    json.set("looperFeatureEnabled", looperEnabled_.load(std::memory_order_acquire));
-    if (looperEnabled_.load(std::memory_order_acquire)) json.set("looper", looperState());
+    json.set("looper", looperState());
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -3793,7 +3774,7 @@ bool Engine::backingCommand(const std::string& command, const Json& payload, std
 }
 
 Json Engine::looperState() const {
-    Json state = looper_ ? looper_->state() : Json::object();
+    Json state = looper_->state();
     const double bpm = transport_.bpm();
     const double beatSeconds = 60.0 / bpm * 4.0 / std::max(1, settings_.transport.beatUnit);
     const double beats = state["duration"].asDouble(0.0) / beatSeconds;
@@ -3805,10 +3786,6 @@ Json Engine::looperState() const {
 
 bool Engine::applyLooperSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    if (!looperEnabled_.load(std::memory_order_acquire)) {
-        error = "stereo looper is disabled";
-        return false;
-    }
     settings_.looper = LooperSettings::fromJson(json);
     looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
                        settings_.looper.level, settings_.looper.feedback);
@@ -3820,10 +3797,6 @@ bool Engine::applyLooperSettings(const Json& json, std::string& error) {
 }
 
 bool Engine::looperCommand(const std::string& command, const Json& payload, std::string& error) {
-    if (!looperEnabled_.load(std::memory_order_acquire)) {
-        error = "stereo looper is disabled";
-        return false;
-    }
     std::string resolved = command;
     if (resolved == "toggle") {
         const Json current = looper_->state();
@@ -3877,10 +3850,6 @@ bool Engine::looperCommand(const std::string& command, const Json& payload, std:
 
 bool Engine::looperExport(const std::string& requestedName, std::string& contents,
                           std::string& name, std::string& error) const {
-    if (!looperEnabled_.load(std::memory_order_acquire)) {
-        error = "stereo looper is disabled";
-        return false;
-    }
     std::string path = looper_->savedPath();
     if (!requestedName.empty()) {
         const std::string safe = sanitizeFileName(fileName(requestedName));

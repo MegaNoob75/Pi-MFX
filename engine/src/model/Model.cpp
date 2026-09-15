@@ -565,7 +565,6 @@ Json SystemSettings::toJson() const {
     json.set("holdCpuLatency", holdCpuLatency);
     json.set("sharedTransportEnabled", sharedTransportEnabled);
     json.set("backingTracksEnabled", backingTracksEnabled);
-    json.set("stereoLooperEnabled", stereoLooperEnabled);
     return json;
 }
 
@@ -582,7 +581,6 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     // Backing Tracks still reports unavailable when decoder libraries are absent.
     settings.sharedTransportEnabled = true;
     settings.backingTracksEnabled = true;
-    settings.stereoLooperEnabled = json["stereoLooperEnabled"].asBool(false);
     return settings;
 }
 
