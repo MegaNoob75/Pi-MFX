@@ -24,6 +24,7 @@ struct Paths {
     std::string backingTracksDir; ///< imported backing-track audio and set lists
     std::string loopsDir;      ///< safely saved stereo looper WAV files
     std::string recordingsDir; ///< multitrack projects, takes, recovery data and exports
+    std::string drumsDir;      ///< drum samples, patterns, variations and song chains
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 
@@ -59,6 +60,9 @@ std::string joinPath(const std::string& a, const std::string& b);
 std::string fileName(const std::string& path);
 std::string fileStem(const std::string& path);
 std::string parentPath(const std::string& path);
+/// Canonicalize existing ancestors and append nonexistent children safely.
+/// Unlike weakly_canonical on some Windows runtimes, accepts new nested folders.
+bool resolveLibraryPath(const std::string& path, std::string& resolved);
 
 /// Turns arbitrary user text into something safe to use as a file name.
 std::string sanitizeFileName(const std::string& text);

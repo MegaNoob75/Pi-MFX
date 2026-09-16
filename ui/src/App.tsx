@@ -25,6 +25,7 @@ import { TransportView } from "./views/TransportView";
 import { BackingTracksView } from "./views/BackingTracksView";
 import { LooperView } from "./views/LooperView";
 import { RecorderView } from "./views/RecorderView";
+import { DrumMachineView } from "./views/DrumMachineView";
 import { installResponsiveSizing } from "./responsive";
 
 export type View =
@@ -42,6 +43,7 @@ export type View =
     | "backingTracks"
     | "looper"
     | "recorder"
+    | "drums"
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
@@ -52,6 +54,7 @@ const titles: Record<string, string> = {
     backingTracks: "BACKING TRACKS",
     looper: "LOOPER",
     recorder: "RECORDER",
+    drums: "DRUM MACHINE",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
@@ -76,7 +79,7 @@ const titles: Record<string, string> = {
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
-    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
@@ -101,6 +104,7 @@ export function App() {
     const transportEnabled = bool(engine.state.transportFeatureEnabled);
     const backingEnabled = bool(engine.state.backingTrackFeatureEnabled);
     const recorderEnabled = bool(engine.state.recorderFeatureEnabled);
+    const drumsEnabled = bool(engine.state.drumFeatureEnabled);
 
     useEffect(() => {
         if (!transportEnabled && view === "transport") {
@@ -111,6 +115,7 @@ export function App() {
     }, [transportEnabled, view, engine.client]);
     useEffect(() => { if (!backingEnabled && view === "backingTracks") { setView("performance"); setHistory([]); } }, [backingEnabled, view]);
     useEffect(() => { if (!recorderEnabled && view === "recorder") { setView("performance"); setHistory([]); } }, [recorderEnabled, view]);
+    useEffect(() => { if (!drumsEnabled && view === "drums") { setView("performance"); setHistory([]); } }, [drumsEnabled, view]);
 
     useEffect(() => {
         if (!engine.connected) {
@@ -252,6 +257,9 @@ export function App() {
     const goTo = (next: View) => {
         setMenuOpen(false);
         if (next === view) {
+            // Close the shared menu as well, otherwise the next focus update
+            // republishes menuOpen:true and opens it again.
+            engine.client.updateUiSession({ menuOpen: false });
             return;
         }
         if (view === "layout" && layoutDirty && next !== "layout") {
@@ -271,7 +279,8 @@ export function App() {
         if (str(message.view) === "backingTracks" && backingEnabled) goTo("backingTracks");
         if (str(message.view) === "looper") goTo("looper");
         if (str(message.view) === "recorder" && recorderEnabled) goTo("recorder");
-    }), [engine.client, backingEnabled, recorderEnabled, view]);
+        if (str(message.view) === "drums" && drumsEnabled) goTo("drums");
+    }), [engine.client, backingEnabled, recorderEnabled, drumsEnabled, view]);
 
     const finishBack = () => {
         setHistory((stack) => {
@@ -515,6 +524,7 @@ export function App() {
                 {view === "backingTracks" && backingEnabled && <BackingTracksView engine={engine} run={run} />}
                 {view === "looper" && <LooperView engine={engine} run={run} />}
                 {view === "recorder" && recorderEnabled && <RecorderView engine={engine} run={run} />}
+                {view === "drums" && drumsEnabled && <DrumMachineView engine={engine} run={run} />}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && (
                     <EditorView
@@ -623,6 +633,7 @@ export function App() {
                         {backingEnabled && <MenuButton label="BACKING TRACKS" subtitle="Import and play independent tracks" active={view === "backingTracks"} onClick={() => goTo("backingTracks")} />}
                         <MenuButton label="LOOPER" subtitle="Record and overdub one stereo loop" active={view === "looper"} onClick={() => goTo("looper")} />
                         {recorderEnabled && <MenuButton label="RECORDER" subtitle="Capture and mix multitrack performances" active={view === "recorder"} onClick={() => goTo("recorder")} />}
+                        {drumsEnabled && <MenuButton label="DRUM MACHINE" subtitle="Kits, patterns, fills and song chains" active={view === "drums"} onClick={() => goTo("drums")} />}
                         <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
                             active={view === "banks"} onClick={() => goTo("banks")} />
                         <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"

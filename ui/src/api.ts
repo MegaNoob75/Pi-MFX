@@ -12,6 +12,7 @@ export interface EngineSnapshot {
     backing: JsonObject;
     looper: JsonObject;
     recorder: JsonObject;
+    drums: JsonObject;
     uiSession: JsonObject;
 }
 
@@ -26,6 +27,7 @@ const emptySnapshot = (): EngineSnapshot => ({
     backing: {},
     looper: {},
     recorder: {},
+    drums: {},
     uiSession: {}
 });
 
@@ -153,6 +155,43 @@ export class EngineClient {
         });
     }
 
+    async uploadDrumSample(voice: number, file: File, onProgress?: (fraction: number) => void): Promise<JsonObject> {
+        if (file.size > 32 * 1024 * 1024) throw new Error("that sample is larger than the 32 MB import limit");
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("POST", "/api/drums/sample/import");
+            request.setRequestHeader("Content-Type", "application/octet-stream");
+            request.setRequestHeader("X-PiMFX-Filename", encodeURIComponent(file.name));
+            request.setRequestHeader("X-PiMFX-Drum-Voice", String(voice));
+            request.upload.onprogress = (event) => {
+                if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+            };
+            request.onerror = () => reject(new Error("lost contact with the engine during sample import"));
+            request.onload = () => {
+                try {
+                    const parsed: unknown = JSON.parse(request.responseText);
+                    if (!isObj(parsed as Json)) throw new Error("drum sample import returned invalid JSON");
+                    const body = parsed as JsonObject;
+                    if (request.status < 200 || request.status >= 300 || !bool(body.ok, true)) {
+                        throw new Error(str(body.error, "drum sample import failed"));
+                    }
+                    this.ingest(body); onProgress?.(1); resolve(body);
+                } catch (error) { reject(error); }
+            };
+            request.send(file);
+        });
+    }
+
+    async importDrumLibrary(file: File, relative: string): Promise<JsonObject> {
+        if (file.size > 32 * 1024 * 1024) throw new Error("sample exceeds 32 MB");
+        const response = await fetch("/api/drums/library/import", {
+            method: "POST", headers: { "Content-Type": "application/octet-stream", "X-PiMFX-Relative": encodeURIComponent(relative) }, body: file
+        });
+        const result = obj(await response.json());
+        if (!response.ok || !bool(result.ok)) throw new Error(str(result.error, "sample import failed"));
+        return result;
+    }
+
     private connect(): void {
         if (this.closed) {
             return;
@@ -192,6 +231,7 @@ export class EngineClient {
                 backing: isObj(message.backing as Json) ? message.backing as JsonObject : this.snapshot.backing,
                 looper: isObj(message.looper as Json) ? message.looper as JsonObject : this.snapshot.looper,
                 recorder: isObj(message.recorder as Json) ? message.recorder as JsonObject : this.snapshot.recorder,
+                drums: isObj(message.drums as Json) ? message.drums as JsonObject : this.snapshot.drums,
                 lastError: str(message.audioError)
             });
             return;
@@ -225,6 +265,10 @@ export class EngineClient {
         }
         if (type === "recorder") {
             this.patch({ recorder: message });
+            return;
+        }
+        if (type === "drums") {
+            this.patch({ drums: message });
             return;
         }
         if (type === "uiNav") {

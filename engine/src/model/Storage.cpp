@@ -190,7 +190,7 @@ bool Storage::isPathInLibrary(const std::string& path) const {
     for (const std::string& root : {
              paths_.modelsDir, paths_.aidaxDir, paths_.irsDir, paths_.lv2Dir,
              paths_.layoutsDir, paths_.backupsDir, paths_.bankExportsDir,
-             paths_.backingTracksDir, paths_.themesDir()}) {
+             paths_.backingTracksDir, paths_.drumsDir, paths_.themesDir()}) {
         const fs::path base = fs::weakly_canonical(fs::path(root), ec);
         if (ec) {
             continue;

@@ -4,7 +4,7 @@ import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
 
-export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing";
+export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing" | "drumsample" | "drumkit";
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -31,6 +31,8 @@ export function joinLibraryDir(parent: string, name: string): string {
 }
 
 export function libraryRootLabel(kind: LibraryKind): string {
+    if (kind === "drumsample") return "drums/samples";
+    if (kind === "drumkit") return "drums/kits";
     if (kind === "ir") {
         return "irs";
     }
@@ -406,7 +408,8 @@ export function LibraryBrowser({
     picker = false,
     dualDefault = true,
     directory: controlledDir,
-    onDirectoryChange
+    onDirectoryChange,
+    onFileSelect
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
@@ -415,6 +418,7 @@ export function LibraryBrowser({
     dualDefault?: boolean;
     directory?: string;
     onDirectoryChange?: (directory: string) => void;
+    onFileSelect?: (item: JsonObject) => void;
 }) {
     const [internalDir, setInternalDir] = useState("");
     const [rightDir, setRightDir] = useState("TONE3000");
@@ -442,6 +446,32 @@ export function LibraryBrowser({
     const [menu, setMenu] = useState<{ x: number; y: number; item: LibraryItem | null } | null>(null);
     const [confirm, setConfirm] = useState<{ title: string; body: string; run: () => void } | null>(null);
     const uploadRef = useRef<HTMLInputElement | null>(null);
+    const folderUploadRef = useRef<HTMLInputElement | null>(null);
+    const [importReport, setImportReport] = useState("");
+    const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+    const [pendingDirectory, setPendingDirectory] = useState("");
+    const [deviceSelection, setDeviceSelection] = useState("");
+    const deviceAudio = useRef<HTMLAudioElement | null>(null);
+    const deviceTimer = useRef<number>();
+    const deviceUrl = useRef("");
+    const stopDevicePreview = () => {
+        window.clearTimeout(deviceTimer.current); deviceAudio.current?.pause(); deviceAudio.current = null;
+        if (deviceUrl.current) URL.revokeObjectURL(deviceUrl.current);
+        deviceUrl.current = "";
+    };
+    useEffect(() => () => stopDevicePreview(), []);
+    const previewDeviceFile = (file: File) => {
+        stopDevicePreview(); setDeviceSelection(file.webkitRelativePath || file.name);
+        if (!/\.wav$/i.test(file.name)) return;
+        deviceUrl.current = URL.createObjectURL(file);
+        const sound = new Audio(deviceUrl.current); sound.loop = true; deviceAudio.current = sound;
+        void sound.play().catch(() => setError("Could not preview that WAV on this browser."));
+        deviceTimer.current = window.setTimeout(stopDevicePreview, 5000);
+    };
+    const selectItem = (item: LibraryItem) => {
+        setSelected(item);
+        if (str(item.type) === "file") onFileSelect?.(item);
+    };
 
     const activeDirectory = activePane === "right" && dual ? rightDir : directory;
     const setActiveDirectory = (next: string) => {
@@ -592,13 +622,28 @@ export function LibraryBrowser({
 
     const moveItemTo = (item: LibraryItem, destDir: string) => moveItemsTo([item], destDir);
 
-    const uploadFiles = (files: FileList | File[], destDir: string) => {
+    const uploadFiles = (files: FileList | File[], destDir: string, confirmed = false) => {
         const list = Array.from(files);
         if (!list.length) {
             return;
         }
+        if (kind === "drumsample" && !confirmed) {
+            setPendingFiles(list); setPendingDirectory(destDir); setDeviceSelection(""); return;
+        }
         work(async () => {
+            let imported = 0, duplicates = 0, ignored = 0, failed = 0;
+            let lastError = "";
             for (const file of list) {
+                if (kind === "drumsample") {
+                    if (!/\.wav$/i.test(file.name)) { ignored++; continue; }
+                    const relative = joinLibraryDir(destDir, file.webkitRelativePath || file.name);
+                    try {
+                        const result = await engine.client.importDrumLibrary(file, relative);
+                        if (result.duplicate) duplicates++; else imported++;
+                    } catch (caught) { failed++; lastError = `${relative}: ${caught instanceof Error ? caught.message : String(caught)}`; }
+                    setImportReport(`${imported} imported · ${duplicates} duplicates skipped · ${ignored} non-WAV skipped · ${failed} failed${lastError ? ` (${lastError})` : ""}`);
+                    continue;
+                }
                 if (kind === "backing") {
                     await engine.client.uploadBackingTrack(file);
                     continue;
@@ -643,6 +688,16 @@ export function LibraryBrowser({
 
     return (
         <div className={`explorer ${dual && !picker ? "explorer-dual" : ""}`}>
+            {pendingFiles.length > 0 && <div className="dialog-backdrop"><div className="dialog drum-import-dialog">
+                <h2>IMPORT DRUM SAMPLES</h2>
+                <div className="muted">Destination: drums/samples/{pendingDirectory} · Select a file to preview for five seconds. Folder hierarchy is preserved; identical files are skipped.</div>
+                <div className="drum-import-list">{pendingFiles.map((file, index) => <div className="row" key={`${file.webkitRelativePath || file.name}-${index}`}>
+                    <button type="button" className={`btn${deviceSelection === (file.webkitRelativePath || file.name) ? " btn-active" : ""}`} onClick={() => previewDeviceFile(file)}>{file.webkitRelativePath || file.name}</button>
+                    <button type="button" className="btn btn-danger" aria-label={`Exclude ${file.name}`} onClick={() => { stopDevicePreview(); setPendingFiles((items) => items.filter((_, i) => i !== index)); }}>×</button>
+                </div>)}</div>
+                <div className="row"><button type="button" className="btn" onClick={() => { stopDevicePreview(); setPendingFiles([]); }}>CANCEL</button>
+                    <button type="button" className="btn btn-accent" onClick={() => { stopDevicePreview(); const files = pendingFiles; setPendingFiles([]); uploadFiles(files, pendingDirectory, true); }}>IMPORT {pendingFiles.filter((file) => /\.wav$/i.test(file.name)).length} WAV FILES</button></div>
+            </div></div>}
             <div className="explorer-toolbar">
                 <div className="explorer-toolbar-main">
                     {!picker && (
@@ -692,11 +747,17 @@ export function LibraryBrowser({
                                 MOVE{targets.length > 1 ? ` (${targets.length})` : ""}
                             </button>
                             <button type="button" className="btn" onClick={() => uploadRef.current?.click()}>UPLOAD</button>
+                            {kind === "drumsample" && <>
+                                <button type="button" className="btn" onClick={() => folderUploadRef.current?.click()}>IMPORT FOLDER</button>
+                                <input ref={(node) => { folderUploadRef.current = node; node?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
+                                    onChange={(event) => { if (event.target.files) uploadFiles(event.target.files, activeDirectory); event.target.value = ""; }} />
+                            </>}
                             <input
                                 ref={uploadRef}
                                 type="file"
                                 hidden
                                 multiple
+                                accept={kind === "drumsample" ? ".wav" : undefined}
                                 onChange={(event) => {
                                     if (event.target.files) {
                                         uploadFiles(event.target.files, activeDirectory);
@@ -741,6 +802,7 @@ export function LibraryBrowser({
                 </div>
             )}
             {busy && <div className="muted">Loading…</div>}
+            {importReport && <div className="muted" role="status">{importReport}</div>}
             <div className="explorer-panes">
                 <ExplorerPane
                     kind={kind}
@@ -755,7 +817,7 @@ export function LibraryBrowser({
                     active={activePane === "left"}
                     onActivate={() => setActivePane("left")}
                     onDirectory={setDirectory}
-                    onSelect={setSelected}
+                    onSelect={selectItem}
                     onToggleChecked={toggleChecked}
                     onOpenFolder={setDirectory}
                     onOpenFile={(item) => {
@@ -780,7 +842,7 @@ export function LibraryBrowser({
                         active={activePane === "right"}
                         onActivate={() => setActivePane("right")}
                         onDirectory={setRightDir}
-                        onSelect={setSelected}
+                        onSelect={selectItem}
                         onToggleChecked={toggleChecked}
                         onOpenFolder={setRightDir}
                         onOpenFile={(item) => {

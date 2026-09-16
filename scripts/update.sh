@@ -116,7 +116,9 @@ fi
 log "Building the engine (${jobs} cores)"
 as_clone_owner env PIMFX_GIT_SHA="${PIMFX_GIT_SHA:-}" \
     nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" \
-        -DCMAKE_BUILD_TYPE=Release -DPIMFX_BUILD_COMMIT="${PIMFX_GIT_SHA:-}" >/dev/null
+        -DCMAKE_BUILD_TYPE=Release \
+        -DPIMFX_BUILD_COMMIT="${PIMFX_GIT_SHA:-}" \
+        -DPIMFX_ENABLE_DRUM_MACHINE=ON >/dev/null
 as_clone_owner nice -n 10 cmake --build "$REPO_DIR/engine/build" -j "$jobs"
 
 if [[ -f "$REPO_DIR/ui/package.json" ]]; then

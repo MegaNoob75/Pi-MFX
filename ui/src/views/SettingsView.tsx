@@ -211,9 +211,16 @@ const HARDWARE_ACTIONS = [
     "looperView",
     "recorderToggle",
     "recorderStop",
-    "recorderView"
+    "recorderView",
+    "drumToggle",
+    "drumFill",
+    "drumVariationNext",
+    "drumVariationPrevious",
+    "drumPatternNext",
+    "drumPatternPrevious",
+    "drumView"
 ] as const;
-const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext"] as const;
+const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext", "drumPatternNext"] as const;
 const ENCODER_PUSH_ACTIONS = [
     "none",
     "select",
@@ -246,7 +253,14 @@ const ENCODER_PUSH_ACTIONS = [
     "looperView",
     "recorderToggle",
     "recorderStop",
-    "recorderView"
+    "recorderView",
+    "drumToggle",
+    "drumFill",
+    "drumVariationNext",
+    "drumVariationPrevious",
+    "drumPatternNext",
+    "drumPatternPrevious",
+    "drumView"
 ] as const;
 const HOLD_ACTIONS = [...HARDWARE_ACTIONS, "looperClear"] as const;
 
@@ -284,7 +298,14 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     looperView: "Open looper",
     recorderToggle: "Recorder record / stop",
     recorderStop: "Recorder stop",
-    recorderView: "Open recorder"
+    recorderView: "Open recorder",
+    drumToggle: "Drums start / stop",
+    drumFill: "Trigger drum fill",
+    drumVariationNext: "Next drum variation",
+    drumVariationPrevious: "Previous drum variation",
+    drumPatternNext: "Next drum pattern",
+    drumPatternPrevious: "Previous drum pattern",
+    drumView: "Open drum machine"
 };
 
 function kindListLabel(kind: string): string {
@@ -932,6 +953,7 @@ function ControllerSettings({
                                 control={selected}
                                 controller={controller}
                                 backingEnabled={bool(engine.state.backingTrackFeatureEnabled)}
+                                drumsEnabled={bool(engine.state.drumFeatureEnabled)}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => showRemoveControl(str(selected.id))}
@@ -1000,6 +1022,7 @@ function HardwareControlDetail({
     control,
     controller,
     backingEnabled,
+    drumsEnabled,
     snapshotSlots,
     onPatch,
     onRemove,
@@ -1011,6 +1034,7 @@ function HardwareControlDetail({
     control: JsonObject;
     controller: JsonObject;
     backingEnabled: boolean;
+    drumsEnabled: boolean;
     snapshotSlots: number[];
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
@@ -1035,8 +1059,10 @@ function HardwareControlDetail({
         : encoderPush
             ? ENCODER_PUSH_ACTIONS
             : HARDWARE_ACTIONS;
-    const functionActions = allFunctionActions.filter((item) => backingEnabled || !item.startsWith("backing"));
-    const holdActions = HOLD_ACTIONS.filter((item) => backingEnabled || !item.startsWith("backing"));
+    const availableAction = (item: string) => (backingEnabled || !item.startsWith("backing"))
+        && (drumsEnabled || !item.startsWith("drum"));
+    const functionActions = allFunctionActions.filter(availableAction);
+    const holdActions = HOLD_ACTIONS.filter(availableAction);
     const rawAction = str(binding.action, "none");
     const action = (functionActions as readonly string[]).includes(rawAction) ? rawAction : "none";
     const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
@@ -1238,6 +1264,7 @@ function HardwareControlDetail({
                         control={pair}
                         controller={controller}
                         backingEnabled={backingEnabled}
+                        drumsEnabled={drumsEnabled}
                         snapshotSlots={snapshotSlots}
                         onPatch={onPatch}
                         onRemove={() => onTogglePushButton(false)}

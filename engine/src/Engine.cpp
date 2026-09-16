@@ -66,6 +66,8 @@ std::string sanitizeRelDir(const std::string& text) {
 }
 
 std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
+    if (kind == "drumsample") return joinPath(paths.drumsDir, "samples");
+    if (kind == "drumkit") return joinPath(paths.drumsDir, "kits");
     if (kind == "ir") {
         return paths.irsDir;
     }
@@ -96,7 +98,7 @@ std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
 std::string libraryKindName(const std::string& kind) {
     if (kind == "ir" || kind == "aidax" || kind == "plugin"
         || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank"
-        || kind == "backing") {
+        || kind == "backing" || kind == "drumsample" || kind == "drumkit") {
         return kind;
     }
     return "model";
@@ -111,7 +113,8 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
     for (const std::string& root : {
              paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir,
              paths.layoutsDir, paths.backupsDir, paths.bankExportsDir,
-             paths.backingTracksDir, paths.themesDir()}) {
+             paths.backingTracksDir, paths.drumsDir, joinPath(paths.drumsDir, "samples"),
+             joinPath(paths.drumsDir, "kits"), paths.themesDir()}) {
         std::error_code rootEc;
         const auto base = std::filesystem::weakly_canonical(std::filesystem::path(root), rootEc);
         if (!rootEc && candidate == base) {
@@ -208,7 +211,16 @@ Json rewritePluginStateFiles(Storage& storage, const Json& state,
     return out;
 }
 
-Json libraryDirNode(const std::string& abs, const std::string& rel) {
+bool pathInsideRoot(const std::string& path, const std::string& root) {
+    std::string baseText, candidateText;
+    if (!resolveLibraryPath(root, baseText) || !resolveLibraryPath(path, candidateText)) return false;
+    const std::filesystem::path base(baseText), candidate(candidateText);
+    auto a = base.begin(), b = candidate.begin();
+    for (; a != base.end(); ++a, ++b) if (b == candidate.end() || *a != *b) return false;
+    return true;
+}
+
+Json libraryDirNode(const std::string& abs, const std::string& rel, bool locked = false) {
     Json node = Json::object();
     node.set("name", rel.empty() ? std::string() : fileName(abs));
     node.set("relative", rel);
@@ -227,11 +239,11 @@ Json libraryDirNode(const std::string& abs, const std::string& rel) {
     });
     for (const auto& entry : entries) {
         const std::string name = entry.path().filename().string();
-        if (hiddenLibraryName(name) || !entry.is_directory(ec)) {
+        if (hiddenLibraryName(name) || (locked && entry.is_symlink(ec)) || !entry.is_directory(ec)) {
             continue;
         }
         const std::string childRel = rel.empty() ? name : rel + "/" + name;
-        children.push(libraryDirNode(entry.path().string(), childRel));
+        children.push(libraryDirNode(entry.path().string(), childRel, locked));
     }
     node.set("children", children);
     return node;
@@ -358,6 +370,10 @@ Engine::Engine(Paths paths)
 #ifdef PIMFX_ENABLE_MULTITRACK_RECORDER
     recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
     recorderEnabled_.store(true, std::memory_order_relaxed);
+#endif
+#ifdef PIMFX_ENABLE_DRUM_MACHINE
+    drums_ = std::make_unique<DrumMachine>(storage_.paths().drumsDir);
+    drumsEnabled_.store(true, std::memory_order_relaxed);
 #endif
 }
 
@@ -686,10 +702,16 @@ void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
         recorder_->prepare(sampleRate, maxFrames);
         recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
             backingEnabled_.load(std::memory_order_acquire));
+        recorder_->setSourceAvailable(MultitrackRecorder::Source::Drum,
+            drumsEnabled_.load(std::memory_order_acquire));
         recorderBackingBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
         recorderBackingPointers_.clear();
         for (auto& channel : recorderBackingBus_) recorderBackingPointers_.push_back(channel.data());
+        recorderDrumBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
+        recorderDrumPointers_.clear();
+        for (auto& channel : recorderDrumBus_) recorderDrumPointers_.push_back(channel.data());
     }
+    if (drums_) drums_->prepare(sampleRate);
 }
 
 void Engine::releaseResources() {}
@@ -778,6 +800,15 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
                 reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
                 static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+        }
+        if (drumsEnabled_.load(std::memory_order_relaxed) && drums_) {
+            drums_->render(outputs, outputChannels,
+                recorderCapturing ? recorderDrumPointers_.data() : nullptr,
+                recorderCapturing ? static_cast<unsigned>(recorderDrumPointers_.size()) : 0,
+                frames, transportBlock);
+            if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Drum,
+                reinterpret_cast<const float* const*>(recorderDrumPointers_.data()),
+                static_cast<unsigned>(recorderDrumPointers_.size()), frames);
         }
         if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
             recorder_->renderPlayback(outputs, outputChannels, frames);
@@ -875,6 +906,15 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
             reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
             static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+    }
+    if (drumsEnabled_.load(std::memory_order_relaxed) && drums_) {
+        drums_->render(outputs, outputChannels,
+            recorderCapturing ? recorderDrumPointers_.data() : nullptr,
+            recorderCapturing ? static_cast<unsigned>(recorderDrumPointers_.size()) : 0,
+            frames, transportBlock);
+        if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Drum,
+            reinterpret_cast<const float* const*>(recorderDrumPointers_.data()),
+            static_cast<unsigned>(recorderDrumPointers_.size()), frames);
     }
     if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
         recorder_->renderPlayback(outputs, outputChannels, frames);
@@ -2891,6 +2931,13 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "recorderToggle"
         && request.action != "recorderStop"
         && request.action != "recorderView"
+        && request.action != "drumToggle"
+        && request.action != "drumFill"
+        && request.action != "drumVariationNext"
+        && request.action != "drumVariationPrevious"
+        && request.action != "drumPatternNext"
+        && request.action != "drumPatternPrevious"
+        && request.action != "drumView"
         && request.action != "navigate"
         && request.action != "select") {
         if (binding.snapshotSlot >= 0) {
@@ -3073,6 +3120,23 @@ void Engine::runAction(const ActionRequest& incoming) {
             recorderCommand(command, Json::object(), error);
             refreshLeds();
         }
+    } else if (request.action.rfind("drum", 0) == 0 && drums_) {
+        if (request.action == "drumView") {
+            notifyUiView("drums");
+        } else if (request.action == "drumToggle") {
+            drumCommand("toggle", Json::object(), error);
+        } else if (request.action == "drumFill") {
+            drumCommand("fill", Json::object(), error);
+        } else {
+            const int current = drumState()["activeVariation"].asInt(0);
+            const bool previous = request.action == "drumVariationPrevious"
+                               || request.action == "drumPatternPrevious"
+                               || (request.kind == ControlKind::Encoder && encoderDelta < 0);
+            Json payload = Json::object();
+            payload.set("variation", (current + (previous ? 3 : 1)) % 4);
+            drumCommand("variation", payload, error);
+        }
+        refreshLeds();
     } else if (request.action == "none") {
         return;
     }
@@ -3207,6 +3271,11 @@ void Engine::refreshLeds() {
                 const bool active = recorder_->recording();
                 state.on = control.binding.action == "recorderStop" ? !active : active;
                 colourRole = active ? "danger" : "utility";
+            } else if (control.binding.action.rfind("drum", 0) == 0 && drums_) {
+                const Json drums = drumState();
+                state.on = control.binding.action == "drumFill"
+                    ? drums["fillActive"].asBool(false) : drums["playing"].asBool(false);
+                colourRole = control.binding.action == "drumFill" ? "snapshot" : "utility";
             }
             break;
         }
@@ -3317,6 +3386,9 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
         error = "backing tracks must use the binary import endpoint";
         return false;
     }
+    if (kind == "drumsample" || kind == "drumkit") {
+        error = "use the drum sample importer or kit designer"; return false;
+    }
     const std::string root = libraryRootForKind(storage_.paths(), kind);
 
     const std::string safeName = sanitizeFileName(name);
@@ -3367,6 +3439,7 @@ Json Engine::readLibraryFile(const std::string& path, std::string& error) {
 }
 
 bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that file is not in the Pi-MFX library";
         return false;
@@ -3401,6 +3474,9 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string dir = rel.empty() ? root : joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && !pathInsideRoot(dir, root)) {
+        error = "folder is outside the drum library"; return Json();
+    }
     if (!storage_.isPathInLibrary(dir) && dir != root) {
         error = "that folder is not in the library";
         return Json();
@@ -3418,6 +3494,7 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             break;
         }
         const std::string name = entry.path().filename().string();
+        if ((kind == "drumsample" || kind == "drumkit") && entry.is_symlink(ec)) continue;
         if (hiddenLibraryName(name)) {
             continue;
         }
@@ -3430,6 +3507,7 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             item.set("type", "dir");
             folders.push(item);
         } else if (entry.is_regular_file(ec)) {
+            if (kind == "drumsample" && lowerCopy(entry.path().extension().string()) != ".wav") continue;
             if (kind == "backing") {
                 const std::string extension = lowerCopy(entry.path().extension().string());
                 if (extension != ".wav" && extension != ".flac"
@@ -3464,7 +3542,7 @@ Json Engine::libraryTree(const std::string& kind, std::string& error) {
     }
     Json json = Json::object();
     json.set("kind", libraryKindName(kind));
-    json.set("root", libraryDirNode(root, std::string()));
+    json.set("root", libraryDirNode(root, std::string(), kind == "drumsample" || kind == "drumkit"));
     error.clear();
     return json;
 }
@@ -3477,6 +3555,9 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
         return false;
     }
     const std::string dir = joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && !pathInsideRoot(dir, root)) {
+        error = "folder is outside the drum library"; return false;
+    }
     if (!makeDirectories(dir) || !storage_.isPathInLibrary(dir)) {
         error = "could not create that folder";
         return false;
@@ -3486,6 +3567,8 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
 }
 
 bool Engine::libraryRename(const std::string& path, const std::string& newName, std::string& error) {
+    if (isLibraryRootPath(storage_.paths(), path)) { error = "cannot rename a library root"; return false; }
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -3496,6 +3579,15 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
         return false;
     }
     const std::string dest = joinPath(parentPath(path), safe);
+    if (pathInsideRoot(path, joinPath(storage_.paths().drumsDir, "samples"))) {
+        std::error_code sampleEc;
+        if (std::filesystem::is_regular_file(path, sampleEc) && lowerCopy(std::filesystem::path(dest).extension().string()) != ".wav") {
+            error = "drum samples must keep the WAV extension"; return false;
+        }
+        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
+            error = "that name already exists in the sample library"; return false;
+        }
+    }
     if (!storage_.isPathInLibrary(dest)) {
         error = "that name cannot be used";
         return false;
@@ -3513,6 +3605,7 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
 
 bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                          std::string& error) {
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -3520,11 +3613,20 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string destDir = rel.empty() ? root : joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && (!pathInsideRoot(path, root) || !pathInsideRoot(destDir, root))) {
+        error = "moves must stay inside this drum library"; return false;
+    }
     if (!makeDirectories(destDir) || !storage_.isPathInLibrary(destDir)) {
         error = "that folder is not in the library";
         return false;
     }
     const std::string dest = joinPath(destDir, fileName(path));
+    if (kind == "drumsample" || kind == "drumkit") {
+        std::error_code sampleEc;
+        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
+            error = "destination already exists; drum files are never overwritten"; return false;
+        }
+    }
     if (!storage_.isPathInLibrary(dest)) {
         error = "could not move that there";
         return false;
@@ -3624,10 +3726,14 @@ void Engine::housekeepingThread() {
                 if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
                     listener_(recorderState());
                 }
+                if (drumsEnabled_.load(std::memory_order_acquire) && drums_) {
+                    listener_(drumState());
+                }
             }
             if (transportEnabled_.load(std::memory_order_acquire)
                 || backingEnabled_.load(std::memory_order_acquire)
-                || recorderEnabled_.load(std::memory_order_acquire)) refreshLeds();
+                || recorderEnabled_.load(std::memory_order_acquire)
+                || drumsEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3729,6 +3835,8 @@ Json Engine::fullState() const {
     json.set("looper", looperState());
     json.set("recorderFeatureEnabled", recorderEnabled_.load(std::memory_order_acquire));
     if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
+    json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
+    if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -4035,6 +4143,51 @@ bool Engine::recorderExport(const std::string& kind, const std::string& trackId,
         return false;
     }
     return recorder_->exportFile(kind, trackId, path, name, error);
+}
+
+Json Engine::drumState() const {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        Json state = Json::object(); state.set("type", "drums"); state.set("available", false); return state;
+    }
+    return drums_->state();
+}
+
+bool Engine::drumImport(unsigned voice, const std::string& name,
+                        const std::string& bytes, std::string& error) {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        error = "drum machine is disabled"; return false;
+    }
+    return drums_->importSample(voice, name, bytes, error);
+}
+
+bool Engine::drumLibraryImport(const std::string& relative, const std::string& bytes, Json& result, std::string& error) {
+    if (!drums_) { error = "drum machine is disabled"; return false; }
+    return drums_->importLibrarySample(relative, bytes, result, error);
+}
+
+bool Engine::drumLibraryRead(const std::string& relative, std::string& bytes, std::string& error) const {
+    if (!drums_) { error = "drum machine is disabled"; return false; }
+    return drums_->readLibrarySample(relative, bytes, error);
+}
+
+bool Engine::drumCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        error = "drum machine is disabled"; return false;
+    }
+    const bool wasPlaying = drums_->playing();
+    const bool ok = drums_->command(command, payload, error);
+    if (!ok) return false;
+    const bool isPlaying = drums_->playing();
+    if (!wasPlaying && isPlaying && transportEnabled_.load(std::memory_order_acquire)) {
+        if (!transport_.playing()) {
+            transport_.play(payload["restart"].asBool(true));
+            drumsOwnTransport_.store(true, std::memory_order_release);
+        }
+    } else if (wasPlaying && !isPlaying && drumsOwnTransport_.load(std::memory_order_acquire)) {
+        transport_.stop();
+        drumsOwnTransport_.store(false, std::memory_order_release);
+    }
+    return true;
 }
 
 Json Engine::meterState() const {
