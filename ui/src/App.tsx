@@ -257,6 +257,9 @@ export function App() {
     const goTo = (next: View) => {
         setMenuOpen(false);
         if (next === view) {
+            // Close the shared menu as well, otherwise the next focus update
+            // republishes menuOpen:true and opens it again.
+            engine.client.updateUiSession({ menuOpen: false });
             return;
         }
         if (view === "layout" && layoutDirty && next !== "layout") {
