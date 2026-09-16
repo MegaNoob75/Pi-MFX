@@ -24,6 +24,7 @@ struct Paths {
     std::string backingTracksDir; ///< imported backing-track audio and set lists
     std::string loopsDir;      ///< safely saved stereo looper WAV files
     std::string recordingsDir; ///< multitrack projects, takes, recovery data and exports
+    std::string drumsDir;      ///< drum samples, patterns, variations and song chains
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 

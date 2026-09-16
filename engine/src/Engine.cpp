@@ -359,6 +359,10 @@ Engine::Engine(Paths paths)
     recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
     recorderEnabled_.store(true, std::memory_order_relaxed);
 #endif
+#ifdef PIMFX_ENABLE_DRUM_MACHINE
+    drums_ = std::make_unique<DrumMachine>(storage_.paths().drumsDir);
+    drumsEnabled_.store(true, std::memory_order_relaxed);
+#endif
 }
 
 Engine::~Engine() {
@@ -686,10 +690,16 @@ void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
         recorder_->prepare(sampleRate, maxFrames);
         recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
             backingEnabled_.load(std::memory_order_acquire));
+        recorder_->setSourceAvailable(MultitrackRecorder::Source::Drum,
+            drumsEnabled_.load(std::memory_order_acquire));
         recorderBackingBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
         recorderBackingPointers_.clear();
         for (auto& channel : recorderBackingBus_) recorderBackingPointers_.push_back(channel.data());
+        recorderDrumBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
+        recorderDrumPointers_.clear();
+        for (auto& channel : recorderDrumBus_) recorderDrumPointers_.push_back(channel.data());
     }
+    if (drums_) drums_->prepare(sampleRate);
 }
 
 void Engine::releaseResources() {}
@@ -778,6 +788,15 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
                 reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
                 static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+        }
+        if (drumsEnabled_.load(std::memory_order_relaxed) && drums_) {
+            drums_->render(outputs, outputChannels,
+                recorderCapturing ? recorderDrumPointers_.data() : nullptr,
+                recorderCapturing ? static_cast<unsigned>(recorderDrumPointers_.size()) : 0,
+                frames, transportBlock);
+            if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Drum,
+                reinterpret_cast<const float* const*>(recorderDrumPointers_.data()),
+                static_cast<unsigned>(recorderDrumPointers_.size()), frames);
         }
         if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
             recorder_->renderPlayback(outputs, outputChannels, frames);
@@ -875,6 +894,15 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
             reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
             static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+    }
+    if (drumsEnabled_.load(std::memory_order_relaxed) && drums_) {
+        drums_->render(outputs, outputChannels,
+            recorderCapturing ? recorderDrumPointers_.data() : nullptr,
+            recorderCapturing ? static_cast<unsigned>(recorderDrumPointers_.size()) : 0,
+            frames, transportBlock);
+        if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Drum,
+            reinterpret_cast<const float* const*>(recorderDrumPointers_.data()),
+            static_cast<unsigned>(recorderDrumPointers_.size()), frames);
     }
     if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
         recorder_->renderPlayback(outputs, outputChannels, frames);
@@ -2891,6 +2919,13 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "recorderToggle"
         && request.action != "recorderStop"
         && request.action != "recorderView"
+        && request.action != "drumToggle"
+        && request.action != "drumFill"
+        && request.action != "drumVariationNext"
+        && request.action != "drumVariationPrevious"
+        && request.action != "drumPatternNext"
+        && request.action != "drumPatternPrevious"
+        && request.action != "drumView"
         && request.action != "navigate"
         && request.action != "select") {
         if (binding.snapshotSlot >= 0) {
@@ -3073,6 +3108,23 @@ void Engine::runAction(const ActionRequest& incoming) {
             recorderCommand(command, Json::object(), error);
             refreshLeds();
         }
+    } else if (request.action.rfind("drum", 0) == 0 && drums_) {
+        if (request.action == "drumView") {
+            notifyUiView("drums");
+        } else if (request.action == "drumToggle") {
+            drumCommand("toggle", Json::object(), error);
+        } else if (request.action == "drumFill") {
+            drumCommand("fill", Json::object(), error);
+        } else {
+            const int current = drumState()["activeVariation"].asInt(0);
+            const bool previous = request.action == "drumVariationPrevious"
+                               || request.action == "drumPatternPrevious"
+                               || (request.kind == ControlKind::Encoder && encoderDelta < 0);
+            Json payload = Json::object();
+            payload.set("variation", (current + (previous ? 3 : 1)) % 4);
+            drumCommand("variation", payload, error);
+        }
+        refreshLeds();
     } else if (request.action == "none") {
         return;
     }
@@ -3207,6 +3259,11 @@ void Engine::refreshLeds() {
                 const bool active = recorder_->recording();
                 state.on = control.binding.action == "recorderStop" ? !active : active;
                 colourRole = active ? "danger" : "utility";
+            } else if (control.binding.action.rfind("drum", 0) == 0 && drums_) {
+                const Json drums = drumState();
+                state.on = control.binding.action == "drumFill"
+                    ? drums["fillActive"].asBool(false) : drums["playing"].asBool(false);
+                colourRole = control.binding.action == "drumFill" ? "snapshot" : "utility";
             }
             break;
         }
@@ -3624,10 +3681,14 @@ void Engine::housekeepingThread() {
                 if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
                     listener_(recorderState());
                 }
+                if (drumsEnabled_.load(std::memory_order_acquire) && drums_) {
+                    listener_(drumState());
+                }
             }
             if (transportEnabled_.load(std::memory_order_acquire)
                 || backingEnabled_.load(std::memory_order_acquire)
-                || recorderEnabled_.load(std::memory_order_acquire)) refreshLeds();
+                || recorderEnabled_.load(std::memory_order_acquire)
+                || drumsEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3729,6 +3790,8 @@ Json Engine::fullState() const {
     json.set("looper", looperState());
     json.set("recorderFeatureEnabled", recorderEnabled_.load(std::memory_order_acquire));
     if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
+    json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
+    if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -4035,6 +4098,41 @@ bool Engine::recorderExport(const std::string& kind, const std::string& trackId,
         return false;
     }
     return recorder_->exportFile(kind, trackId, path, name, error);
+}
+
+Json Engine::drumState() const {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        Json state = Json::object(); state.set("type", "drums"); state.set("available", false); return state;
+    }
+    return drums_->state();
+}
+
+bool Engine::drumImport(unsigned voice, const std::string& name,
+                        const std::string& bytes, std::string& error) {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        error = "drum machine is disabled"; return false;
+    }
+    return drums_->importSample(voice, name, bytes, error);
+}
+
+bool Engine::drumCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        error = "drum machine is disabled"; return false;
+    }
+    const bool wasPlaying = drums_->playing();
+    const bool ok = drums_->command(command, payload, error);
+    if (!ok) return false;
+    const bool isPlaying = drums_->playing();
+    if (!wasPlaying && isPlaying && transportEnabled_.load(std::memory_order_acquire)) {
+        if (!transport_.playing()) {
+            transport_.play(payload["restart"].asBool(true));
+            drumsOwnTransport_.store(true, std::memory_order_release);
+        }
+    } else if (wasPlaying && !isPlaying && drumsOwnTransport_.load(std::memory_order_acquire)) {
+        transport_.stop();
+        drumsOwnTransport_.store(false, std::memory_order_release);
+    }
+    return true;
 }
 
 Json Engine::meterState() const {

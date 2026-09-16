@@ -378,7 +378,7 @@ export function PerformanceView({
         if (action === "bypassAll") {
             return "bypass";
         }
-        if (action === "looperRecord" || action === "looperClear" || action === "recorderToggle") {
+        if (action === "looperRecord" || action === "looperClear" || action === "recorderToggle" || action === "drumToggle") {
             return "bypass";
         }
         if (action === "looperOverdub") {
@@ -421,6 +421,10 @@ export function PerformanceView({
         if (action.startsWith("recorder")) {
             return str(engine.recorder.status, "stopped").toUpperCase();
         }
+        if (action.startsWith("drum")) {
+            return bool(engine.drums.fillActive) ? "FILL" : bool(engine.drums.playing)
+                ? `VAR ${num(engine.drums.activeVariation) + 1}` : "STOPPED";
+        }
         return action.toUpperCase();
     };
 
@@ -450,6 +454,13 @@ export function PerformanceView({
             recorderToggle: "REC / STOP",
             recorderStop: "STOP RECORDING",
             recorderView: "OPEN RECORDER",
+            drumToggle: "DRUMS START / STOP",
+            drumFill: "DRUM FILL",
+            drumVariationNext: "NEXT VARIATION",
+            drumVariationPrevious: "PREVIOUS VARIATION",
+            drumPatternNext: "NEXT DRUM PATTERN",
+            drumPatternPrevious: "PREVIOUS DRUM PATTERN",
+            drumView: "OPEN DRUM MACHINE",
             reloadPreset: "RELOAD PRESET",
             presetUp: "PRESET UP",
             presetDown: "PRESET DOWN",
@@ -752,6 +763,8 @@ export function PerformanceView({
                     || (action === "looperClear" && bool(engine.looper.hasLoop))
                     || (action === "recorderToggle" && str(engine.recorder.status) === "recording")
                     || (action === "recorderStop" && str(engine.recorder.status) === "stopped")
+                    || (action === "drumToggle" && bool(engine.drums.playing))
+                    || (action === "drumFill" && bool(engine.drums.fillActive))
                     || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
                         && num(binding.snapshotSlot, -1) >= 0)
                     || (toggleSlot !== "" && bool(

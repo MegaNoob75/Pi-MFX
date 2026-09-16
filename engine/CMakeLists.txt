@@ -16,6 +16,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fno-math-errno -fno-trapping-math")
 
 option(PIMFX_NATIVE_ARCH "Tune for the build machine (leave OFF for portable builds)" OFF)
 option(PIMFX_ENABLE_MULTITRACK_RECORDER "Build the Milestone 3 multitrack recorder" ON)
+option(PIMFX_ENABLE_DRUM_MACHINE "Build the Milestone 4 drum machine" ON)
 
 add_executable(pimfx)
 
@@ -42,6 +43,8 @@ target_sources(pimfx PRIVATE
     src/backing/BackingTrackPlayer.cpp
     src/looper/StereoLooper.cpp
     src/recorder/MultitrackRecorder.cpp
+    src/drums/DrumSequencer.cpp
+    src/drums/DrumMachine.cpp
     src/library/Tone3000.cpp
     src/library/PluginStore.cpp
 )
@@ -144,6 +147,10 @@ if(PIMFX_ENABLE_MULTITRACK_RECORDER)
     target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_MULTITRACK_RECORDER=1)
 endif()
 
+if(PIMFX_ENABLE_DRUM_MACHINE)
+    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_DRUM_MACHINE=1)
+endif()
+
 install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
@@ -156,6 +163,32 @@ if(BUILD_TESTING)
     target_include_directories(pimfx_transport_test PRIVATE src)
     target_link_libraries(pimfx_transport_test PRIVATE Threads::Threads)
     add_test(NAME musical_transport COMMAND pimfx_transport_test)
+    add_executable(pimfx_drum_sequencer_test
+        tests/DrumSequencerTest.cpp
+        src/drums/DrumSequencer.cpp
+    )
+    target_include_directories(pimfx_drum_sequencer_test PRIVATE src)
+    target_compile_options(pimfx_drum_sequencer_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_drum_sequencer_test PRIVATE Threads::Threads)
+    add_test(NAME drum_sequencer COMMAND pimfx_drum_sequencer_test)
+    add_executable(pimfx_drum_machine_test
+        tests/DrumMachineTest.cpp
+        src/drums/DrumMachine.cpp
+        src/drums/DrumSequencer.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_drum_machine_test PRIVATE src)
+    target_compile_options(pimfx_drum_machine_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_drum_machine_test PRIVATE Threads::Threads)
+    add_test(NAME drum_machine COMMAND pimfx_drum_machine_test)
     add_executable(pimfx_stereo_looper_test
         tests/StereoLooperTest.cpp
         src/looper/StereoLooper.cpp

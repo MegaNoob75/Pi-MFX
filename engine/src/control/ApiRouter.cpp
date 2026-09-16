@@ -4,6 +4,7 @@
 #include "core/Log.h"
 
 #include <set>
+#include <cstdlib>
 #include <filesystem>
 #include <unordered_set>
 
@@ -75,6 +76,20 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
         std::string error;
         const bool ok = engine_.backingImport(urlDecode(request.header("x-pimfx-filename")), request.body, error);
         response.json(envelope(ok, error, engine_.backingState()).dump(), ok ? 200 : 400);
+        return true;
+    }
+    if (command == "drums/sample/import"
+        && request.method == "POST"
+        && request.header("content-type").find("application/octet-stream") != std::string::npos) {
+        std::string error;
+        const std::string voiceText = request.header("x-pimfx-drum-voice");
+        char* end = nullptr;
+        const long voice = std::strtol(voiceText.c_str(), &end, 10);
+        const bool validVoice = !voiceText.empty() && end && *end == '\0' && voice >= 0;
+        const bool ok = validVoice && engine_.drumImport(static_cast<unsigned>(voice),
+            urlDecode(request.header("x-pimfx-filename")), request.body, error);
+        if (!validVoice) error = "invalid drum voice";
+        response.json(envelope(ok, error, engine_.drumState()).dump(), ok ? 200 : 400);
         return true;
     }
     if (command == "looper/export" && request.method == "GET") {
@@ -612,6 +627,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command.rfind("recorder/", 0) == 0) {
         ok = engine_.recorderCommand(command.substr(9), payload, error);
         return engine_.recorderState();
+    }
+    if (command == "drums/state") return engine_.drumState();
+    if (command.rfind("drums/", 0) == 0) {
+        ok = engine_.drumCommand(command.substr(6), payload, error);
+        return engine_.drumState();
     }
     if (command == "tuner") {
         engine_.setTunerEnabled(payload["enabled"].asBool(true));

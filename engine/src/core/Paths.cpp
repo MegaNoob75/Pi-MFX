@@ -56,6 +56,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.backingTracksDir = joinPath(root, "backing-tracks");
     paths.loopsDir = joinPath(root, "loops");
     paths.recordingsDir = joinPath(root, "recordings");
+    paths.drumsDir = joinPath(root, "drums");
 
     paths.webRoot = environment("PIMFX_WEB_ROOT");
     if (paths.webRoot.empty()) {
@@ -81,6 +82,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.backingTracksDir);
     makeDirectories(paths.loopsDir);
     makeDirectories(paths.recordingsDir);
+    makeDirectories(paths.drumsDir);
     return paths;
 }
 

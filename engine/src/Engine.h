@@ -11,6 +11,7 @@
 #include "transport/MusicalTransport.h"
 #include "backing/BackingTrackPlayer.h"
 #include "looper/StereoLooper.h"
+#include "drums/DrumMachine.h"
 #include "recorder/MultitrackRecorder.h"
 
 #include <atomic>
@@ -66,6 +67,7 @@ public:
     Json backingState() const;
     Json looperState() const;
     Json recorderState() const;
+    Json drumState() const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
@@ -89,6 +91,8 @@ public:
     bool recorderCommand(const std::string& command, const Json& payload, std::string& error);
     bool recorderExport(const std::string& kind, const std::string& trackId,
                         std::string& path, std::string& name, std::string& error);
+    bool drumImport(unsigned voice, const std::string& name, const std::string& bytes, std::string& error);
+    bool drumCommand(const std::string& command, const Json& payload, std::string& error);
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
@@ -339,6 +343,11 @@ private:
     std::atomic<bool> recorderOwnsBacking_{false};
     std::vector<std::vector<float>> recorderBackingBus_;
     std::vector<float*> recorderBackingPointers_;
+    std::unique_ptr<DrumMachine> drums_;
+    std::atomic<bool> drumsEnabled_{false};
+    std::atomic<bool> drumsOwnTransport_{false};
+    std::vector<std::vector<float>> recorderDrumBus_;
+    std::vector<float*> recorderDrumPointers_;
 
     struct AnalogCatch {
         bool waiting = true;
