@@ -66,6 +66,8 @@ std::string sanitizeRelDir(const std::string& text) {
 }
 
 std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
+    if (kind == "drumsample") return joinPath(paths.drumsDir, "samples");
+    if (kind == "drumkit") return joinPath(paths.drumsDir, "kits");
     if (kind == "ir") {
         return paths.irsDir;
     }
@@ -96,7 +98,7 @@ std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
 std::string libraryKindName(const std::string& kind) {
     if (kind == "ir" || kind == "aidax" || kind == "plugin"
         || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank"
-        || kind == "backing") {
+        || kind == "backing" || kind == "drumsample" || kind == "drumkit") {
         return kind;
     }
     return "model";
@@ -111,7 +113,8 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
     for (const std::string& root : {
              paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir,
              paths.layoutsDir, paths.backupsDir, paths.bankExportsDir,
-             paths.backingTracksDir, paths.themesDir()}) {
+             paths.backingTracksDir, paths.drumsDir, joinPath(paths.drumsDir, "samples"),
+             joinPath(paths.drumsDir, "kits"), paths.themesDir()}) {
         std::error_code rootEc;
         const auto base = std::filesystem::weakly_canonical(std::filesystem::path(root), rootEc);
         if (!rootEc && candidate == base) {
@@ -208,7 +211,16 @@ Json rewritePluginStateFiles(Storage& storage, const Json& state,
     return out;
 }
 
-Json libraryDirNode(const std::string& abs, const std::string& rel) {
+bool pathInsideRoot(const std::string& path, const std::string& root) {
+    std::string baseText, candidateText;
+    if (!resolveLibraryPath(root, baseText) || !resolveLibraryPath(path, candidateText)) return false;
+    const std::filesystem::path base(baseText), candidate(candidateText);
+    auto a = base.begin(), b = candidate.begin();
+    for (; a != base.end(); ++a, ++b) if (b == candidate.end() || *a != *b) return false;
+    return true;
+}
+
+Json libraryDirNode(const std::string& abs, const std::string& rel, bool locked = false) {
     Json node = Json::object();
     node.set("name", rel.empty() ? std::string() : fileName(abs));
     node.set("relative", rel);
@@ -227,11 +239,11 @@ Json libraryDirNode(const std::string& abs, const std::string& rel) {
     });
     for (const auto& entry : entries) {
         const std::string name = entry.path().filename().string();
-        if (hiddenLibraryName(name) || !entry.is_directory(ec)) {
+        if (hiddenLibraryName(name) || (locked && entry.is_symlink(ec)) || !entry.is_directory(ec)) {
             continue;
         }
         const std::string childRel = rel.empty() ? name : rel + "/" + name;
-        children.push(libraryDirNode(entry.path().string(), childRel));
+        children.push(libraryDirNode(entry.path().string(), childRel, locked));
     }
     node.set("children", children);
     return node;
@@ -3374,6 +3386,9 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
         error = "backing tracks must use the binary import endpoint";
         return false;
     }
+    if (kind == "drumsample" || kind == "drumkit") {
+        error = "use the drum sample importer or kit designer"; return false;
+    }
     const std::string root = libraryRootForKind(storage_.paths(), kind);
 
     const std::string safeName = sanitizeFileName(name);
@@ -3424,6 +3439,7 @@ Json Engine::readLibraryFile(const std::string& path, std::string& error) {
 }
 
 bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that file is not in the Pi-MFX library";
         return false;
@@ -3458,6 +3474,9 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string dir = rel.empty() ? root : joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && !pathInsideRoot(dir, root)) {
+        error = "folder is outside the drum library"; return Json();
+    }
     if (!storage_.isPathInLibrary(dir) && dir != root) {
         error = "that folder is not in the library";
         return Json();
@@ -3475,6 +3494,7 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             break;
         }
         const std::string name = entry.path().filename().string();
+        if ((kind == "drumsample" || kind == "drumkit") && entry.is_symlink(ec)) continue;
         if (hiddenLibraryName(name)) {
             continue;
         }
@@ -3487,6 +3507,7 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             item.set("type", "dir");
             folders.push(item);
         } else if (entry.is_regular_file(ec)) {
+            if (kind == "drumsample" && lowerCopy(entry.path().extension().string()) != ".wav") continue;
             if (kind == "backing") {
                 const std::string extension = lowerCopy(entry.path().extension().string());
                 if (extension != ".wav" && extension != ".flac"
@@ -3521,7 +3542,7 @@ Json Engine::libraryTree(const std::string& kind, std::string& error) {
     }
     Json json = Json::object();
     json.set("kind", libraryKindName(kind));
-    json.set("root", libraryDirNode(root, std::string()));
+    json.set("root", libraryDirNode(root, std::string(), kind == "drumsample" || kind == "drumkit"));
     error.clear();
     return json;
 }
@@ -3534,6 +3555,9 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
         return false;
     }
     const std::string dir = joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && !pathInsideRoot(dir, root)) {
+        error = "folder is outside the drum library"; return false;
+    }
     if (!makeDirectories(dir) || !storage_.isPathInLibrary(dir)) {
         error = "could not create that folder";
         return false;
@@ -3543,6 +3567,8 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
 }
 
 bool Engine::libraryRename(const std::string& path, const std::string& newName, std::string& error) {
+    if (isLibraryRootPath(storage_.paths(), path)) { error = "cannot rename a library root"; return false; }
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -3553,6 +3579,15 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
         return false;
     }
     const std::string dest = joinPath(parentPath(path), safe);
+    if (pathInsideRoot(path, joinPath(storage_.paths().drumsDir, "samples"))) {
+        std::error_code sampleEc;
+        if (std::filesystem::is_regular_file(path, sampleEc) && lowerCopy(std::filesystem::path(dest).extension().string()) != ".wav") {
+            error = "drum samples must keep the WAV extension"; return false;
+        }
+        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
+            error = "that name already exists in the sample library"; return false;
+        }
+    }
     if (!storage_.isPathInLibrary(dest)) {
         error = "that name cannot be used";
         return false;
@@ -3570,6 +3605,7 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
 
 bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                          std::string& error) {
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -3577,11 +3613,20 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string destDir = rel.empty() ? root : joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && (!pathInsideRoot(path, root) || !pathInsideRoot(destDir, root))) {
+        error = "moves must stay inside this drum library"; return false;
+    }
     if (!makeDirectories(destDir) || !storage_.isPathInLibrary(destDir)) {
         error = "that folder is not in the library";
         return false;
     }
     const std::string dest = joinPath(destDir, fileName(path));
+    if (kind == "drumsample" || kind == "drumkit") {
+        std::error_code sampleEc;
+        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
+            error = "destination already exists; drum files are never overwritten"; return false;
+        }
+    }
     if (!storage_.isPathInLibrary(dest)) {
         error = "could not move that there";
         return false;
@@ -4113,6 +4158,16 @@ bool Engine::drumImport(unsigned voice, const std::string& name,
         error = "drum machine is disabled"; return false;
     }
     return drums_->importSample(voice, name, bytes, error);
+}
+
+bool Engine::drumLibraryImport(const std::string& relative, const std::string& bytes, Json& result, std::string& error) {
+    if (!drums_) { error = "drum machine is disabled"; return false; }
+    return drums_->importLibrarySample(relative, bytes, result, error);
+}
+
+bool Engine::drumLibraryRead(const std::string& relative, std::string& bytes, std::string& error) const {
+    if (!drums_) { error = "drum machine is disabled"; return false; }
+    return drums_->readLibrarySample(relative, bytes, error);
 }
 
 bool Engine::drumCommand(const std::string& command, const Json& payload, std::string& error) {

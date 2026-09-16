@@ -69,6 +69,35 @@ int main() {
     assert(drums.state()["voices"].at(0)["loaded"].asBool(false));
     Json deleteKit = kit; deleteKit.set("confirmed", true); assert(drums.command("kit/delete", deleteKit, error));
 
+    Json imported;
+    std::string nestedWave = impulseWave(); nestedWave.back() = 1;
+    const bool nestedImported = drums.importLibrarySample("Acoustic/Studio/snare.wav", nestedWave, imported, error);
+    if (!nestedImported) std::cerr << error << '\n';
+    assert(nestedImported);
+    assert(!imported["duplicate"].asBool(true));
+    assert(fs::exists(root / "samples/Acoustic/Studio/snare.wav"));
+    assert(drums.importLibrarySample("DifferentFolder/renamed.wav", nestedWave, imported, error));
+    assert(imported["duplicate"].asBool(false));
+    assert(!fs::exists(root / "samples/DifferentFolder/renamed.wav"));
+    assert(!drums.importLibrarySample("Acoustic/Studio/snare.wav", std::string(nestedWave).replace(45, 1, "x"), imported, error));
+    assert(!drums.importLibrarySample("../escape.wav", nestedWave, imported, error));
+    assert(!drums.importLibrarySample("/escape.wav", nestedWave, imported, error));
+    assert(!drums.importLibrarySample("Acoustic/test.mp3", nestedWave, imported, error));
+    Json load = Json::object(); load.set("voice", 4); load.set("relative", "Acoustic/Studio/snare.wav");
+    assert(drums.command("sample/load", load, error));
+    assert(drums.state()["voices"].at(4)["name"].asString() == "snare");
+    assert(!drums.canEditLibraryPath((root / "samples/Acoustic").string(), error));
+    Json nestedKit = Json::object(); nestedKit.set("name", "Nested");
+    assert(drums.command("kit/save", nestedKit, error));
+    assert(drums.command("kit/new", Json::object(), error));
+    assert(!drums.state()["voices"].at(4)["loaded"].asBool(true));
+    assert(!drums.canEditLibraryPath((root / "samples/Acoustic").string(), error));
+    assert(drums.command("kit/load", nestedKit, error));
+    assert(drums.state()["voices"].at(4)["loaded"].asBool(false));
+    std::string preview;
+    assert(drums.readLibrarySample("Acoustic/Studio/snare.wav", preview, error) && preview == nestedWave);
+    assert(!drums.readLibrarySample("../drum-machine.json", preview, error));
+
     assert(drums.command("fill", Json::object(), error));
     Json song = Json::object(); Json sections = Json::array();
     Json section = Json::object(); section.set("variation", 0); section.set("repeats", 2); sections.push(section);

@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DrumSampleBrowser } from "./DrumSampleBrowser";
 
 type Page = "play" | "pattern" | "song" | "kit";
 
@@ -19,10 +20,9 @@ export function DrumMachineView({
     const [editFill, setEditFill] = useState(false);
     const [stepPage, setStepPage] = useState(0);
     const [selected, setSelected] = useState({ voice: 0, step: 0 });
-    const [importVoice, setImportVoice] = useState(0);
-    const [progress, setProgress] = useState(0);
+    const [browseVoice, setBrowseVoice] = useState<number | null>(null);
     const [deleteKit, setDeleteKit] = useState("");
-    const fileRef = useRef<HTMLInputElement>(null);
+    const [newKit, setNewKit] = useState(false);
     const voices = arr(drums.voices).map(obj);
     const variations = arr(drums.variations).map(obj);
     const pattern = editFill ? obj(drums.fill) : obj(variations[variation]);
@@ -37,7 +37,12 @@ export function DrumMachineView({
         const velocities = arr(row.velocities).map((value) => num(value));
         const accents = str(row.accents);
         return { voice, voiceIndex, velocities, accents };
-    }), [voices, pattern]);
+    }).filter(({ voice }) => Boolean(str(voice.sample))), [voices, pattern]);
+    useEffect(() => {
+        if (rows.length && !rows.some((row) => row.voiceIndex === selected.voice)) {
+            setSelected((item) => ({ ...item, voice: rows[0].voiceIndex }));
+        }
+    }, [rows, selected.voice]);
 
     const command = (name: string, payload: JsonObject = {}) =>
         run(() => engine.client.request(`drums/${name}`, payload));
@@ -57,11 +62,6 @@ export function DrumMachineView({
         quantizationEnabled: bool(engine.transport.quantizationEnabled)
     }));
     const saveSong = (next: JsonObject[]) => command("song/set", { sections: next });
-    const importFile = (file: File) => run(async () => {
-        setProgress(0.01);
-        await engine.client.uploadDrumSample(importVoice, file, setProgress);
-        setProgress(0);
-    });
     const saveKit = async () => {
         const name = await askText("Drum kit name", str(drums.kitName, "Custom"));
         if (name?.trim()) await command("kit/save", { name: name.trim() });
@@ -125,6 +125,7 @@ export function DrumMachineView({
             </section>}
 
             {page === "pattern" && <section className="panel drums-pattern stack">
+                {rows.length === 0 && <div className="muted">Add drums in the Kit page before building your pattern.</div>}
                 <div className="drums-editor-toolbar">
                     {[0, 1, 2, 3].map((index) => <button type="button" key={index}
                         className={`btn${!editFill && variation === index ? " btn-active" : ""}`}
@@ -182,34 +183,38 @@ export function DrumMachineView({
             </section>}
 
             {page === "kit" && <section className="panel drums-kit stack">
-                <input ref={fileRef} type="file" accept=".wav,audio/wav" hidden onChange={(event) => {
-                    const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) void importFile(file);
-                }} />
-                <div className="muted">Load mono or stereo WAV samples. Files are decoded and resampled before they reach the audio thread.</div>
-                {progress > 0 && <div className="drums-import-progress"><span style={{ width: `${progress * 100}%` }} /></div>}
-                <div className="row drums-kit-actions">
+                <div className="drum-kit-workspace">
+                <aside className="drum-kit-library"><div className="field-label">SAVED KITS</div><div className="drum-kit-list">
+                    {savedKits.length === 0 && <span className="muted">No saved kits yet.</span>}
+                    {savedKits.map((name) => <div className="drum-kit-entry" key={name}>
+                        <button type="button" className={`btn${str(drums.kitName) === name ? " btn-active" : ""}`} onClick={() => void command("kit/load", { name })}>{name}</button>
+                        <button type="button" className="btn btn-danger" aria-label={`Delete ${name}`} onClick={() => setDeleteKit(name)}>×</button>
+                    </div>)}
+                </div></aside>
+                <div className="drum-kit-designer"><div className="row drums-kit-actions">
                     <button type="button" className="btn btn-accent" onClick={() => void saveKit()}>SAVE KIT</button>
+                    <button type="button" className="btn" onClick={() => setNewKit(true)}>NEW KIT</button>
                     <strong>{str(drums.kitName, "Custom")}</strong>
                 </div>
-                {voices.map((voice, index) => <div className="drums-kit-row" key={index}>
-                    <strong>{str(voice.name)}</strong><span>{str(voice.sample, "NO SAMPLE")}</span>
-                    <button type="button" className="btn" onClick={() => { setImportVoice(index); window.setTimeout(() => fileRef.current?.click(), 0); }}>
-                        {bool(voice.loaded) ? "REPLACE WAV" : "LOAD WAV"}</button>
-                    <button type="button" className="btn btn-danger" disabled={!bool(voice.loaded)}
-                        onClick={() => void command("sample/clear", { voice: index })}>CLEAR</button>
+                <div className="drum-designer-list">{voices.map((voice, index) => str(voice.sample) && <div className="drums-kit-row" key={index}>
+                    <strong title={str(voice.sample)}>{str(voice.name)}</strong>
+                    <button type="button" className="btn" onClick={() => setBrowseVoice(index)}>REPLACE</button>
+                    <button type="button" className="btn btn-danger" onClick={() => void command("sample/clear", { voice: index })}>REMOVE</button>
                 </div>)}
-                <div className="field-label">SAVED KITS</div>
-                {savedKits.length === 0 && <span className="muted">Saved kits will appear here.</span>}
-                {savedKits.map((name) => <div className="drums-saved-kit" key={name}>
-                    <strong>{name}</strong>
-                    <button type="button" className="btn" onClick={() => void command("kit/load", { name })}>LOAD</button>
-                    <button type="button" className="btn btn-danger" onClick={() => setDeleteKit(name)}>DELETE</button>
-                </div>)}
+                {rows.length === 0 && <div className="muted">Empty kit. Add sounds from your sample library.</div>}</div>
+                <div className="row"><button type="button" className="btn btn-accent" disabled={voices.every((voice) => Boolean(str(voice.sample)))} onClick={() => setBrowseVoice(-1)}>ADD DRUM</button>
+                    <button type="button" className="btn" onClick={() => setBrowseVoice(-2)}>SAMPLE BROWSER</button></div>
+                <span className="muted">Up to eight drums · names follow the WAV files.</span>
+                </div></div>
             </section>}
+            {browseVoice !== null && <DrumSampleBrowser engine={engine} run={run} onClose={() => setBrowseVoice(null)}
+                onPick={(relative) => { const voice = browseVoice; setBrowseVoice(null); void command("sample/load", { voice, relative }); }} />}
             {deleteKit && <ConfirmDialog title="DELETE DRUM KIT?" body={`Delete the saved “${deleteKit}” kit? Imported WAV files remain available.`}
                 confirmLabel="DELETE" danger onCancel={() => setDeleteKit("")} onConfirm={() => {
                     const name = deleteKit; setDeleteKit(""); void command("kit/delete", { name, confirmed: true });
                 }} />}
+            {newKit && <ConfirmDialog title="START AN EMPTY KIT?" body="Current drum assignments will be cleared. Save your kit first if you want to recall it. Saved kits and WAV files are kept."
+                confirmLabel="NEW KIT" onCancel={() => setNewKit(false)} onConfirm={() => { setNewKit(false); void command("kit/new"); }} />}
         </div>
     );
 }

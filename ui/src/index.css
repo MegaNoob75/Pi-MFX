@@ -3998,6 +3998,23 @@ button.list-item {
 }
 
 .drums-view { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.drum-kit-workspace { display: grid; grid-template-columns: minmax(140px, 28%) minmax(0, 1fr); gap: 10px; height: clamp(220px, 48vh, 400px); }
+.drum-kit-library, .drum-kit-designer { display: flex; flex-direction: column; min-height: 0; min-width: 0; gap: 8px; }
+.drum-kit-library { border-right: 1px solid var(--mfx-border); padding-right: 8px; }
+.drum-kit-list, .drum-designer-list { overflow-y: auto; min-height: 0; flex: 1; }
+.drum-kit-entry { display: flex; gap: 4px; margin-bottom: 6px; }
+.drum-kit-entry > :first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.drum-kit-designer .drums-kit-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 5px; padding: 6px 0; }
+.drum-kit-designer .drums-kit-row strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.drum-kit-designer .btn { min-height: 38px; padding: 6px 9px; }
+.drum-sample-dialog { width: min(96vw, 950px); max-width: 950px; height: 92vh; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+.drum-sample-dialog > .explorer { flex: 1; min-height: 0; overflow: auto; }
+.drum-sample-dialog .explorer-toolbar-main { flex-wrap: wrap; }
+.drum-import-dialog { width: min(92vw, 800px); max-width: 800px; display: flex; flex-direction: column; max-height: 90vh; gap: 8px; }
+.drum-import-list { overflow: auto; min-height: 0; }
+.drum-import-list .row { flex-wrap: nowrap; margin-bottom: 5px; }
+.drum-import-list .row > :first-child { min-width: 0; flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 540px) { .drum-kit-workspace { grid-template-columns: 120px minmax(0, 1fr); } .drum-kit-designer .drums-kit-row { grid-template-columns: 1fr auto; } .drum-kit-designer .drums-kit-row strong { grid-column: 1 / -1; } }
 .drums-status { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .drums-status > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .drums-status strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

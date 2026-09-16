@@ -25,6 +25,10 @@ public:
     void prepare(unsigned sampleRate);
     bool importSample(unsigned voice, const std::string& name,
                       const std::string& bytes, std::string& error);
+    bool importLibrarySample(const std::string& relative, const std::string& bytes,
+                             Json& result, std::string& error);
+    bool readLibrarySample(const std::string& relative, std::string& bytes, std::string& error) const;
+    bool canEditLibraryPath(const std::string& path, std::string& error) const;
     bool command(const std::string& command, const Json& payload, std::string& error);
 
     void render(float* const* master, unsigned masterChannels,
@@ -70,6 +74,7 @@ private:
     static bool decodeWave(const std::string& bytes, unsigned outputRate,
                            Sample& sample, std::string& error);
     static bool safeWaveName(const std::string& name, std::string& safe);
+    bool samplePath(const std::string& relative, std::string& path, std::string& error) const;
 
     std::string root_;
     std::string samplesRoot_;

@@ -92,6 +92,8 @@ public:
     bool recorderExport(const std::string& kind, const std::string& trackId,
                         std::string& path, std::string& name, std::string& error);
     bool drumImport(unsigned voice, const std::string& name, const std::string& bytes, std::string& error);
+    bool drumLibraryImport(const std::string& relative, const std::string& bytes, Json& result, std::string& error);
+    bool drumLibraryRead(const std::string& relative, std::string& bytes, std::string& error) const;
     bool drumCommand(const std::string& command, const Json& payload, std::string& error);
 
     // --- banks and presets -----------------------------------------------

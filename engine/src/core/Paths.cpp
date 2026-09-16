@@ -15,6 +15,26 @@
 namespace fs = std::filesystem;
 
 namespace pimfx {
+bool resolveLibraryPath(const std::string& path, std::string& resolved) {
+    std::error_code ec;
+    fs::path ancestor = fs::absolute(fs::path(path), ec).lexically_normal();
+    if (ec) return false;
+    std::vector<fs::path> missing;
+    for (;;) {
+        const auto status = fs::symlink_status(ancestor, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) return false;
+        if (!ec && status.type() != fs::file_type::not_found) break;
+        ec.clear();
+        const auto parent = ancestor.parent_path();
+        if (parent.empty() || parent == ancestor) return false;
+        missing.push_back(ancestor.filename()); ancestor = parent;
+    }
+    fs::path result = fs::canonical(ancestor, ec);
+    if (ec) return false;
+    for (auto it = missing.rbegin(); it != missing.rend(); ++it) result /= *it;
+    resolved = result.string(); return true;
+}
+
 namespace {
 
 std::string environment(const char* name) {

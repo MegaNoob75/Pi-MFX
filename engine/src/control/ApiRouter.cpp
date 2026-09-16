@@ -66,6 +66,17 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
     }
 
     const std::string command = request.path.substr(5);
+    if (command == "drums/library/import" && request.method == "POST") {
+        Json result = Json::object(); std::string error;
+        const bool ok = engine_.drumLibraryImport(urlDecode(request.header("x-pimfx-relative")), request.body, result, error);
+        response.json(envelope(ok, error, result).dump(), ok ? 200 : 400); return true;
+    }
+    if (command == "drums/library/audio" && request.method == "GET") {
+        std::string error, bytes;
+        if (!engine_.drumLibraryRead(request.queryValue("relative"), bytes, error)) response.error(400, error);
+        else { response.status = 200; response.contentType = "audio/wav"; response.body = std::move(bytes); }
+        return true;
+    }
 
     // Media is uploaded as its original binary representation. JSON/base64
     // remains appropriate for small control payloads, but would inflate and

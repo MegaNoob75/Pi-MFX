@@ -7,14 +7,11 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <limits>
 
 namespace pimfx {
 namespace {
-
-constexpr const char* kVoiceNames[] = {
-    "Kick", "Snare", "Closed Hat", "Open Hat", "Tom", "Clap", "Ride", "Percussion"
-};
 
 uint16_t u16(const unsigned char* p) {
     return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1] << 8);
@@ -67,7 +64,7 @@ void DrumMachine::prepare(unsigned sampleRate) {
         std::string bytes;
         std::string error;
         Sample sample;
-        if (readFile(joinPath(samplesRoot_, file), bytes)
+        if (readLibrarySample(file, bytes, error)
             && decodeWave(bytes, sampleRate_, sample, error)) {
             sample.file = file;
             sample.name = fileStem(file);
@@ -97,21 +94,105 @@ bool DrumMachine::importSample(unsigned voice, const std::string& name,
     }
     std::string safe;
     if (!safeWaveName(name, safe)) { error = "drum samples must be WAV files"; return false; }
-    const std::string storedName = std::to_string(voice + 1) + "-" + safe;
+    Json result;
+    if (!importLibrarySample(safe, bytes, result, error)) return false;
+    Json load = Json::object(); load.set("voice", voice); load.set("relative", result["relative"].asString());
+    return command("sample/load", load, error);
+}
+
+bool DrumMachine::samplePath(const std::string& relative, std::string& path, std::string& error) const {
+    namespace fs = std::filesystem;
+    const fs::path rel(relative);
+    for (unsigned char c : relative) if (c < 32 || c == 127) { error = "invalid drum sample path"; return false; }
+    if (relative.empty() || rel.is_absolute() || rel.has_root_name() || relative.find('\\') != std::string::npos) {
+        error = "use a relative path inside drum samples"; return false;
+    }
+    for (const auto& part : rel) {
+        if (part == ".." || part == "." || part.string().find(':') != std::string::npos) {
+            error = "invalid drum sample path"; return false;
+        }
+    }
+    std::string safe;
+    if (!safeWaveName(rel.filename().string(), safe)) { error = "select a WAV sample"; return false; }
+    std::string rootText, targetText;
+    if (!resolveLibraryPath(samplesRoot_, rootText)) { error = "could not resolve samples folder"; return false; }
+    const fs::path root(rootText);
+    if (!resolveLibraryPath((root / rel).string(), targetText)) { error = "could not resolve sample path"; return false; }
+    const fs::path target(targetText);
+    auto a = root.begin(), b = target.begin();
+    for (; a != root.end(); ++a, ++b) {
+        if (b == target.end() || *a != *b) { error = "sample is outside the drum library"; return false; }
+    }
+    path = target.string(); return true;
+}
+
+bool DrumMachine::readLibrarySample(const std::string& relative, std::string& bytes, std::string& error) const {
+    std::string path;
+    if (!samplePath(relative, path, error)) return false;
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size > 32u * 1024u * 1024u || !readFile(path, bytes)) {
+        error = "could not read that drum sample"; return false;
+    }
+    return true;
+}
+
+bool DrumMachine::canEditLibraryPath(const std::string& path, std::string& error) const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto root = fs::weakly_canonical(samplesRoot_, ec);
+    const auto target = fs::weakly_canonical(path, ec);
+    if (ec) { error = "could not resolve library path"; return false; }
+    const auto linked = [&](const std::string& file) {
+        if (file.empty()) return false;
+        const auto sample = fs::weakly_canonical(root / file, ec);
+        if (ec) return true;
+        auto a = target.begin(), b = sample.begin();
+        for (; a != target.end(); ++a, ++b) if (b == sample.end() || *a != *b) return false;
+        return true;
+    };
+    for (const auto& sample : controlKit_.voices) if (linked(sample.file)) {
+        error = "sample is used by the current kit; remove it from the kit first"; return false;
+    }
+    for (const auto& name : savedKits_) {
+        std::string text;
+        if (!readFile(joinPath(kitsRoot_, name + ".json"), text)) continue;
+        std::string parseError; const Json manifest = Json::parse(text, &parseError);
+        if (!parseError.empty()) { error = "could not check saved kit references"; return false; }
+        for (size_t i = 0; i < manifest["samples"].size(); ++i) if (linked(manifest["samples"].at(i).asString())) {
+            error = "sample is used by saved kit " + name + "; update or delete that kit first"; return false;
+        }
+    }
+    return true;
+}
+
+bool DrumMachine::importLibrarySample(const std::string& relative, const std::string& bytes,
+                                     Json& result, std::string& error) {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (bytes.empty() || bytes.size() > 32u * 1024u * 1024u) { error = "WAV limit is 32 MB"; return false; }
+    std::string path;
+    if (!samplePath(relative, path, error)) return false;
     Sample decoded;
     if (!decodeWave(bytes, sampleRate_, decoded, error)) return false;
-    if (!writeFileAtomic(joinPath(samplesRoot_, storedName), bytes)) {
-        error = "could not save the drum sample";
-        return false;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // Compare content, not names: identical WAVs in different folders are not imported twice.
+    for (fs::recursive_directory_iterator it(samplesRoot_, fs::directory_options::skip_permission_denied, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        if (it->is_symlink(ec)) { it.disable_recursion_pending(); continue; }
+        if (!it->is_regular_file(ec) || it->file_size(ec) != bytes.size()) continue;
+        std::string existing;
+        if (readFile(it->path().string(), existing) && existing == bytes) {
+            result = Json::object(); result.set("duplicate", true);
+            result.set("relative", fs::relative(it->path(), samplesRoot_, ec).generic_string()); return true;
+        }
     }
-
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    decoded.file = storedName;
-    decoded.name = fileStem(safe);
-    controlKit_.voices[voice] = std::move(decoded);
-    if (!publishKitUnlocked(error)) return false;
-    if (!saveStateUnlocked()) { error = "could not save the drum kit"; return false; }
-    return true;
+    if (ec) { error = "could not scan drum samples for duplicates"; return false; }
+    if (fs::exists(path, ec)) { error = "a different sample already has that name; rename it before importing"; return false; }
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    if (ec || !writeFileAtomic(path, bytes)) { error = "could not save drum sample"; return false; }
+    result = Json::object(); result.set("duplicate", false); result.set("relative", relative); return true;
 }
 
 bool DrumMachine::publishKitUnlocked(std::string& error) {
@@ -210,10 +291,10 @@ bool DrumMachine::loadKit(const Json& payload, std::string& error) {
     }
     Kit loaded;
     for (size_t voice = 0; voice < std::min(manifest["samples"].size(), DrumSequencer::kVoiceCount); ++voice) {
-        const std::string file = sanitizeFileName(fileName(manifest["samples"].at(voice).asString()));
+        const std::string file = manifest["samples"].at(voice).asString();
         if (file.empty() || manifest["samples"].at(voice).asString().empty()) continue;
         std::string bytes; Sample sample;
-        if (!readFile(joinPath(samplesRoot_, file), bytes) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
+        if (!readLibrarySample(file, bytes, error) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
         sample.file = file; sample.name = fileStem(file); loaded.voices[voice] = std::move(sample);
     }
     controlKit_ = std::move(loaded); kitName_ = manifest["name"].asString(safe);
@@ -252,10 +333,32 @@ bool DrumMachine::command(const std::string& commandName, const Json& payload, s
     if (commandName == "kit/save") return saveKit(payload, error);
     if (commandName == "kit/load") return loadKit(payload, error);
     if (commandName == "kit/delete") return deleteKit(payload, error);
+    if (commandName == "kit/new") {
+        controlKit_ = Kit{}; kitName_ = "Custom";
+        if (!publishKitUnlocked(error)) return false;
+        return saveStateUnlocked();
+    }
+    if (commandName == "sample/load") {
+        unsigned voice = static_cast<unsigned>(payload["voice"].asInt(-1));
+        if (voice >= DrumSequencer::kVoiceCount) {
+            voice = 0;
+            while (voice < DrumSequencer::kVoiceCount && !controlKit_.voices[voice].file.empty()) ++voice;
+        }
+        if (voice >= DrumSequencer::kVoiceCount) { error = "kit is full (eight drums maximum)"; return false; }
+        const std::string file = payload["relative"].asString();
+        std::string bytes; Sample sample;
+        if (!readLibrarySample(file, bytes, error) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
+        sample.file = file; sample.name = fileStem(fileName(file)); controlKit_.voices[voice] = std::move(sample);
+        if (!publishKitUnlocked(error)) return false;
+        return saveStateUnlocked();
+    }
     if (commandName == "sample/clear") {
         const unsigned voice = static_cast<unsigned>(payload["voice"].asInt(-1));
         if (voice >= DrumSequencer::kVoiceCount) { error = "invalid drum voice"; return false; }
         controlKit_.voices[voice] = Sample{};
+        for (auto& variation : program_.variations) variation.steps[voice] = {};
+        program_.fill.steps[voice] = {};
+        if (!publishProgramUnlocked(error)) return false;
         if (!publishKitUnlocked(error)) return false;
         if (!saveStateUnlocked()) { error = "could not save the drum kit"; return false; }
         return true;
@@ -303,8 +406,6 @@ void DrumMachine::render(float* const* master, unsigned masterChannels,
         while (triggerIndex < triggerCount && triggers[triggerIndex].frameOffset == frame) {
             const auto& trigger = triggers[triggerIndex++];
             Playback& voice = playback_[trigger.voice];
-            if (trigger.voice == 2) playback_[3] = Playback{};
-            if (trigger.voice == 3) playback_[2] = Playback{};
             voice.sample = &activeKit_->voices[trigger.voice];
             voice.position = 0;
             voice.gain = trigger.velocity * (trigger.accent ? 1.2f : 1.0f);
@@ -418,7 +519,8 @@ Json DrumMachine::state() const {
     out.set("droppedKitChanges", static_cast<int64_t>(droppedKitChanges_.load()));
     Json voices = Json::array();
     for (size_t index = 0; index < DrumSequencer::kVoiceCount; ++index) {
-        Json voice = Json::object(); voice.set("id", static_cast<int>(index)); voice.set("name", kVoiceNames[index]);
+        Json voice = Json::object(); voice.set("id", static_cast<int>(index));
+        voice.set("name", controlKit_.voices[index].file.empty() ? "" : fileStem(fileName(controlKit_.voices[index].file)));
         voice.set("sample", controlKit_.voices[index].file); voice.set("loaded", !controlKit_.voices[index].left.empty());
         voices.push(std::move(voice));
     }
@@ -451,7 +553,7 @@ bool DrumMachine::decodeWave(const std::string& bytes, unsigned outputRate,
         offset = body + size + (size & 1u);
     }
     if ((format != 1 && format != 3) || channels < 1 || channels > 2 || rate < 8000 || rate > 384000
-        || (bits != 16 && bits != 24 && bits != 32) || dataOffset == 0) {
+        || (bits != 16 && bits != 24 && bits != 32) || (format == 3 && bits != 32) || dataOffset == 0) {
         error = "use mono or stereo PCM/float WAV samples at 16, 24, or 32 bits"; return false;
     }
     const size_t bytesPerSample = bits / 8; const size_t frameBytes = bytesPerSample * channels;

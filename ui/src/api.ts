@@ -182,6 +182,16 @@ export class EngineClient {
         });
     }
 
+    async importDrumLibrary(file: File, relative: string): Promise<JsonObject> {
+        if (file.size > 32 * 1024 * 1024) throw new Error("sample exceeds 32 MB");
+        const response = await fetch("/api/drums/library/import", {
+            method: "POST", headers: { "Content-Type": "application/octet-stream", "X-PiMFX-Relative": encodeURIComponent(relative) }, body: file
+        });
+        const result = obj(await response.json());
+        if (!response.ok || !bool(result.ok)) throw new Error(str(result.error, "sample import failed"));
+        return result;
+    }
+
     private connect(): void {
         if (this.closed) {
             return;
