@@ -44,8 +44,8 @@ elif [[ -d .git ]]; then
     requested="${PIMFX_BRANCH:-}"
     if [[ -n "$requested" ]]; then
         case "$requested" in
-            main|dev) ;;
-            *) die "branch must be main or dev" ;;
+            main|dev|workstation) ;;
+            *) die "branch must be main, dev or workstation" ;;
         esac
         log "Switching to ${requested}"
         origin_url="$(as_clone_owner git remote get-url origin 2>/dev/null || true)"

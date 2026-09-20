@@ -268,6 +268,28 @@ function Show-FasterBootMenu {
     }
 }
 
+function Show-UpdateBranchMenu {
+    Write-Host ""
+    Write-Host "  Update from GitHub"
+    Write-Host "  1) Main         (stable release)"
+    Write-Host "  2) Dev          (development)"
+    Write-Host "  3) Workstation  (workstation features)"
+    Write-Host "  4) Back"
+    $c = Read-Host "Choose [1-4]"
+    $branch = switch ($c) {
+        "1" { "main" }
+        "2" { "dev" }
+        "3" { "workstation" }
+        "4" { return }
+        default {
+            Write-Host "pick a number from 1 to 4"
+            return
+        }
+    }
+    Invoke-Pimfx "update -y --branch $branch"
+    Reload-PiKiosk
+}
+
 function Invoke-MenuAction([string]$Choice) {
     $userName = ""
     if ($script:Target -match "^(.*)@") {
@@ -277,7 +299,7 @@ function Invoke-MenuAction([string]$Choice) {
         "0" { Copy-LocalTree "rebuild" }
         "1" { Invoke-Pimfx ("complete -y --display-user " + $userName) }
         "2" { Invoke-Pimfx "install -y" }
-        "3" { Invoke-Pimfx "update -y --branch dev"; Reload-PiKiosk }
+        "3" { Show-UpdateBranchMenu }
         "4" { Invoke-Pimfx "rebuild -y"; Reload-PiKiosk }
         "5" { Invoke-Pimfx ("display -y --display-user " + $userName) }
         "5r" { Invoke-Pimfx "display-refresh -y" }
@@ -326,7 +348,7 @@ function Show-Menu {
         Write-Host "  Same as scripts/pimfx.sh on the Pi"
         Write-Host "  1) Complete setup  (install + touchscreen)"
         Write-Host "  2) Install / first-time setup"
-        Write-Host "  3) Update  (fetch GitHub, then rebuild and restart)"
+        Write-Host "  3) Update from GitHub  (choose main, dev or workstation)"
         Write-Host "  4) Rebuild local files  (no git pull)"
         Write-Host "  5) Set up touchscreen display"
         Write-Host "  5r) Refresh touchscreen (hard-refresh kiosk, hide pointer, hide keyboard)"
