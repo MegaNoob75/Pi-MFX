@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { useEngine } from "./api";
 import { arr, bool, num, obj, str, type JsonObject } from "./json";
 import { applyHardwareNavFocus, handleHardwareNav, watchHardwareNavFocus } from "./hardwareNav";
-import { AboutView, buildIdentity } from "./views/AboutView";
+import { AboutView } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
 import { EditorView } from "./views/EditorView";
 import { PerformanceView } from "./views/PerformanceView";
@@ -717,7 +717,6 @@ export function App() {
     }, [menuOpen, engine.client]);
 
     const audioRunning = bool(engine.state.audioRunning);
-    const engineBuild = buildIdentity(engine.state);
     const title = useMemo(() => {
         if (view === "performance" && snapshotMode) {
             return "SNAPSHOTS";
@@ -769,22 +768,20 @@ export function App() {
                     onOpen={openEntry} onDragStart={beginMenuDrag} />
                 <div className="shell-mid">
                     <div />
-                    <div className="shell-title"><MarqueeText text={title} align="center" fontWeight={900} /></div>
+                    <div className="shell-title-stack">
+                        <span className={`status-bar${engine.connected && audioRunning ? " on" : ""}`} title={
+                            engine.connected
+                                ? audioRunning ? "engine connected, audio running" : "engine connected"
+                                : "engine disconnected"
+                        } />
+                        <div className="shell-title"><MarqueeText text={title} align="center" fontWeight={900} /></div>
+                    </div>
                     <div />
                 </div>
                 <ShortcutTray side="right" ids={rightShortcuts.filter((id) => featureAvailable(entryById(id)))} entries={MENU_ENTRIES}
                     activeView={view} settingsActive={settingsActive} editing={menuEditing} draggingId={menuDrag?.id}
                     onOpen={openEntry} onDragStart={beginMenuDrag} />
                 <div className="shell-actions">
-                    <span className="shell-build" title="Engine version and commit">
-                        <span>version {engineBuild.version}</span>
-                        {engineBuild.gitSha && <span>{engineBuild.gitSha}</span>}
-                    </span>
-                    <span className={`status-dot${engine.connected && audioRunning ? " on" : ""}`} title={
-                        engine.connected
-                            ? audioRunning ? "engine connected, audio running" : "engine connected"
-                            : "engine disconnected"
-                    } />
                     {view === "snapshotEdit" && snapshotEditId && (
                         <button
                             type="button"

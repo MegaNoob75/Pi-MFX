@@ -1314,9 +1314,9 @@ export function PerformanceView({
                     return (
                         <div
                             key={id}
-                            className={`status-widget${isMeterWidget(id) ? " is-meter" : ""}`}
+                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}`}
                             style={{
-                                ...rectStyle(widget.rect),
+                                ...rectStyle(widget.rect, isMeterWidget(id) && widget.orientation === "vertical"),
                                 zIndex: pickerOpen ? 50 : undefined
                             }}
                         >
@@ -1327,8 +1327,9 @@ export function PerformanceView({
                                     : isMeterWidget(id) ? (
                                         <LiveGainMeter
                                             client={client}
-                                            label={STATUS_WIDGET_LABELS[id]}
+                                            label={id === "inputMeter" ? "In" : "Out"}
                                             channel={id === "inputMeter" ? "input" : "output"}
+                                            orientation={widget.orientation}
                                         />
                                     ) : id === "audioStatus" ? (
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
@@ -1797,17 +1798,20 @@ function isLiveMeterText(id: string): boolean {
 function LiveGainMeter({
     client,
     label,
-    channel
+    channel,
+    orientation
 }: {
     client: import("../api").EngineClient;
     label: string;
     channel: "input" | "output";
+    orientation: "vertical" | "horizontal";
 }) {
     const meters = useMeters(client);
     return (
         <GainMeter
             label={label}
             peak={channel === "input" ? num(meters.inputPeak) : num(meters.outputPeak)}
+            orientation={orientation}
         />
     );
 }
@@ -1870,11 +1874,14 @@ function widgetText(id: string, values: Record<string, string>): string {
     }
 }
 
-function rectStyle(rect: { x: number; y: number; width: number; height: number }): CSSProperties {
+function rectStyle(
+    rect: { x: number; y: number; width: number; height: number },
+    intrinsicWidth = false
+): CSSProperties {
     return {
         left: `${rect.x * 100}%`,
         top: `${rect.y * 100}%`,
-        width: `${rect.width * 100}%`,
+        width: intrinsicWidth ? undefined : `${rect.width * 100}%`,
         height: `${rect.height * 100}%`
     };
 }
