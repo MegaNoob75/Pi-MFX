@@ -11,7 +11,11 @@ export const STATUS_WIDGET_IDS = [
     "tuner",
     "inputMeter",
     "outputMeter",
-    "looperStatus"
+    "tapTempo",
+    "backingTrack",
+    "looperControl",
+    "recorderControl",
+    "drumMachine"
 ] as const;
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
@@ -27,11 +31,24 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     tuner: "Tuner",
     inputMeter: "Input Gain",
     outputMeter: "Output Gain",
-    looperStatus: "Looper"
+    tapTempo: "Tap Tempo",
+    backingTrack: "Backing Tracks",
+    looperControl: "Looper",
+    recorderControl: "Recorder",
+    drumMachine: "Drum Machine"
 };
 
 export function isMeterWidget(id: string): boolean {
     return id === "inputMeter" || id === "outputMeter";
+}
+
+export function statusWidgetMinSize(id: string): { width: number; height: number } {
+    if (["tapTempo", "backingTrack", "looperControl", "recorderControl", "drumMachine"].includes(id)) {
+        return { width: 0.22, height: 0.24 };
+    }
+    if (id === "audioStatus") return { width: 0.20, height: 0.18 };
+    if (isMeterWidget(id)) return { width: 0.08, height: 0.22 };
+    return { width: 0.08, height: 0.08 };
 }
 
 export interface LayoutRect {
@@ -80,7 +97,7 @@ export function defaultStatusWidgets(): Record<string, StatusWidget> {
                     y: 0.02,
                     width: 0.22,
                     height: 0.12
-                })
+                }, statusWidgetMinSize(id))
         };
     });
     return widgets;
@@ -90,7 +107,10 @@ export function readStatusWidgets(layout: JsonObject): Record<string, StatusWidg
     const stored = obj(layout.elements);
     const widgets = defaultStatusWidgets();
     for (const id of STATUS_WIDGET_IDS) {
-        const item = obj(stored[id]);
+        const current = obj(stored[id]);
+        const item = id === "looperControl" && Object.keys(current).length === 0
+            ? obj(stored.looperStatus)
+            : current;
         if (!item.id && !item.visible && !item.rect) {
             continue;
         }
@@ -103,7 +123,7 @@ export function readStatusWidgets(layout: JsonObject): Record<string, StatusWidg
                 y: num(obj(item.rect).y, widgets[id].rect.y),
                 width: num(obj(item.rect).width, widgets[id].rect.width),
                 height: num(obj(item.rect).height, widgets[id].rect.height)
-            })
+            }, statusWidgetMinSize(id))
         };
     }
     return widgets;

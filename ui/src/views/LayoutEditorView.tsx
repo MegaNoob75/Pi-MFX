@@ -22,6 +22,7 @@ import {
     snapshotWidgetId,
     snapshotWidgetsToJson,
     spaceRectsEvenly,
+    statusWidgetMinSize,
     statusWidgetsToJson,
     unplacedIds,
     type LayoutGroup,
@@ -285,7 +286,7 @@ export function LayoutEditorView({
         if (control) {
             return analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
         }
-        return { width: 0.08, height: 0.08 };
+        return statusWidgetMinSize(id);
     };
 
     const rectForId = (id: string): LayoutRect | null => {

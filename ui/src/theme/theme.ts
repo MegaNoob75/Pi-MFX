@@ -233,6 +233,12 @@ export interface MultiFXThemeDefinition {
         muted: string;
         border: string;
         danger: string;
+        icon: string;
+        iconActive: string;
+        shortcutBackground: string;
+        shortcutBorder: string;
+        shortcutActiveBackground: string;
+        shortcutActiveBorder: string;
     };
     appearance: MultiFXThemeAppearance;
 }
@@ -241,7 +247,9 @@ interface MultiFXThemePaletteDefinition {
     name: string;
     author: string;
     version: number;
-    colors: MultiFXThemeDefinition["colors"];
+    colors: Omit<MultiFXThemeDefinition["colors"],
+        "icon" | "iconActive" | "shortcutBackground" | "shortcutBorder"
+        | "shortcutActiveBackground" | "shortcutActiveBorder">;
 }
 
 const BUILT_IN_THEME_PALETTES: MultiFXThemePaletteDefinition[] = [
@@ -2923,7 +2931,16 @@ function makeThemeFonts(profile: BuiltInThemeProfile): MultiFXThemeFonts {
 function makeTheme(
     palette: MultiFXThemePaletteDefinition
 ): MultiFXThemeDefinition {
-    const c = structuredClone(palette.colors);
+    const base = structuredClone(palette.colors);
+    const c: MultiFXThemeDefinition["colors"] = {
+        ...base,
+        icon: base.navigationText,
+        iconActive: base.selectedText,
+        shortcutBackground: base.navigationSurface,
+        shortcutBorder: base.navigation,
+        shortcutActiveBackground: base.selectedSurface,
+        shortcutActiveBorder: base.selected
+    };
     c.navigationText = readablePaletteText(
         c.navigationText,
         c.navigationSurface,
@@ -3350,7 +3367,13 @@ export const MFX_COLORS = {
     text: "var(--mfx-text)",
     muted: "var(--mfx-muted)",
     border: "var(--mfx-border)",
-    danger: "var(--mfx-danger)"
+    danger: "var(--mfx-danger)",
+    icon: "var(--mfx-icon)",
+    iconActive: "var(--mfx-icon-active)",
+    shortcutBackground: "var(--mfx-shortcut-bg)",
+    shortcutBorder: "var(--mfx-shortcut-border)",
+    shortcutActiveBackground: "var(--mfx-shortcut-active-bg)",
+    shortcutActiveBorder: "var(--mfx-shortcut-active-border)"
 } as const;
 
 /** Semantic surfaces used by MultiFX screens, dialogs, menus and feedback. */
@@ -3596,6 +3619,15 @@ function upgradeLegacyTheme(value: unknown): unknown {
         return value;
     }
     const next = structuredClone(value) as Record<string, unknown>;
+    if (isRecord(next.colors)) {
+        const colors = next.colors;
+        colors.icon ??= colors.navigationText;
+        colors.iconActive ??= colors.selectedText;
+        colors.shortcutBackground ??= colors.navigationSurface;
+        colors.shortcutBorder ??= colors.navigation;
+        colors.shortcutActiveBackground ??= colors.selectedSurface;
+        colors.shortcutActiveBorder ??= colors.selected;
+    }
     if (!isRecord(next.appearance)) return next;
     const appearance = next.appearance;
     if (isRecord(appearance.fonts)) {
@@ -3653,7 +3685,9 @@ export function validateMultiFXTheme(
             "background", "panel", "panelAlt", "navigation",
             "navigationText", "navigationSurface", "selected",
             "selectedSurface", "selectedText", "text", "muted",
-            "border", "danger"
+            "border", "danger", "icon", "iconActive",
+            "shortcutBackground", "shortcutBorder",
+            "shortcutActiveBackground", "shortcutActiveBorder"
         ])
     ) {
         return undefined;
@@ -3672,7 +3706,13 @@ export function validateMultiFXTheme(
         "text",
         "muted",
         "border",
-        "danger"
+        "danger",
+        "icon",
+        "iconActive",
+        "shortcutBackground",
+        "shortcutBorder",
+        "shortcutActiveBackground",
+        "shortcutActiveBorder"
     ];
 
     for (const key of required) {
@@ -3847,6 +3887,12 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
         target.style.setProperty("--mfx-muted", c.muted);
         target.style.setProperty("--mfx-border", c.border);
         target.style.setProperty("--mfx-danger", c.danger);
+        target.style.setProperty("--mfx-icon", c.icon);
+        target.style.setProperty("--mfx-icon-active", c.iconActive);
+        target.style.setProperty("--mfx-shortcut-bg", c.shortcutBackground);
+        target.style.setProperty("--mfx-shortcut-border", c.shortcutBorder);
+        target.style.setProperty("--mfx-shortcut-active-bg", c.shortcutActiveBackground);
+        target.style.setProperty("--mfx-shortcut-active-border", c.shortcutActiveBorder);
 
         for (const [name, surfaceValue] of Object.entries(
             appearance.surfaces
@@ -4060,7 +4106,10 @@ export function clearAppliedMultiFXTheme(): void {
         "--mfx-text",
         "--mfx-muted",
         "--mfx-border",
-        "--mfx-danger"
+        "--mfx-danger",
+        "--mfx-icon", "--mfx-icon-active", "--mfx-shortcut-bg",
+        "--mfx-shortcut-border", "--mfx-shortcut-active-bg",
+        "--mfx-shortcut-active-border"
     ];
 
     const surfaceKeys = [

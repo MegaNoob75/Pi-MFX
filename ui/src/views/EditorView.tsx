@@ -33,12 +33,14 @@ export function EditorView({
     run,
     lockChain = false,
     backRequest = 0,
+    onSnapshots,
     onPageChange
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     lockChain?: boolean;
     backRequest?: number;
+    onSnapshots?: () => void;
     onPageChange?: (page: EditPage, title?: string) => void;
 }) {
     const { client, state, catalog, library } = engine;
@@ -285,9 +287,12 @@ export function EditorView({
             {page === "chain" && (
                 <>
                     <div className="editor-toolbar editor-chain-bar">
-                        {!lockChain ? (
-                            <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
-                        ) : <div />}
+                        <div className="editor-primary-actions">
+                            {!lockChain && (
+                                <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
+                            )}
+                            <button type="button" className="btn" onClick={onSnapshots}>SNAPSHOTS</button>
+                        </div>
                         <button
                             type="button"
                             className="editor-preset-name"

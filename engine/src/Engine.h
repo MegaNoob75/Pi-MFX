@@ -290,6 +290,7 @@ private:
 
     Lv2Catalog catalog_;
     std::unique_ptr<AudioBackend> backend_;
+    std::string audioDeviceName_;
     AudioMetrics metrics_;
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 

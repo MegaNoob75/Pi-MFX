@@ -519,9 +519,8 @@ Json UiSettings::toJson() const {
     json.set("customThemes", customThemes);
     json.set("ledColors", ledColors.isObject() ? ledColors : Json::object());
     json.set("scale", scale);
-    json.set("showTuner", showTuner);
-    json.set("showLatencyMeter", showLatencyMeter);
-    json.set("confirmPresetOverwrite", confirmPresetOverwrite);
+    json.set("menuOrder", menuOrder.isArray() ? menuOrder : Json::array());
+    json.set("shortcuts", shortcuts.isObject() ? shortcuts : Json::object());
     json.set("startupView", startupView);
     json.set("virtualSwitchCount", virtualSwitchCount);
     json.set("performanceEncoder", performanceEncoder);
@@ -540,9 +539,8 @@ UiSettings UiSettings::fromJson(const Json& json) {
     settings.customThemes = json["customThemes"].isArray() ? json["customThemes"] : Json::array();
     settings.ledColors = json["ledColors"].isObject() ? json["ledColors"] : Json::object();
     settings.scale = std::max(0.6, std::min(2.0, json["scale"].asDouble(1.0)));
-    settings.showTuner = json["showTuner"].asBool(true);
-    settings.showLatencyMeter = json["showLatencyMeter"].asBool(true);
-    settings.confirmPresetOverwrite = json["confirmPresetOverwrite"].asBool(true);
+    settings.menuOrder = json["menuOrder"].isArray() ? json["menuOrder"] : Json::array();
+    settings.shortcuts = json["shortcuts"].isObject() ? json["shortcuts"] : Json::object();
     settings.startupView = json["startupView"].asString("performance");
     settings.virtualSwitchCount = std::max(1, std::min(64, json["virtualSwitchCount"].asInt(8)));
     const std::string encoderMode = json["performanceEncoder"].asString("browse");

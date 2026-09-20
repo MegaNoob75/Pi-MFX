@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useEngine } from "./api";
-import { arr, bool, num, obj, str } from "./json";
+import { arr, bool, num, obj, str, type JsonObject } from "./json";
 import { applyHardwareNavFocus, handleHardwareNav, watchHardwareNavFocus } from "./hardwareNav";
 import { AboutView, buildIdentity } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
@@ -27,6 +27,7 @@ import { LooperView } from "./views/LooperView";
 import { RecorderView } from "./views/RecorderView";
 import { DrumMachineView } from "./views/DrumMachineView";
 import { installResponsiveSizing } from "./responsive";
+import { MenuIcon, type MenuIconName } from "./theme/MenuIcon";
 
 export type View =
     | "performance"
@@ -47,6 +48,62 @@ export type View =
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
+
+type MenuId = "performance" | "transport" | "backingTracks" | "looper" | "recorder"
+    | "drums" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
+
+type MenuEntry = {
+    id: MenuId;
+    view: View;
+    label: string;
+    subtitle: string;
+    icon: MenuIconName;
+    feature?: "transport" | "backing" | "recorder" | "drums";
+};
+
+const MENU_ENTRIES: readonly MenuEntry[] = [
+    { id: "performance", view: "performance", label: "PERFORMANCE", subtitle: "Preset and foot-controller view", icon: "performance" },
+    { id: "transport", view: "transport", label: "TAP TEMPO", subtitle: "Set tempo, metronome and count-in", icon: "transport", feature: "transport" },
+    { id: "backingTracks", view: "backingTracks", label: "BACKING TRACKS", subtitle: "Import and play independent tracks", icon: "backingTracks", feature: "backing" },
+    { id: "looper", view: "looper", label: "LOOPER", subtitle: "Record and overdub one stereo loop", icon: "looper" },
+    { id: "recorder", view: "recorder", label: "RECORDER", subtitle: "Capture and mix multitrack performances", icon: "recorder", feature: "recorder" },
+    { id: "drums", view: "drums", label: "DRUM MACHINE", subtitle: "Kits, patterns, fills and song chains", icon: "drums", feature: "drums" },
+    { id: "banks", view: "banks", label: "BANKS / PRESETS", subtitle: "Organize banks and presets", icon: "banks" },
+    { id: "edit", view: "edit", label: "PRESET EDITOR", subtitle: "Plugins, controls and signal chain", icon: "edit" },
+    { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "TONE3000 NAM, AIDA-X and IR downloads", icon: "library" },
+    { id: "plugins", view: "plugins", label: "PLUGINS", subtitle: "Installed effects and Raspberry Pi OS / PatchStorage installs", icon: "plugins" },
+    { id: "files", view: "files", label: "FILES", subtitle: "Browse NAM, AIDA-X and IR folders", icon: "files" },
+    { id: "settings", view: "settings", label: "SETTINGS", subtitle: "Controller, theme, PI-MFX UI and system", icon: "settings" },
+    { id: "about", view: "about", label: "ABOUT", subtitle: "About Pi-MFX", icon: "about" }
+] as const;
+
+const MENU_IDS = MENU_ENTRIES.map((entry) => entry.id);
+const SHORTCUT_LIMIT = 4;
+
+function sanitizedMenuOrder(value: unknown): MenuId[] {
+    const seen = new Set<MenuId>();
+    const result: MenuId[] = [];
+    for (const item of Array.isArray(value) ? value : []) {
+        if (typeof item === "string" && MENU_IDS.includes(item as MenuId) && !seen.has(item as MenuId)) {
+            seen.add(item as MenuId);
+            result.push(item as MenuId);
+        }
+    }
+    for (const id of MENU_IDS) if (!seen.has(id)) result.push(id);
+    return result;
+}
+
+function sanitizedShortcuts(value: unknown, excluded: ReadonlySet<MenuId> = new Set()): MenuId[] {
+    const result: MenuId[] = [];
+    for (const item of Array.isArray(value) ? value : []) {
+        if (typeof item !== "string" || !MENU_IDS.includes(item as MenuId)) continue;
+        const id = item as MenuId;
+        if (!excluded.has(id) && !result.includes(id) && result.length < SHORTCUT_LIMIT) result.push(id);
+    }
+    return result;
+}
+
+type MenuDrag = { id: MenuId; source: "menu" | "left" | "right"; x: number; y: number; originalOrder: MenuId[] };
 
 const titles: Record<string, string> = {
     performance: "PERFORMANCE",
@@ -83,6 +140,20 @@ const viewNames = new Set<View>([
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
+function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject | null {
+    if (view === "controller") {
+        if (settings.controllerResetLayout === true) return { controllerResetLayout: false };
+        if (settings.controllerPage === "hardware" || settings.controllerPage === "diagnostics") {
+            return { controllerPage: "hub" };
+        }
+    }
+    if (view === "system") {
+        if (typeof settings.systemConfirm === "string" && settings.systemConfirm) return { systemConfirm: "" };
+        if (settings.systemPage === "realtime") return { systemPage: "hub" };
+    }
+    return null;
+}
+
 export function App() {
     const engine = useEngine();
     const [view, setView] = useState<View>("performance");
@@ -97,7 +168,7 @@ export function App() {
     const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
     const [layoutDirty, setLayoutDirty] = useState(false);
-    const [leaveLayout, setLeaveLayout] = useState<View | "back" | null>(null);
+    const [leaveLayout, setLeaveLayout] = useState<{ view: View; fromMenu: boolean } | "back" | null>(null);
     const menuRef = useRef<HTMLElement | null>(null);
     const engineWasConnected = useRef(false);
     const engineRestarted = useRef(false);
@@ -105,6 +176,56 @@ export function App() {
     const backingEnabled = bool(engine.state.backingTrackFeatureEnabled);
     const recorderEnabled = bool(engine.state.recorderFeatureEnabled);
     const drumsEnabled = bool(engine.state.drumFeatureEnabled);
+    const ui = obj(engine.state.ui);
+    const [menuEditing, setMenuEditing] = useState(false);
+    const [menuOrder, setMenuOrder] = useState<MenuId[]>(() => sanitizedMenuOrder(ui.menuOrder));
+    const menuOrderRef = useRef<MenuId[]>(menuOrder);
+    const [leftShortcuts, setLeftShortcuts] = useState<MenuId[]>(() => sanitizedShortcuts(obj(ui.shortcuts).left));
+    const [rightShortcuts, setRightShortcuts] = useState<MenuId[]>(() => sanitizedShortcuts(
+        obj(ui.shortcuts).right,
+        new Set(sanitizedShortcuts(obj(ui.shortcuts).left))
+    ));
+    const [menuDrag, setMenuDrag] = useState<MenuDrag | null>(null);
+    const menuDragRef = useRef<MenuDrag | null>(null);
+    const navigationSaveRef = useRef(false);
+    const menuButtonHoldRef = useRef<{
+        timer: number;
+        startX: number;
+        startY: number;
+        triggered: boolean;
+    } | null>(null);
+
+    useEffect(() => {
+        if (menuDrag || navigationSaveRef.current) return;
+        const left = sanitizedShortcuts(obj(ui.shortcuts).left);
+        const order = sanitizedMenuOrder(ui.menuOrder);
+        menuOrderRef.current = order;
+        setMenuOrder(order);
+        setLeftShortcuts(left);
+        setRightShortcuts(sanitizedShortcuts(obj(ui.shortcuts).right, new Set(left)));
+    }, [ui.menuOrder, ui.shortcuts, menuDrag]);
+
+    const saveNavigation = (order: MenuId[], left: MenuId[], right: MenuId[]) => {
+        menuOrderRef.current = order;
+        setMenuOrder(order);
+        setLeftShortcuts(left);
+        setRightShortcuts(right);
+        navigationSaveRef.current = true;
+        void engine.client.request("ui/settings", {
+            menuOrder: order,
+            shortcuts: { left, right }
+        }).catch((error: unknown) => {
+            setToast(error instanceof Error ? error.message : String(error));
+            const restoredLeft = sanitizedShortcuts(obj(ui.shortcuts).left);
+            const restoredOrder = sanitizedMenuOrder(ui.menuOrder);
+            menuOrderRef.current = restoredOrder;
+            setMenuOrder(restoredOrder);
+            setLeftShortcuts(restoredLeft);
+            setRightShortcuts(sanitizedShortcuts(obj(ui.shortcuts).right, new Set(restoredLeft)));
+        }).finally(() => {
+            navigationSaveRef.current = false;
+        });
+    };
 
     useEffect(() => {
         if (!transportEnabled && view === "transport") {
@@ -233,13 +354,15 @@ export function App() {
     const snapshotMode = bool(engine.state.snapshotMode);
     const chainLocked = snapshotMode || num(engine.state.activeSnapshot, -1) >= 0;
 
-    const navigateTo = (next: View) => {
+    const navigateTo = (next: View, fromMenu = false) => {
         setMenuOpen(false);
         if (next === view) {
             engine.client.updateUiSession({ menuOpen: false });
             return;
         }
-        const nextHistory = [...history, view];
+        const nextHistory = fromMenu
+            ? (next === "performance" ? [] : ["performance" as View])
+            : [...history, view];
         if (next === "edit") {
             setEditSubpage("chain");
             setEditEffectTitle(undefined);
@@ -254,26 +377,32 @@ export function App() {
         });
     };
 
-    const goTo = (next: View) => {
+    const goTo = (next: View, fromMenu = false) => {
         setMenuOpen(false);
         if (next === view) {
             // Close the shared menu as well, otherwise the next focus update
             // republishes menuOpen:true and opens it again.
-            engine.client.updateUiSession({ menuOpen: false });
+            const nextHistory = fromMenu
+                ? (next === "performance" ? [] : ["performance" as View])
+                : history;
+            if (fromMenu) setHistory(nextHistory);
+            engine.client.updateUiSession({ menuOpen: false, ...(fromMenu ? { viewHistory: nextHistory } : {}) });
             return;
         }
         if (view === "layout" && layoutDirty && next !== "layout") {
-            setLeaveLayout(next);
+            setLeaveLayout({ view: next, fromMenu });
             return;
         }
         if (view === "edit" && next !== "edit") {
             void engine.client.request("preset/save").catch(() => undefined).finally(() => {
-                navigateTo(next);
+                navigateTo(next, fromMenu);
             });
             return;
         }
-        navigateTo(next);
+        navigateTo(next, fromMenu);
     };
+
+    const openMenuView = (next: View) => goTo(next, true);
 
     useEffect(() => engine.client.subscribeUiView((message) => {
         if (str(message.view) === "backingTracks" && backingEnabled) goTo("backingTracks");
@@ -321,6 +450,12 @@ export function App() {
             setLeaveLayout("back");
             return;
         }
+        const settingsSession = obj(engine.uiSession.settings);
+        const nestedBackPatch = nestedSettingsBackPatch(view, settingsSession);
+        if (nestedBackPatch) {
+            updateUiSessionSection(engine.client, "settings", nestedBackPatch);
+            return;
+        }
         if (view === "controller") {
             updateUiSessionSection(engine.client, "settings", {
                 controllerPage: "hub",
@@ -336,8 +471,45 @@ export function App() {
             void engine.client.request("snapshot/mode", { enabled: false }).catch(() => undefined);
         }
         if (view !== "performance") {
-            goTo("performance");
+            goTo("performance", true);
+        } else {
+            setHistory([]);
+            engine.client.updateUiSession({ menuOpen: false, viewHistory: [] });
         }
+    };
+
+    const clearMenuButtonHold = () => {
+        const hold = menuButtonHoldRef.current;
+        if (hold) window.clearTimeout(hold.timer);
+    };
+
+    const beginMenuButtonHold = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (event.pointerType === "mouse" && event.button !== 0) return;
+        clearMenuButtonHold();
+        const hold = {
+            timer: 0,
+            startX: event.clientX,
+            startY: event.clientY,
+            triggered: false
+        };
+        hold.timer = window.setTimeout(() => {
+            hold.triggered = true;
+            openPerformance();
+        }, 500);
+        menuButtonHoldRef.current = hold;
+    };
+
+    const moveMenuButtonHold = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        const hold = menuButtonHoldRef.current;
+        if (!hold || hold.triggered) return;
+        if (Math.hypot(event.clientX - hold.startX, event.clientY - hold.startY) > 10) {
+            window.clearTimeout(hold.timer);
+            menuButtonHoldRef.current = null;
+        }
+    };
+
+    const endMenuButtonHold = () => {
+        clearMenuButtonHold();
     };
 
     const run = async (work: () => Promise<unknown>) => {
@@ -349,6 +521,137 @@ export function App() {
             setDismissedError("");
             setToast(message);
         }
+    };
+
+    const featureAvailable = (entry: MenuEntry) => !entry.feature
+        || (entry.feature === "transport" && transportEnabled)
+        || (entry.feature === "backing" && backingEnabled)
+        || (entry.feature === "recorder" && recorderEnabled)
+        || (entry.feature === "drums" && drumsEnabled);
+    const entryById = (id: MenuId) => MENU_ENTRIES.find((entry) => entry.id === id)!;
+    const orderedEntries = menuOrder.map(entryById).filter(featureAvailable);
+
+    const openEntry = (entry: MenuEntry) => {
+        if (menuEditing) return;
+        if (entry.id === "performance") {
+            openPerformance();
+            return;
+        }
+        if (entry.id === "edit") {
+            setEditSubpage("chain");
+            setEditEffectTitle(undefined);
+        }
+        openMenuView(entry.view);
+    };
+
+    const finishMenuDrop = (drag: MenuDrag, target: Element | null) => {
+        const menuTarget = target?.closest<HTMLElement>("[data-menu-id]")?.dataset.menuId as MenuId | undefined;
+        const zone = target?.closest<HTMLElement>("[data-shortcut-zone]")?.dataset.shortcutZone as "left" | "right" | undefined;
+        const shortcutTarget = target?.closest<HTMLElement>("[data-shortcut-id]")?.dataset.shortcutId as MenuId | undefined;
+        let nextOrder = [...menuOrderRef.current];
+        let nextLeft = leftShortcuts.filter((id) => id !== drag.id);
+        let nextRight = rightShortcuts.filter((id) => id !== drag.id);
+
+        if (menuTarget) {
+            saveNavigation(nextOrder, nextLeft, nextRight);
+            return;
+        }
+        if (!zone) {
+            menuOrderRef.current = drag.originalOrder;
+            setMenuOrder(drag.originalOrder);
+            return;
+        }
+        const originalDestination = zone === "left" ? leftShortcuts : rightShortcuts;
+        const destination = zone === "left" ? nextLeft : nextRight;
+        if (destination.length >= SHORTCUT_LIMIT && !destination.includes(drag.id)) {
+            setToast(`The ${zone} shortcut area already has four icons.`);
+            return;
+        }
+        let index = shortcutTarget ? destination.indexOf(shortcutTarget) : destination.length;
+        if (shortcutTarget === drag.id && drag.source === zone) {
+            index = originalDestination.indexOf(drag.id);
+        } else if (shortcutTarget && drag.source === zone) {
+            const sourceIndex = originalDestination.indexOf(drag.id);
+            const targetIndex = originalDestination.indexOf(shortcutTarget);
+            if (sourceIndex >= 0 && targetIndex > sourceIndex) index += 1;
+        }
+        destination.splice(index < 0 ? destination.length : index, 0, drag.id);
+        if (zone === "left") nextLeft = destination.slice(0, SHORTCUT_LIMIT);
+        else nextRight = destination.slice(0, SHORTCUT_LIMIT);
+        saveNavigation(nextOrder, nextLeft, nextRight);
+    };
+
+    const beginMenuDrag = (event: ReactPointerEvent, id: MenuId, source: MenuDrag["source"]) => {
+        if (!menuEditing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const drag: MenuDrag = { id, source, x: event.clientX, y: event.clientY, originalOrder: [...menuOrder] };
+        menuDragRef.current = drag;
+        setMenuDrag(drag);
+        const move = (next: PointerEvent) => {
+            if (!menuDragRef.current) return;
+            const updated = { ...menuDragRef.current, x: next.clientX, y: next.clientY };
+            menuDragRef.current = updated;
+            setMenuDrag(updated);
+            if (updated.source === "menu") {
+                const menu = menuRef.current;
+                const bounds = menu?.getBoundingClientRect();
+                const insideMenu = Boolean(bounds
+                    && next.clientX >= bounds.left && next.clientX <= bounds.right
+                    && next.clientY >= bounds.top && next.clientY <= bounds.bottom);
+                if (!insideMenu) {
+                    if (JSON.stringify(menuOrderRef.current) !== JSON.stringify(updated.originalOrder)) {
+                        menuOrderRef.current = [...updated.originalOrder];
+                        setMenuOrder([...updated.originalOrder]);
+                    }
+                } else {
+                    const rows = Array.from(menu?.querySelectorAll<HTMLElement>("[data-menu-id]") ?? [])
+                    .filter((row) => row.dataset.menuId !== updated.id);
+                    const over = rows.find((row) => {
+                        const rect = row.getBoundingClientRect();
+                        return next.clientY < rect.top + rect.height / 2;
+                    });
+                    const targetId = over?.dataset.menuId as MenuId | undefined;
+                    const reordered = menuOrderRef.current.filter((item) => item !== updated.id);
+                    const targetIndex = targetId ? reordered.indexOf(targetId) : reordered.length;
+                    reordered.splice(targetIndex < 0 ? reordered.length : targetIndex, 0, updated.id);
+                    if (JSON.stringify(reordered) !== JSON.stringify(menuOrderRef.current)) {
+                        menuOrderRef.current = reordered;
+                        setMenuOrder(reordered);
+                    }
+                }
+            }
+            const menu = menuRef.current;
+            if (menu) {
+                const bounds = menu.getBoundingClientRect();
+                if (next.clientY < bounds.top + 48) menu.scrollTop -= 14;
+                else if (next.clientY > bounds.bottom - 48) menu.scrollTop += 14;
+            }
+        };
+        const up = (next: PointerEvent) => {
+            const finished = menuDragRef.current;
+            menuDragRef.current = null;
+            setMenuDrag(null);
+            window.removeEventListener("pointermove", move, true);
+            window.removeEventListener("pointerup", up, true);
+            window.removeEventListener("pointercancel", cancel, true);
+            if (finished) finishMenuDrop(finished, document.elementFromPoint(next.clientX, next.clientY));
+        };
+        const cancel = () => {
+            const cancelled = menuDragRef.current;
+            menuDragRef.current = null;
+            setMenuDrag(null);
+            if (cancelled) {
+                menuOrderRef.current = cancelled.originalOrder;
+                setMenuOrder(cancelled.originalOrder);
+            }
+            window.removeEventListener("pointermove", move, true);
+            window.removeEventListener("pointerup", up, true);
+            window.removeEventListener("pointercancel", cancel, true);
+        };
+        window.addEventListener("pointermove", move, true);
+        window.addEventListener("pointerup", up, true);
+        window.addEventListener("pointercancel", cancel, true);
     };
 
     const errorText = toast || engine.lastError;
@@ -429,7 +732,6 @@ export function App() {
         }
         return titles[view] ?? "PI-MFX";
     }, [view, snapshotMode, editSubpage, editEffectTitle]);
-    const ui = obj(engine.state.ui);
     const shellBackVisible = view !== "performance" || snapshotMode;
     const controllerState = obj(engine.state.controller);
     const controllerFirmwareVersion = str(controllerState.firmwareVersion);
@@ -438,10 +740,19 @@ export function App() {
         && str(engine.uiSession.dismissedFirmwareWarning) !== controllerFirmwareVersion;
 
     return (
-        <div className="app mfx-app-root">
+        <div className={`app mfx-app-root${menuEditing && menuOpen ? " menu-editing" : ""}`}>
             <ThemeRoot ui={ui} />
             <header className="shell">
-                <button type="button" className="btn-mfx" onClick={() => {
+                <button type="button" className="btn-mfx"
+                    onPointerDown={beginMenuButtonHold}
+                    onPointerMove={moveMenuButtonHold}
+                    onPointerUp={endMenuButtonHold}
+                    onPointerCancel={endMenuButtonHold}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onClick={() => {
+                    const hold = menuButtonHoldRef.current;
+                    menuButtonHoldRef.current = null;
+                    if (hold?.triggered) return;
                     if (view === "snapshotEdit") {
                         return;
                     }
@@ -453,15 +764,17 @@ export function App() {
                 }}>
                     PI-MFX
                 </button>
+                <ShortcutTray side="left" ids={leftShortcuts.filter((id) => featureAvailable(entryById(id)))} entries={MENU_ENTRIES}
+                    activeView={view} settingsActive={settingsActive} editing={menuEditing} draggingId={menuDrag?.id}
+                    onOpen={openEntry} onDragStart={beginMenuDrag} />
                 <div className="shell-mid">
-                    {view === "edit" && editSubpage === "chain" ? (
-                        <div className="shell-hint">Tap to edit • drag to reorder • + inserts an effect</div>
-                    ) : (
-                        <div />
-                    )}
+                    <div />
                     <div className="shell-title"><MarqueeText text={title} align="center" fontWeight={900} /></div>
                     <div />
                 </div>
+                <ShortcutTray side="right" ids={rightShortcuts.filter((id) => featureAvailable(entryById(id)))} entries={MENU_ENTRIES}
+                    activeView={view} settingsActive={settingsActive} editing={menuEditing} draggingId={menuDrag?.id}
+                    onOpen={openEntry} onDragStart={beginMenuDrag} />
                 <div className="shell-actions">
                     <span className="shell-build" title="Engine version and commit">
                         <span>version {engineBuild.version}</span>
@@ -472,11 +785,6 @@ export function App() {
                             ? audioRunning ? "engine connected, audio running" : "engine connected"
                             : "engine disconnected"
                     } />
-                    {view === "edit" && editSubpage === "chain" && (
-                        <button type="button" className="btn-mfx btn-accent" onClick={() => goTo("snapshots")}>
-                            SNAPSHOTS
-                        </button>
-                    )}
                     {view === "snapshotEdit" && snapshotEditId && (
                         <button
                             type="button"
@@ -513,6 +821,7 @@ export function App() {
                         onEdit={() => {
                             goTo("edit");
                         }}
+                        onOpenView={(next) => goTo(next)}
                         onEditSnapshot={(snapshotId) => {
                             setSnapshotEditId(snapshotId);
                             engine.client.updateUiSession({ snapshotEditId: snapshotId });
@@ -532,6 +841,7 @@ export function App() {
                         run={run}
                         lockChain={chainLocked}
                         backRequest={editBackRequest}
+                        onSnapshots={() => goTo("snapshots")}
                         onPageChange={(page, effectTitle) => {
                             setEditSubpage(page);
                             setEditEffectTitle(effectTitle);
@@ -623,39 +933,31 @@ export function App() {
                                 <b>Pi-MFX</b>
                                 <span>GUITAR MULTI-FX</span>
                             </div>
+                            <button type="button" className={`menu-edit-toggle${menuEditing ? " active" : ""}`}
+                                aria-label={menuEditing ? "Lock menu order" : "Unlock menu order"}
+                                aria-pressed={menuEditing}
+                                onClick={() => setMenuEditing((value) => !value)}>
+                                <MenuIcon name="reorder" />
+                            </button>
                         </div>
-                        <MenuButton label="PERFORMANCE" subtitle="Preset and foot-controller view"
-                            active={view === "performance"} onClick={openPerformance} />
-                        {transportEnabled && (
-                            <MenuButton label="TAP TEMPO" subtitle="Set tempo, metronome and count-in"
-                                active={view === "transport"} onClick={() => goTo("transport")} />
-                        )}
-                        {backingEnabled && <MenuButton label="BACKING TRACKS" subtitle="Import and play independent tracks" active={view === "backingTracks"} onClick={() => goTo("backingTracks")} />}
-                        <MenuButton label="LOOPER" subtitle="Record and overdub one stereo loop" active={view === "looper"} onClick={() => goTo("looper")} />
-                        {recorderEnabled && <MenuButton label="RECORDER" subtitle="Capture and mix multitrack performances" active={view === "recorder"} onClick={() => goTo("recorder")} />}
-                        {drumsEnabled && <MenuButton label="DRUM MACHINE" subtitle="Kits, patterns, fills and song chains" active={view === "drums"} onClick={() => goTo("drums")} />}
-                        <MenuButton label="BANKS / PRESETS" subtitle="Organize banks and presets"
-                            active={view === "banks"} onClick={() => goTo("banks")} />
-                        <MenuButton label="PRESET EDITOR" subtitle="Plugins, controls and signal chain"
-                            active={view === "edit"} onClick={() => {
-                                setEditSubpage("chain");
-                                setEditEffectTitle(undefined);
-                                goTo("edit");
-                            }} />
-                        <div className="menu-divider" />
-                        <MenuButton label="MODEL LIBRARY" subtitle="TONE3000 NAM, AIDA-X and IR downloads"
-                            active={view === "library"} onClick={() => goTo("library")} />
-                        <MenuButton label="PLUGINS" subtitle="Installed effects and Raspberry Pi OS / PatchStorage installs"
-                            active={view === "plugins"} onClick={() => goTo("plugins")} />
-                        <MenuButton label="FILES" subtitle="Browse NAM, AIDA-X and IR folders"
-                            active={view === "files"} onClick={() => goTo("files")} />
-                        <div className="menu-divider" />
-                        <MenuButton label="SETTINGS" subtitle="Controller, theme, PI-MFX UI and system"
-                            active={settingsActive} onClick={() => goTo("settings")} />
-                        <MenuButton label="ABOUT" subtitle="About Pi-MFX"
-                            active={view === "about"} onClick={() => goTo("about")} />
+                        {menuEditing && <div className="menu-edit-hint">DRAG HANDLES TO REORDER OR DROP INTO A SHORTCUT AREA</div>}
+                        {orderedEntries.map((entry) => (
+                            <MenuButton key={entry.id} entry={entry}
+                                active={entry.id === "settings" ? settingsActive : view === entry.view}
+                                editing={menuEditing} dragging={menuDrag?.id === entry.id}
+                                onClick={() => openEntry(entry)}
+                                onDragStart={(event) => beginMenuDrag(event, entry.id, "menu")} />
+                        ))}
                     </nav>
                 </>
+            )}
+
+            {menuDrag && (
+                <div className={`menu-drag-ghost${menuDrag.source === "menu" ? "" : " shortcut-drag-ghost"}`}
+                    style={{ left: menuDrag.x + 12, top: menuDrag.y + 12 }}>
+                    <MenuIcon name={entryById(menuDrag.id).icon} />
+                    <span>{entryById(menuDrag.id).label}</span>
+                </div>
             )}
 
             {visibleToast && (
@@ -685,7 +987,7 @@ export function App() {
                             finishBack();
                             return;
                         }
-                        navigateTo(pending);
+                        navigateTo(pending.view, pending.fromMenu);
                     }}
                 />
             )}
@@ -695,20 +997,79 @@ export function App() {
 }
 
 function MenuButton({
-    label,
-    subtitle,
+    entry,
     active,
-    onClick
+    editing,
+    dragging,
+    onClick,
+    onDragStart
 }: {
-    label: string;
-    subtitle: string;
+    entry: MenuEntry;
     active: boolean;
+    editing: boolean;
+    dragging: boolean;
     onClick: () => void;
+    onDragStart: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
     return (
-        <button type="button" className="menu-item" aria-current={active ? "page" : undefined} onClick={onClick}>
-            {label}
-            <small>{subtitle}</small>
-        </button>
+        <div className={`menu-item-wrap${dragging ? " dragging" : ""}`} data-menu-id={entry.id}>
+            <button type="button" className="menu-item" aria-current={active ? "page" : undefined}
+                aria-disabled={editing || undefined} onClick={onClick}>
+                <MenuIcon name={entry.icon} className="menu-item-icon" />
+                <span className="menu-item-copy">{entry.label}<small>{entry.subtitle}</small></span>
+            </button>
+            {editing && (
+                <button type="button" className="menu-drag-handle" aria-label={`Move ${entry.label}`}
+                    onPointerDown={onDragStart}>
+                    <MenuIcon name="drag" />
+                </button>
+            )}
+        </div>
+    );
+}
+
+function ShortcutTray({
+    side,
+    ids,
+    entries,
+    activeView,
+    settingsActive,
+    editing,
+    draggingId,
+    onOpen,
+    onDragStart
+}: {
+    side: "left" | "right";
+    ids: MenuId[];
+    entries: readonly MenuEntry[];
+    activeView: View;
+    settingsActive: boolean;
+    editing: boolean;
+    draggingId?: MenuId;
+    onOpen: (entry: MenuEntry) => void;
+    onDragStart: (event: ReactPointerEvent, id: MenuId, source: "left" | "right") => void;
+}) {
+    return (
+        <div className={`shortcut-tray shortcut-tray-${side}${editing ? " editing" : ""}`}
+            data-shortcut-zone={side} aria-label={`${side} shortcuts`}>
+            {ids.map((id) => {
+                const entry = entries.find((candidate) => candidate.id === id);
+                if (!entry) return null;
+                const active = activeView === entry.view || (entry.id === "settings" && settingsActive);
+                return (
+                    <button key={id} type="button"
+                        className={`shortcut-button${active ? " active" : ""}${draggingId === id ? " dragging" : ""}`}
+                        data-shortcut-id={id} aria-label={entry.label} title={entry.label}
+                        aria-current={active ? "page" : undefined}
+                        onPointerDown={editing ? (event) => onDragStart(event, id, side) : undefined}
+                        onClick={() => onOpen(entry)}>
+                        <MenuIcon name={entry.icon} />
+                    </button>
+                );
+            })}
+            {editing && ids.length < SHORTCUT_LIMIT && (
+                <span className="shortcut-empty">{ids.length === 0 ? "DROP SHORTCUTS" : "+"}</span>
+            )}
+        </div>
     );
 }

@@ -253,9 +253,10 @@ struct UiSettings {
     Json customThemes = Json::array();
     Json ledColors = Json::object();
     double scale = 1.0;
-    bool showTuner = true;
-    bool showLatencyMeter = true;
-    bool confirmPresetOverwrite = true;
+    /// Stable menu ids and header shortcuts. Stored on the Pi so every
+    /// connected screen sees the same workstation navigation.
+    Json menuOrder = Json::array();
+    Json shortcuts = Json::object();
     std::string startupView = "performance";
     /// Number of on-screen performance switches when no physical controller is
     /// connected, so a tablet alone is still a complete control surface.

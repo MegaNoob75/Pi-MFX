@@ -90,12 +90,14 @@ export function PerformanceView({
     engine,
     run,
     onEdit,
+    onOpenView,
     onEditSnapshot
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     onSnapshots?: () => void;
     onEdit?: () => void;
+    onOpenView?: (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums") => void;
     onEditSnapshot?: (snapshotId: string) => void;
 }) {
     const { client, state } = engine;
@@ -997,8 +999,7 @@ export function PerformanceView({
                 if (warnSnapshotWrite("Saving the preset")) {
                     return;
                 }
-                if (bool(ui.confirmPresetOverwrite, true)
-                    && !window.confirm(`Overwrite saved preset “${str(obj(preset).name, "this preset")}”?`)) {
+                if (!window.confirm(`Overwrite saved preset “${str(obj(preset).name, "this preset")}”?`)) {
                     return;
                 }
                 closeMenu();
@@ -1082,8 +1083,7 @@ export function PerformanceView({
         bank: str(obj(bank).name, "—"),
         preset: str(obj(preset).name, "—"),
         bypass: bypassAll ? "ON" : "OFF",
-        snaps: snapshotStatus,
-        looper: str(engine.looper.status, "empty").toUpperCase()
+        snaps: snapshotStatus
     };
 
     const selectBankId = (id: string) => {
@@ -1320,7 +1320,9 @@ export function PerformanceView({
                                 zIndex: pickerOpen ? 50 : undefined
                             }}
                         >
-                            {id === "currentBank" ? bankPicker
+                            {isWorkstationWidget(id) ? (
+                                <WorkstationWidget id={id} engine={engine} run={run} onOpen={onOpenView} />
+                            ) : id === "currentBank" ? bankPicker
                                 : id === "activePreset" ? presetPicker
                                     : isMeterWidget(id) ? (
                                         <LiveGainMeter
@@ -1328,6 +1330,8 @@ export function PerformanceView({
                                             label={STATUS_WIDGET_LABELS[id]}
                                             channel={id === "inputMeter" ? "input" : "output"}
                                         />
+                                    ) : id === "audioStatus" ? (
+                                        <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
                                         <>
                                             {widget.showLabel && (
@@ -1677,6 +1681,115 @@ function NamePicker({
     );
 }
 
+function isWorkstationWidget(id: string): id is "tapTempo" | "backingTrack" | "looperControl" | "recorderControl" | "drumMachine" {
+    return ["tapTempo", "backingTrack", "looperControl", "recorderControl", "drumMachine"].includes(id);
+}
+
+function WorkstationWidget({
+    id,
+    engine,
+    run,
+    onOpen
+}: {
+    id: "tapTempo" | "backingTrack" | "looperControl" | "recorderControl" | "drumMachine";
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    onOpen?: (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums") => void;
+}) {
+    const request = (command: string, payload: JsonObject = {}) => run(() => engine.client.request(command, payload));
+    const open = (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums") => (
+        <button type="button" className="workstation-widget-open" aria-label={`Open ${STATUS_WIDGET_LABELS[id]}`}
+            onClick={() => onOpen?.(view)}>↗</button>
+    );
+
+    if (id === "tapTempo") {
+        const playing = bool(engine.transport.playing);
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>TAP TEMPO</span>{open("transport")}</div>
+            <strong>{num(engine.transport.bpm, 120).toFixed(1)} <small>BPM</small></strong>
+            <div className="workstation-widget-actions">
+                <button type="button" className="btn" onClick={() => void request("tap")}>TAP</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} aria-pressed={playing}
+                    onClick={() => void request(playing ? "transport/stop" : "transport/play", { restart: true })}>
+                    {playing ? "STOP" : "PLAY"}
+                </button>
+            </div>
+        </div>;
+    }
+    if (id === "backingTrack") {
+        const track = engine.backing;
+        const loaded = bool(track.loaded);
+        const playing = bool(track.playing);
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>BACKING TRACKS</span>{open("backingTracks")}</div>
+            <strong className="marquee">{str(track.title, str(track.name, "NO TRACK"))}</strong>
+            <small>{formatWidgetTime(num(track.position))} / {formatWidgetTime(num(track.duration))}</small>
+            <div className="workstation-widget-actions three">
+                <button type="button" className="btn" onClick={() => void request("backing/previous")}>◀</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} disabled={!loaded} aria-pressed={playing}
+                    onClick={() => void request(playing ? "backing/pause" : "backing/play")}>{playing ? "PAUSE" : "PLAY"}</button>
+                <button type="button" className="btn" onClick={() => void request("backing/next")}>▶</button>
+            </div>
+        </div>;
+    }
+    if (id === "looperControl") {
+        const loop = engine.looper;
+        const status = str(loop.status, "empty");
+        const recording = status === "recording" || status === "armed";
+        const playing = status === "playing" || status === "overdubbing";
+        const hasLoop = bool(loop.hasLoop);
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>LOOPER</span>{open("looper")}</div>
+            <strong>{status.toUpperCase()}</strong><small>{num(loop.position).toFixed(1)} / {num(loop.duration).toFixed(1)}s</small>
+            <div className="workstation-widget-actions three">
+                <button type="button" className={`btn${recording ? " btn-active btn-danger" : " btn-danger"}`}
+                    aria-pressed={recording} onClick={() => void request(recording ? "looper/finish" : "looper/record")}>{recording ? "FINISH" : "REC"}</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} disabled={!hasLoop}
+                    aria-pressed={playing} onClick={() => void request(playing ? "looper/stop" : "looper/play")}>{playing ? "STOP" : "PLAY"}</button>
+                <button type="button" className={`btn${status === "overdubbing" ? " btn-active" : ""}`} disabled={!hasLoop}
+                    aria-pressed={status === "overdubbing"} onClick={() => void request("looper/overdub")}>DUB</button>
+            </div>
+        </div>;
+    }
+    if (id === "recorderControl") {
+        const recorder = engine.recorder;
+        const recording = str(recorder.status) === "recording";
+        const playing = str(recorder.playbackStatus) === "playing";
+        const projectReady = Boolean(str(recorder.projectId));
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>RECORDER</span>{open("recorder")}</div>
+            <strong>{recording ? "RECORDING" : playing ? "PLAYING" : str(recorder.status, "STOPPED").toUpperCase()}</strong>
+            <small>{num(recorder.position).toFixed(1)} / {num(recorder.duration).toFixed(1)}s</small>
+            <div className="workstation-widget-actions three">
+                <button type="button" className={`btn btn-danger${recording ? " btn-active" : ""}`} disabled={!projectReady}
+                    aria-pressed={recording} onClick={() => void request(recording ? "recorder/record/stop" : "recorder/record/start")}>{recording ? "SAVE" : "REC"}</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} disabled={!projectReady}
+                    aria-pressed={playing} onClick={() => void request(playing ? "recorder/playback/pause" : "recorder/playback/play")}>{playing ? "PAUSE" : "PLAY"}</button>
+                <button type="button" className="btn" disabled={!projectReady}
+                    onClick={() => void request("recorder/playback/stop")}>STOP</button>
+            </div>
+        </div>;
+    }
+    const drums = engine.drums;
+    const playing = bool(drums.playing);
+    return <div className="workstation-widget">
+        <div className="workstation-widget-head"><span>DRUM MACHINE</span>{open("drums")}</div>
+        <strong className="marquee">{str(drums.kitName, "NO KIT")}</strong>
+        <small>VAR {String.fromCharCode(65 + Math.max(0, num(drums.activeVariation)))} · {num(engine.transport.bpm, 120).toFixed(1)} BPM</small>
+        <div className="workstation-widget-actions">
+            <button type="button" className={`btn${playing ? " btn-active" : ""}`} aria-pressed={playing}
+                onClick={() => void request("drums/toggle", { restart: !playing })}>{playing ? "STOP" : "START"}</button>
+            <button type="button" className={`btn${bool(drums.fillActive) ? " btn-active" : ""}`} aria-pressed={bool(drums.fillActive)}
+                onClick={() => void request("drums/fill")}>FILL</button>
+        </div>
+    </div>;
+}
+
+function formatWidgetTime(seconds: number): string {
+    const whole = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
 function isLiveMeterText(id: string): boolean {
     return id === "cpuUsage" || id === "xruns" || id === "audioStatus" || id === "tuner";
 }
@@ -1720,6 +1833,29 @@ function LiveMeterText({
     });
 }
 
+function LiveAudioWidget({
+    engine,
+    showLabel
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    showLabel: boolean;
+}) {
+    const meters = useMeters(engine.client);
+    const requested = obj(engine.state.audio);
+    const actual = obj(engine.state.actualAudio);
+    const running = bool(meters.running, bool(engine.state.audioRunning));
+    return <div className="audio-widget-detail">
+        <div className="audio-widget-heading">
+            {showLabel && <span className="field-label mfx-performance-ui-label">AUDIO</span>}
+            <i className={`audio-widget-dot${running ? " running" : ""}`} title={running ? "Audio running" : "Audio stopped"} />
+        </div>
+        <strong className="marquee">{str(engine.state.audioInterface, str(actual.device, str(requested.device, "NO INTERFACE")))}</strong>
+        <span>{num(actual.sampleRate, num(requested.sampleRate, 48000))} Hz · {num(actual.periodFrames, num(requested.periodFrames, 0))} × {num(actual.periodCount, num(requested.periodCount, 0))}</span>
+        <span>REQUESTED {num(meters.bufferMs, num(requested.bufferMs)).toFixed(2)} ms</span>
+        <span>MEASURED {num(meters.roundTripMs).toFixed(2)} ms</span>
+    </div>;
+}
+
 function widgetText(id: string, values: Record<string, string>): string {
     switch (id) {
         case "currentBank": return values.bank;
@@ -1730,7 +1866,6 @@ function widgetText(id: string, values: Record<string, string>): string {
         case "chainBypassStatus": return values.bypass;
         case "snapshotModeStatus": return values.snaps;
         case "tuner": return values.tuner;
-        case "looperStatus": return values.looper;
         default: return "—";
     }
 }

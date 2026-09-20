@@ -543,6 +543,13 @@ bool Engine::restartAudio(std::string& error) {
     settings_.audio.device = actual.device;
     settings_.audio.inputChannels = actual.inputChannels;
     settings_.audio.outputChannels = actual.outputChannels;
+    audioDeviceName_ = actual.device;
+    for (const AudioDeviceInfo& device : backend_->enumerateDevices()) {
+        if (device.id == actual.device) {
+            audioDeviceName_ = device.name.empty() ? device.id : device.name;
+            break;
+        }
+    }
     if (settings_.audio.inputChannelOffset >= settings_.audio.inputChannels) {
         settings_.audio.inputChannelOffset = settings_.audio.inputChannels - 1;
     }
@@ -3825,6 +3832,8 @@ Json Engine::fullState() const {
     json.set("activePresetId", activePresetId_);
 
     json.set("audio", audioSettingsToJson(settings_.audio));
+    if (backend_) json.set("actualAudio", audioSettingsToJson(backend_->actualSettings()));
+    json.set("audioInterface", audioDeviceName_.empty() ? settings_.audio.device : audioDeviceName_);
     json.set("ui", settings_.ui.toJson());
     json.set("system", settings_.system.toJson());
     json.set("transportSettings", settings_.transport.toJson());

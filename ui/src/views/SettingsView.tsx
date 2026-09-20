@@ -1345,13 +1345,9 @@ function UiSettings({
                     <input type="number" min={0.7} max={1.6} step={0.05} value={num(ui.scale, 1)}
                         onChange={(event) => save({ ...ui, scale: Number(event.target.value) })} />
                 </label>
-                <div className="row">
-                    <button type="button" className={`btn ${bool(ui.showTuner, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...ui, showTuner: !bool(ui.showTuner, true) })}>TUNER</button>
-                    <button type="button" className={`btn ${bool(ui.showLatencyMeter, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...ui, showLatencyMeter: !bool(ui.showLatencyMeter, true) })}>LATENCY</button>
-                    <button type="button" className={`btn ${bool(ui.confirmPresetOverwrite, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...ui, confirmPresetOverwrite: !bool(ui.confirmPresetOverwrite, true) })}>CONFIRM SAVE</button>
+                <div className="muted">
+                    Tuner, latency and workstation controls are managed as Performance widgets in Layout.
+                    Overwriting an existing preset always requires confirmation.
                 </div>
                 <UiBehaviorEditor engine={engine} />
             </div>
