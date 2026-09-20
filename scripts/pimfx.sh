@@ -8,6 +8,7 @@
 #   sudo bash ./scripts/pimfx.sh update
 #   sudo bash ./scripts/pimfx.sh update --branch dev
 #   sudo bash ./scripts/pimfx.sh update --branch main
+#   sudo bash ./scripts/pimfx.sh update --branch workstation
 #   sudo bash ./scripts/pimfx.sh display --display-user YOUR_LOGIN
 
 # Print before touching the clone. If this never appears, the disk is wedged
@@ -63,7 +64,8 @@ Actions:
 
 Options:
   --no-tuning            Install the service but leave the OS alone
-  --branch main|dev    Update from that GitHub branch (update only)
+  --branch main|dev|workstation
+                         Update from that GitHub branch (update only)
   --port <n>             Web UI port (default 8080)
   --display-user USER    Account that auto-logs in on the screen
   --purge                Also delete /var/lib/pimfx (remove only)
@@ -110,11 +112,11 @@ parse_args() {
                 INSTALL_ARGS+=(--port "$2")
                 shift 2 ;;
             --branch)
-                [[ $# -ge 2 ]] || die "--branch needs main or dev"
+                [[ $# -ge 2 ]] || die "--branch needs main, dev or workstation"
                 UPDATE_BRANCH="$2"
                 case "$UPDATE_BRANCH" in
-                    main|dev) ;;
-                    *) die "--branch must be main or dev" ;;
+                    main|dev|workstation) ;;
+                    *) die "--branch must be main, dev or workstation" ;;
                 esac
                 shift 2 ;;
             --display-user)
@@ -386,7 +388,7 @@ do_install() {
 do_update() {
     local branch="${UPDATE_BRANCH:-dev}"
     case "$branch" in
-        main|dev) ;;
+        main|dev|workstation) ;;
         *) branch="dev" ;;
     esac
     PIMFX_BRANCH="$branch" run_script update.sh
@@ -495,6 +497,29 @@ MENU
     esac
 }
 
+update_branch_menu() {
+    local choice branch
+    draw_banner
+    cat <<'MENU'
+  Update from GitHub
+
+  1) Main         (stable release)
+  2) Dev          (development)
+  3) Workstation  (workstation features)
+  4) Back
+MENU
+    echo
+    read -r -p "Choose [1-4]: " choice
+    case "$choice" in
+        1) branch="main" ;;
+        2) branch="dev" ;;
+        3) branch="workstation" ;;
+        4) return 0 ;;
+        *) warn "pick a number from 1 to 4"; return 0 ;;
+    esac
+    UPDATE_BRANCH="$branch" do_update
+}
+
 do_reboot() {
     if confirm "Reboot this Pi now?"; then
         log "Rebooting"
@@ -509,7 +534,7 @@ show_menu() {
         cat <<'MENU'
   1) Complete setup  (install + touchscreen)
   2) Install / first-time setup
-  3) Update  (fetch GitHub, then rebuild and restart)
+  3) Update from GitHub  (choose main, dev or workstation)
   4) Rebuild local files  (no git pull)
   5) Set up touchscreen display
   6) Remove touchscreen display
@@ -526,7 +551,7 @@ MENU
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
-            3) do_update || warn "update did not finish" ;;
+            3) update_branch_menu || warn "update did not finish" ;;
             4) do_rebuild || warn "rebuild did not finish" ;;
             5) configure_touchscreen || warn "touchscreen setup did not finish" ;;
             6) remove_touchscreen || warn "touchscreen remove did not finish" ;;
