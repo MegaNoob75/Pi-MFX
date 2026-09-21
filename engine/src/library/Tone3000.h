@@ -64,7 +64,9 @@ public:
     /// `relativeDir` is a folder under models/ or irs/; empty means TONE3000.
     bool downloadModel(const std::string& url, const std::string& suggestedName,
                        const std::string& kind, const std::string& relativeDir,
-                       std::string& storedPath, std::string& error);
+                       std::string& storedPath, std::string& error,
+                       const std::string& expectedSha256 = std::string(),
+                       const Json& provenance = Json::object());
 
 private:
     struct Tokens {

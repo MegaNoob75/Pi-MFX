@@ -77,6 +77,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.loopsDir = joinPath(root, "loops");
     paths.recordingsDir = joinPath(root, "recordings");
     paths.drumsDir = joinPath(root, "drums");
+    paths.communityDir = joinPath(root, "community");
 
     paths.webRoot = environment("PIMFX_WEB_ROOT");
     if (paths.webRoot.empty()) {
@@ -103,6 +104,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.loopsDir);
     makeDirectories(paths.recordingsDir);
     makeDirectories(paths.drumsDir);
+    makeDirectories(paths.communityDir);
     return paths;
 }
 
@@ -115,6 +117,7 @@ std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json
 std::string Paths::hotspotFile() const { return joinPath(dataRoot, "hotspot.json"); }
 std::string Paths::patchstorageCacheFile() const { return joinPath(dataRoot, "patchstorage-cache.json"); }
 std::string Paths::tone3000CacheFile() const { return joinPath(dataRoot, "tone3000-cache.json"); }
+std::string Paths::tone3000AssetsFile() const { return joinPath(dataRoot, "tone3000-assets.json"); }
 
 bool fileExists(const std::string& path) {
     std::error_code ec;

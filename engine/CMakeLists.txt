@@ -17,6 +17,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fno-math-errno -fno-trapping-math")
 option(PIMFX_NATIVE_ARCH "Tune for the build machine (leave OFF for portable builds)" OFF)
 option(PIMFX_ENABLE_MULTITRACK_RECORDER "Build the Milestone 3 multitrack recorder" ON)
 option(PIMFX_ENABLE_DRUM_MACHINE "Build the Milestone 4 drum machine" ON)
+option(PIMFX_ENABLE_COMMUNITY_CATALOG "Build the Milestone 5 community preset catalog" ON)
 
 add_executable(pimfx)
 
@@ -47,6 +48,8 @@ target_sources(pimfx PRIVATE
     src/drums/DrumMachine.cpp
     src/library/Tone3000.cpp
     src/library/PluginStore.cpp
+    src/community/CommunityPresetPackage.cpp
+    src/community/CommunityCatalog.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -151,10 +154,34 @@ if(PIMFX_ENABLE_DRUM_MACHINE)
     target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_DRUM_MACHINE=1)
 endif()
 
+if(PIMFX_ENABLE_COMMUNITY_CATALOG)
+    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_COMMUNITY_CATALOG=1)
+endif()
+
 install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(pimfx_community_package_test
+        tests/CommunityPresetPackageTest.cpp
+        src/community/CommunityPresetPackage.cpp
+        src/model/Model.cpp
+        src/model/Storage.cpp
+        src/core/Paths.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_community_package_test PRIVATE src)
+    target_compile_options(pimfx_community_package_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_community_package_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pimfx_community_package_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME community_preset_package COMMAND pimfx_community_package_test)
     add_executable(pimfx_transport_test
         tests/MusicalTransportTest.cpp
         src/transport/MusicalTransport.cpp

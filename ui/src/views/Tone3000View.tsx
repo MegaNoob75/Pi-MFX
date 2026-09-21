@@ -3,13 +3,13 @@ import type { EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type Json, type JsonObject } from "../json";
 import { LibraryFolderPicker, libraryRootLabel, loadTone3000Dir, saveTone3000Dir, type LibraryKind } from "./LibraryManager";
 
-type CatalogSource = "trending" | "latest" | "search" | "downloads" | "favorited";
+type CatalogSource = "trending" | "latest" | "downloaded" | "created" | "favorited" | "search";
 
 const SOURCES: { id: CatalogSource; label: string }[] = [
     { id: "trending", label: "TRENDING" },
     { id: "latest", label: "LATEST" },
-    { id: "search", label: "SEARCH" },
-    { id: "downloads", label: "DOWNLOADS" },
+    { id: "downloaded", label: "MY DOWNLOADS" },
+    { id: "created", label: "MY TONES" },
     { id: "favorited", label: "FAVORITES" }
 ];
 
@@ -421,55 +421,17 @@ function toneOnDeviceState(
 }
 
 function pageSizeFor(source: CatalogSource): number {
-    if (source === "favorited") {
-        return 50;
-    }
-    return 25;
+    return source === "trending" || source === "latest" ? 10 : 50;
 }
 
 function buildListPayload(catalog: CatalogQuery, page: number, refresh: boolean): JsonObject {
-    const ir = catalog.gear === "ir";
-    if (catalog.source === "favorited") {
-        return { refresh, source: catalog.source, page, page_size: pageSizeFor(catalog.source) };
-    }
-
-    // Trending / latest homepage feeds are only 10 items. Search is paginated,
-    // so those tabs keep loading through /tones/search as the user scrolls.
-    // DOWNLOADS is Tone3000's most-downloaded catalog, not the user's history.
+    // The published non-commercial API tier allows OAuth selection/load flows
+    // and these bounded lists. Do not silently turn filters into /tones/search.
+    const source = SOURCES.some((item) => item.id === catalog.source) ? catalog.source : "trending";
     const body: JsonObject = {
-        refresh,
-        source: "search",
-        page,
-        page_size: pageSizeFor("search"),
-        sort: catalog.source === "latest"
-            ? "newest"
-            : catalog.source === "trending"
-                ? "trending"
-                : catalog.source === "downloads"
-                    ? "downloads-all-time"
-                    : catalog.sort
+        refresh, source, page, page_size: pageSizeFor(source)
     };
-    if (catalog.source === "search" && catalog.query.trim()) {
-        body.query = catalog.query.trim();
-    }
-    if (ir) {
-        body.format = "ir";
-    } else if (catalog.gear) {
-        body.gears = catalog.gear;
-        body.format = "nam";
-    }
-    if (!ir && catalog.architecture) {
-        body.architecture = catalog.architecture;
-    }
-    if (!ir && catalog.calibrated) {
-        body.calibrated = "true";
-    }
-    if (catalog.verified) {
-        body.verified = "true";
-    }
-    if (catalog.creators.length) {
-        body.creators = catalog.creators.join(",");
-    }
+    if (catalog.gear) body.gear = catalog.gear;
     return body;
 }
 
@@ -843,6 +805,11 @@ export function Tone3000View({
         const result = await engine.client.request("tone3000/download", {
             url,
             modelId,
+            toneId: jsonId(tone.id),
+            toneTitle: toneName(tone),
+            creator: str(obj(tone.user).username, str(obj(tone.user).name)),
+            sourceLicense: str(obj(tone.license).name, str(tone.license)),
+            architecture: str(resolved.architecture_version),
             name: label,
             kind,
             directory

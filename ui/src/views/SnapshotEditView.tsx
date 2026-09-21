@@ -35,7 +35,8 @@ export function SnapshotEditView({
 
     const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
     const plugin = obj(obj(selected).plugin);
-    const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control" && bool(port.input, true));
+    const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control"
+        && bool(port.input, true) && !bool(port.notOnGui));
     const properties = objects(plugin.properties);
 
     useEffect(() => {

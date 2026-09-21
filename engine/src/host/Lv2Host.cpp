@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -38,6 +39,9 @@ Json PortInfo::toJson() const {
     json.set("index", static_cast<int>(index));
     json.set("symbol", symbol);
     json.set("name", name);
+    if (!comment.empty()) {
+        json.set("comment", comment);
+    }
     json.set("input", input);
     json.set("kind", audio ? "audio" : (atom ? "atom" : (cv ? "cv" : "control")));
     if (control) {
@@ -48,12 +52,21 @@ Json PortInfo::toJson() const {
         json.set("integer", integer);
         json.set("enumerated", enumerated);
         json.set("logarithmic", logarithmic);
+        json.set("sampleRate", sampleRate);
+        json.set("trigger", trigger);
+        json.set("notOnGui", notOnGui);
+        if (rangeSteps > 0) {
+            json.set("rangeSteps", static_cast<int>(rangeSteps));
+        }
         json.set("meter", meter);
         if (!unit.empty()) {
             json.set("unit", unit);
         }
         if (!unitUri.empty()) {
             json.set("unitUri", unitUri);
+        }
+        if (!unitRender.empty()) {
+            json.set("unitRender", unitRender);
         }
         json.set("tempoLinkCandidate", tempoLinkCandidate);
         if (!scalePoints.empty()) {
@@ -276,6 +289,10 @@ struct Lv2Catalog::Impl {
     LilvNode* integer = nullptr;
     LilvNode* enumeration = nullptr;
     LilvNode* logarithmic = nullptr;
+    LilvNode* sampleRate = nullptr;
+    LilvNode* trigger = nullptr;
+    LilvNode* notOnGui = nullptr;
+    LilvNode* rangeSteps = nullptr;
     LilvNode* patchWritable = nullptr;
     LilvNode* rdfsLabel = nullptr;
     LilvNode* rdfsRange = nullptr;
@@ -286,14 +303,16 @@ struct Lv2Catalog::Impl {
     LilvNode* timePosition = nullptr;
     LilvNode* unitsUnit = nullptr;
     LilvNode* unitsSymbol = nullptr;
+    LilvNode* unitsRender = nullptr;
     LilvNode* fileTypeProperty = nullptr;
     LilvNode* modFileTypes = nullptr;
 
     ~Impl() {
         LilvNode* nodes[] = {audioPort, controlPort, atomPort, cvPort, inputPort, outputPort,
-                             toggled, integer, enumeration, logarithmic, patchWritable,
+                             toggled, integer, enumeration, logarithmic, sampleRate,
+                             trigger, notOnGui, rangeSteps, patchWritable,
                              rdfsLabel, rdfsRange, rdfsComment, atomPath, atomSupports,
-                             midiEvent, timePosition, unitsUnit, unitsSymbol,
+                             midiEvent, timePosition, unitsUnit, unitsSymbol, unitsRender,
                              fileTypeProperty, modFileTypes};
         for (LilvNode* node : nodes) {
             if (node) {
@@ -385,6 +404,10 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.integer = lilv_new_uri(impl.world, LV2_CORE__integer);
         impl.enumeration = lilv_new_uri(impl.world, LV2_CORE__enumeration);
         impl.logarithmic = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#logarithmic");
+        impl.sampleRate = lilv_new_uri(impl.world, LV2_CORE__sampleRate);
+        impl.trigger = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#trigger");
+        impl.notOnGui = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#notOnGUI");
+        impl.rangeSteps = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#rangeSteps");
         impl.patchWritable = lilv_new_uri(impl.world, LV2_PATCH__writable);
         impl.rdfsLabel = lilv_new_uri(impl.world, "http://www.w3.org/2000/01/rdf-schema#label");
         impl.rdfsRange = lilv_new_uri(impl.world, "http://www.w3.org/2000/01/rdf-schema#range");
@@ -395,6 +418,7 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.timePosition = lilv_new_uri(impl.world, LV2_TIME__Position);
         impl.unitsUnit = lilv_new_uri(impl.world, LV2_UNITS__unit);
         impl.unitsSymbol = lilv_new_uri(impl.world, LV2_UNITS__symbol);
+        impl.unitsRender = lilv_new_uri(impl.world, LV2_UNITS__render);
         impl.fileTypeProperty = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/patch#fileType");
         impl.modFileTypes = lilv_new_uri(impl.world, "http://moddevices.com/ns/mod#fileTypes");
     }
@@ -447,6 +471,12 @@ bool Lv2Catalog::rescan(std::string& error) {
                 portInfo.name = lilv_node_as_string(label);
                 lilv_node_free(label);
             }
+            if (LilvNodes* comments = lilv_port_get_value(plugin, port, impl.rdfsComment)) {
+                if (const LilvNode* first = lilv_nodes_get_first(comments)) {
+                    portInfo.comment = lilv_node_as_string(first);
+                }
+                lilv_nodes_free(comments);
+            }
             portInfo.input = lilv_port_is_a(plugin, port, impl.inputPort);
             portInfo.audio = lilv_port_is_a(plugin, port, impl.audioPort);
             portInfo.control = lilv_port_is_a(plugin, port, impl.controlPort);
@@ -469,14 +499,31 @@ bool Lv2Catalog::rescan(std::string& error) {
             }
 
             if (portInfo.control) {
-                portInfo.minimum = minimums[index];
-                portInfo.maximum = maximums[index];
-                portInfo.defaultValue = defaults[index];
+                portInfo.minimum = std::isfinite(minimums[index]) ? minimums[index] : 0.0f;
+                portInfo.maximum = std::isfinite(maximums[index]) ? maximums[index] : 1.0f;
+                if (portInfo.maximum < portInfo.minimum) {
+                    std::swap(portInfo.minimum, portInfo.maximum);
+                }
+                portInfo.defaultValue = std::isfinite(defaults[index])
+                    ? std::max(portInfo.minimum, std::min(portInfo.maximum, defaults[index]))
+                    : portInfo.minimum;
                 portInfo.toggled = lilv_port_has_property(plugin, port, impl.toggled);
                 portInfo.integer = lilv_port_has_property(plugin, port, impl.integer);
                 portInfo.enumerated = lilv_port_has_property(plugin, port, impl.enumeration);
                 portInfo.logarithmic = lilv_port_has_property(plugin, port, impl.logarithmic);
+                portInfo.sampleRate = lilv_port_has_property(plugin, port, impl.sampleRate);
+                portInfo.trigger = lilv_port_has_property(plugin, port, impl.trigger);
+                portInfo.notOnGui = lilv_port_has_property(plugin, port, impl.notOnGui);
                 portInfo.meter = !portInfo.input;
+
+                if (LilvNodes* steps = lilv_port_get_value(plugin, port, impl.rangeSteps)) {
+                    if (const LilvNode* first = lilv_nodes_get_first(steps);
+                        first && lilv_node_is_int(first)) {
+                        const int count = lilv_node_as_int(first);
+                        portInfo.rangeSteps = count > 0 ? static_cast<unsigned>(count) : 0;
+                    }
+                    lilv_nodes_free(steps);
+                }
 
                 if (LilvNodes* units = lilv_port_get_value(plugin, port, impl.unitsUnit)) {
                     if (const LilvNode* unit = lilv_nodes_get_first(units)) {
@@ -486,6 +533,10 @@ bool Lv2Catalog::rescan(std::string& error) {
                         if (LilvNode* symbol = lilv_world_get(impl.world, unit, impl.unitsSymbol, nullptr)) {
                             portInfo.unit = lilv_node_as_string(symbol);
                             lilv_node_free(symbol);
+                        }
+                        if (LilvNode* render = lilv_world_get(impl.world, unit, impl.unitsRender, nullptr)) {
+                            portInfo.unitRender = lilv_node_as_string(render);
+                            lilv_node_free(render);
                         }
                     }
                     lilv_nodes_free(units);
@@ -512,7 +563,9 @@ bool Lv2Catalog::rescan(std::string& error) {
                         ScalePoint scalePoint;
                         scalePoint.value = lilv_node_as_float(lilv_scale_point_get_value(point));
                         scalePoint.label = lilv_node_as_string(lilv_scale_point_get_label(point));
-                        portInfo.scalePoints.push_back(std::move(scalePoint));
+                        if (std::isfinite(scalePoint.value)) {
+                            portInfo.scalePoints.push_back(std::move(scalePoint));
+                        }
                     }
                     lilv_scale_points_free(points);
                     std::sort(portInfo.scalePoints.begin(), portInfo.scalePoints.end(),
@@ -775,6 +828,17 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     std::unique_ptr<PluginInstance> self(new PluginInstance());
     Impl& impl = *self->impl_;
     self->info_ = *info;
+    for (PortInfo& port : self->info_.ports) {
+        if (port.control && port.sampleRate) {
+            const float rate = static_cast<float>(sampleRate);
+            port.minimum *= rate;
+            port.maximum *= rate;
+            port.defaultValue *= rate;
+            for (ScalePoint& point : port.scalePoints) {
+                point.value *= rate;
+            }
+        }
+    }
 
     impl.catalog = &catalog;
     impl.plugin = plugin;
@@ -1127,6 +1191,15 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
             impl.live[i] = impl.staged[i].load(std::memory_order_relaxed);
         }
     }
+    for (const PortInfo& port : info_.ports) {
+        if (port.control && port.input && port.trigger) {
+            // A trigger is visible for exactly one run. Exchange before the
+            // run so a new press arriving concurrently remains queued for the
+            // following block rather than being accidentally cleared.
+            impl.live[port.index] = impl.staged[port.index].exchange(
+                port.defaultValue, std::memory_order_acq_rel);
+        }
+    }
 
     impl.runCycle(inputs, inputCount, outputs, outputCount, frames, transport);
 }
@@ -1136,7 +1209,7 @@ Json PluginInstance::saveState() const {
     Json controls = Json::object();
     for (const PortInfo& port : info_.ports) {
         if (port.control && port.input) {
-            controls.set(port.symbol, Json(control(port.index)));
+            controls.set(port.symbol, Json(port.trigger ? port.defaultValue : control(port.index)));
         }
     }
     state.set("controls", controls);
@@ -1161,7 +1234,25 @@ void PluginInstance::loadState(const Json& state) {
             continue;
         }
         if (controls.has(port.symbol)) {
-            const float value = controls[port.symbol].asFloat(port.defaultValue);
+            const float requested = controls[port.symbol].asFloat(port.defaultValue);
+            float value = std::max(port.minimum, std::min(port.maximum, requested));
+            if (port.trigger) {
+                value = port.defaultValue;
+            } else if (port.toggled) {
+                value = requested > 0.0f
+                    ? std::max(port.minimum, std::min(port.maximum, 1.0f))
+                    : std::max(port.minimum, std::min(port.maximum, 0.0f));
+            } else if (port.enumerated && !port.scalePoints.empty()) {
+                const ScalePoint* closest = &port.scalePoints.front();
+                for (const ScalePoint& point : port.scalePoints) {
+                    if (std::abs(point.value - requested) < std::abs(closest->value - requested)) {
+                        closest = &point;
+                    }
+                }
+                value = closest->value;
+            } else if (port.integer) {
+                value = std::round(value);
+            }
             setControl(port.index, std::max(port.minimum, std::min(port.maximum, value)));
         }
     }

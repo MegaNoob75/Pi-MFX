@@ -26,6 +26,7 @@ import { BackingTracksView } from "./views/BackingTracksView";
 import { LooperView } from "./views/LooperView";
 import { RecorderView } from "./views/RecorderView";
 import { DrumMachineView } from "./views/DrumMachineView";
+import { CommunityPresetsView } from "./views/CommunityPresetsView";
 import { installResponsiveSizing } from "./responsive";
 import { MenuIcon, type MenuIconName } from "./theme/MenuIcon";
 
@@ -45,12 +46,13 @@ export type View =
     | "looper"
     | "recorder"
     | "drums"
+    | "community"
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
 
 type MenuId = "performance" | "transport" | "backingTracks" | "looper" | "recorder"
-    | "drums" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
+    | "drums" | "community" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
 
 type MenuEntry = {
     id: MenuId;
@@ -58,7 +60,7 @@ type MenuEntry = {
     label: string;
     subtitle: string;
     icon: MenuIconName;
-    feature?: "transport" | "backing" | "recorder" | "drums";
+    feature?: "transport" | "backing" | "recorder" | "drums" | "community";
 };
 
 const MENU_ENTRIES: readonly MenuEntry[] = [
@@ -68,6 +70,7 @@ const MENU_ENTRIES: readonly MenuEntry[] = [
     { id: "looper", view: "looper", label: "LOOPER", subtitle: "Record and overdub one stereo loop", icon: "looper" },
     { id: "recorder", view: "recorder", label: "RECORDER", subtitle: "Capture and mix multitrack performances", icon: "recorder", feature: "recorder" },
     { id: "drums", view: "drums", label: "DRUM MACHINE", subtitle: "Kits, patterns, fills and song chains", icon: "drums", feature: "drums" },
+    { id: "community", view: "community", label: "COMMUNITY PRESETS", subtitle: "Browse, review, install and share presets", icon: "community", feature: "community" },
     { id: "banks", view: "banks", label: "BANKS / PRESETS", subtitle: "Organize banks and presets", icon: "banks" },
     { id: "edit", view: "edit", label: "PRESET EDITOR", subtitle: "Plugins, controls and signal chain", icon: "edit" },
     { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "TONE3000 NAM, AIDA-X and IR downloads", icon: "library" },
@@ -112,6 +115,7 @@ const titles: Record<string, string> = {
     looper: "LOOPER",
     recorder: "RECORDER",
     drums: "DRUM MACHINE",
+    community: "COMMUNITY PRESETS",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
@@ -136,7 +140,7 @@ const titles: Record<string, string> = {
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
-    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "community", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
@@ -176,6 +180,7 @@ export function App() {
     const backingEnabled = bool(engine.state.backingTrackFeatureEnabled);
     const recorderEnabled = bool(engine.state.recorderFeatureEnabled);
     const drumsEnabled = bool(engine.state.drumFeatureEnabled);
+    const communityEnabled = bool(engine.state.communityCatalogFeatureEnabled);
     const ui = obj(engine.state.ui);
     const [menuEditing, setMenuEditing] = useState(false);
     const [menuOrder, setMenuOrder] = useState<MenuId[]>(() => sanitizedMenuOrder(ui.menuOrder));
@@ -237,6 +242,7 @@ export function App() {
     useEffect(() => { if (!backingEnabled && view === "backingTracks") { setView("performance"); setHistory([]); } }, [backingEnabled, view]);
     useEffect(() => { if (!recorderEnabled && view === "recorder") { setView("performance"); setHistory([]); } }, [recorderEnabled, view]);
     useEffect(() => { if (!drumsEnabled && view === "drums") { setView("performance"); setHistory([]); } }, [drumsEnabled, view]);
+    useEffect(() => { if (!communityEnabled && view === "community") { setView("performance"); setHistory([]); } }, [communityEnabled, view]);
 
     useEffect(() => {
         if (!engine.connected) {
@@ -409,7 +415,8 @@ export function App() {
         if (str(message.view) === "looper") goTo("looper");
         if (str(message.view) === "recorder" && recorderEnabled) goTo("recorder");
         if (str(message.view) === "drums" && drumsEnabled) goTo("drums");
-    }), [engine.client, backingEnabled, recorderEnabled, drumsEnabled, view]);
+        if (str(message.view) === "community" && communityEnabled) goTo("community");
+    }), [engine.client, backingEnabled, recorderEnabled, drumsEnabled, communityEnabled, view]);
 
     const finishBack = () => {
         setHistory((stack) => {
@@ -527,7 +534,8 @@ export function App() {
         || (entry.feature === "transport" && transportEnabled)
         || (entry.feature === "backing" && backingEnabled)
         || (entry.feature === "recorder" && recorderEnabled)
-        || (entry.feature === "drums" && drumsEnabled);
+        || (entry.feature === "drums" && drumsEnabled)
+        || (entry.feature === "community" && communityEnabled);
     const entryById = (id: MenuId) => MENU_ENTRIES.find((entry) => entry.id === id)!;
     const orderedEntries = menuOrder.map(entryById).filter(featureAvailable);
 
@@ -831,6 +839,7 @@ export function App() {
                 {view === "looper" && <LooperView engine={engine} run={run} />}
                 {view === "recorder" && recorderEnabled && <RecorderView engine={engine} run={run} />}
                 {view === "drums" && drumsEnabled && <DrumMachineView engine={engine} run={run} />}
+                {view === "community" && communityEnabled && <CommunityPresetsView engine={engine} run={run} />}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && (
                     <EditorView
@@ -1046,6 +1055,26 @@ function ShortcutTray({
     onOpen: (entry: MenuEntry) => void;
     onDragStart: (event: ReactPointerEvent, id: MenuId, source: "left" | "right") => void;
 }) {
+    const [pressedId, setPressedId] = useState<MenuId | null>(null);
+    const pressedTimer = useRef<number | null>(null);
+
+    useEffect(() => () => {
+        if (pressedTimer.current !== null) {
+            window.clearTimeout(pressedTimer.current);
+        }
+    }, []);
+
+    const showPressed = (id: MenuId) => {
+        setPressedId(id);
+        if (pressedTimer.current !== null) {
+            window.clearTimeout(pressedTimer.current);
+        }
+        pressedTimer.current = window.setTimeout(() => {
+            setPressedId(null);
+            pressedTimer.current = null;
+        }, 1000);
+    };
+
     return (
         <div className={`shortcut-tray shortcut-tray-${side}${editing ? " editing" : ""}`}
             data-shortcut-zone={side} aria-label={`${side} shortcuts`}>
@@ -1055,10 +1084,12 @@ function ShortcutTray({
                 const active = activeView === entry.view || (entry.id === "settings" && settingsActive);
                 return (
                     <button key={id} type="button"
-                        className={`shortcut-button${active ? " active" : ""}${draggingId === id ? " dragging" : ""}`}
+                        className={`shortcut-button${active ? " active" : ""}${pressedId === id ? " pressed" : ""}${draggingId === id ? " dragging" : ""}`}
                         data-shortcut-id={id} aria-label={entry.label} title={entry.label}
                         aria-current={active ? "page" : undefined}
-                        onPointerDown={editing ? (event) => onDragStart(event, id, side) : undefined}
+                        onPointerDown={editing
+                            ? (event) => onDragStart(event, id, side)
+                            : () => showPressed(id)}
                         onClick={() => onOpen(entry)}>
                         <MenuIcon name={entry.icon} />
                     </button>

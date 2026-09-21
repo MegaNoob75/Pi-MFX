@@ -70,6 +70,9 @@ struct Preset {
     std::vector<EffectSlot> chain;
     std::vector<Snapshot> snapshots;
     std::vector<ParameterBinding> parameterBindings;
+    /// Provenance and completion state for an imported community preset.
+    /// Empty for presets created locally.
+    Json community = Json::object();
     /// Layout slot of the snapshot currently applied to the live chain, or -1.
     int activeSnapshot = -1;
     /// Last Snapshot-view choice for this preset. Performance re-press toggles it.
@@ -273,6 +276,9 @@ struct UiSettings {
     /// Extra milliseconds to ignore after a switch or encoder click. Firmware
     /// already debounces; this is for noisy MIDI or cheap switches.
     int switchDebounceMs = 0;
+    /// Default author for Community Preset manifests. Stored on the Pi so it
+    /// follows the rig across browsers, while remaining editable per share.
+    std::string communityAuthor;
 
     Json toJson() const;
     static UiSettings fromJson(const Json& json);

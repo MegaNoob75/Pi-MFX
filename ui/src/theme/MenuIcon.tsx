@@ -1,6 +1,6 @@
 export type MenuIconName =
     | "performance" | "transport" | "backingTracks" | "looper" | "recorder"
-    | "drums" | "banks" | "edit" | "library" | "plugins" | "files"
+    | "drums" | "community" | "banks" | "edit" | "library" | "plugins" | "files"
     | "settings" | "about" | "reorder" | "drag" | "remove" | "overflow";
 
 const paths: Record<MenuIconName, string[]> = {
@@ -10,6 +10,7 @@ const paths: Record<MenuIconName, string[]> = {
     looper: ["M7 7h9l-2-2m2 2-2 2", "M17 17H8l2 2m-2-2 2-2", "M18 9a6 6 0 010 6M6 15a6 6 0 010-6"],
     recorder: ["M7 4h10v16H7z", "M12 8v5", "M9.5 11.5a2.5 2.5 0 005 0", "M12 14v3m-3 0h6"],
     drums: ["M4 9h16v8c0 2-3.6 3-8 3s-8-1-8-3z", "M4 9c0 2 3.6 3 8 3s8-1 8-3-3.6-3-8-3-8 1-8 3z", "M7 5l2 4m8-4-2 4"],
+    community: ["M12 4a4 4 0 100 8 4 4 0 000-8z", "M4 20a8 8 0 0116 0", "M3 9h4m10 0h4"],
     banks: ["M4 6h16v13H4z", "M4 10h16", "M8 3h8v3"],
     edit: ["M4 20l4.5-1 10-10-3.5-3.5-10 10z", "M13.5 6.5l3.5 3.5"],
     library: ["M5 4h11a3 3 0 013 3v13H8a3 3 0 00-3-3z", "M8 4v13a3 3 0 013 3"],

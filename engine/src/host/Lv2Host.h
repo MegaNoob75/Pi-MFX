@@ -24,8 +24,10 @@ struct PortInfo {
     uint32_t index = 0;
     std::string symbol;
     std::string name;
+    std::string comment;
     std::string unit;
     std::string unitUri;
+    std::string unitRender;
 
     bool input = true;
     bool control = false;
@@ -42,6 +44,10 @@ struct PortInfo {
     bool integer = false;
     bool enumerated = false;
     bool logarithmic = false;
+    bool sampleRate = false;
+    bool trigger = false;
+    bool notOnGui = false;
+    unsigned rangeSteps = 0;
     /// Ports the plugin marks as output-only meters: level, gain reduction,
     /// tuner pitch. The UI polls these instead of trying to edit them.
     bool meter = false;

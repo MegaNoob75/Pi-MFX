@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "community/CommunityPresetPackage.h"
 
 #include "core/Log.h"
 
@@ -343,7 +344,7 @@ bool followLatchPosition(const std::string& action) {
         || action == "setParameter";
 }
 
-float mappedBindingValue(const ActionRequest& request) {
+float mappedBindingValue(const ActionRequest& request, const PortInfo* port = nullptr) {
     float visual = isContinuousKind(request.kind) ? request.value
                  : (request.pressed ? 1.0f : 0.0f);
     visual = std::max(0.0f, std::min(1.0f, visual));
@@ -352,8 +353,14 @@ float mappedBindingValue(const ActionRequest& request) {
     if (request.fromPresetBind && request.binding.inverted) {
         visual = 1.0f - visual;
     }
-    return request.binding.minimum
-         + visual * (request.binding.maximum - request.binding.minimum);
+    const float minimum = request.binding.minimum;
+    const float maximum = request.binding.maximum;
+    if (port && port->logarithmic && minimum != 0.0f && maximum != 0.0f
+        && ((minimum > 0.0f) == (maximum > 0.0f))) {
+        return static_cast<float>(minimum * std::pow(
+            static_cast<double>(maximum) / minimum, visual));
+    }
+    return minimum + visual * (maximum - minimum);
 }
 
 bool latchOn(const ActionRequest& request) {
@@ -1745,6 +1752,86 @@ bool Engine::importBank(const Json& json, std::string& error) {
     return true;
 }
 
+static float normalizePortValue(const PortInfo& port, float value) {
+    float normalized = std::max(port.minimum, std::min(port.maximum, value));
+    if (port.toggled) {
+        const float off = std::max(port.minimum, std::min(port.maximum, 0.0f));
+        const float on = std::max(port.minimum, std::min(port.maximum, 1.0f));
+        normalized = value > 0.0f ? on : off;
+    } else if (port.enumerated && !port.scalePoints.empty()) {
+        const ScalePoint* closest = &port.scalePoints.front();
+        for (const ScalePoint& point : port.scalePoints) {
+            if (std::abs(point.value - value) < std::abs(closest->value - value)) {
+                closest = &point;
+            }
+        }
+        normalized = closest->value;
+    } else if (port.integer) {
+        normalized = std::round(normalized);
+    }
+    return std::max(port.minimum, std::min(port.maximum, normalized));
+}
+
+bool Engine::exportPresetForCommunity(const std::string& bankId, const std::string& presetId,
+                                      Preset& exported, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* preset = nullptr;
+    for (Bank& bank : banks_) {
+        if (bank.id != bankId) continue;
+        for (Preset& candidate : bank.presets) {
+            if (candidate.id == presetId) { preset = &candidate; break; }
+        }
+        break;
+    }
+    if (!preset) {
+        error = "that local preset was not found";
+        return false;
+    }
+    if (preset->community.isObject() && !preset->community.members().empty()) {
+        error = "community-installed presets cannot be submitted again";
+        return false;
+    }
+    if (bankId == activeBankId_ && presetId == activePresetId_) syncPresetFromChain();
+    exported = *preset;
+    exported.activeSnapshot = -1;
+    exported.rememberedSnapshotSlot = -1;
+    exported.rememberedSnapshotEnabled = false;
+    exported.community = Json::object();
+    return true;
+}
+
+bool Engine::importCommunityPreset(const Json& manifest, bool incomplete,
+                                   std::string& bankId, std::string& error) {
+    if (!CommunityPresetPackage::validate(manifest, error)) return false;
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+
+    Preset preset = CommunityPresetPackage::presetFromManifest(manifest);
+    preset.id = newId("preset");
+    Json provenance = Json::object();
+    provenance.set("catalogId", manifest["id"].asString());
+    provenance.set("author", manifest["author"].asString());
+    provenance.set("license", manifest["license"].asString());
+    provenance.set("manifestSha256", CommunityPresetPackage::checksum(manifest));
+    provenance.set("incomplete", incomplete);
+    preset.community = provenance;
+
+    Bank bank;
+    bank.id = newId("bank");
+    bank.name = std::string(incomplete ? "INCOMPLETE · " : "COMMUNITY · ")
+        + manifest["name"].asString(preset.name);
+    bank.order = static_cast<int>(banks_.size());
+    bank.lastPresetId = preset.id;
+    bank.presets.push_back(std::move(preset));
+    if (!storage_.saveBank(bank)) {
+        error = "could not write the community bank";
+        return false;
+    }
+    bankId = bank.id;
+    banks_.push_back(std::move(bank));
+    notify();
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Chain editing
 // ---------------------------------------------------------------------------
@@ -1983,14 +2070,14 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             if (!port.control || !port.input || port.symbol != portSymbol) {
                 continue;
             }
-            const float clamped = std::max(port.minimum, std::min(port.maximum, value));
+            const float clamped = normalizePortValue(port, value);
             // Queued rather than written directly: the audio thread applies it
             // between periods so a moving knob cannot land mid-buffer.
             if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
                 slot.plugin->setControl(port.index, clamped);
             }
             bool clearedTempoLink = false;
-            if (persist) {
+            if (persist && !port.trigger) {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 writeStoredControlUnlocked(slotId, portSymbol, clamped);
                 if (Preset* preset = activePreset(); preset && preset->activeSnapshot < 0) {
@@ -2111,14 +2198,41 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
             const float current = slot.plugin->control(port.index);
             const float span = port.maximum - port.minimum;
             float step = span == 0.0f ? 0.01f : span / 64.0f;
-            if (port.integer || port.enumerated) {
+            if (port.enumerated && !port.scalePoints.empty()) {
+                size_t selected = 0;
+                for (size_t point = 1; point < port.scalePoints.size(); ++point) {
+                    if (std::abs(port.scalePoints[point].value - current)
+                        < std::abs(port.scalePoints[selected].value - current)) {
+                        selected = point;
+                    }
+                }
+                const long nextIndex = std::max<long>(0, std::min<long>(
+                    static_cast<long>(port.scalePoints.size()) - 1,
+                    static_cast<long>(selected) + delta));
+                return setControlValue(request.binding.slotId, request.binding.portSymbol,
+                                       port.scalePoints[static_cast<size_t>(nextIndex)].value,
+                                       error, false);
+            }
+            if (port.integer) {
                 step = 1.0f;
+            } else if (port.rangeSteps > 1) {
+                step = span / static_cast<float>(port.rangeSteps - 1);
             }
             if (port.toggled) {
                 return setControlValue(request.binding.slotId, request.binding.portSymbol,
                                        delta > 0 ? port.maximum : port.minimum, error, false);
             }
-            const float next = current + static_cast<float>(delta) * step;
+            float next = current + static_cast<float>(delta) * step;
+            if (port.logarithmic && port.minimum != 0.0f && port.maximum != 0.0f
+                && ((port.minimum > 0.0f) == (port.maximum > 0.0f))) {
+                const unsigned steps = port.rangeSteps > 1 ? port.rangeSteps : 65;
+                const double ratio = static_cast<double>(port.maximum) / port.minimum;
+                const double position = std::log(static_cast<double>(current) / port.minimum)
+                                      / std::log(ratio);
+                const double nextPosition = std::max(0.0, std::min(1.0,
+                    position + static_cast<double>(delta) / static_cast<double>(steps - 1)));
+                next = static_cast<float>(port.minimum * std::pow(ratio, nextPosition));
+            }
             if (!setControlValue(request.binding.slotId, request.binding.portSymbol, next, error, false)) {
                 return false;
             }
@@ -3051,7 +3165,21 @@ void Engine::runAction(const ActionRequest& incoming) {
             nudgeEncoderParameter(request, error);
         } else {
             const bool persist = request.persist && !isContinuousKind(request.kind);
-            setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error, persist);
+            const PortInfo* boundPort = nullptr;
+            if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                    if (slot->id != binding.slotId || !slot->plugin) continue;
+                    for (const PortInfo& port : slot->plugin->info().ports) {
+                        if (port.control && port.input && port.symbol == binding.portSymbol) {
+                            boundPort = &port;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+            setControlValue(binding.slotId, binding.portSymbol,
+                            mappedBindingValue(request, boundPort), error, persist);
             notifyPerformance();
         }
     } else if (request.action == "bypassAll") {
@@ -3846,6 +3974,11 @@ Json Engine::fullState() const {
     if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
     json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
     if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
+#if defined(PIMFX_ENABLE_COMMUNITY_CATALOG)
+    json.set("communityCatalogFeatureEnabled", true);
+#else
+    json.set("communityCatalogFeatureEnabled", false);
+#endif
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
