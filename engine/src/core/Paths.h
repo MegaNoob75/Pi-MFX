@@ -25,6 +25,7 @@ struct Paths {
     std::string loopsDir;      ///< safely saved stereo looper WAV files
     std::string recordingsDir; ///< multitrack projects, takes, recovery data and exports
     std::string drumsDir;      ///< drum samples, patterns, variations and song chains
+    std::string communityDir;  ///< trusted catalog cache and install journals
 
     static Paths resolve(const std::string& overrideRoot = std::string());
 
@@ -37,6 +38,7 @@ struct Paths {
     std::string hotspotFile() const;
     std::string patchstorageCacheFile() const;
     std::string tone3000CacheFile() const;
+    std::string tone3000AssetsFile() const;
 };
 
 bool fileExists(const std::string& path);

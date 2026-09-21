@@ -149,6 +149,9 @@ Json Preset::toJson() const {
         bindingJson.push(binding.toJson());
     }
     json.set("parameterBindings", bindingJson);
+    if (community.isObject() && !community.members().empty()) {
+        json.set("community", community);
+    }
     json.set("activeSnapshot", activeSnapshot);
     json.set("rememberedSnapshotSlot", rememberedSnapshotSlot);
     json.set("rememberedSnapshotEnabled", rememberedSnapshotEnabled);
@@ -186,6 +189,7 @@ Preset Preset::fromJson(const Json& json) {
             preset.parameterBindings.push_back(std::move(binding));
         }
     }
+    preset.community = json["community"].isObject() ? json["community"] : Json::object();
     preset.activeSnapshot = json["activeSnapshot"].asInt(-1);
     preset.rememberedSnapshotSlot = json["rememberedSnapshotSlot"].asInt(-1);
     preset.rememberedSnapshotEnabled = json["rememberedSnapshotEnabled"].asBool(false);
@@ -527,6 +531,7 @@ Json UiSettings::toJson() const {
     json.set("encoderStepsPerDetent", encoderStepsPerDetent);
     json.set("analogDeadband", analogDeadband);
     json.set("switchDebounceMs", switchDebounceMs);
+    json.set("communityAuthor", communityAuthor);
     return json;
 }
 
@@ -550,6 +555,8 @@ UiSettings UiSettings::fromJson(const Json& json) {
     settings.encoderStepsPerDetent = std::max(1, std::min(8, json["encoderStepsPerDetent"].asInt(1)));
     settings.analogDeadband = std::max(0, std::min(16, json["analogDeadband"].asInt(0)));
     settings.switchDebounceMs = std::max(0, std::min(80, json["switchDebounceMs"].asInt(0)));
+    settings.communityAuthor = json["communityAuthor"].asString();
+    if (settings.communityAuthor.size() > 120) settings.communityAuthor.resize(120);
     return settings;
 }
 

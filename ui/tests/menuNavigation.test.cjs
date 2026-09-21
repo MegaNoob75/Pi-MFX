@@ -26,7 +26,7 @@ assert.ok(sanitizeShortcutsCallback, 'App must validate persisted shortcuts');
 const compiled = ts.transpileModule(`const navigate = ${callback.getText(source)}; return navigate;`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 }
 }).outputText;
-for (const view of ['drums', 'looper', 'recorder', 'performance']) {
+for (const view of ['community', 'drums', 'looper', 'recorder', 'performance']) {
     let localMenu = true;
     let shared = { view, menuOpen: true };
     let updates = 0;
@@ -82,7 +82,7 @@ assert.deepEqual(nestedBack('controller', { controllerPage: 'diagnostics' }), { 
 assert.deepEqual(nestedBack('system', { systemPage: 'realtime' }), { systemPage: 'hub' });
 assert.equal(nestedBack('controller', { controllerPage: 'hub' }), null);
 
-const menuIds = ['performance', 'transport', 'backingTracks', 'looper', 'recorder', 'drums', 'banks', 'edit', 'library', 'plugins', 'files', 'settings', 'about'];
+const menuIds = ['performance', 'transport', 'backingTracks', 'looper', 'recorder', 'drums', 'community', 'banks', 'edit', 'library', 'plugins', 'files', 'settings', 'about'];
 const compiledSanitizers = ts.transpileModule(`
 const MENU_IDS = ${JSON.stringify(menuIds)};
 const SHORTCUT_LIMIT = 4;

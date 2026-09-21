@@ -2,6 +2,7 @@
 
 #include "Engine.h"
 #include "control/HttpServer.h"
+#include "community/CommunityCatalog.h"
 #include "library/PluginStore.h"
 #include "library/Tone3000.h"
 
@@ -19,7 +20,8 @@ namespace pimfx {
 /// drift apart.
 class ApiRouter {
 public:
-    ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plugins, HttpServer& server);
+    ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plugins,
+              CommunityCatalog& community, HttpServer& server);
 
     /// Wires the router into the server and starts pushing state to clients.
     void attach();
@@ -36,16 +38,22 @@ private:
 
     Json tone3000Command(const std::string& command, const Json& payload, bool& ok, std::string& error);
     Json pluginsCommand(const std::string& command, const Json& payload, bool& ok, std::string& error);
+    Json communityCommand(const std::string& command, const Json& payload, bool& ok, std::string& error);
+    Json communityPlan(const Json& manifest, std::string& error) const;
     Json visibleCatalog(bool includePorts) const;
     void publishCatalog();
 
     Engine& engine_;
     Tone3000Client& tone3000_;
     PluginStore& plugins_;
+    CommunityCatalog& community_;
     HttpServer& server_;
     std::atomic<uint64_t> uiNavClient_{0};
     std::mutex uiSessionMutex_;
     Json uiSession_ = Json::object();
+    std::mutex communityMutex_;
+    Json pendingCommunityManifest_;
+    std::string pendingCommunityToken_;
 };
 
 } // namespace pimfx

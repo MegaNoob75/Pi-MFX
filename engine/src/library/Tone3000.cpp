@@ -466,7 +466,8 @@ Json Tone3000Client::listTones(const std::string& source, const Json& query, std
         || source == "trending" || source == "latest") {
         path = "/tones/" + source;
     } else {
-        path = "/tones/search";
+        error = "this TONE3000 API tier does not permit custom catalog search; use Browse TONE3000";
+        return Json();
     }
 
     std::string separator = "?";
@@ -501,21 +502,9 @@ Json Tone3000Client::listTones(const std::string& source, const Json& query, std
 }
 
 Json Tone3000Client::listUsers(const Json& query, std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::string path = "/users";
-    std::string separator = "?";
-    for (const char* key : {"query", "page", "page_size", "sort"}) {
-        std::string text = queryValue(query[key]);
-        if (text.empty()) {
-            continue;
-        }
-        if (std::string(key) == "page_size" && query[key].asInt(10) > 10) {
-            text = "10";
-        }
-        path += separator + key + "=" + urlEncode(text);
-        separator = "&";
-    }
-    return authorizedGet(path, error);
+    (void)query;
+    error = "creator search is not available under the TONE3000 non-commercial API tier";
+    return Json();
 }
 
 Json Tone3000Client::tone(const std::string& toneId, std::string& error) {
@@ -564,7 +553,9 @@ bool Tone3000Client::downloadModel(const std::string& url,
                                    const std::string& kind,
                                    const std::string& relativeDir,
                                    std::string& storedPath,
-                                   std::string& error) {
+                                   std::string& error,
+                                   const std::string& expectedSha256,
+                                   const Json& provenance) {
 #if defined(PIMFX_HAVE_CURL)
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -608,6 +599,10 @@ bool Tone3000Client::downloadModel(const std::string& url,
     }
     if (body.size() > 256u * 1024u * 1024u) {
         error = "that file is unreasonably large";
+        return false;
+    }
+    if (!expectedSha256.empty() && toHex(sha256(body)) != expectedSha256) {
+        error = "the downloaded asset did not match its expected SHA-256 checksum";
         return false;
     }
 
@@ -705,10 +700,36 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return false;
     }
 
+    // Keep provider identity beside the library, never inside the downloaded
+    // asset. This allows a later preset share to recover stable TONE3000 IDs
+    // from the exact bytes without persisting temporary CDN URLs.
+    const std::string digest = toHex(sha256(body));
+    Json registry = Json::object();
+    std::string registryText;
+    std::string registryError;
+    if (readFile(paths_.tone3000AssetsFile(), registryText)) {
+        Json parsed = Json::parse(registryText, &registryError);
+        if (registryError.empty() && parsed.isObject()) registry = parsed;
+    }
+    Json asset = Json::object();
+    asset.set("provider", "tone3000");
+    asset.set("sha256", digest);
+    asset.set("expectedFilename", fileName(storedPath));
+    asset.set("kind", isIr ? "ir" : isAidax ? "aidax" : "model");
+    for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
+                            "creator", "sourceLicense"}) {
+        const std::string value = provenance[key].asString();
+        if (!value.empty()) asset.set(key, value);
+    }
+    registry.set(digest, asset);
+    if (!writeFileAtomic(paths_.tone3000AssetsFile(), registry.dump(2))) {
+        logWarn("tone3000: could not save asset provenance");
+    }
+
     logInfo("tone3000: saved " + storedPath + " (" + sniffedFileLabel(sniffed) + ")");
     return true;
 #else
-    (void)url; (void)suggestedName; (void)kind; (void)relativeDir; (void)storedPath;
+    (void)url; (void)suggestedName; (void)kind; (void)relativeDir; (void)storedPath; (void)provenance;
     error = "this build has no HTTPS support";
     return false;
 #endif

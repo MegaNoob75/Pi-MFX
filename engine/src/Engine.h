@@ -73,6 +73,7 @@ public:
     Json midiPortsState() const;
     Json libraryState() const;
     Json diagnosticsState() const;
+    const Paths& storagePaths() const { return storage_.paths(); }
 
     // --- audio -----------------------------------------------------------
     bool applyAudioSettings(const Json& json, std::string& error);
@@ -117,6 +118,10 @@ public:
     bool reorderBank(const std::string& bankId, int newIndex, std::string& error);
     Json exportBank(const std::string& bankId) const;
     bool importBank(const Json& json, std::string& error);
+    bool exportPresetForCommunity(const std::string& bankId, const std::string& presetId,
+                                  Preset& preset, std::string& error);
+    bool importCommunityPreset(const Json& manifest, bool incomplete,
+                               std::string& bankId, std::string& error);
 
     // --- chain -----------------------------------------------------------
     bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error);

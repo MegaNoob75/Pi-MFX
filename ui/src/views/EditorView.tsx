@@ -87,7 +87,8 @@ export function EditorView({
 
     const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
     const plugin = obj(obj(selected).plugin);
-    const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control" && bool(port.input, true));
+    const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control"
+        && bool(port.input, true) && !bool(port.notOnGui));
     const properties = objects(plugin.properties);
     const models = objects(library.models);
     const aidax = objects(library.aidax);
@@ -946,6 +947,75 @@ export function EffectControls({
 }) {
     const slotId = str(selected.id);
     const tempoLinks = obj(selected.tempoLinks);
+    const [previewValues, setPreviewValues] = useState<Record<string, number>>({});
+    const pendingValues = useRef(new Map<string, number>());
+    const previewFrame = useRef<number | null>(null);
+    const pendingPreview = useRef<{ symbol: string; value: number } | null>(null);
+
+    useEffect(() => () => {
+        if (previewFrame.current !== null) {
+            window.cancelAnimationFrame(previewFrame.current);
+        }
+    }, []);
+
+    useEffect(() => {
+        setPreviewValues((current) => {
+            let changed = false;
+            const next = { ...current };
+            for (const [symbol, pending] of pendingValues.current) {
+                const port = ports.find((item) => str(item.symbol) === symbol);
+                if (!port) {
+                    pendingValues.current.delete(symbol);
+                    delete next[symbol];
+                    changed = true;
+                    continue;
+                }
+                const actual = controlValue(selected, symbol, num(port.default, num(port.min)));
+                if (approximatelyEqual(actual, pending)) {
+                    pendingValues.current.delete(symbol);
+                    delete next[symbol];
+                    changed = true;
+                }
+            }
+            return changed ? next : current;
+        });
+    }, [selected, ports]);
+
+    const preview = (symbol: string, value: number) => {
+        setPreviewValues((current) => ({ ...current, [symbol]: value }));
+    };
+    const previewLive = (symbol: string, value: number) => {
+        preview(symbol, value);
+        pendingPreview.current = { symbol, value };
+        if (previewFrame.current !== null) {
+            return;
+        }
+        previewFrame.current = window.requestAnimationFrame(() => {
+            previewFrame.current = null;
+            const next = pendingPreview.current;
+            pendingPreview.current = null;
+            if (!next) {
+                return;
+            }
+            void client.request("chain/control", {
+                slotId,
+                port: next.symbol,
+                value: next.value,
+                persist: false
+            }).catch(() => undefined);
+        });
+    };
+    const clearPreview = (symbol: string) => {
+        pendingValues.current.delete(symbol);
+        setPreviewValues((current) => {
+            if (!(symbol in current)) {
+                return current;
+            }
+            const next = { ...current };
+            delete next[symbol];
+            return next;
+        });
+    };
     const boundFor = (symbol: string) => bindings.find((binding) =>
         str(binding.action) === "setParameter"
         && str(binding.slotId) === slotId
@@ -972,17 +1042,28 @@ export function EffectControls({
                     const name = str(port.name, symbol);
                     const min = num(port.min, 0);
                     const max = num(port.max, 1);
-                    const value = controlValue(selected, symbol, num(port.default, min));
+                    const actualValue = controlValue(selected, symbol, num(port.default, min));
+                    const value = previewValues[symbol] ?? actualValue;
                     const linkedBeats = num(tempoLinks[symbol], 0);
                     const tempoLinkCandidate = bool(port.tempoLinkCandidate);
                     const stepped = bool(port.integer) || bool(port.toggled);
+                    const points = arr(port.scalePoints).filter(isObj);
+                    const enumeration = bool(port.enumerated) && points.length > 0;
                     const apply = (next: number) => {
                         const clamped = clampPortValue(next, min, max, stepped);
+                        if (previewFrame.current !== null) {
+                            window.cancelAnimationFrame(previewFrame.current);
+                            previewFrame.current = null;
+                        }
+                        pendingPreview.current = null;
+                        preview(symbol, clamped);
+                        pendingValues.current.set(symbol, clamped);
                         void client.request("chain/control", {
                             slotId: str(selected.id),
                             port: symbol,
-                            value: clamped
-                        }).catch(() => undefined);
+                            value: clamped,
+                            persist: true
+                        }).catch(() => clearPreview(symbol));
                     };
                     const editNumber = () => {
                         void (async () => {
@@ -1002,7 +1083,8 @@ export function EffectControls({
                         })();
                     };
                     return (
-                        <div key={symbol} className={`control-card field${boundFor(symbol) ? " bound" : ""}${tempoEnabled && linkedBeats > 0 ? " tempo-linked" : ""}`}>
+                        <div key={symbol} title={str(port.comment) || undefined}
+                            className={`control-card field${boundFor(symbol) ? " bound" : ""}${tempoEnabled && linkedBeats > 0 ? " tempo-linked" : ""}`}>
                             <div className="control-card-head">
                                 <span
                                     onPointerDown={(event) => {
@@ -1039,12 +1121,12 @@ export function EffectControls({
                                         target.addEventListener("pointermove", move);
                                     }}
                                 >{name}</span>
-                                {!bool(port.toggled) && arr(port.scalePoints).filter(isObj).length === 0 && (
+                                {!bool(port.toggled) && !bool(port.trigger) && !enumeration && (
                                     <button type="button" className="control-value" onClick={editNumber}>
                                         {formatControl(value, port)}
                                     </button>
                                 )}
-                                {(bool(port.toggled) || arr(port.scalePoints).filter(isObj).length > 0) && (
+                                {(bool(port.toggled) || bool(port.trigger) || enumeration) && (
                                     <span className="muted">{formatControl(value, port)}</span>
                                 )}
                             </div>
@@ -1076,43 +1158,54 @@ export function EffectControls({
                                     </select>
                                 </label>
                             )}
-                            {bool(port.toggled) ? (
+                            {bool(port.trigger) ? (
                                 <button
                                     type="button"
-                                    className={`btn ${value >= 0.5 ? "btn-active" : ""}`}
+                                    className="btn"
                                     onClick={() => void run(() => client.request("chain/control", {
                                         slotId: str(selected.id),
                                         port: symbol,
-                                        value: value >= 0.5 ? 0 : 1
+                                        value: triggerValue(port)
                                     }))}
                                 >
-                                    {value >= 0.5 ? "ON" : "OFF"}
+                                    TRIGGER
                                 </button>
-                            ) : arr(port.scalePoints).filter(isObj).length > 0 ? (
+                            ) : bool(port.toggled) ? (
+                                <button
+                                    type="button"
+                                    className={`btn ${value > 0 ? "btn-active" : ""}`}
+                                    onClick={() => void run(() => client.request("chain/control", {
+                                        slotId: str(selected.id),
+                                        port: symbol,
+                                        value: value > 0 ? toggleValue(port, false) : toggleValue(port, true)
+                                    }))}
+                                >
+                                    {value > 0 ? "ON" : "OFF"}
+                                </button>
+                            ) : enumeration ? (
                                 <select
-                                    value={String(value)}
+                                    value={String(closestScalePointValue(points, value))}
                                     onChange={(event) => void run(() => client.request("chain/control", {
                                         slotId: str(selected.id),
                                         port: symbol,
                                         value: Number(event.target.value)
                                     }))}
                                 >
-                                    {arr(port.scalePoints).filter(isObj).map((item) => (
-                                        <option key={str(item.label, String(num(item.value)))} value={num(item.value)}>
+                                    {points.map((item) => (
+                                        <option key={`${num(item.value)}:${str(item.label)}`} value={num(item.value)}>
                                             {str(item.label, String(num(item.value)))}
                                         </option>
                                     ))}
                                 </select>
                             ) : (
-                                <input
-                                    type="range"
-                                    min={min}
-                                    max={max}
-                                    step={stepped ? 1 : "any"}
+                                <Lv2RangeControl
+                                    port={port}
                                     value={value}
-                                    aria-label={name}
+                                    name={name}
                                     disabled={tempoEnabled && linkedBeats > 0}
-                                    onChange={(event) => apply(Number(event.target.value))}
+                                    onPreview={(next) => previewLive(symbol, next)}
+                                    onCancel={() => clearPreview(symbol)}
+                                    onCommit={apply}
                                 />
                             )}
                         </div>
@@ -1272,8 +1365,20 @@ function ChainIoPanel({
 }
 
 function formatControl(value: number, port: JsonObject): string {
-    const unit = str(port.unit);
+    const point = arr(port.scalePoints).filter(isObj).find((item) =>
+        approximatelyEqual(num(item.value), value));
+    if (point) {
+        return str(point.label, String(value));
+    }
     const digits = bool(port.integer) || bool(port.toggled) ? 0 : 2;
+    const render = str(port.unitRender);
+    const placeholder = /%[-+ 0#]*(?:\.(\d+))?f/;
+    if (render && placeholder.test(render)) {
+        const match = render.match(placeholder);
+        const precision = match?.[1] === undefined ? digits : Math.min(8, Number(match[1]));
+        return render.replace(placeholder, value.toFixed(precision)).replaceAll("%%", "%");
+    }
+    const unit = str(port.unit);
     return `${value.toFixed(digits)}${unit ? ` ${unit}` : ""}`;
 }
 
@@ -1295,4 +1400,135 @@ function formatTempoLinkedValue(beats: number, bpm: number, port: JsonObject): s
 function clampPortValue(value: number, min: number, max: number, integer: boolean): number {
     const next = integer ? Math.round(value) : value;
     return Math.min(max, Math.max(min, next));
+}
+
+function approximatelyEqual(left: number, right: number): boolean {
+    return Math.abs(left - right) <= Math.max(1e-6, Math.abs(left) * 1e-6, Math.abs(right) * 1e-6);
+}
+
+function closestScalePointValue(points: JsonObject[], value: number): number {
+    return points.reduce((closest, point) => {
+        const candidate = num(point.value);
+        return Math.abs(candidate - value) < Math.abs(closest - value) ? candidate : closest;
+    }, num(points[0]?.value, value));
+}
+
+function toggleValue(port: JsonObject, on: boolean): number {
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    return Math.min(max, Math.max(min, on ? 1 : 0));
+}
+
+function triggerValue(port: JsonObject): number {
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    const candidate = max > 0 ? max : 1;
+    return Math.min(max, Math.max(min, candidate));
+}
+
+function hasLogarithmicRange(port: JsonObject): boolean {
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    return bool(port.logarithmic) && min !== 0 && max !== 0 && (min > 0) === (max > 0);
+}
+
+function sliderValue(port: JsonObject, value: number): number {
+    if (!hasLogarithmicRange(port)) {
+        return value;
+    }
+    const min = num(port.min);
+    const max = num(port.max, 1);
+    const clamped = Math.min(max, Math.max(min, value));
+    return Math.log(clamped / min) / Math.log(max / min);
+}
+
+function portValue(port: JsonObject, value: number): number {
+    if (!hasLogarithmicRange(port)) {
+        return value;
+    }
+    const min = num(port.min);
+    const max = num(port.max, 1);
+    return min * Math.pow(max / min, value);
+}
+
+function Lv2RangeControl({
+    port,
+    value,
+    name,
+    disabled,
+    onPreview,
+    onCancel,
+    onCommit
+}: {
+    port: JsonObject;
+    value: number;
+    name: string;
+    disabled: boolean;
+    onPreview: (value: number) => void;
+    onCancel: () => void;
+    onCommit: (value: number) => void;
+}) {
+    const logarithmic = hasLogarithmicRange(port);
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    const steps = Math.max(0, Math.trunc(num(port.rangeSteps)));
+    const rangeMin = logarithmic ? 0 : min;
+    const rangeMax = logarithmic ? 1 : max;
+    const step = logarithmic
+        ? steps > 1 ? 1 / (steps - 1) : "any"
+        : bool(port.integer)
+            ? 1
+            : steps > 1
+            ? (rangeMax - rangeMin) / (steps - 1)
+            : "any";
+    const external = sliderValue(port, value);
+    const [draft, setDraft] = useState(external);
+    const dragging = useRef(false);
+    const lastCommitted = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (!dragging.current) {
+            setDraft(external);
+        }
+    }, [external]);
+
+    const commit = (raw: number) => {
+        dragging.current = false;
+        lastCommitted.current = raw;
+        onCommit(portValue(port, raw));
+    };
+
+    const change = (raw: number) => {
+        lastCommitted.current = null;
+        setDraft(raw);
+        onPreview(portValue(port, raw));
+    };
+
+    return (
+        <input
+            type="range"
+            min={rangeMin}
+            max={rangeMax}
+            step={step}
+            value={draft}
+            aria-label={name}
+            disabled={disabled}
+            onPointerDown={() => { dragging.current = true; lastCommitted.current = null; }}
+            onChange={(event) => change(Number(event.target.value))}
+            onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+            onPointerCancel={() => {
+                dragging.current = false;
+                lastCommitted.current = null;
+                setDraft(external);
+                onCancel();
+            }}
+            onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+            onBlur={(event) => {
+                const raw = Number(event.currentTarget.value);
+                if (lastCommitted.current === null || !approximatelyEqual(lastCommitted.current, raw)) {
+                    commit(raw);
+                }
+            }}
+        />
+    );
 }
