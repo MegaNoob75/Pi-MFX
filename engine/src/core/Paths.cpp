@@ -93,7 +93,6 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.aidaxDir);
     makeDirectories(paths.irsDir);
     makeDirectories(joinPath(paths.modelsDir, "TONE3000"));
-    makeDirectories(joinPath(paths.aidaxDir, "TONE3000"));
     makeDirectories(joinPath(paths.irsDir, "TONE3000"));
     makeDirectories(paths.downloadsDir);
     makeDirectories(paths.lv2Dir);

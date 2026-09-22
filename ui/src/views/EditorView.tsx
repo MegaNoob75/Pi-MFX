@@ -48,7 +48,7 @@ export function EditorView({
     const plugins = objects(catalog.plugins);
     const preset = findPreset(state);
     const bank = findBank(state);
-    const banks = objects(state.banks);
+    const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
@@ -914,6 +914,167 @@ function filesForPathProperty(
     return models;
 }
 
+function PathPropertyPicker({
+    slotId,
+    propertyUri,
+    current,
+    files,
+    client,
+    run
+}: {
+    slotId: string;
+    propertyUri: string;
+    current: string;
+    files: JsonObject[];
+    client: import("../api").EngineClient;
+    run: (work: () => Promise<unknown>) => Promise<void>;
+}) {
+    const [open, setOpen] = useState(false);
+    const [highlighted, setHighlighted] = useState(current);
+    const lastSent = useRef(current);
+    const original = useRef(current);
+    const listRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        lastSent.current = current;
+        if (!open) {
+            setHighlighted(current);
+        }
+    }, [current, open]);
+
+    const previewPath = (path: string) => {
+        setHighlighted(path);
+        if (path === lastSent.current) {
+            return;
+        }
+        lastSent.current = path;
+        void run(() => client.request("chain/property", {
+            slotId,
+            property: propertyUri,
+            path,
+            persist: false
+        }));
+    };
+
+    const entries = [{ path: "", name: "None" }, ...files.map((file) => ({
+        path: str(file.path),
+        name: str(file.name)
+    }))];
+    const step = (direction: number) => {
+        const index = Math.max(0, entries.findIndex((entry) => entry.path === highlighted));
+        const next = Math.max(0, Math.min(entries.length - 1, index + direction));
+        if (next !== index) {
+            previewPath(entries[next].path);
+        }
+    };
+
+    const commit = (path: string) => {
+        setHighlighted(path);
+        lastSent.current = path;
+        void run(() => client.request("chain/property", {
+            slotId,
+            property: propertyUri,
+            path,
+            persist: true
+        })).then(() => setOpen(false));
+    };
+
+    const cancel = () => {
+        const path = original.current;
+        lastSent.current = path;
+        void run(() => client.request("chain/property", {
+            slotId,
+            property: propertyUri,
+            path,
+            persist: false
+        })).then(() => setOpen(false));
+    };
+
+    useEffect(() => {
+        if (!open || !listRef.current) {
+            return;
+        }
+        const list = listRef.current;
+        const syncEncoderHighlight = () => {
+            const item = list.querySelector<HTMLElement>('[data-mfx-nav-cursor="true"]');
+            const path = item?.getAttribute("data-path");
+            if (path !== null && path !== undefined) {
+                previewPath(path);
+            }
+        };
+        const observer = new MutationObserver(syncEncoderHighlight);
+        observer.observe(list, { attributes: true, subtree: true, attributeFilter: ["data-mfx-nav-cursor"] });
+        const frame = window.requestAnimationFrame(() => {
+            list.querySelector<HTMLElement>(`[data-path="${CSS.escape(highlighted)}"]`)?.focus();
+        });
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
+    }, [open, highlighted]);
+
+    const highlightedName = entries.find((entry) => entry.path === highlighted)?.name ?? "None";
+
+    return (
+        <>
+            <button type="button" className="btn file-property-picker-button" onClick={() => {
+                original.current = current;
+                lastSent.current = current;
+                setHighlighted(current);
+                setOpen(true);
+            }}>
+                {highlightedName} ▾
+            </button>
+            {open && createPortal(
+                <div
+                    className="mfx-overlay"
+                    onClick={cancel}
+                    onWheel={(event) => {
+                        if (event.deltaY === 0) return;
+                        event.preventDefault();
+                        step(event.deltaY > 0 ? 1 : -1);
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancel();
+                        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                            event.preventDefault();
+                            step(event.key === "ArrowDown" ? 1 : -1);
+                        }
+                    }}
+                >
+                    <div className="mfx-overlay-card file-property-picker" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">CHOOSE MODEL</div>
+                        <div className="muted">Move through the list to audition. Click, press Enter, or press the encoder to use.</div>
+                        <div ref={listRef} className="file-property-picker-list" data-mfx-nav-list="file-property">
+                            {entries.map((entry) => (
+                                <button
+                                    key={entry.path || "none"}
+                                    type="button"
+                                    className={`mfx-overlay-option${highlighted === entry.path ? " selected" : ""}`}
+                                    data-path={entry.path}
+                                    data-mfx-nav-key={`file:${entry.path}`}
+                                    onPointerEnter={() => previewPath(entry.path)}
+                                    onFocus={() => previewPath(entry.path)}
+                                    onClick={() => commit(entry.path)}
+                                >
+                                    {entry.name}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <button type="button" className="btn" onClick={cancel}>CANCEL</button>
+                            <button type="button" className="btn btn-accent" onClick={() => commit(highlighted)}>USE MODEL</button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+        </>
+    );
+}
+
 export function EffectControls({
     selected,
     ports,
@@ -1219,19 +1380,14 @@ export function EffectControls({
                 return (
                     <label key={str(property.uri)} className="field">
                         <span>{str(property.label, "File")}</span>
-                        <select
-                            value={current}
-                            onChange={(event) => void run(() => client.request("chain/property", {
-                                slotId: str(selected.id),
-                                property: str(property.uri),
-                                path: event.target.value
-                            }))}
-                        >
-                            <option value="">None</option>
-                            {files.map((file) => (
-                                <option key={str(file.path)} value={str(file.path)}>{str(file.name)}</option>
-                            ))}
-                        </select>
+                        <PathPropertyPicker
+                            slotId={str(selected.id)}
+                            propertyUri={str(property.uri)}
+                            current={current}
+                            files={files}
+                            client={client}
+                            run={run}
+                        />
                     </label>
                 );
             })}

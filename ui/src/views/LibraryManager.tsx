@@ -30,6 +30,15 @@ export function joinLibraryDir(parent: string, name: string): string {
     return parent ? `${parent}/${leaf}` : leaf;
 }
 
+export function safeLibraryFolderName(name: string): string {
+    const cleaned = name
+        .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, " ")
+        .replace(/\s+/g, " ")
+        .replace(/^\.+|\.+$/g, "")
+        .trim();
+    return cleaned.slice(0, 96).trim() || "TONE3000";
+}
+
 export function libraryRootLabel(kind: LibraryKind): string {
     if (kind === "drumsample") return "drums/samples";
     if (kind === "drumkit") return "drums/kits";
@@ -152,28 +161,28 @@ export function FilesView({
 
 export function LibraryFileManager({
     engine,
-    run
+    run,
+    kinds = ["model", "aidax", "ir"]
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    kinds?: LibraryKind[];
 }) {
-    const [kind, setKind] = useState<LibraryKind>("model");
+    const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
+    const [kind, setKind] = useState<LibraryKind>(availableKinds[0]?.id ?? "model");
     return (
         <div className="panel stack">
             <div className="muted">
-                NAM files live in models. AIDA-X files live in aidax. Impulse responses live in irs.
+                NAM files live in models. Impulse responses live in irs.
+                {kinds.includes("aidax") && " AIDA-X files live in aidax."}
                 Drag between the two panes, or long-press a row for more actions.
             </div>
             <div className="row explorer-kind-tabs">
-                <button type="button" className={`btn ${kind === "model" ? "btn-active" : ""}`} onClick={() => setKind("model")}>
-                    NAM
-                </button>
-                <button type="button" className={`btn ${kind === "aidax" ? "btn-active" : ""}`} onClick={() => setKind("aidax")}>
-                    AIDA-X
-                </button>
-                <button type="button" className={`btn ${kind === "ir" ? "btn-active" : ""}`} onClick={() => setKind("ir")}>
-                    IRs
-                </button>
+                {availableKinds.map((item) => (
+                    <button key={item.id} type="button" className={`btn ${kind === item.id ? "btn-active" : ""}`} onClick={() => setKind(item.id)}>
+                        {item.label}
+                    </button>
+                ))}
             </div>
             <LibraryBrowser engine={engine} run={run} kind={kind} />
         </div>
@@ -191,19 +200,25 @@ export function LibraryFolderPicker({
     run,
     kind,
     value,
+    createFolderName,
     onPick,
-    onClose
+    onClose,
+    kinds = ["model", "aidax", "ir"]
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     kind: LibraryKind;
     value: string;
+    createFolderName?: string;
     onPick: (directory: string, kind: LibraryKind) => void;
     onClose: () => void;
+    kinds?: LibraryKind[];
 }) {
     const [activeKind, setActiveKind] = useState<LibraryKind>(kind === "plugin" ? "model" : kind);
     const [directory, setDirectory] = useState(value || "TONE3000");
+    const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
     const title = activeKind === "ir" ? "IR FOLDER" : activeKind === "aidax" ? "AIDA-X FOLDER" : "NAM FOLDER";
+    const suggestedFolder = createFolderName ? safeLibraryFolderName(createFolderName) : "";
     return (
         <div className="dialog-backdrop" onClick={onClose}>
             <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
@@ -212,7 +227,7 @@ export function LibraryFolderPicker({
                     Choose the folder under {libraryRootLabel(activeKind)}/ where files should be saved.
                 </div>
                 <div className="row explorer-kind-tabs">
-                    {PICKER_KINDS.map((item) => (
+                    {availableKinds.map((item) => (
                         <button
                             key={item.id}
                             type="button"
@@ -234,8 +249,28 @@ export function LibraryFolderPicker({
                     directory={directory}
                     onDirectoryChange={setDirectory}
                 />
-                <div className="row" style={{ justifyContent: "flex-end" }}>
+                <div className="library-picker-actions">
                     <button type="button" className="btn" onClick={onClose}>CANCEL</button>
+                    {suggestedFolder && (
+                        <button
+                            type="button"
+                            className="btn btn-accent library-picker-create"
+                            title={`Create ${suggestedFolder} and save there`}
+                            onClick={() => {
+                                const target = joinLibraryDir(directory, suggestedFolder);
+                                void run(async () => {
+                                    await engine.client.request("library/mkdir", {
+                                        kind: activeKind,
+                                        directory: target
+                                    });
+                                    onPick(target, activeKind);
+                                    onClose();
+                                });
+                            }}
+                        >
+                            <span>SAVE IN NEW “{suggestedFolder}” FOLDER</span>
+                        </button>
+                    )}
                     <button
                         type="button"
                         className="btn btn-accent"
@@ -577,24 +612,46 @@ export function LibraryBrowser({
         if (!items.length) {
             return;
         }
-        const folders = items.filter((item) => str(item.type) === "dir").length;
-        const label = items.length === 1
-            ? `“${str(items[0].name)}”`
-            : `${items.length} items`;
-        setConfirm({
-            title: items.length === 1 && folders ? "DELETE FOLDER" : "DELETE",
-            body: folders
-                ? `Delete ${label}${folders ? " and any folders inside" : ""}? This cannot be undone.`
-                : `Delete ${label}? This cannot be undone.`,
-            run: () => {
-                work(async () => {
-                    for (const item of items) {
-                        await engine.client.request("library/delete", { path: str(item.path) });
-                    }
-                    setSelected(null);
-                    setCheckedPaths([]);
-                });
-            }
+        void run(async () => {
+            const impact = await engine.client.request("library/delete-impact", {
+                paths: items.map((item) => str(item.path))
+            });
+            const affected = objects(impact.affectedPresets);
+            const folders = items.filter((item) => str(item.type) === "dir").length;
+            const label = items.length === 1 ? `“${str(items[0].name)}”` : `${items.length} items`;
+            const names = affected.slice(0, 3).map((item) => `“${str(item.presetName)}”`).join(", ");
+            const more = affected.length > 3 ? ` and ${affected.length - 3} more` : "";
+            const normalWarning = folders
+                ? `Delete ${label} and any folders inside? This cannot be undone.`
+                : `Delete ${label}? This cannot be undone.`;
+            const dependencyWarning = affected.length
+                ? `The ${affected.length === 1 ? "Community Preset" : `${affected.length} Community Presets`} ${names}${more} ${affected.length === 1 ? "needs" : "need"} these files. Continuing will also remove ${affected.length === 1 ? "that preset" : "those presets"} so the device is not left with broken presets.`
+                : "";
+            setConfirm({
+                title: affected.length ? "DELETE FILES AND PRESETS" : items.length === 1 && folders ? "DELETE FOLDER" : "DELETE",
+                body: dependencyWarning || normalWarning,
+                run: () => {
+                    work(async () => {
+                        const removedBanks = new Set<string>();
+                        for (const preset of affected) {
+                            const bankId = str(preset.bankId);
+                            if (Number(preset.bankPresetCount) <= 1) {
+                                if (!removedBanks.has(bankId)) {
+                                    await engine.client.request("bank/delete", { bankId });
+                                    removedBanks.add(bankId);
+                                }
+                            } else {
+                                await engine.client.request("preset/delete", { presetId: str(preset.presetId) });
+                            }
+                        }
+                        for (const item of items) {
+                            await engine.client.request("library/delete", { path: str(item.path) });
+                        }
+                        setSelected(null);
+                        setCheckedPaths([]);
+                    });
+                }
+            });
         });
     };
 

@@ -224,21 +224,6 @@ restore_display_file() {
     fi
 }
 
-disable_system_keyboard() {
-    local user home file
-    pkill -x squeekboard >/dev/null 2>&1 || true
-    pkill -x onboard >/dev/null 2>&1 || true
-    user="$(cat "$DISPLAY_STATE_DIR/configured-user" 2>/dev/null || true)"
-    home=""
-    if [[ -n "$user" ]]; then
-        home="$(getent passwd "$user" | cut -d: -f6 || true)"
-    fi
-    for file in /etc/xdg/labwc/autostart ${home:+$home/.config/labwc/autostart}; do
-        [[ -f "$file" ]] || continue
-        sed -i -E '/squeekboard|onboard/d' "$file" || true
-    done
-}
-
 write_labwc_rc() {
     mkdir -p /etc/xdg/labwc
     cat > /etc/xdg/labwc/rc.xml <<'RCXML'
@@ -265,9 +250,6 @@ write_chromium_autostart() {
     mkdir -p /etc/xdg/labwc
     cat > /etc/xdg/labwc/autostart <<AUTOSTART
 #!/bin/bash
-export GTK_IM_MODULE=none
-export QT_IM_MODULE=none
-export SDL_IM_MODULE=none
 # Labwc draws a pointer until the first touch. Hide it before Chromium paints,
 # then once more after the window maps.
 (
@@ -275,22 +257,16 @@ export SDL_IM_MODULE=none
     sleep 1
     wtype -M alt -M logo -k h -m logo -m alt >/dev/null 2>&1 || true
 ) &
+squeekboard >/dev/null 2>&1 &
 exec /usr/bin/chromium \\
     --ozone-platform=wayland \\
     --start-maximized \\
     --overscroll-history-navigation=0 \\
-    --disable-features=WaylandWindowDecorations,VirtualKeyboard,OnScreenKeyboard,TouchDragAndContextMenu \\
+    --disable-features=WaylandWindowDecorations,TouchDragAndContextMenu \\
     --app='${url}' \\
     --password-store=basic
 AUTOSTART
     chmod 0755 /etc/xdg/labwc/autostart
-}
-
-purge_squeekboard() {
-    dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed' || return 0
-    log "Removing the system on-screen keyboard so Pi-MFX can use its own"
-    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
-        apt-get purge -y squeekboard || true
 }
 
 restart_touchscreen_browser() {
@@ -303,8 +279,11 @@ restart_touchscreen_browser() {
 
 refresh_touchscreen_session() {
     [[ -f "$DISPLAY_STATE_DIR/configured-user" ]] || return 0
-    log "Keeping the system keyboard off the touchscreen"
-    disable_system_keyboard
+    log "Keeping the touchscreen keyboard available for hosted browser flows"
+    if ! dpkg-query -W -f='${Status}' squeekboard 2>/dev/null | grep -q 'install ok installed'; then
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 \
+            apt-get install -y --no-install-recommends squeekboard
+    fi
     write_labwc_rc
     write_chromium_autostart
     pkill -HUP -x labwc >/dev/null 2>&1 || true
@@ -320,7 +299,7 @@ configure_touchscreen() {
 
     log "Setting up a fullscreen Pi-MFX session for $DISPLAY_USER"
     apt-get update
-    apt-get install -y --no-install-recommends labwc chromium wtype
+    apt-get install -y --no-install-recommends labwc chromium wtype squeekboard
     [[ -x /usr/bin/chromium ]] || die "chromium did not install at /usr/bin/chromium"
 
     mkdir -p "$DISPLAY_STATE_DIR" /etc/xdg/labwc
@@ -334,8 +313,6 @@ configure_touchscreen() {
     write_labwc_rc
     write_chromium_autostart
     printf '%s\n' "$DISPLAY_USER" > "$DISPLAY_STATE_DIR/configured-user"
-    disable_system_keyboard
-    purge_squeekboard
 
     cat > "$profile" <<'PROFILE'
 # Pi-MFX fullscreen session on the attached screen.

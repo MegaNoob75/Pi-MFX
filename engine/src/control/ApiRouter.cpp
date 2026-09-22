@@ -10,6 +10,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <unordered_set>
 
 namespace pimfx {
@@ -30,6 +33,41 @@ Json envelope(bool ok, const std::string& error, const Json& payload) {
         json.set("error", error);
     }
     return json;
+}
+
+bool sameOrInsidePath(const std::string& candidate, const std::string& target) {
+    std::error_code candidateError;
+    std::error_code targetError;
+    const auto candidatePath = std::filesystem::weakly_canonical(candidate, candidateError);
+    const auto targetPath = std::filesystem::weakly_canonical(target, targetError);
+    if (candidateError || targetError) return false;
+    if (candidatePath == targetPath) return true;
+    auto candidateIt = candidatePath.begin();
+    for (auto targetIt = targetPath.begin(); targetIt != targetPath.end(); ++targetIt, ++candidateIt) {
+        if (candidateIt == candidatePath.end() || *candidateIt != *targetIt) return false;
+    }
+    return true;
+}
+
+bool jsonReferencesLibraryTarget(const Json& value, Storage& storage,
+                                 const std::vector<std::string>& targets) {
+    if (value.isString()) {
+        const std::string resolved = storage.resolveLibraryFile(value.asString());
+        if (resolved.empty()) return false;
+        return std::any_of(targets.begin(), targets.end(), [&](const std::string& target) {
+            return sameOrInsidePath(resolved, target);
+        });
+    }
+    if (value.isArray()) {
+        for (const Json& child : value.items()) {
+            if (jsonReferencesLibraryTarget(child, storage, targets)) return true;
+        }
+    } else if (value.isObject()) {
+        for (const Json::Member& child : value.members()) {
+            if (jsonReferencesLibraryTarget(child.second, storage, targets)) return true;
+        }
+    }
+    return false;
 }
 
 std::array<int, 3> versionParts(const std::string& value) {
@@ -78,6 +116,12 @@ ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plug
     uiSession_.set("view", "performance");
     uiSession_.set("menuOpen", false);
     uiSession_.set("performancePicker", "");
+}
+
+ApiRouter::~ApiRouter() {
+    for (auto& thread : toneDownloadThreads_) {
+        if (thread.joinable()) thread.join();
+    }
 }
 
 void ApiRouter::attach() {
@@ -494,7 +538,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "chain/property") {
         ok = engine_.setEffectProperty(payload["slotId"].asString(),
                                        payload["property"].asString(),
-                                       payload["path"].asString(), error);
+                                       payload["path"].asString(), error,
+                                       payload["persist"].asBool(true));
         return Json::object();
     }
     if (command == "chain/bypass") {
@@ -605,6 +650,34 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         const Json result = engine_.readLibraryFile(payload["path"].asString(), error);
         ok = error.empty();
         return result.isObject() ? result : Json::object();
+    }
+    if (command == "library/delete-impact") {
+        std::vector<std::string> targets;
+        for (const Json& item : payload["paths"].items()) {
+            const std::string path = item.asString();
+            if (!path.empty() && engine_.storage().isPathInLibrary(path)) targets.push_back(path);
+        }
+        Json affected = Json::array();
+        if (!targets.empty()) {
+            const Json state = engine_.fullState();
+            for (const Json& bank : state["banks"].items()) {
+                for (const Json& preset : bank["presets"].items()) {
+                    const Json& community = preset["community"];
+                    if (!community.isObject() || community.members().empty()) continue;
+                    if (!jsonReferencesLibraryTarget(preset, engine_.storage(), targets)) continue;
+                    Json item = Json::object();
+                    item.set("bankId", bank["id"]);
+                    item.set("bankName", bank["name"]);
+                    item.set("bankPresetCount", static_cast<int>(bank["presets"].size()));
+                    item.set("presetId", preset["id"]);
+                    item.set("presetName", preset["name"]);
+                    affected.push(item);
+                }
+            }
+        }
+        Json result = Json::object();
+        result.set("affectedPresets", affected);
+        return result;
     }
     if (command == "library/delete") {
         ok = engine_.deleteLibraryFile(payload["path"].asString(), error);
@@ -840,6 +913,155 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         result.set("path", storedPath);
         return result;
     }
+    if (command == "download-batch") {
+        const Json& items = payload["items"];
+        if (!items.isArray() || items.size() == 0) {
+            ok = false;
+            error = "no models were selected";
+            return Json::object();
+        }
+
+        struct BatchResult {
+            bool ok = false;
+            std::string path;
+            std::string error;
+            std::string name;
+        };
+        std::vector<BatchResult> results(items.size());
+        std::atomic<size_t> next{0};
+        const size_t workerCount = std::min<size_t>(3, items.size());
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for (size_t worker = 0; worker < workerCount; ++worker) {
+            workers.emplace_back([&]() {
+                while (true) {
+                    const size_t index = next.fetch_add(1);
+                    if (index >= items.size()) break;
+                    const Json& item = items.at(index);
+                    BatchResult& result = results[index];
+                    result.name = item["name"].asString("TONE3000 model");
+                    Json provenance = Json::object();
+                    for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
+                                            "creator", "sourceLicense"}) {
+                        const std::string value = item[key].asString();
+                        if (!value.empty()) provenance.set(key, value);
+                    }
+                    result.ok = tone3000_.downloadModel(
+                        item["url"].asString(), result.name,
+                        item["kind"].asString("model"), item["directory"].asString(),
+                        result.path, result.error, std::string(), provenance);
+                }
+            });
+        }
+        for (auto& worker : workers) worker.join();
+
+        Json saved = Json::array();
+        Json failed = Json::array();
+        for (const BatchResult& result : results) {
+            Json entry = Json::object();
+            entry.set("name", result.name);
+            if (result.ok) {
+                entry.set("path", result.path);
+                saved.push(entry);
+            } else {
+                entry.set("error", result.error);
+                failed.push(entry);
+            }
+        }
+        Json response = Json::object();
+        response.set("saved", saved);
+        response.set("failed", failed);
+        response.set("concurrency", static_cast<int>(workerCount));
+        return response;
+    }
+    if (command == "download-job/start") {
+        const Json items = payload["items"];
+        if (!items.isArray() || items.size() == 0) {
+            ok = false; error = "no models were selected"; return Json::object();
+        }
+        const std::string jobId = "tone-download-" + std::to_string(nextToneDownloadJob_.fetch_add(1));
+        auto job = std::make_shared<ToneDownloadJob>();
+        job->files.reserve(items.size());
+        for (const Json& item : items.items()) {
+            ToneDownloadFile file;
+            file.name = item["name"].asString("TONE3000 model");
+            job->files.push_back(std::move(file));
+        }
+        {
+            std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+            toneDownloadJobs_[jobId] = job;
+        }
+        toneDownloadThreads_.emplace_back([this, job, items]() {
+            std::atomic<size_t> next{0};
+            const size_t workerCount = std::min<size_t>(3, items.size());
+            std::vector<std::thread> workers;
+            for (size_t worker = 0; worker < workerCount; ++worker) {
+                workers.emplace_back([this, job, &items, &next]() {
+                    while (true) {
+                        const size_t index = next.fetch_add(1);
+                        if (index >= items.size()) break;
+                        const Json& item = items.at(index);
+                        {
+                            std::lock_guard<std::mutex> lock(job->mutex);
+                            job->files[index].state = "downloading";
+                        }
+                        Json provenance = Json::object();
+                        for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
+                                                "creator", "sourceLicense"}) {
+                            const std::string value = item[key].asString();
+                            if (!value.empty()) provenance.set(key, value);
+                        }
+                        std::string path;
+                        std::string downloadError;
+                        const bool saved = tone3000_.downloadModel(
+                            item["url"].asString(), item["name"].asString(),
+                            item["kind"].asString("model"), item["directory"].asString(),
+                            path, downloadError, std::string(), provenance);
+                        {
+                            std::lock_guard<std::mutex> lock(job->mutex);
+                            ToneDownloadFile& file = job->files[index];
+                            file.state = saved ? "saved" : "failed";
+                            file.path = path;
+                            file.error = downloadError;
+                        }
+                        job->completed.fetch_add(1);
+                    }
+                });
+            }
+            for (auto& worker : workers) worker.join();
+            job->done.store(true);
+        });
+        Json result = Json::object();
+        result.set("jobId", jobId);
+        return result;
+    }
+    if (command == "download-job/status") {
+        std::shared_ptr<ToneDownloadJob> job;
+        {
+            std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+            const auto found = toneDownloadJobs_.find(payload["jobId"].asString());
+            if (found != toneDownloadJobs_.end()) job = found->second;
+        }
+        if (!job) { ok = false; error = "download job was not found"; return Json::object(); }
+        Json files = Json::array();
+        {
+            std::lock_guard<std::mutex> lock(job->mutex);
+            for (const ToneDownloadFile& file : job->files) {
+                Json item = Json::object();
+                item.set("name", file.name);
+                item.set("state", file.state);
+                if (!file.path.empty()) item.set("path", file.path);
+                if (!file.error.empty()) item.set("error", file.error);
+                files.push(item);
+            }
+        }
+        Json result = Json::object();
+        result.set("files", files);
+        result.set("completed", job->completed.load());
+        result.set("total", static_cast<int>(job->files.size()));
+        result.set("done", job->done.load());
+        return result;
+    }
 
     ok = false;
     error = "unknown command";
@@ -1043,7 +1265,7 @@ Json ApiRouter::communityPlan(const Json& manifest, std::string& error) const {
         const std::string expectedName = dependency["expectedFilename"].asString();
         const std::string expectedHash = dependency["sha256"].asString();
         for (const Json& item : library[libraryKey].items()) {
-            if (item["name"].asString() != expectedName) continue;
+            if (fileName(item["path"].asString()) != expectedName) continue;
             std::string bytes;
             if (readFile(item["path"].asString(), bytes)
                 && toHex(sha256(bytes)) == expectedHash) return std::string("installed");
@@ -1109,7 +1331,7 @@ Json ApiRouter::communityPlan(const Json& manifest, std::string& error) const {
     plan.set("requirements", requirements);
     plan.set("changes", changes);
     plan.set("complete", complete);
-    plan.set("importsToNewBank", true);
+    plan.set("importsToCommunityBank", true);
     plan.set("overwritesUserData", false);
     const Json& compatibility = manifest["compatibility"];
     const auto current = versionParts(PIMFX_VERSION);
@@ -1208,6 +1430,13 @@ Json ApiRouter::communityCommand(const std::string& command, const Json& payload
         pendingCommunityToken_.clear();
         return Json::object();
     }
+    if (command == "uninstall") {
+        int removed = 0;
+        ok = engine_.uninstallCommunityPreset(payload["id"].asString(), removed, error);
+        Json result = Json::object();
+        result.set("removed", removed);
+        return result;
+    }
     if (command == "install/confirm") {
         Json manifest;
         {
@@ -1252,21 +1481,30 @@ Json ApiRouter::communityCommand(const std::string& command, const Json& payload
         }
 
         auto downloadToneAsset = [&](const Json& dependency, const std::string& id, const std::string& kind) {
+            auto downloadUrl = [](const Json& model) {
+                std::string url = model["model_url"].asString();
+                if (url.empty()) url = model["download_url"].asString();
+                if (url.empty()) url = model["url"].asString();
+                return url;
+            };
             std::string modelError;
-            Json query = Json::object();
-            query.set("page_size", 100);
-            const std::string architecture = dependency["architecture"].asString();
-            if (!architecture.empty()) query.set("architecture", architecture);
-            const Json response = tone3000_.models(dependency["toneId"].asString(), query, modelError);
-            const Json& candidates = response["data"].isArray() ? response["data"] : response;
-            Json model;
-            for (const Json& candidate : candidates.items()) {
-                if (candidate["id"].asString() == id) { model = candidate; break; }
+            Json model = tone3000_.model(id, modelError);
+            if (model["data"].isArray() && model["data"].size() != 0) model = model["data"].at(0);
+            if (!modelError.empty() || !model.isObject() || downloadUrl(model).empty()) {
+                modelError.clear();
+                Json query = Json::object();
+                query.set("page_size", 100);
+                const std::string architecture = dependency["architecture"].asString();
+                if (!architecture.empty()) query.set("architecture", architecture);
+                const Json response = tone3000_.models(dependency["toneId"].asString(), query, modelError);
+                const Json& candidates = response["data"].isArray() ? response["data"] : response;
+                model = Json();
+                for (const Json& candidate : candidates.items()) {
+                    if (candidate["id"].asString() == id) { model = candidate; break; }
+                }
             }
             if (modelError.empty() && !model.isObject()) modelError = "the referenced TONE3000 model is no longer available";
-            std::string url = model["model_url"].asString();
-            if (url.empty()) url = model["download_url"].asString();
-            if (url.empty()) url = model["url"].asString();
+            const std::string url = downloadUrl(model);
             std::string stored;
             if (!modelError.empty() || url.empty() || !tone3000_.downloadModel(
                     url, dependency["expectedFilename"].asString(), kind, "Community",

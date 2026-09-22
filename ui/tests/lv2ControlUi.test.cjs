@@ -32,8 +32,18 @@ assert.match(editor, /window\.requestAnimationFrame[\s\S]*persist: false/,
     'drag previews must be frame-throttled and non-persistent');
 assert.match(editor, /pendingPreview\.current = null;[\s\S]*persist: true/,
     'release must cancel any queued preview and persist the final value');
+assert.match(editor, /data-mfx-nav-list="file-property"/,
+    'path properties must expose real list items to hardware encoder navigation');
+assert.match(editor, /MutationObserver\(syncEncoderHighlight\)/,
+    'moving the hardware navigation cursor must audition the highlighted file');
+assert.match(editor, /previewPath[\s\S]*persist: false/,
+    'auditioning a NAM profile must change the live plugin without saving the preset');
+assert.match(editor, /commit[\s\S]*persist: true/,
+    'choosing a NAM profile must persist it');
+assert.match(editor, /const cancel[\s\S]*original\.current[\s\S]*persist: false/,
+    'cancelling profile audition must restore the original live model');
 assert.match(router, /payload\["persist"\]\.asBool\(true\)/,
-    'the control API must accept non-persistent live updates while defaulting to persistence');
+    'live control and property APIs must accept non-persistent updates while defaulting to persistence');
 assert.match(host, /portInfo\.sampleRate = lilv_port_has_property/,
     'sample-rate-relative port metadata must be discovered');
 assert.match(host, /port\.minimum \*= rate;[\s\S]*port\.defaultValue \*= rate;/,

@@ -10,6 +10,9 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace pimfx {
 
@@ -22,6 +25,7 @@ class ApiRouter {
 public:
     ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plugins,
               CommunityCatalog& community, HttpServer& server);
+    ~ApiRouter();
 
     /// Wires the router into the server and starts pushing state to clients.
     void attach();
@@ -54,6 +58,22 @@ private:
     std::mutex communityMutex_;
     Json pendingCommunityManifest_;
     std::string pendingCommunityToken_;
+    struct ToneDownloadFile {
+        std::string name;
+        std::string state = "queued";
+        std::string path;
+        std::string error;
+    };
+    struct ToneDownloadJob {
+        std::mutex mutex;
+        std::vector<ToneDownloadFile> files;
+        std::atomic<int> completed{0};
+        std::atomic<bool> done{false};
+    };
+    std::mutex toneDownloadJobsMutex_;
+    std::unordered_map<std::string, std::shared_ptr<ToneDownloadJob>> toneDownloadJobs_;
+    std::vector<std::thread> toneDownloadThreads_;
+    std::atomic<uint64_t> nextToneDownloadJob_{1};
 };
 
 } // namespace pimfx

@@ -1315,25 +1315,24 @@ bool Engine::selectBank(const std::string& bankId, std::string& error) {
 }
 
 bool Engine::stepBank(int delta, std::string& error) {
-    if (banks_.empty()) {
+    std::vector<const Bank*> playable;
+    for (const Bank& bank : banks_) {
+        if (!bank.communityHolding && !bank.presets.empty()) playable.push_back(&bank);
+    }
+    if (playable.empty()) {
         error = "no banks";
         return false;
     }
     int index = 0;
-    for (size_t i = 0; i < banks_.size(); ++i) {
-        if (banks_[i].id == activeBankId_) {
+    for (size_t i = 0; i < playable.size(); ++i) {
+        if (playable[i]->id == activeBankId_) {
             index = static_cast<int>(i);
             break;
         }
     }
-    const int count = static_cast<int>(banks_.size());
+    const int count = static_cast<int>(playable.size());
     index = ((index + delta) % count + count) % count;
-    const Bank& bank = banks_[static_cast<size_t>(index)];
-    if (bank.presets.empty()) {
-        error = "that bank is empty";
-        return false;
-    }
-    return selectBank(bank.id, error);
+    return selectBank(playable[static_cast<size_t>(index)]->id, error);
 }
 
 bool Engine::stepSnapshot(int delta, std::string& error) {
@@ -1499,26 +1498,62 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
         error = "no such preset";
         return false;
     }
-    if (bank->presets.size() <= 1) {
-        error = "a bank must keep at least one preset";
-        return false;
-    }
-
     const auto found = std::find_if(bank->presets.begin(), bank->presets.end(),
                                     [&](const Preset& preset) { return preset.id == presetId; });
     if (found == bank->presets.end()) {
         error = "no such preset";
         return false;
     }
+    if (bank->presets.size() <= 1 && !bank->communityHolding
+        && (!found->community.isObject() || found->community.members().empty())) {
+        error = "a bank must keep at least one preset";
+        return false;
+    }
 
+    const Json removedCommunity = found->community;
     const bool wasActive = presetId == activePresetId_;
     bank->presets.erase(found);
     storage_.saveBank(*bank);
 
+    auto dependencyStillUsed = [&](const std::string& group, const std::string& name) {
+        for (const Bank& candidateBank : banks_) {
+            for (const Preset& candidatePreset : candidateBank.presets) {
+                for (const Json& dependency : candidatePreset.community["dependencies"][group].items()) {
+                    if (dependency["expectedFilename"].asString() == name) return true;
+                }
+            }
+        }
+        return false;
+    };
+    auto removeDependencies = [&](const std::string& group) {
+        for (const Json& dependency : removedCommunity["dependencies"][group].items()) {
+            const std::string name = dependency["expectedFilename"].asString();
+            if (name.empty() || fileName(name) != name || dependencyStillUsed(group, name)) continue;
+            const std::string kind = dependency["kind"].asString(group == "irs" ? "ir" : "model");
+            const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+            removeFile(joinPath(joinPath(root, "Community"), name));
+        }
+    };
+    removeDependencies("tone3000");
+    removeDependencies("irs");
+
     if (wasActive) {
-        activePresetId_ = bank->presets.front().id;
+        if (bank->presets.empty()) {
+            const auto playable = std::find_if(banks_.begin(), banks_.end(), [&](const Bank& candidate) {
+                return candidate.id != bank->id && !candidate.communityHolding && !candidate.presets.empty();
+            });
+            if (playable != banks_.end()) {
+                activeBankId_ = playable->id;
+                activePresetId_ = playable->presets.front().id;
+            } else {
+                activePresetId_.clear();
+            }
+        } else {
+            activePresetId_ = bank->presets.front().id;
+        }
         std::string chainError;
-        publishChain(buildChain(bank->presets.front(), chainError));
+        if (Preset* next = activePreset()) publishChain(buildChain(*next, chainError));
+        settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
         persistSettings();
     }
@@ -1579,7 +1614,7 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         notify();
         return true;
     }
-    if (source->presets.size() < 2) {
+    if (source->presets.size() < 2 && !source->communityHolding) {
         error = "a bank must keep at least one preset";
         return false;
     }
@@ -1813,22 +1848,55 @@ bool Engine::importCommunityPreset(const Json& manifest, bool incomplete,
     provenance.set("license", manifest["license"].asString());
     provenance.set("manifestSha256", CommunityPresetPackage::checksum(manifest));
     provenance.set("incomplete", incomplete);
+    provenance.set("dependencies", manifest["dependencies"]);
     preset.community = provenance;
 
-    Bank bank;
-    bank.id = newId("bank");
-    bank.name = std::string(incomplete ? "INCOMPLETE · " : "COMMUNITY · ")
-        + manifest["name"].asString(preset.name);
-    bank.order = static_cast<int>(banks_.size());
-    bank.lastPresetId = preset.id;
-    bank.presets.push_back(std::move(preset));
-    if (!storage_.saveBank(bank)) {
+    Bank* bank = nullptr;
+    for (Bank& candidate : banks_) {
+        if (candidate.communityHolding) { bank = &candidate; break; }
+    }
+    if (!bank) {
+        Bank created;
+        created.id = newId("bank");
+        created.name = "Community";
+        created.order = static_cast<int>(banks_.size());
+        created.communityHolding = true;
+        banks_.push_back(std::move(created));
+        bank = &banks_.back();
+    }
+    bank->lastPresetId = preset.id;
+    bank->presets.push_back(std::move(preset));
+    if (!storage_.saveBank(*bank)) {
         error = "could not write the community bank";
         return false;
     }
-    bankId = bank.id;
-    banks_.push_back(std::move(bank));
+    bankId = bank->id;
     notify();
+    return true;
+}
+
+bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    removed = 0;
+    std::vector<std::string> presetIds;
+    for (const Bank& bank : banks_) {
+        for (const Preset& preset : bank.presets) {
+            if (preset.community["catalogId"].asString() == catalogId) presetIds.push_back(preset.id);
+        }
+    }
+    if (presetIds.empty()) { error = "that community preset is not installed"; return false; }
+    for (const std::string& presetId : presetIds) {
+        Bank* bank = findBankForPreset(presetId);
+        if (bank && bank->presets.size() <= 1 && !bank->communityHolding) {
+            Preset placeholder;
+            placeholder.id = newId("preset");
+            placeholder.name = "Preset 1";
+            bank->presets.push_back(std::move(placeholder));
+            storage_.saveBank(*bank);
+        }
+        if (!deletePreset(presetId, error)) return false;
+        ++removed;
+    }
     return true;
 }
 
@@ -2247,7 +2315,7 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
 }
 
 bool Engine::setEffectProperty(const std::string& slotId, const std::string& propertyUri,
-                               const std::string& path, std::string& error) {
+                               const std::string& path, std::string& error, bool persist) {
     std::string resolved = path;
     if (!path.empty()) {
         resolved = resolvePluginFilePath(storage_, propertyUri, path, error);
@@ -2268,17 +2336,19 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
         if (!slot->plugin->setProperty(propertyUri, resolved, error)) {
             return false;
         }
-        if (Preset* preset = activePreset()) {
-            if (EffectSlot* stored = preset->findSlot(slotId)) {
-                Json properties = stored->state["properties"].isObject()
-                                ? stored->state["properties"] : Json::object();
-                properties.set(propertyUri, Json(resolved));
-                Json state = stored->state.isObject() ? stored->state : Json::object();
-                state.set("properties", properties);
-                stored->state = state;
+        if (persist) {
+            if (Preset* preset = activePreset()) {
+                if (EffectSlot* stored = preset->findSlot(slotId)) {
+                    Json properties = stored->state["properties"].isObject()
+                                    ? stored->state["properties"] : Json::object();
+                    properties.set(propertyUri, Json(resolved));
+                    Json state = stored->state.isObject() ? stored->state : Json::object();
+                    state.set("properties", properties);
+                    stored->state = state;
+                }
             }
         }
-        {
+        if (persist) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             requestBankPersist(true);
         }

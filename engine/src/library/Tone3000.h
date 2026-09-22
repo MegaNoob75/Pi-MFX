@@ -92,6 +92,7 @@ private:
     std::string redirectUri_;
     std::string pendingVerifier_;
     std::string pendingState_;
+    std::string pendingRedirectUri_;
 
     Tokens tokens_;
     Json profile_ = Json::object();

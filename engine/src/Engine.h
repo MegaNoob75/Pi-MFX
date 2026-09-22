@@ -122,6 +122,7 @@ public:
                                   Preset& preset, std::string& error);
     bool importCommunityPreset(const Json& manifest, bool incomplete,
                                std::string& bankId, std::string& error);
+    bool uninstallCommunityPreset(const std::string& catalogId, int& removed, std::string& error);
 
     // --- chain -----------------------------------------------------------
     bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error);
@@ -135,7 +136,7 @@ public:
     bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
                       double quarterNoteBeats, std::string& error);
     bool setEffectProperty(const std::string& slotId, const std::string& propertyUri,
-                           const std::string& path, std::string& error);
+                           const std::string& path, std::string& error, bool persist = true);
     bool setBypassAll(bool bypassed);
     bool bypassAll() const;
 

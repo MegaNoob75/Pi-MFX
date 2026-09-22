@@ -73,7 +73,7 @@ const MENU_ENTRIES: readonly MenuEntry[] = [
     { id: "community", view: "community", label: "COMMUNITY PRESETS", subtitle: "Browse, review, install and share presets", icon: "community", feature: "community" },
     { id: "banks", view: "banks", label: "BANKS / PRESETS", subtitle: "Organize banks and presets", icon: "banks" },
     { id: "edit", view: "edit", label: "PRESET EDITOR", subtitle: "Plugins, controls and signal chain", icon: "edit" },
-    { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "TONE3000 NAM, AIDA-X and IR downloads", icon: "library" },
+    { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "Manage local NAM and IR files or browse TONE3000", icon: "library" },
     { id: "plugins", view: "plugins", label: "PLUGINS", subtitle: "Installed effects and Raspberry Pi OS / PatchStorage installs", icon: "plugins" },
     { id: "files", view: "files", label: "FILES", subtitle: "Browse NAM, AIDA-X and IR folders", icon: "files" },
     { id: "settings", view: "settings", label: "SETTINGS", subtitle: "Controller, theme, PI-MFX UI and system", icon: "settings" },

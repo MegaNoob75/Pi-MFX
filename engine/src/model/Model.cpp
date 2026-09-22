@@ -201,6 +201,7 @@ Json Bank::toJson() const {
     json.set("id", id);
     json.set("name", name);
     json.set("order", order);
+    if (communityHolding) json.set("communityHolding", true);
     if (!lastPresetId.empty()) {
         json.set("lastPresetId", lastPresetId);
     }
@@ -217,6 +218,7 @@ Bank Bank::fromJson(const Json& json) {
     bank.id = json["id"].asString(newId("bank"));
     bank.name = json["name"].asString("Bank");
     bank.order = json["order"].asInt(0);
+    bank.communityHolding = json["communityHolding"].asBool(false);
     bank.lastPresetId = json["lastPresetId"].asString();
     const Json& presetJson = json["presets"];
     for (size_t i = 0; i < presetJson.size(); ++i) {

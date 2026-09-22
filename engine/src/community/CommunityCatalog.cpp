@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 
 #if defined(PIMFX_HAVE_CURL)
 #include <curl/curl.h>
@@ -17,6 +18,15 @@ constexpr const char* kCatalogIndex =
     "https://raw.githubusercontent.com/MegaNoob75/Pi-MFX-Community-Presets/main/catalog/index.json";
 constexpr const char* kCatalogRaw =
     "https://raw.githubusercontent.com/MegaNoob75/Pi-MFX-Community-Presets/main/";
+
+std::string versionedUrl(const std::string& url, const std::string& version) {
+    return url + "?v=" + version;
+}
+
+std::string refreshVersion() {
+    return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+}
 
 bool safeCatalogId(const std::string& id) {
     if (id.empty() || id.size() > 64) return false;
@@ -116,7 +126,10 @@ Json CommunityCatalog::index(bool refresh, std::string& error) {
         if (saved["format"].asString() == "pimfx-community-catalog") return saved;
     }
     std::string body;
-    if (!get(kCatalogIndex, body, error)) {
+    const std::string catalogUrl = refresh
+        ? versionedUrl(kCatalogIndex, refreshVersion())
+        : std::string(kCatalogIndex);
+    if (!get(catalogUrl, body, error)) {
         Json saved = loadCached(cache);
         if (saved["format"].asString() == "pimfx-community-catalog") {
             saved.set("cached", true);
@@ -163,7 +176,11 @@ Json CommunityCatalog::preset(const std::string& id, bool refresh, std::string& 
         if (CommunityPresetPackage::validate(saved, validationError)
             && CommunityPresetPackage::checksum(saved) == expectedChecksum) return saved;
     }
-    if (!get(std::string(kCatalogRaw) + manifestPath, body, error)) return Json::object();
+    // Key the raw GitHub request to the protected checksum. This avoids a stale
+    // CDN response after a catalog publication while retaining immutable caching.
+    const std::string manifestUrl = versionedUrl(std::string(kCatalogRaw) + manifestPath,
+                                                  expectedChecksum);
+    if (!get(manifestUrl, body, error)) return Json::object();
     std::string parseError;
     Json manifest = Json::parse(body, &parseError);
     if (!parseError.empty() || !CommunityPresetPackage::validate(manifest, error)) {

@@ -103,7 +103,7 @@ export function PerformanceView({
     const { client, state } = engine;
     const bank = findBank(state);
     const preset = findPreset(state);
-    const banks = objects(state.banks);
+    const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const ui = obj(state.ui);
     const controller = obj(state.controller);
     const layout = obj(controller.performanceLayout);
@@ -164,6 +164,12 @@ export function PerformanceView({
     });
     const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
     const sharedPicker = str(engine.uiSession.performancePicker);
+    const playableBankId = str(banks[0]?.id);
+    useEffect(() => {
+        if (bool(obj(bank).communityHolding) && playableBankId) {
+            void run(() => client.request("bank/select", { bankId: playableBankId }));
+        }
+    }, [state.activeBankId, playableBankId, client, run]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
         [state.activePresetId, chainSignature]

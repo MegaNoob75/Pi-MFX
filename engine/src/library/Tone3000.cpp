@@ -207,7 +207,11 @@ std::string Tone3000Client::beginAuthorization(const std::string& prompt,
         error = "add your TONE3000 publishable key first (Settings -> API Keys on tone3000.com)";
         return std::string();
     }
-    if (redirectUri_.empty()) {
+    pendingRedirectUri_ = filters["redirectUri"].asString();
+    if (pendingRedirectUri_.empty()) {
+        pendingRedirectUri_ = redirectUri_;
+    }
+    if (pendingRedirectUri_.empty()) {
         error = "set the redirect URI, and register the same value on tone3000.com";
         return std::string();
     }
@@ -222,7 +226,7 @@ std::string Tone3000Client::beginAuthorization(const std::string& prompt,
 
     std::string url = std::string(kBase) + "/oauth/authorize"
                     + "?client_id=" + urlEncode(publishableKey_)
-                    + "&redirect_uri=" + urlEncode(redirectUri_)
+                    + "&redirect_uri=" + urlEncode(pendingRedirectUri_)
                     + "&response_type=code"
                     + "&code_challenge=" + urlEncode(challenge)
                     + "&code_challenge_method=S256"
@@ -231,7 +235,8 @@ std::string Tone3000Client::beginAuthorization(const std::string& prompt,
     if (!prompt.empty()) {
         url += "&prompt=" + urlEncode(prompt);
     }
-    for (const char* key : {"gears", "format", "architecture", "tone_id", "calibrated"}) {
+    for (const char* key : {"gears", "format", "architecture", "tone_id", "calibrated",
+                            "menubar", "preview"}) {
         const std::string value = filters[key].asString();
         if (!value.empty()) {
             url += std::string("&") + key + "=" + urlEncode(value);
@@ -292,14 +297,16 @@ bool Tone3000Client::completeAuthorization(const std::string& code,
         return false;
     }
 
+    const std::string callbackRedirect = pendingRedirectUri_.empty() ? redirectUri_ : pendingRedirectUri_;
     const std::string body = "grant_type=authorization_code"
                              "&code=" + urlEncode(code) +
                              "&code_verifier=" + urlEncode(pendingVerifier_) +
-                             "&redirect_uri=" + urlEncode(redirectUri_) +
+                             "&redirect_uri=" + urlEncode(callbackRedirect) +
                              "&client_id=" + urlEncode(publishableKey_);
 
     pendingState_.clear();
     pendingVerifier_.clear();
+    pendingRedirectUri_.clear();
 
     if (!exchange(body, error)) {
         return false;
@@ -320,6 +327,7 @@ void Tone3000Client::logout() {
     profile_ = Json::object();
     pendingState_.clear();
     pendingVerifier_.clear();
+    pendingRedirectUri_.clear();
     saveCredentials();
     // Downloaded / favorited lists belong to the signed-in user.
     removeFile(paths_.tone3000CacheFile());
@@ -557,15 +565,18 @@ bool Tone3000Client::downloadModel(const std::string& url,
                                    const std::string& expectedSha256,
                                    const Json& provenance) {
 #if defined(PIMFX_HAVE_CURL)
-    std::lock_guard<std::mutex> lock(mutex_);
-
     if (url.rfind("https://", 0) != 0) {
         error = "that download link is not an HTTPS URL";
         return false;
     }
 
-    if (!ensureAccessToken(error)) {
-        return false;
+    std::string accessToken;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ensureAccessToken(error)) {
+            return false;
+        }
+        accessToken = tokens_.accessToken;
     }
 
     std::string body;
@@ -580,7 +591,7 @@ bool Tone3000Client::downloadModel(const std::string& url,
         return request(url, "GET", std::string(), bearer, body, status, error, 300);
     };
 
-    if (!fetch(tokens_.accessToken)) {
+    if (!fetch(accessToken)) {
         return false;
     }
     if (status == 400 || status == 401 || status == 403) {
@@ -704,13 +715,6 @@ bool Tone3000Client::downloadModel(const std::string& url,
     // asset. This allows a later preset share to recover stable TONE3000 IDs
     // from the exact bytes without persisting temporary CDN URLs.
     const std::string digest = toHex(sha256(body));
-    Json registry = Json::object();
-    std::string registryText;
-    std::string registryError;
-    if (readFile(paths_.tone3000AssetsFile(), registryText)) {
-        Json parsed = Json::parse(registryText, &registryError);
-        if (registryError.empty() && parsed.isObject()) registry = parsed;
-    }
     Json asset = Json::object();
     asset.set("provider", "tone3000");
     asset.set("sha256", digest);
@@ -721,9 +725,21 @@ bool Tone3000Client::downloadModel(const std::string& url,
         const std::string value = provenance[key].asString();
         if (!value.empty()) asset.set(key, value);
     }
-    registry.set(digest, asset);
-    if (!writeFileAtomic(paths_.tone3000AssetsFile(), registry.dump(2))) {
-        logWarn("tone3000: could not save asset provenance");
+    {
+        // Parallel downloads may finish together. Serialize the shared
+        // provenance registry update without serializing the network work.
+        std::lock_guard<std::mutex> lock(mutex_);
+        Json registry = Json::object();
+        std::string registryText;
+        std::string registryError;
+        if (readFile(paths_.tone3000AssetsFile(), registryText)) {
+            Json parsed = Json::parse(registryText, &registryError);
+            if (registryError.empty() && parsed.isObject()) registry = parsed;
+        }
+        registry.set(digest, asset);
+        if (!writeFileAtomic(paths_.tone3000AssetsFile(), registry.dump(2))) {
+            logWarn("tone3000: could not save asset provenance");
+        }
     }
 
     logInfo("tone3000: saved " + storedPath + " (" + sniffedFileLabel(sniffed) + ")");

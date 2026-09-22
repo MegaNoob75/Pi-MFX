@@ -94,6 +94,7 @@ struct Bank {
     std::string id;
     std::string name = "Bank";
     int order = 0; ///< user-facing list order; lower values appear first
+    bool communityHolding = false; ///< staging only; excluded from performance use
     /// Last preset loaded in this bank, so returning to it restores that slot.
     std::string lastPresetId;
     std::vector<Preset> presets;

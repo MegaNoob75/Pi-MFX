@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { bool, obj, objects, str, type JsonObject } from "../json";
 
 type Tab = "catalog" | "share";
 type LocalPreset = { key: string; bankId: string; bankName: string; presetId: string; presetName: string };
+
+const effectName = (uri: string) => ({
+    "http://two-play.com/plugins/toob-nam": "TooB Neural Amp Modeler",
+    "http://two-play.com/plugins/toob-cab-ir": "TooB Cab IR"
+} as Record<string, string>)[uri] ?? uri;
 
 export function CommunityPresetsView({ engine, run }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
@@ -15,6 +20,7 @@ export function CommunityPresetsView({ engine, run }: {
     const [query, setQuery] = useState("");
     const [selectedId, setSelectedId] = useState("");
     const [selectedManifest, setSelectedManifest] = useState<JsonObject>({});
+    const [manifestLoadState, setManifestLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
     const [plan, setPlan] = useState<JsonObject | null>(null);
     const [installResult, setInstallResult] = useState<JsonObject | null>(null);
     const [busy, setBusy] = useState("");
@@ -23,6 +29,9 @@ export function CommunityPresetsView({ engine, run }: {
         name: "", author: str(obj(engine.state.ui).communityAuthor), description: "", tags: ""
     });
     const [manifest, setManifest] = useState<JsonObject | null>(null);
+    const [contextPreset, setContextPreset] = useState<JsonObject | null>(null);
+    const [confirmUninstall, setConfirmUninstall] = useState<JsonObject | null>(null);
+    const holdTimer = useRef<number | null>(null);
 
     const load = (refresh = true) => run(async () => {
         if (busy) return;
@@ -45,18 +54,23 @@ export function CommunityPresetsView({ engine, run }: {
             || [item.name, item.author, ...(Array.isArray(item.tags) ? item.tags : [])]
                 .some((value) => String(value).toLowerCase().includes(needle)));
     }, [catalog.presets, query]);
+    const installedIds = useMemo(() => new Set(objects(engine.state.banks).flatMap((bank) =>
+        objects(bank.presets).map((preset) => str(obj(preset.community).catalogId)).filter(Boolean)
+    )), [engine.state.banks]);
 
     useEffect(() => {
-        if (entries.length === 0) { setSelectedId(""); setSelectedManifest({}); return; }
+        if (entries.length === 0) { setSelectedId(""); setSelectedManifest({}); setManifestLoadState("idle"); return; }
         if (!entries.some((item) => str(item.id) === selectedId)) setSelectedId(str(entries[0].id));
     }, [entries, selectedId]);
 
     useEffect(() => {
-        if (!selectedId) return;
+        if (!selectedId) { setManifestLoadState("idle"); return; }
         let current = true;
+        setSelectedManifest({});
+        setManifestLoadState("loading");
         void engine.client.request("community/preset", { id: selectedId }).then((next) => {
-            if (current) setSelectedManifest(next);
-        }).catch(() => { if (current) setSelectedManifest({}); });
+            if (current) { setSelectedManifest(next); setManifestLoadState("ready"); }
+        }).catch(() => { if (current) { setSelectedManifest({}); setManifestLoadState("error"); } });
         return () => { current = false; };
     }, [selectedId, engine.client]);
 
@@ -141,11 +155,34 @@ export function CommunityPresetsView({ engine, run }: {
         downloadManifest(); window.open(submissionUrl, "_blank", "noopener,noreferrer");
     };
 
+    const clearHold = () => {
+        if (holdTimer.current !== null) window.clearTimeout(holdTimer.current);
+        holdTimer.current = null;
+    };
+    const uninstall = (item: JsonObject) => {
+        setConfirmUninstall(null); setContextPreset(null);
+        void run(async () => {
+            setBusy("Uninstalling community preset…");
+            try {
+                await engine.client.request("community/uninstall", { id: str(item.id) });
+                setInstallResult(null);
+            } finally { setBusy(""); }
+        });
+    };
+
     const dependencyRows = [
-        ...objects(obj(selectedManifest.dependencies).effects).map((item) => ({ label: str(item.uri), detail: "LV2 EFFECT" })),
+        ...objects(obj(selectedManifest.dependencies).effects).map((item) => ({
+            label: effectName(str(item.uri)), detail: "LV2 PLUGIN"
+        })),
         ...objects(obj(selectedManifest.dependencies).tone3000).map((item) => ({
             label: str(item.expectedFilename),
             detail: `${str(item.kind, "model").toUpperCase()} · TONE3000 ${str(item.modelId)}`
+        })),
+        ...objects(obj(selectedManifest.dependencies).irs).map((item) => ({
+            label: str(item.expectedFilename), detail: "CABINET IR"
+        })),
+        ...objects(obj(selectedManifest.dependencies).localAssets).map((item) => ({
+            label: str(item.expectedFilename), detail: `${str(item.kind, "asset").toUpperCase()} · MANUAL`
         }))
     ];
 
@@ -164,8 +201,15 @@ export function CommunityPresetsView({ engine, run }: {
                     <div className="community-list" data-mfx-nav-list>{entries.map((item) => {
                         const id = str(item.id);
                         return <button key={id} className={`community-list-row${selectedId === id ? " selected" : ""}`}
+                            onPointerDown={() => {
+                                clearHold();
+                                if (installedIds.has(id)) holdTimer.current = window.setTimeout(() => {
+                                    setSelectedId(id); setContextPreset(item); holdTimer.current = null;
+                                }, 600);
+                            }} onPointerUp={clearHold} onPointerCancel={clearHold} onPointerLeave={clearHold}
                             onClick={() => setSelectedId(id)} onDoubleClick={() => void reviewInstall(id)}>
-                            <strong>{str(item.name, id)}</strong><span>{str(item.author, "Unknown author")}</span>
+                            <strong>{str(item.name, id)}{installedIds.has(id) && <span className="community-installed" title="Installed">✓</span>}</strong>
+                            <span>{str(item.author, "Unknown author")}</span>
                         </button>;
                     })}</div>
                     <section className="community-detail">
@@ -173,7 +217,9 @@ export function CommunityPresetsView({ engine, run }: {
                         <p>{str(selectedEntry?.description, "No description provided.")}</p>
                         <div className="community-tags">{(Array.isArray(selectedEntry?.tags) ? selectedEntry.tags : []).map((tag) => <span key={String(tag)}>{String(tag)}</span>)}</div>
                         <div className="community-dependency-summary"><strong>REQUIREMENTS</strong>
-                            {dependencyRows.length === 0 && <span className="muted">No external NAM, IR or LV2 requirements.</span>}
+                            {manifestLoadState === "loading" && <span className="muted">Loading requirements…</span>}
+                            {manifestLoadState === "error" && <span className="danger">Requirements could not be loaded. Reopen the catalog to retry.</span>}
+                            {manifestLoadState === "ready" && dependencyRows.length === 0 && <span className="muted">No external NAM, IR or LV2 requirements.</span>}
                             {dependencyRows.map((item, index) => <div key={`${item.label}-${index}`}><span>{item.label}</span><small>{item.detail}</small></div>)}
                         </div>
                         <button className="btn btn-accent community-review" disabled={!selectedId || !!busy}
@@ -181,10 +227,17 @@ export function CommunityPresetsView({ engine, run }: {
                     </section>
                 </div>}
             {installResult && <div className={bool(installResult.incomplete) ? "notice danger" : "notice success"}>
-                {bool(installResult.incomplete) ? `Imported into a new incomplete bank. ${objects(installResult.unresolved).length} requirement(s) still need attention.` : "Installed into a new community bank without overwriting user data."}
+                {bool(installResult.incomplete) ? <>
+                    <strong>Imported into the Community staging bank. These requirements need attention:</strong>
+                    <div className="community-unresolved">{objects(installResult.unresolved).map((item, index) => <div key={`${str(item.id, str(item.uri))}-${index}`}>
+                        <span>{effectName(str(item.label, str(item.expectedFilename, str(item.uri, "Unknown requirement"))))}</span>
+                        <small>{str(item.reason, "This requirement is unavailable.")}</small>
+                    </div>)}</div>
+                </> : "Installed into the Community staging bank without overwriting user data."}
             </div>}
         </div> : <div className="community-share">
             <p className="muted">Choose one of your local presets. Community-installed presets are excluded. Manifests use MIT; referenced TONE3000 assets keep their own creator and license attribution.</p>
+            <div className="notice">PUBLISHING: Check &amp; Create → Submit for Review and attach the downloaded JSON → after validation, apply <strong>approved-for-pr</strong> → merge the generated pull request.</div>
             {localPresets.length === 0 ? <div className="empty-state"><strong>NO LOCAL PRESETS TO SHARE</strong></div> : <>
                 <div className="community-share-layout">
                     <div className="community-local-list" data-mfx-nav-list>{localPresets.map((item) => <button key={item.key}
@@ -202,21 +255,31 @@ export function CommunityPresetsView({ engine, run }: {
                 <div className="button-row">
                     <button className="btn btn-accent" disabled={!selectedLocal || !share.name.trim() || !share.author.trim() || !!busy} onClick={() => void generateManifest()}>CHECK &amp; CREATE</button>
                     <button className="btn" disabled={!manifest} onClick={downloadManifest}>DOWNLOAD JSON</button>
-                    <button className="btn" disabled={!manifest || !bool(status.submissionAvailable)} title={str(status.submissionMessage)} onClick={submitForReview}>SUBMIT FOR REVIEW</button>
+                    <button className="btn" disabled={!manifest || !bool(status.submissionAvailable)} title={str(status.submissionMessage)} onClick={submitForReview}>DOWNLOAD &amp; OPEN REVIEW</button>
                 </div>
             </>}
-            {manifest && <div className="notice success">Ready to submit. The catalog name and complete preset fingerprint are unique.</div>}
+            {manifest && <div className="notice success">Ready. The JSON will download and GitHub will open. Attach it, create the submission, apply approved-for-pr after validation, then merge the generated pull request to publish.</div>}
         </div>}
         {plan && <div className="dialog-backdrop"><div className="dialog community-plan" role="dialog" aria-modal="true" aria-label="Community preset installation plan">
             <h2>INSTALL {str(plan.name).toUpperCase()}</h2><p>{str(plan.author)} · MIT</p>
             <div className="community-requirements" data-mfx-nav-list>{objects(plan.requirements).map((item, index) => <div className="community-requirement" key={`${str(item.id)}-${index}`}>
                 <span>{str(item.label, str(item.id))}</span><strong>{str(item.status).toUpperCase()}</strong>
             </div>)}</div>
-            <p className="muted">Imports into a new bank. Existing banks and presets are never overwritten.</p>
+            <p className="muted">Imports into the Community staging bank. Move it to a normal bank before using it in Performance. Existing banks and presets are never overwritten.</p>
             {!bool(plan.complete) && <p className="danger">Unavailable requirements will be clearly marked incomplete; Pi-MFX will not substitute them.</p>}
             {!bool(plan.compatible, true) && <p className="danger">{str(plan.compatibilityError, "This preset is not compatible with this device.")}</p>}
             <div className="button-row"><button className="btn" onClick={() => { void engine.client.request("community/install/cancel"); setPlan(null); }}>CANCEL</button>
                 <button className="btn btn-accent" onClick={confirmInstall} disabled={!!busy || !str(plan.planToken)}>CONFIRM INSTALL</button></div>
+        </div></div>}
+        {contextPreset && <div className="dialog-backdrop" onClick={() => setContextPreset(null)}><div className="dialog" onClick={(event) => event.stopPropagation()}>
+            <h2>{str(contextPreset.name, "COMMUNITY PRESET").toUpperCase()}</h2>
+            <button className="btn btn-danger" onClick={() => { setConfirmUninstall(contextPreset); setContextPreset(null); }}>UNINSTALL</button>
+        </div></div>}
+        {confirmUninstall && <div className="dialog-backdrop"><div className="dialog" role="dialog" aria-modal="true" aria-label="Uninstall community preset">
+            <h2>UNINSTALL PRESET?</h2>
+            <p>Remove every local copy of “{str(confirmUninstall.name)}” and its unused NAM/IR files from the Community folders? The public catalog entry will remain.</p>
+            <div className="button-row"><button className="btn" onClick={() => setConfirmUninstall(null)}>CANCEL</button>
+                <button className="btn btn-danger" onClick={() => uninstall(confirmUninstall)}>UNINSTALL</button></div>
         </div></div>}
     </div>;
 }
