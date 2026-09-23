@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { dismissOnScreenKeyboard } from "../keyboard/ask";
 import { obj, str, objects, type JsonObject } from "../json";
@@ -11,6 +11,13 @@ type EditState = {
     title: string;
     value: string;
 } | null;
+
+type PresetDrag = {
+    presetId: string;
+    name: string;
+    x: number;
+    y: number;
+};
 
 export function BanksView({
     engine,
@@ -33,6 +40,9 @@ export function BanksView({
     const [saveContents, setSaveContents] = useState("");
     const [emptyBank, setEmptyBank] = useState<JsonObject | null>(null);
     const [toast, setToast] = useState("");
+    const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
+    const [dropBankId, setDropBankId] = useState("");
+    const suppressPresetClickRef = useRef(false);
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
@@ -154,6 +164,73 @@ export function BanksView({
         setEdit(null);
     };
 
+    const beginPresetDrag = (event: React.PointerEvent<HTMLElement>, preset: JsonObject, from: number) => {
+        if (busy || event.button !== 0) {
+            return;
+        }
+        event.preventDefault();
+        const pointerId = event.pointerId;
+        const originX = event.clientX;
+        const originY = event.clientY;
+        const presetDragId = str(preset.id);
+        const presetName = str(preset.name, "Preset");
+        const capture = event.currentTarget;
+        let dragging = false;
+        let targetBankId = "";
+        let targetPresetIndex = from;
+        capture.setPointerCapture(pointerId);
+
+        const move = (moveEvent: PointerEvent) => {
+            if (moveEvent.pointerId !== pointerId) {
+                return;
+            }
+            if (!dragging && Math.hypot(moveEvent.clientX - originX, moveEvent.clientY - originY) < 6) {
+                return;
+            }
+            dragging = true;
+            suppressPresetClickRef.current = true;
+            const over = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
+            const bankEl = over?.closest("[data-bank-id]") as HTMLElement | null;
+            const presetEl = over?.closest("[data-preset-index]") as HTMLElement | null;
+            targetBankId = bankEl?.dataset.bankId ?? (presetEl ? bankId : "");
+            targetPresetIndex = Number(presetEl?.dataset.presetIndex ?? from);
+            setDropBankId(targetBankId);
+            setPresetDrag({ presetId: presetDragId, name: presetName, x: moveEvent.clientX, y: moveEvent.clientY });
+        };
+        const finish = (finishEvent: PointerEvent) => {
+            if (finishEvent.pointerId !== pointerId) {
+                return;
+            }
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", finish);
+            window.removeEventListener("pointercancel", finish);
+            setPresetDrag(null);
+            setDropBankId("");
+            if (!dragging) {
+                setCursorPreset(presetDragId);
+                return;
+            }
+            window.setTimeout(() => { suppressPresetClickRef.current = false; }, 0);
+            if (targetBankId && targetBankId !== bankId) {
+                mutate(() => client.request("preset/move", {
+                    presetId: presetDragId,
+                    bankId: targetBankId,
+                    index: 0
+                }));
+                return;
+            }
+            if (targetBankId === bankId && Number.isInteger(targetPresetIndex) && targetPresetIndex !== from) {
+                mutate(() => client.request("preset/reorder", {
+                    presetId: presetDragId,
+                    index: targetPresetIndex
+                }));
+            }
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", finish);
+        window.addEventListener("pointercancel", finish);
+    };
+
     return (
         <div className="split-panes">
             <section className={`split-pane${focused === "banks" ? " is-nav-focused" : ""}`}
@@ -210,7 +287,7 @@ export function BanksView({
                             type="button"
                             data-bank-id={str(bank.id)}
                             data-mfx-nav-key={`bank:${str(bank.id)}`}
-                            className={`split-row${str(bank.id) === bankId || (focused === "banks" && str(bank.id) === bankId) ? " selected" : ""}`}
+                            className={`split-row${str(bank.id) === bankId || (focused === "banks" && str(bank.id) === bankId) ? " selected" : ""}${dropBankId === str(bank.id) ? " preset-drop-target" : ""}`}
                             onClick={() => selectBank(str(bank.id))}
                         >
                             <MarqueeText text={str(bank.name)} align="left" fontWeight={800} />
@@ -241,7 +318,13 @@ export function BanksView({
                             className={`split-row split-row-drag${str(preset.id) === selectedPresetId ? " selected" : ""}`}
                             data-preset-index={index}
                             data-mfx-nav-key={`preset:${str(preset.id)}`}
-                            onClick={() => setCursorPreset(str(preset.id))}
+                            data-preset-dragging={presetDrag?.presetId === str(preset.id) ? "true" : undefined}
+                            onPointerDown={(event) => beginPresetDrag(event, preset, index)}
+                            onClick={() => {
+                                if (!suppressPresetClickRef.current) {
+                                    setCursorPreset(str(preset.id));
+                                }
+                            }}
                             onDoubleClick={() => mutate(() => client.request("preset/select", {
                                 bankId,
                                 presetId: str(preset.id)
@@ -249,51 +332,7 @@ export function BanksView({
                         >
                             <span
                                 className="split-row-handle"
-                                onPointerDown={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    const startY = event.clientY;
-                                    const from = index;
-                                    const pointerId = event.pointerId;
-                                    (event.currentTarget as HTMLElement).setPointerCapture(pointerId);
-                                    const move = (moveEvent: PointerEvent) => {
-                                        if (moveEvent.pointerId !== pointerId) {
-                                            return;
-                                        }
-                                        const over = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
-                                        const bankEl = over?.closest("[data-bank-id]") as HTMLElement | null;
-                                        const presetEl = over?.closest("[data-preset-index]") as HTMLElement | null;
-                                        (event.currentTarget as HTMLElement).dataset.dropBank = bankEl?.dataset.bankId ?? "";
-                                        (event.currentTarget as HTMLElement).dataset.dropIndex = presetEl?.dataset.presetIndex ?? String(from);
-                                        void startY;
-                                    };
-                                    const up = (upEvent: PointerEvent) => {
-                                        if (upEvent.pointerId !== pointerId) {
-                                            return;
-                                        }
-                                        window.removeEventListener("pointermove", move);
-                                        window.removeEventListener("pointerup", up);
-                                        const handle = event.currentTarget as HTMLElement;
-                                        const dropBank = handle.dataset.dropBank ?? "";
-                                        const dropIndex = Number(handle.dataset.dropIndex);
-                                        if (dropBank && dropBank !== bankId) {
-                                            mutate(() => client.request("preset/move", {
-                                                presetId: str(preset.id),
-                                                bankId: dropBank,
-                                                index: 0
-                                            }));
-                                            return;
-                                        }
-                                        if (Number.isInteger(dropIndex) && dropIndex !== from) {
-                                            mutate(() => client.request("preset/reorder", {
-                                                presetId: str(preset.id),
-                                                index: dropIndex
-                                            }));
-                                        }
-                                    };
-                                    window.addEventListener("pointermove", move);
-                                    window.addEventListener("pointerup", up);
-                                }}
+                                aria-hidden="true"
                             >
                                 ☰
                             </span>
@@ -304,6 +343,17 @@ export function BanksView({
                     ))}
                 </div>
             </section>
+
+            {presetDrag && (
+                <div
+                    className="preset-drag-ghost"
+                    style={{ transform: `translate3d(${presetDrag.x + 14}px, ${presetDrag.y + 14}px, 0)` }}
+                    aria-hidden="true"
+                >
+                    <span className="split-row-handle">☰</span>
+                    <MarqueeText text={presetDrag.name} align="left" fontWeight={800} />
+                </div>
+            )}
 
             {edit && (
                 <div className="mfx-overlay" onClick={() => {

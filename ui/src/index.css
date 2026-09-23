@@ -2018,12 +2018,12 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     margin: 0 auto;
 }
 
-.toast-ok {
+.toast.toast-ok {
     top: calc(var(--mfx-header-height) + 8px);
     bottom: auto;
-    border-color: var(--mfx-cyan);
-    background: var(--mfx-cyan-surface);
-    color: var(--mfx-cyan-text);
+    border-color: var(--mfx-success, #6fdc8c);
+    background: #166534;
+    color: #ffffff;
 }
 
 .status-bar {
@@ -3344,6 +3344,8 @@ button.list-item {
     gap: 8px;
     min-width: 0;
     overflow: hidden;
+    cursor: grab;
+    touch-action: pan-y;
 }
 
 .split-row-handle {
@@ -3351,6 +3353,7 @@ button.list-item {
     color: var(--mfx-muted);
     cursor: grab;
     font-weight: 900;
+    touch-action: none;
 }
 
 .editor-picker-card {
@@ -4301,6 +4304,39 @@ button.list-item {
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
+}
+
+.split-row-drag[data-preset-dragging="true"] {
+    opacity: 0.38;
+}
+
+.split-row.preset-drop-target {
+    border-color: var(--mfx-cyan);
+    background: var(--mfx-cyan-surface);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--mfx-cyan) 45%, transparent),
+        0 0 18px color-mix(in srgb, var(--mfx-cyan) 30%, transparent);
+}
+
+.preset-drag-ghost {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: min(360px, 52vw);
+    min-height: 44px;
+    padding: 7px 10px;
+    overflow: hidden;
+    pointer-events: none;
+    border: 2px solid var(--mfx-cyan);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--mfx-panel-alt) 88%, transparent);
+    color: var(--mfx-text);
+    box-shadow: 0 10px 30px color-mix(in srgb, #000 55%, transparent),
+        0 0 18px color-mix(in srgb, var(--mfx-cyan) 35%, transparent);
+    opacity: 0.92;
 }
 
 .model-library-files > .panel {

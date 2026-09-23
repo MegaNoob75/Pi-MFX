@@ -9,6 +9,7 @@ const packageSource = fs.readFileSync(path.join(__dirname, '../../engine/src/com
 const css = fs.readFileSync(path.join(__dirname, '../src/index.css'), 'utf8');
 const engineSource = fs.readFileSync(path.join(__dirname, '../../engine/src/Engine.cpp'), 'utf8');
 const modelSource = fs.readFileSync(path.join(__dirname, '../../engine/src/model/Model.cpp'), 'utf8');
+const pluginStoreSource = fs.readFileSync(path.join(__dirname, '../../engine/src/library/PluginStore.cpp'), 'utf8');
 const performanceSource = fs.readFileSync(path.join(__dirname, '../src/views/PerformanceView.tsx'), 'utf8');
 
 assert.match(app, /communityCatalogFeatureEnabled/, 'the view must be engine-feature-gated');
@@ -49,6 +50,11 @@ assert.match(engineSource, /provenance\.set\("dependencies"/,
     'installed presets must retain their community dependency provenance');
 assert.match(engineSource, /removeDependencies\("tone3000"\)[\s\S]*removeDependencies\("irs"\)/,
     'preset deletion must clean unused community NAM and IR dependencies');
+assert.match(pluginStoreSource, /Community presets must use the current TooB build shipped by PiPedal/,
+    'TooB community dependencies must always come from the latest PiPedal release');
+assert.doesNotMatch(pluginStoreSource.slice(pluginStoreSource.indexOf('bool PluginStore::githubInstall')),
+    /resolveToobAmpArm64Deb|installed ToobAmp .* from ToobAmp dev/,
+    'the install path must not use the standalone ToobAmp repository');
 assert.match(view, /Object\.keys\(obj\(preset\.community\)\)\.length === 0/, 'community-installed presets must be excluded from sharing');
 assert.match(view, /bankId:[\s\S]*presetId:/, 'sharing must identify a selected preset from any bank');
 assert.match(view, /communityAuthor/, 'the author must be restored from Pi UI settings');
