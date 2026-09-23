@@ -36,6 +36,14 @@ assert.match(editor, /data-mfx-nav-list="file-property"/,
     'path properties must expose real list items to hardware encoder navigation');
 assert.match(editor, /MutationObserver\(syncEncoderHighlight\)/,
     'moving the hardware navigation cursor must audition the highlighted file');
+assert.match(editor, /highlightedRef\.current[\s\S]*entries\.findIndex/,
+    'rapid model-picker input must step from the latest highlight instead of stale render state');
+assert.match(editor, /wheelDelta\.current[\s\S]*lastWheelStepAt\.current < 50/,
+    'precision wheel bursts must be accumulated and rate-limited before changing models');
+assert.match(editor, /focus\(\{ preventScroll: true \}\)[\s\S]*behavior: "smooth"/,
+    'highlight focus must not fight the picker\'s smooth nearest-row scrolling');
+assert.match(editor, /onPointerMove=\{\(\) => previewPath\(entry\.path\)\}/,
+    'rows moving beneath a stationary pointer must not cause an extra model jump');
 assert.match(editor, /previewPath[\s\S]*persist: false/,
     'auditioning a NAM profile must change the live plugin without saving the preset');
 assert.match(editor, /commit[\s\S]*persist: true/,

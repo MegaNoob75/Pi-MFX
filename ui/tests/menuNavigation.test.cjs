@@ -73,6 +73,10 @@ assert.deepEqual(menuSwitch.shared.viewHistory, ['performance']);
 const settingsChild = runNavigation('settings', ['performance'], 'controller', false);
 assert.deepEqual(settingsChild.nextHistory, ['performance', 'settings'], 'child views must retain their parent path');
 
+const presetEditor = runNavigation('performance', [], 'edit', false);
+assert.equal(presetEditor.shared.editSubpage, 'chain', 'the shell must enter Preset Editor on the chain');
+assert.equal(presetEditor.shared.editorPage, 'chain', 'EditorView must not restore stale plugin controls');
+
 const compiledNestedBack = ts.transpileModule(`${nestedBackCallback.getText(source)}; return nestedSettingsBackPatch;`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 }
 }).outputText;

@@ -19,6 +19,18 @@ namespace {
 /// Priority for the thread that feeds the card. Plugin workers run below this
 /// so a slow convolution can never delay the next period.
 constexpr int kAudioThreadPriority = 80;
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "ALSA realtime status publication requires lock-free 64-bit atomics");
+
+uint64_t packFailure(AudioFailureCategory category, int errorCode) noexcept {
+    const uint64_t code = static_cast<uint32_t>(std::max(0, errorCode));
+    return (static_cast<uint64_t>(category) << 32) | code;
+}
+
+uint64_t packRealtimeStatus(int priority, int errorCode) noexcept {
+    const uint64_t code = static_cast<uint32_t>(std::max(0, errorCode));
+    return (static_cast<uint64_t>(static_cast<uint32_t>(priority)) << 32) | code;
+}
 
 /// Formats we try, best first. Float avoids conversion entirely; S32 keeps full
 /// resolution on every interface worth using; S16 is the last resort.
@@ -150,20 +162,34 @@ AlsaBackend::~AlsaBackend() {
     stop();
 }
 
-void AlsaBackend::setFailureHandler(std::function<void(const std::string&)> handler) {
-    std::lock_guard<std::mutex> lock(failureMutex_);
-    failureHandler_ = std::move(handler);
+bool AlsaBackend::takeFailure(AudioFailure& failure) {
+    const uint64_t packed = pendingFailure_.exchange(0, std::memory_order_acq_rel);
+    if (packed == 0) {
+        return false;
+    }
+    failure.category = static_cast<AudioFailureCategory>(packed >> 32);
+    failure.errorCode = static_cast<int>(packed & UINT64_C(0xffffffff));
+    return true;
 }
 
-void AlsaBackend::reportFailure(const std::string& message) {
-    std::function<void(const std::string&)> handler;
-    {
-        std::lock_guard<std::mutex> lock(failureMutex_);
-        handler = failureHandler_;
+bool AlsaBackend::takeRealtimeStatus(AudioRealtimeStatus& status) {
+    const uint64_t packed = pendingRealtimeStatus_.exchange(0, std::memory_order_acq_rel);
+    if (packed == 0) {
+        return false;
     }
-    logError("audio: " + message);
-    if (handler) {
-        handler(message);
+    status.priority = static_cast<int>(packed >> 32);
+    status.errorCode = static_cast<int>(packed & UINT64_C(0xffffffff));
+    return true;
+}
+
+void AlsaBackend::reportFailure(AudioFailureCategory category, int errorCode) noexcept {
+    const uint64_t packed = packFailure(category, errorCode < 0 ? -errorCode : errorCode);
+    uint64_t empty = 0;
+    if (!pendingFailure_.compare_exchange_strong(empty, packed,
+                                                  std::memory_order_release,
+                                                  std::memory_order_relaxed)) {
+        // A fatal error is already waiting for housekeeping. Preserve the
+        // first cause rather than replacing it with a secondary failure.
     }
 }
 
@@ -356,20 +382,19 @@ bool AlsaBackend::resyncAfterXrun(unsigned frames, unsigned periodCount) {
 
     int err = prepare(playback_.pcm);
     if (err < 0) {
-        reportFailure(std::string("cannot prepare playback after xrun: ") + snd_strerror(err));
+        reportFailure(AudioFailureCategory::PreparePlaybackAfterXrun, err);
         return false;
     }
     err = prepare(capture_.pcm);
     if (err < 0) {
-        reportFailure(std::string("cannot prepare capture after xrun: ") + snd_strerror(err));
+        reportFailure(AudioFailureCategory::PrepareCaptureAfterXrun, err);
         return false;
     }
 
     if (streamsLinked_) {
         err = snd_pcm_link(capture_.pcm, playback_.pcm);
         if (err < 0) {
-            reportFailure(std::string("cannot re-link capture and playback after xrun: ")
-                          + snd_strerror(err));
+            reportFailure(AudioFailureCategory::RelinkAfterXrun, err);
             streamsLinked_ = false;
             return false;
         }
@@ -379,7 +404,7 @@ bool AlsaBackend::resyncAfterXrun(unsigned frames, unsigned periodCount) {
 
     err = snd_pcm_start(capture_.pcm);
     if (err < 0 && err != -EBADFD) {
-        reportFailure(std::string("cannot restart capture after xrun: ") + snd_strerror(err));
+        reportFailure(AudioFailureCategory::RestartCaptureAfterXrun, err);
         return false;
     }
     return true;
@@ -453,6 +478,12 @@ bool AlsaBackend::start(const AudioSettings& settings,
         std::lock_guard<std::mutex> lock(settingsMutex_);
         actual_ = resolved;
     }
+
+    runPeriodFrames_ = resolved.periodFrames;
+    runPeriodCount_ = resolved.periodCount;
+    runSampleRate_ = resolved.sampleRate;
+    pendingFailure_.store(0, std::memory_order_relaxed);
+    pendingRealtimeStatus_.store(0, std::memory_order_relaxed);
 
     if (metrics_) {
         metrics_->reset();
@@ -541,31 +572,23 @@ void AlsaBackend::interleave(Stream& stream, unsigned frames) {
 void AlsaBackend::run() {
     rt::disableDenormals();
 
-    std::string message;
-    if (rt::setThreadRealtime(fifoPriority_, message)) {
-        logInfo("audio thread: " + message);
-    } else {
-        logWarn("audio thread: " + message + " (expect dropouts under load)");
-    }
+    const int realtimeError = rt::setThreadRealtime(fifoPriority_);
+    pendingRealtimeStatus_.store(packRealtimeStatus(fifoPriority_, realtimeError),
+                                 std::memory_order_release);
 
-    AudioSettings settings;
-    {
-        std::lock_guard<std::mutex> lock(settingsMutex_);
-        settings = actual_;
-    }
-
-    const unsigned frames = settings.periodFrames;
-    const double periodSeconds = static_cast<double>(frames) / settings.sampleRate;
+    const unsigned frames = runPeriodFrames_;
+    const unsigned periodCount = runPeriodCount_;
+    const double periodSeconds = static_cast<double>(frames) / runSampleRate_;
 
     // Queue periodCount-1 silent periods before the first real write. USB
     // needs that slack; one period was not enough and xran at settings that
     // were previously stable. startImmediately only changes the start
     // threshold, not how much is queued.
-    writeSilence(frames, settings.periodCount);
+    writeSilence(frames, periodCount);
 
     int result = snd_pcm_start(capture_.pcm);
     if (result < 0 && result != -EBADFD) {
-        reportFailure(std::string("cannot start capture: ") + snd_strerror(result));
+        reportFailure(AudioFailureCategory::StartCapture, result);
         running_.store(false, std::memory_order_release);
         return;
     }
@@ -586,7 +609,7 @@ void AlsaBackend::run() {
             if (metrics_) {
                 metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
             }
-            if (!resyncAfterXrun(frames, settings.periodCount)) {
+            if (!resyncAfterXrun(frames, periodCount)) {
                 break;
             }
             continue;
@@ -621,7 +644,7 @@ void AlsaBackend::run() {
             if (metrics_) {
                 metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
             }
-            if (!resyncAfterXrun(frames, settings.periodCount)) {
+            if (!resyncAfterXrun(frames, periodCount)) {
                 break;
             }
             continue;

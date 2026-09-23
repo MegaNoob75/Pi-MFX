@@ -31,13 +31,17 @@ public:
 
     AudioSettings actualSettings() const override;
     std::vector<AudioDeviceInfo> enumerateDevices() override;
-    void setFailureHandler(std::function<void(const std::string&)> handler) override;
+    bool takeFailure(AudioFailure& failure) override;
+    bool takeRealtimeStatus(AudioRealtimeStatus& status) override;
 
 private:
     void run();
 
     AudioSettings settings_;
     mutable std::mutex settingsMutex_;
+    unsigned runPeriodFrames_ = 0;
+    unsigned runPeriodCount_ = 0;
+    unsigned runSampleRate_ = 0;
 
     AudioProcessor* processor_ = nullptr;
     AudioMetrics* metrics_ = nullptr;
@@ -50,7 +54,6 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopRequested_{false};
-    std::function<void(const std::string&)> failureHandler_;
 };
 
 } // namespace pimfx

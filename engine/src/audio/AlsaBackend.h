@@ -35,7 +35,8 @@ public:
 
     std::vector<AudioDeviceInfo> enumerateDevices() override;
 
-    void setFailureHandler(std::function<void(const std::string&)> handler) override;
+    bool takeFailure(AudioFailure& failure) override;
+    bool takeRealtimeStatus(AudioRealtimeStatus& status) override;
     void configureRealtime(int fifoPriority) override;
 
 private:
@@ -56,7 +57,7 @@ private:
 
     void closeStream(Stream& stream);
     void run();
-    void reportFailure(const std::string& message);
+    void reportFailure(AudioFailureCategory category, int errorCode) noexcept;
     void writeSilence(unsigned frames, unsigned periodCount);
     bool resyncAfterXrun(unsigned frames, unsigned periodCount);
 
@@ -71,6 +72,9 @@ private:
     Stream playback_;
     bool streamsLinked_ = false;
     int fifoPriority_ = 80;
+    unsigned runPeriodFrames_ = 0;
+    unsigned runPeriodCount_ = 0;
+    unsigned runSampleRate_ = 0;
 
     AudioProcessor* processor_ = nullptr;
     AudioMetrics* metrics_ = nullptr;
@@ -84,8 +88,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stopRequested_{false};
 
-    std::function<void(const std::string&)> failureHandler_;
-    std::mutex failureMutex_;
+    std::atomic<uint64_t> pendingFailure_{0};
+    std::atomic<uint64_t> pendingRealtimeStatus_{0};
 };
 
 } // namespace pimfx

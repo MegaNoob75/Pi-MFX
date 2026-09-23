@@ -379,7 +379,10 @@ export function App() {
             view: next,
             menuOpen: false,
             viewHistory: nextHistory,
-            ...(next === "edit" ? { editSubpage: "chain" } : {})
+            // Reset both copies of editor navigation together. EditorView
+            // restores editorPage from the shared session, while the shell
+            // uses editSubpage to decide whether Back is nested or global.
+            ...(next === "edit" ? { editSubpage: "chain", editorPage: "chain" } : {})
         });
     };
 

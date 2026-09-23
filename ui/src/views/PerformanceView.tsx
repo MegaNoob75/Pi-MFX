@@ -1862,7 +1862,10 @@ function LiveAudioWidget({
         <strong className="marquee">{str(engine.state.audioInterface, str(actual.device, str(requested.device, "NO INTERFACE")))}</strong>
         <span>{num(actual.sampleRate, num(requested.sampleRate, 48000))} Hz · {num(actual.periodFrames, num(requested.periodFrames, 0))} × {num(actual.periodCount, num(requested.periodCount, 0))}</span>
         <span>REQUESTED {num(meters.bufferMs, num(requested.bufferMs)).toFixed(2)} ms</span>
-        <span>MEASURED {num(meters.roundTripMs).toFixed(2)} ms</span>
+        <span>
+            MEASURED {num(meters.roundTripMs).toFixed(2)} ms
+            {num(meters.safetyLookaheadMs) > 0 ? ` · LIMITER ${num(meters.safetyLookaheadMs).toFixed(2)} ms` : ""}
+        </span>
     </div>;
 }
 

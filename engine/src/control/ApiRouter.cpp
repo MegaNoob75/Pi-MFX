@@ -345,6 +345,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- settings ---------------------------------------------------------
+    if (command == "audio/preview") {
+        engine_.previewAudioSettings(payload);
+        return Json::object();
+    }
     if (command == "audio/settings") {
         ok = engine_.applyAudioSettings(payload, error);
         return engine_.fullState();

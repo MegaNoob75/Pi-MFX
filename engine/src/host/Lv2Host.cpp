@@ -5,6 +5,7 @@
 #include "core/SpscQueue.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -204,6 +205,9 @@ public:
     explicit ByteRing(size_t capacity) : buffer_(capacity) {}
 
     bool write(const void* data, uint32_t size) {
+        if (size > buffer_.size() - sizeof(uint32_t)) {
+            return false;
+        }
         const size_t needed = sizeof(uint32_t) + size;
         if (available() < needed) {
             return false;
@@ -227,6 +231,15 @@ public:
         readRaw(cursor, out.data(), size);
         read_.store(cursor, std::memory_order_release);
         return true;
+    }
+
+    size_t maximumMessageSize() const {
+        return buffer_.size() - sizeof(uint32_t) - 1;
+    }
+
+    bool empty() const {
+        return read_.load(std::memory_order_acquire)
+            == write_.load(std::memory_order_acquire);
     }
 
 private:
@@ -651,6 +664,12 @@ bool Lv2Catalog::rescan(std::string& error) {
 }
 
 struct PluginInstance::Impl {
+    static constexpr size_t kWorkerRequestBufferSize = 64 * 1024;
+    // Responses are normally small pointer-bearing records, but extra queue
+    // headroom preserves event boundaries during rapid model changes.
+    static constexpr size_t kWorkerResponseBufferSize = 256 * 1024;
+    static constexpr size_t kPendingPropertyCapacity = 32;
+
     Lv2Catalog* catalog = nullptr;
     const LilvPlugin* plugin = nullptr;
     LilvInstance* instance = nullptr;
@@ -680,19 +699,30 @@ struct PluginInstance::Impl {
     LV2_Atom_Forge forge{};
 
     SpscQueue<PropertyMessage> propertyQueue{32};
+    std::atomic<bool> propertyChangesHeld{false};
+    // Audio-thread-owned staging. Repeated changes to the same property are
+    // coalesced here while a worker transaction is active, so a NAM plugin
+    // never has multiple model load/swap/free cycles in flight at once.
+    std::array<PropertyMessage, kPendingPropertyCapacity> pendingProperties{};
+    size_t pendingPropertyCount = 0;
+    bool propertyWorkerTransitionActive = false; // audio thread only
     SpscQueue<MidiMessage> midiQueue{256};
     std::vector<std::pair<std::string, std::string>> propertyValues;
     mutable std::mutex propertyMutex;
 
     // Worker extension.
     const LV2_Worker_Interface* workerInterface = nullptr;
-    ByteRing workRequests{64 * 1024};
-    ByteRing workResponses{64 * 1024};
+    ByteRing workRequests{kWorkerRequestBufferSize};
+    ByteRing workResponses{kWorkerResponseBufferSize};
+    // Reserved before activation. std::vector storage has the same fundamental
+    // alignment as the previously working implementation, and resize remains
+    // allocation-free because no ring message can exceed the reservation.
     std::vector<uint8_t> workerScratch;
     std::thread workerThread;
     std::mutex workerMutex;
     std::condition_variable workerSignal;
     std::atomic<bool> workerRunning{false};
+    std::atomic<bool> workerBusy{false};
 
     LV2_URID_Map uridMap{};
     LV2_URID_Unmap uridUnmap{};
@@ -762,7 +792,6 @@ struct PluginInstance::Impl {
         if (!impl->workRequests.write(data, size)) {
             return LV2_WORKER_ERR_NO_SPACE;
         }
-        impl->workerSignal.notify_one();
         return LV2_WORKER_SUCCESS;
     }
 
@@ -770,9 +799,16 @@ struct PluginInstance::Impl {
                                      uint32_t size,
                                      const void* data) {
         Impl* impl = static_cast<Impl*>(handle);
-        return impl->workResponses.write(data, size)
-            ? LV2_WORKER_SUCCESS
-            : LV2_WORKER_ERR_NO_SPACE;
+        if (size > impl->workResponses.maximumMessageSize()) {
+            logWarn("lv2 worker: response exceeds preallocated queue capacity ("
+                    + std::to_string(size) + " bytes)");
+            return LV2_WORKER_ERR_NO_SPACE;
+        }
+        if (!impl->workResponses.write(data, size)) {
+            logWarn("lv2 worker: response queue is full; response was rejected");
+            return LV2_WORKER_ERR_NO_SPACE;
+        }
+        return LV2_WORKER_SUCCESS;
     }
 
     void runCycle(const float* const* inputs, unsigned inputCount,
@@ -787,12 +823,7 @@ LV2_URID uridMapCallback(LV2_URID_Map_Handle handle, const char* uri) {
 }
 
 const char* uridUnmapCallback(LV2_URID_Unmap_Handle handle, LV2_URID urid) {
-    // The plugin only borrows this string for the duration of the call, but a
-    // few hold it longer, so it is cached per instance rather than returned
-    // from a temporary.
-    static thread_local std::string cached;
-    cached = static_cast<UridMap*>(handle)->unmap(urid);
-    return cached.c_str();
+    return static_cast<UridMap*>(handle)->unmap(urid);
 }
 
 } // namespace
@@ -978,10 +1009,10 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     // do it on the worker thread so the audio thread never waits on a file.
     if (const void* extension = lilv_instance_get_extension_data(impl.instance, LV2_WORKER__interface)) {
         impl.workerInterface = static_cast<const LV2_Worker_Interface*>(extension);
+        impl.workerScratch.reserve(impl.workResponses.maximumMessageSize());
         impl.workerRunning.store(true);
         Impl* raw = &impl;
         impl.workerThread = std::thread([raw]() {
-            std::string message;
             // Below the audio thread on purpose: a long load must never delay
             // the next period.
             std::vector<uint8_t> request;
@@ -990,6 +1021,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                     std::unique_lock<std::mutex> lock(raw->workerMutex);
                     raw->workerSignal.wait_for(lock, std::chrono::milliseconds(20));
                 }
+                raw->workerBusy.store(true, std::memory_order_release);
                 while (raw->workRequests.read(request)) {
                     raw->workerInterface->work(lilv_instance_get_handle(raw->instance),
                                                Impl::respond,
@@ -997,9 +1029,10 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                                                static_cast<uint32_t>(request.size()),
                                                request.data());
                 }
+                raw->workerBusy.store(false, std::memory_order_release);
             }
+            raw->workerBusy.store(false, std::memory_order_release);
         });
-        impl.workerScratch.reserve(65536);
     }
 
     lilv_instance_activate(impl.instance);
@@ -1091,6 +1124,22 @@ std::string PluginInstance::property(const std::string& propertyUri) const {
     return std::string();
 }
 
+void PluginInstance::holdPropertyChanges() {
+    impl_->propertyChangesHeld.store(true, std::memory_order_release);
+}
+
+void PluginInstance::releasePropertyChanges() {
+    impl_->propertyChangesHeld.store(false, std::memory_order_release);
+}
+
+bool PluginInstance::propertyTransitionPending() const {
+    const Impl& impl = *impl_;
+    return impl.propertyChangesHeld.load(std::memory_order_acquire)
+        || !impl.propertyQueue.empty()
+        || impl.pendingPropertyCount != 0
+        || impl.propertyWorkerTransitionActive;
+}
+
 void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
                                     float* const* outputs, unsigned outputCount,
                                     unsigned frames, const TransportBlock* transport) {
@@ -1140,8 +1189,38 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
             lv2_atom_forge_write(&forge, midi.data, midi.size);
         }
 
-        PropertyMessage property;
-        while (propertyQueue.pop(property)) {
+        PropertyMessage property{};
+        while (!propertyChangesHeld.load(std::memory_order_acquire)
+               && propertyQueue.pop(property)) {
+            propertyWorkerTransitionActive = true;
+            size_t pending = 0;
+            for (; pending < pendingPropertyCount; ++pending) {
+                if (pendingProperties[pending].propertyUrid == property.propertyUrid) {
+                    pendingProperties[pending] = property;
+                    break;
+                }
+            }
+            if (pending == pendingPropertyCount) {
+                if (pendingPropertyCount < pendingProperties.size()) {
+                    pendingProperties[pendingPropertyCount++] = property;
+                } else {
+                    // The producer queue has the same bounded capacity. This
+                    // only affects a plugin exposing more than 32 distinct
+                    // path properties changed during one worker transaction;
+                    // retain the newest value without allocating or blocking.
+                    pendingProperties.back() = property;
+                }
+            }
+        }
+
+        const bool workerPipelineIdle = !workerInterface
+            || (!workerBusy.load(std::memory_order_acquire)
+                && workRequests.empty()
+                && workResponses.empty());
+        if (pendingPropertyCount > 0 && workerPipelineIdle) {
+            property = pendingProperties[0];
+            pendingProperties[0] = pendingProperties[--pendingPropertyCount];
+
             LV2_Atom_Forge_Frame objectFrame;
             lv2_atom_forge_frame_time(&forge, 0);
             lv2_atom_forge_object(&forge, &objectFrame, 0, urids.patchSet);
@@ -1165,16 +1244,29 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
     lilv_instance_run(instance, frames);
 
     if (workerInterface) {
-        while (workResponses.read(workerScratch)) {
+        // Bound response handling to one transaction per block. In
+        // particular, NAM's response swaps the active model and schedules the
+        // previous model for destruction; draining a burst here can overlap
+        // those lifetimes even though the callback itself never xruns.
+        if (workResponses.read(workerScratch)) {
             if (workerInterface->work_response) {
                 workerInterface->work_response(lilv_instance_get_handle(instance),
                                                static_cast<uint32_t>(workerScratch.size()),
-                                               workerScratch.data());
+                                               workerScratch.empty() ? nullptr : workerScratch.data());
             }
         }
         if (workerInterface->end_run) {
             workerInterface->end_run(lilv_instance_get_handle(instance));
         }
+    }
+
+    if (propertyWorkerTransitionActive
+        && propertyQueue.empty()
+        && pendingPropertyCount == 0
+        && !workerBusy.load(std::memory_order_acquire)
+        && workRequests.empty()
+        && workResponses.empty()) {
+        propertyWorkerTransitionActive = false;
     }
 }
 
@@ -1299,6 +1391,9 @@ bool PluginInstance::setProperty(const std::string&, const std::string&, std::st
     return false;
 }
 std::string PluginInstance::property(const std::string&) const { return std::string(); }
+void PluginInstance::holdPropertyChanges() {}
+void PluginInstance::releasePropertyChanges() {}
+bool PluginInstance::propertyTransitionPending() const { return false; }
 void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned,
                              const TransportBlock*) {}
 Json PluginInstance::saveState() const { return Json::object(); }

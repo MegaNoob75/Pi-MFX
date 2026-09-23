@@ -427,6 +427,9 @@ function AudioSettings({
     const [devices, setDevices] = useState<JsonObject[]>([]);
     const [draft, setDraft] = useState(audio);
     const [deviceError, setDeviceError] = useState("");
+    const livePreviewFrame = useRef<number | null>(null);
+    const pendingLivePreview = useRef<JsonObject | null>(null);
+    const livePreviewQueue = useRef<Promise<unknown>>(Promise.resolve());
 
     useEffect(() => {
         const sharedDraft = obj(obj(engine.uiSession.settings).audioDraft);
@@ -460,6 +463,65 @@ function AudioSettings({
             updateUiSessionSection(client, "settings", { audioDraft: next });
             return next;
         });
+    };
+
+    useEffect(() => () => {
+        if (livePreviewFrame.current !== null) {
+            window.cancelAnimationFrame(livePreviewFrame.current);
+        }
+    }, []);
+
+    const liveValue = (key: string, value: number) => {
+        if (!Number.isFinite(value)) return num(draft[key]);
+        if (key === "inputGainDb") return Math.max(-60, Math.min(24, value));
+        if (key === "outputGainDb") return Math.max(-60, Math.min(12, value));
+        return value;
+    };
+
+    const queueLiveRequest = (command: string, patch: JsonObject) => {
+        const request = livePreviewQueue.current
+            .catch(() => undefined)
+            .then(() => client.request(command, patch));
+        livePreviewQueue.current = request;
+        return request;
+    };
+
+    const previewLive = (key: string, value: number) => {
+        const next = liveValue(key, value);
+        set(key, next);
+        pendingLivePreview.current = { [key]: next };
+        if (livePreviewFrame.current !== null) return;
+        livePreviewFrame.current = window.requestAnimationFrame(() => {
+            livePreviewFrame.current = null;
+            const patch = pendingLivePreview.current;
+            pendingLivePreview.current = null;
+            if (!patch) return;
+            void queueLiveRequest("audio/preview", patch).catch(() => undefined);
+        });
+    };
+
+    const commitLive = (key: string, value: number) => {
+        const next = liveValue(key, value);
+        if (livePreviewFrame.current !== null) {
+            window.cancelAnimationFrame(livePreviewFrame.current);
+            livePreviewFrame.current = null;
+        }
+        pendingLivePreview.current = null;
+        void run(() => queueLiveRequest("audio/settings", { [key]: next }));
+    };
+
+    const setLiveToggle = (key: string, value: boolean) => {
+        set(key, value);
+        void run(() => queueLiveRequest("audio/settings", { [key]: value }));
+    };
+
+    const applyDraft = () => {
+        if (livePreviewFrame.current !== null) {
+            window.cancelAnimationFrame(livePreviewFrame.current);
+            livePreviewFrame.current = null;
+        }
+        pendingLivePreview.current = null;
+        void run(() => queueLiveRequest("audio/settings", { ...draft, guitarInput }));
     };
 
     return (
@@ -522,21 +584,111 @@ function AudioSettings({
                 <div className="muted">
                     Guitar is mono and copied to both headphone channels. On a Scarlett Solo the instrument jack is Input 2.
                 </div>
-                <div className="row">
+                <label className="field">
+                    <span>Input gain · {num(draft.inputGainDb).toFixed(1)} dB</span>
+                    <div className="audio-live-control">
+                        <input type="range" min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
+                            onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))} />
+                        <input className="audio-live-number" aria-label="Input gain in decibels" type="number"
+                            min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
+                            onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
+                            onBlur={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+                    </div>
+                </label>
+                <label className="field">
+                    <span>Output gain · {num(draft.outputGainDb).toFixed(1)} dB</span>
+                    <div className="audio-live-control">
+                        <input type="range" min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
+                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))} />
+                        <input className="audio-live-number" aria-label="Output gain in decibels" type="number"
+                            min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
+                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
+                            onBlur={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+                    </div>
+                </label>
+                <div className="panel stack">
+                    <h2>OUTPUT SAFETY</h2>
+                    <div className="row">
+                        <button type="button" className={`btn ${bool(draft.muteOnChange, true) ? "btn-active" : ""}`}
+                            onClick={() => setLiveToggle("muteOnChange", !bool(draft.muteOnChange, true))}>
+                            PATCH MUTE
+                        </button>
+                        <button type="button" className={`btn ${bool(draft.dcBlockerEnabled, true) ? "btn-active" : ""}`}
+                            onClick={() => setLiveToggle("dcBlockerEnabled", !bool(draft.dcBlockerEnabled, true))}>
+                            DC BLOCKER
+                        </button>
+                        <button type="button" className={`btn ${bool(draft.limiterEnabled, true) ? "btn-active" : ""}`}
+                            onClick={() => setLiveToggle("limiterEnabled", !bool(draft.limiterEnabled, true))}>
+                            SAFETY LIMITER
+                        </button>
+                    </div>
                     <label className="field">
-                        <span>Input gain (dB)</span>
-                        <input type="number" value={num(draft.inputGainDb)} onChange={(event) => set("inputGainDb", Number(event.target.value))} />
+                        <span>Patch fade out · {num(draft.patchFadeOutMs, 5).toFixed(1)} ms</span>
+                        <input type="range" min={1} max={20} step={0.5} value={num(draft.patchFadeOutMs, 5)}
+                            onChange={(event) => previewLive("patchFadeOutMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))} />
                     </label>
                     <label className="field">
-                        <span>Output gain (dB)</span>
-                        <input type="number" value={num(draft.outputGainDb)} onChange={(event) => set("outputGainDb", Number(event.target.value))} />
+                        <span>Patch fade in · {num(draft.patchFadeInMs, 8).toFixed(1)} ms</span>
+                        <input type="range" min={1} max={30} step={0.5} value={num(draft.patchFadeInMs, 8)}
+                            onChange={(event) => previewLive("patchFadeInMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))} />
                     </label>
+                    <label className="field">
+                        <span>Limiter ceiling · {num(draft.limiterCeilingDb, -1).toFixed(1)} dBFS</span>
+                        <input type="range" min={-12} max={-0.1} step={0.1} value={num(draft.limiterCeilingDb, -1)}
+                            onChange={(event) => previewLive("limiterCeilingDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))} />
+                    </label>
+                    <label className="field">
+                        <span>Look-ahead · {num(draft.limiterLookaheadMs, 0.75).toFixed(2)} ms</span>
+                        <input type="range" min={0} max={2} step={0.05} value={num(draft.limiterLookaheadMs, 0.75)}
+                            onChange={(event) => previewLive("limiterLookaheadMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))} />
+                    </label>
+                    <label className="field">
+                        <span>Limiter release · {num(draft.limiterReleaseMs, 80).toFixed(0)} ms</span>
+                        <input type="range" min={20} max={500} step={5} value={num(draft.limiterReleaseMs, 80)}
+                            onChange={(event) => previewLive("limiterReleaseMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))} />
+                    </label>
+                    <label className="field">
+                        <span>DC blocker · {num(draft.dcBlockerHz, 7).toFixed(1)} Hz</span>
+                        <input type="range" min={2} max={20} step={0.5} value={num(draft.dcBlockerHz, 7)}
+                            onChange={(event) => previewLive("dcBlockerHz", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))} />
+                    </label>
+                    <div className="muted">
+                        Look-ahead adds the selected amount of output latency. Patch muting keeps model and preset changes silent while their DSP state settles.
+                    </div>
                 </div>
                 <div className="muted">
-                    Requested buffer {formatMs(num(draft.bufferMs))} · measured {formatMs(num(meters.roundTripMs))} · {num(meters.xruns)} xruns
+                    Requested buffer {formatMs(num(draft.bufferMs))} · measured {formatMs(num(meters.roundTripMs))}
+                    {num(meters.safetyLookaheadMs) > 0 ? ` (includes ${formatMs(num(meters.safetyLookaheadMs))} limiter)` : ""}
+                    {` · ${num(meters.xruns)} xruns`}
                 </div>
                 <div className="row">
-                    <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("audio/settings", { ...draft, guitarInput }))}>
+                    <button type="button" className="btn btn-accent" onClick={applyDraft}>
                         APPLY
                     </button>
                     <button type="button" className="btn" onClick={() => refreshDevices()}>

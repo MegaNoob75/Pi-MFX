@@ -167,6 +167,13 @@ public:
     bool setProperty(const std::string& propertyUri, const std::string& value, std::string& error);
     std::string property(const std::string& propertyUri) const;
 
+    /// Coordinates click-free property changes with the engine master mute.
+    /// Holding is control-thread safe; release/query are audio-thread safe and
+    /// only touch atomics or audio-owned bounded queues.
+    void holdPropertyChanges();
+    void releasePropertyChanges();
+    bool propertyTransitionPending() const;
+
     /// Queues a MIDI event for the next `run()`. Audio-thread safe.
     void pushMidi(const uint8_t* data, uint32_t size, uint32_t frameOffset);
 

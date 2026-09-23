@@ -2,12 +2,31 @@
 
 #include "audio/AudioTypes.h"
 
-#include <functional>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace pimfx {
+
+enum class AudioFailureCategory : uint32_t {
+    None = 0,
+    StartCapture,
+    PreparePlaybackAfterXrun,
+    PrepareCaptureAfterXrun,
+    RelinkAfterXrun,
+    RestartCaptureAfterXrun,
+};
+
+struct AudioFailure {
+    AudioFailureCategory category = AudioFailureCategory::None;
+    int errorCode = 0;
+};
+
+struct AudioRealtimeStatus {
+    int priority = 0;
+    int errorCode = 0;
+};
 
 /// Called once per period on the realtime thread.
 ///
@@ -61,9 +80,13 @@ public:
     /// Enumerates devices with their real capabilities.
     virtual std::vector<AudioDeviceInfo> enumerateDevices() = 0;
 
-    /// Reported when the stream dies on its own, for example when a USB
-    /// interface is unplugged mid-set. Invoked on a non-realtime thread.
-    virtual void setFailureHandler(std::function<void(const std::string&)> handler) = 0;
+    /// Consumed by the engine's housekeeping thread. The realtime thread only
+    /// publishes fixed-size numeric records and never formats or logs them.
+    virtual bool takeFailure(AudioFailure& failure) = 0;
+
+    /// Reports whether the audio thread acquired its requested scheduling
+    /// priority. Text formatting and logging belong to the consumer.
+    virtual bool takeRealtimeStatus(AudioRealtimeStatus& status) = 0;
 
     /// Applied the next time the realtime thread starts.
     virtual void configureRealtime(int fifoPriority) {

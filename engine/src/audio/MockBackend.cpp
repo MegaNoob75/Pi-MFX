@@ -13,9 +13,9 @@ MockBackend::~MockBackend() {
     stop();
 }
 
-void MockBackend::setFailureHandler(std::function<void(const std::string&)> handler) {
-    failureHandler_ = std::move(handler);
-}
+bool MockBackend::takeFailure(AudioFailure&) { return false; }
+
+bool MockBackend::takeRealtimeStatus(AudioRealtimeStatus&) { return false; }
 
 AudioSettings MockBackend::actualSettings() const {
     std::lock_guard<std::mutex> lock(settingsMutex_);
@@ -34,6 +34,10 @@ bool MockBackend::start(const AudioSettings& settings,
         settings_ = settings;
         settings_.useMmap = false;
     }
+
+    runPeriodFrames_ = std::max(1u, settings.periodFrames);
+    runPeriodCount_ = settings.periodCount;
+    runSampleRate_ = std::max(1u, settings.sampleRate);
 
     processor_ = processor;
     metrics_ = metrics;
@@ -86,20 +90,14 @@ void MockBackend::stop() {
 void MockBackend::run() {
     rt::disableDenormals();
 
-    AudioSettings settings;
-    {
-        std::lock_guard<std::mutex> lock(settingsMutex_);
-        settings = settings_;
-    }
-
-    const unsigned frames = std::max(1u, settings.periodFrames);
+    const unsigned frames = runPeriodFrames_;
     const auto period = std::chrono::duration<double>(
-        static_cast<double>(frames) / std::max(1u, settings.sampleRate));
+        static_cast<double>(frames) / runSampleRate_);
     auto next = std::chrono::steady_clock::now();
 
     if (metrics_) {
         metrics_->running.store(true, std::memory_order_relaxed);
-        metrics_->roundTripFrames.store(frames * settings.periodCount, std::memory_order_relaxed);
+        metrics_->roundTripFrames.store(frames * runPeriodCount_, std::memory_order_relaxed);
     }
 
     float loadAverage = 0.0f;

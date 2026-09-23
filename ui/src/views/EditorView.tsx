@@ -931,18 +931,23 @@ function PathPropertyPicker({
 }) {
     const [open, setOpen] = useState(false);
     const [highlighted, setHighlighted] = useState(current);
+    const highlightedRef = useRef(current);
     const lastSent = useRef(current);
     const original = useRef(current);
     const listRef = useRef<HTMLDivElement | null>(null);
+    const wheelDelta = useRef(0);
+    const lastWheelStepAt = useRef(Number.NEGATIVE_INFINITY);
 
     useEffect(() => {
         lastSent.current = current;
         if (!open) {
+            highlightedRef.current = current;
             setHighlighted(current);
         }
     }, [current, open]);
 
     const previewPath = (path: string) => {
+        highlightedRef.current = path;
         setHighlighted(path);
         if (path === lastSent.current) {
             return;
@@ -961,14 +966,34 @@ function PathPropertyPicker({
         name: str(file.name)
     }))];
     const step = (direction: number) => {
-        const index = Math.max(0, entries.findIndex((entry) => entry.path === highlighted));
+        const index = Math.max(0, entries.findIndex((entry) => entry.path === highlightedRef.current));
         const next = Math.max(0, Math.min(entries.length - 1, index + direction));
         if (next !== index) {
             previewPath(entries[next].path);
         }
     };
 
+    const wheelStep = (deltaY: number, deltaMode: number) => {
+        if (deltaY === 0) return;
+        const direction = Math.sign(deltaY);
+        const pixels = deltaY * (deltaMode === 1 ? 16 : deltaMode === 2 ? 120 : 1);
+        if (Math.sign(wheelDelta.current) !== direction) {
+            wheelDelta.current = 0;
+        }
+        wheelDelta.current += pixels;
+        if (Math.abs(wheelDelta.current) < 32) return;
+        wheelDelta.current = 0;
+
+        // Precision wheels and trackpads report a burst of events for one gesture.
+        // Rate-limit model loads so that burst cannot skip over several profiles.
+        const now = performance.now();
+        if (now - lastWheelStepAt.current < 50) return;
+        lastWheelStepAt.current = now;
+        step(direction);
+    };
+
     const commit = (path: string) => {
+        highlightedRef.current = path;
         setHighlighted(path);
         lastSent.current = path;
         void run(() => client.request("chain/property", {
@@ -1005,7 +1030,9 @@ function PathPropertyPicker({
         const observer = new MutationObserver(syncEncoderHighlight);
         observer.observe(list, { attributes: true, subtree: true, attributeFilter: ["data-mfx-nav-cursor"] });
         const frame = window.requestAnimationFrame(() => {
-            list.querySelector<HTMLElement>(`[data-path="${CSS.escape(highlighted)}"]`)?.focus();
+            const item = list.querySelector<HTMLElement>(`[data-path="${CSS.escape(highlighted)}"]`);
+            item?.focus({ preventScroll: true });
+            item?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
         });
         return () => {
             window.cancelAnimationFrame(frame);
@@ -1020,6 +1047,9 @@ function PathPropertyPicker({
             <button type="button" className="btn file-property-picker-button" onClick={() => {
                 original.current = current;
                 lastSent.current = current;
+                highlightedRef.current = current;
+                wheelDelta.current = 0;
+                lastWheelStepAt.current = Number.NEGATIVE_INFINITY;
                 setHighlighted(current);
                 setOpen(true);
             }}>
@@ -1029,11 +1059,6 @@ function PathPropertyPicker({
                 <div
                     className="mfx-overlay"
                     onClick={cancel}
-                    onWheel={(event) => {
-                        if (event.deltaY === 0) return;
-                        event.preventDefault();
-                        step(event.deltaY > 0 ? 1 : -1);
-                    }}
                     onKeyDown={(event) => {
                         if (event.key === "Escape") {
                             event.preventDefault();
@@ -1047,7 +1072,16 @@ function PathPropertyPicker({
                     <div className="mfx-overlay-card file-property-picker" onClick={(event) => event.stopPropagation()}>
                         <div className="mfx-overlay-title">CHOOSE MODEL</div>
                         <div className="muted">Move through the list to audition. Click, press Enter, or press the encoder to use.</div>
-                        <div ref={listRef} className="file-property-picker-list" data-mfx-nav-list="file-property">
+                        <div
+                            ref={listRef}
+                            className="file-property-picker-list"
+                            data-mfx-nav-list="file-property"
+                            onWheel={(event) => {
+                                if (event.deltaY === 0) return;
+                                event.preventDefault();
+                                wheelStep(event.deltaY, event.deltaMode);
+                            }}
+                        >
                             {entries.map((entry) => (
                                 <button
                                     key={entry.path || "none"}
@@ -1055,7 +1089,7 @@ function PathPropertyPicker({
                                     className={`mfx-overlay-option${highlighted === entry.path ? " selected" : ""}`}
                                     data-path={entry.path}
                                     data-mfx-nav-key={`file:${entry.path}`}
-                                    onPointerEnter={() => previewPath(entry.path)}
+                                    onPointerMove={() => previewPath(entry.path)}
                                     onFocus={() => previewPath(entry.path)}
                                     onClick={() => commit(entry.path)}
                                 >

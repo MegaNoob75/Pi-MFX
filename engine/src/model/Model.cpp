@@ -450,6 +450,14 @@ Json audioSettingsToJson(const AudioSettings& settings) {
     json.set("inputGainDb", settings.inputGainDb);
     json.set("outputGainDb", settings.outputGainDb);
     json.set("muteOnChange", settings.muteOnChange);
+    json.set("patchFadeOutMs", settings.patchFadeOutMs);
+    json.set("patchFadeInMs", settings.patchFadeInMs);
+    json.set("dcBlockerEnabled", settings.dcBlockerEnabled);
+    json.set("dcBlockerHz", settings.dcBlockerHz);
+    json.set("limiterEnabled", settings.limiterEnabled);
+    json.set("limiterCeilingDb", settings.limiterCeilingDb);
+    json.set("limiterLookaheadMs", settings.limiterLookaheadMs);
+    json.set("limiterReleaseMs", settings.limiterReleaseMs);
     json.set("bufferMs", settings.bufferMs());
     return json;
 }
@@ -466,10 +474,11 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     if (json.has("guitarInput")) {
         const int oneBased = json["guitarInput"].asInt(1);
         settings.inputChannelOffset = static_cast<unsigned>(std::max(1, oneBased) - 1);
-    } else {
-        // Older files stored inputChannelOffset but the engine never applied it.
-        // Two-channel USB boxes (Scarlett Solo) put the instrument jack on input 2.
-        settings.inputChannelOffset = settings.inputChannels >= 2 ? 1u : 0u;
+    } else if (json.has("inputChannelOffset")) {
+        // Accept the older zero-based field while preserving the fallback for
+        // partial live-setting updates that do not mention either channel key.
+        settings.inputChannelOffset = static_cast<unsigned>(
+            std::max(0, json["inputChannelOffset"].asInt(static_cast<int>(fallback.inputChannelOffset))));
     }
     if (json.has("outputChannelOffset")) settings.outputChannelOffset = static_cast<unsigned>(json["outputChannelOffset"].asInt(0));
     if (json.has("useMmap")) settings.useMmap = json["useMmap"].asBool(fallback.useMmap);
@@ -477,6 +486,14 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     if (json.has("inputGainDb")) settings.inputGainDb = json["inputGainDb"].asFloat(fallback.inputGainDb);
     if (json.has("outputGainDb")) settings.outputGainDb = json["outputGainDb"].asFloat(fallback.outputGainDb);
     if (json.has("muteOnChange")) settings.muteOnChange = json["muteOnChange"].asBool(fallback.muteOnChange);
+    if (json.has("patchFadeOutMs")) settings.patchFadeOutMs = json["patchFadeOutMs"].asFloat(fallback.patchFadeOutMs);
+    if (json.has("patchFadeInMs")) settings.patchFadeInMs = json["patchFadeInMs"].asFloat(fallback.patchFadeInMs);
+    if (json.has("dcBlockerEnabled")) settings.dcBlockerEnabled = json["dcBlockerEnabled"].asBool(fallback.dcBlockerEnabled);
+    if (json.has("dcBlockerHz")) settings.dcBlockerHz = json["dcBlockerHz"].asFloat(fallback.dcBlockerHz);
+    if (json.has("limiterEnabled")) settings.limiterEnabled = json["limiterEnabled"].asBool(fallback.limiterEnabled);
+    if (json.has("limiterCeilingDb")) settings.limiterCeilingDb = json["limiterCeilingDb"].asFloat(fallback.limiterCeilingDb);
+    if (json.has("limiterLookaheadMs")) settings.limiterLookaheadMs = json["limiterLookaheadMs"].asFloat(fallback.limiterLookaheadMs);
+    if (json.has("limiterReleaseMs")) settings.limiterReleaseMs = json["limiterReleaseMs"].asFloat(fallback.limiterReleaseMs);
 
     // Clamp to values the engine can actually run, so a hand-edited settings
     // file cannot leave the service unable to start.
@@ -485,6 +502,14 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     settings.periodCount = std::max(2u, std::min(16u, settings.periodCount));
     settings.inputChannels = std::max(1u, std::min(64u, settings.inputChannels));
     settings.outputChannels = std::max(1u, std::min(64u, settings.outputChannels));
+    settings.inputGainDb = std::max(-60.0f, std::min(24.0f, settings.inputGainDb));
+    settings.outputGainDb = std::max(-60.0f, std::min(12.0f, settings.outputGainDb));
+    settings.patchFadeOutMs = std::max(1.0f, std::min(20.0f, settings.patchFadeOutMs));
+    settings.patchFadeInMs = std::max(1.0f, std::min(30.0f, settings.patchFadeInMs));
+    settings.dcBlockerHz = std::max(2.0f, std::min(20.0f, settings.dcBlockerHz));
+    settings.limiterCeilingDb = std::max(-12.0f, std::min(-0.1f, settings.limiterCeilingDb));
+    settings.limiterLookaheadMs = std::max(0.0f, std::min(2.0f, settings.limiterLookaheadMs));
+    settings.limiterReleaseMs = std::max(20.0f, std::min(500.0f, settings.limiterReleaseMs));
     if (settings.inputChannelOffset >= settings.inputChannels) {
         settings.inputChannelOffset = settings.inputChannels - 1;
     }

@@ -2219,6 +2219,22 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     border: none;
 }
 
+.audio-live-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 84px;
+    gap: 10px;
+    align-items: center;
+}
+
+.field .audio-live-number {
+    width: 84px;
+    min-width: 0;
+    min-height: 36px;
+    height: 36px;
+    padding: 0 6px;
+    text-align: right;
+}
+
 .control-card-head {
     display: flex;
     justify-content: space-between;

@@ -17,12 +17,14 @@ namespace rt {
 /// thread is an audible dropout, so this is not optional on the Pi.
 bool lockMemory(std::string& message);
 
-/// Puts the calling thread on SCHED_FIFO at `priority`.
+/// Puts the calling thread on SCHED_FIFO at `priority`. Returns zero on
+/// success or a positive platform error code. This entry point performs no
+/// allocation or logging and is safe to call while entering the audio loop.
 ///
 /// 80 is the audio thread. Plugin worker threads sit below it, and the MIDI
 /// thread below those, so a busy convolution worker can never preempt the
 /// thread feeding the card.
-bool setThreadRealtime(int priority, std::string& message);
+int setThreadRealtime(int priority) noexcept;
 
 /// Pins the calling thread to `cpus`.
 ///
