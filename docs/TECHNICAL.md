@@ -25,6 +25,11 @@ reinstalls leave it alone unless you `--purge`.
 | `lv2/` | User-installed LV2 bundles (PatchStorage) |
 | `models/`, IRs | NAM / AIDA-X / IR files |
 | `backups/`, `themes/` | Backup archives and custom themes |
+| `backing/` | Imported backing-track audio, metadata, and set lists |
+| `loops/` | Saved stereo-looper WAV files |
+| `recordings/` | Multitrack projects, takes, recovery data, and exports |
+| `drums/` | User samples, kits, patterns, variations, and song chains |
+| `community/` | Trusted catalog cache, provenance, and install journals |
 
 `layouts/*.json` is visual only: widget geometry, hidden controls, and groups.
 It does not store MIDI ports or switch actions. Those stay in `controller.json`.
@@ -40,6 +45,9 @@ the ESP32 match immediately.
 - `system/update/status` and install job used by **Settings → System → Updates**
 - `system/reboot` and `system/shutdown` used by **Settings → System** power buttons
 - Helpers: `scripts/plugin-helper.py`, `scripts/hotspot.py`, `scripts/mdns.py`
+- Engine-owned transport, backing, looper, recorder, and drum services publish
+  compact state messages without doing file, decode, network, or export work in
+  the realtime callback.
 
 Avahi publishes `pimfx.local`. Default port is **8080** (`PIMFX_PORT` / install
 `--port`). There is no LAN login.
@@ -49,6 +57,10 @@ Avahi publishes `pimfx.local`. Default port is **8080** (`PIMFX_PORT` / install
 - Built into `ui/dist` and served by the engine
 - Dev: `cd ui && npm run dev` proxies `/api` and `/ws` to `127.0.0.1:8080`
 - Designed around a 7" **1024×600** kiosk; phones and tablets scale
+- Shared UI-session state keeps navigation, editors, scroll positions, and
+  hardware focus coherent across connected browsers and the physical encoder.
+- `ui/docs.html` supplies representative read-only state for regenerating the
+  documentation gallery without a connected Pi.
 
 ## Firmware
 

@@ -93,7 +93,7 @@ There is no login on the HTTP or WebSocket APIs.
 
 ## 5. Set up audio
 
-**Settings → Audio**
+**Settings → System → Audio**
 
 1. Pick your interface or HAT. Duplex devices are listed first.
 2. Set sample rate, period size, and period count. Start at 48000 / 64 / 3.
@@ -104,13 +104,19 @@ The round-trip figure is measured from the driver, not calculated.
 
 ## 6. Build a chain
 
-**Editor** → add effects. If the picker is empty, install LV2 plugins from
+Open **Preset Editor** from the PI-MFX menu, then add effects with the **+**
+buttons between the input and output nodes. If the picker is empty, install LV2 plugins from
 **Plugins**, then Rescan.
 
 For amp captures and cabs you need a NAM-capable LV2 plugin and a convolution
 plugin. Once installed, effects that take a `.nam` file or an impulse response
 show a file button that opens the Pi-MFX library, including anything you
 downloaded from TONE3000.
+
+Use **Banks / Presets** to create and organize sounds, **Snapshots** inside the
+Preset Editor to capture variations, and **Settings → Layout** to arrange the
+Performance screen. Tap the PI-MFX button in the top-left at any time to open
+the full navigation drawer.
 
 ## 7. Optional: foot controller
 
@@ -181,7 +187,8 @@ sudo bash ./scripts/pimfx.sh hotspot
 
 ## Updating
 
-After the first install, pull `dev`, rebuild, and restart without redoing apt or
+After the first install, choose `main`, `dev`, or `workstation`, then pull,
+rebuild, and restart without redoing apt or
 OS tuning. From the UI: **Settings → System → Updates**. From SSH:
 
 ```bash

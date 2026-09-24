@@ -1,55 +1,93 @@
 # Screenshots
 
-All shots are the running Pi-MFX UI at **1024×600** (7" LCD). These were taken
-from the browser UI with no engine on this PC, so banks and plugins are empty
-and the status dot is off. On a Pi, open `http://pimfx.local:8080` for live
-data.
+These are the current Pi-MFX React views at **1024×600**, the target size for a
+7-inch kiosk display. They use the read-only documentation fixture in
+`ui/docs.html`, so the captures show representative banks, effects, tracks,
+projects, patterns, and catalog entries without changing a Pi or user data.
 
-Snapshot mode on Performance needs a connected engine;
-`performance-snapshots.png` is the default Performance stage.
-Snapshot tiles are shown in `layout-snapshots.png`.
+Open `http://pimfx.local:8080` on a Pi for live audio, hardware, storage, and
+network state. The fixture is visual documentation, not Raspberry Pi audio or
+XRun validation.
 
-## Performance
+## Shell and performance
+
+![Navigation drawer](images/menu.png)
 
 ![Performance](images/performance.png)
 
 ![Performance snapshot mode](images/performance-snapshots.png)
 
-## Banks and editor
+## Transport and performance tools
 
-![Banks / Presets](images/banks.png)
+![Tap Tempo and shared transport](images/transport.png)
 
-![Preset Editor](images/editor.png)
+![Backing Tracks](images/backing-tracks.png)
+
+![Looper](images/looper.png)
+
+![Looper options](images/looper-options.png)
+
+![Saved loop library](images/looper-library.png)
+
+![Multitrack Recorder](images/recorder.png)
+
+![Drum Machine controls](images/drum-machine.png)
+
+![Drum pattern editor](images/drum-pattern.png)
+
+![Drum kit](images/drum-kit.png)
+
+![Drum song chain](images/drum-song.png)
+
+![Tuner](images/tuner.png)
+
+## Presets and effects
+
+![Banks and Presets](images/banks.png)
+
+![Preset Editor chain](images/editor.png)
+
+![Preset Editor controls](images/editor-controls.png)
+
+![Preset Editor input and output](images/editor-io.png)
 
 ![Snapshots](images/snapshots.png)
 
-## Library, plugins, files
+![Community Presets catalog](images/community-presets.png)
+
+![Share Preset](images/community-share.png)
+
+## Models, plugins, and files
 
 ![Model Library](images/library.png)
 
-![Plugins — Installed](images/plugins-installed.png)
+![Plugins installed](images/plugins-installed.png)
 
-![Plugins — Install](images/plugins-install.png)
+![Plugins install](images/plugins-install.png)
 
 ![Files](images/files.png)
 
-## Settings
+## Settings and controller
 
 ![Settings hub](images/settings.png)
 
-![Controller](images/controller.png)
+![Controller hub](images/controller.png)
 
 ![Hardware Setup](images/hardware.png)
 
-![Layout — Performance](images/layout.png)
+![Layout Performance stage](images/layout.png)
 
-![Layout — Snapshots](images/layout-snapshots.png)
+![Layout Snapshot stage](images/layout-snapshots.png)
 
-![Theme](images/theme.png)
+![Theme Manager](images/theme.png)
 
 ![Keyboard](images/keyboard.png)
 
-![PI-MFX UI](images/ui.png)
+![PI-MFX UI settings](images/ui.png)
+
+![Backup](images/backup.png)
+
+![TONE3000 settings](images/model-library-settings.png)
 
 ## System
 
@@ -57,16 +95,31 @@ Snapshot tiles are shown in `layout-snapshots.png`.
 
 ![Audio](images/audio.png)
 
-![Wi-Fi / Hotspot](images/hotspot.png)
+![Wi-Fi and Hotspot](images/hotspot.png)
 
 ![Updates](images/updates.png)
 
-![Realtime](images/realtime.png)
+![Realtime diagnostics](images/realtime.png)
 
 ## About
 
 ![About](images/about.png)
 
-![About / Legal](images/about-legal.png)
+![About and Legal](images/about-legal.png)
 
 How to use each screen: [USER_GUIDE.md](USER_GUIDE.md).
+
+## Regenerating the gallery
+
+From `ui/`, run `npm run dev`. On Windows, run
+`powershell -ExecutionPolicy Bypass -File scripts/capture-docs.ps1` from the
+repository root to replace the full gallery. Individual preview URLs include:
+
+```text
+http://127.0.0.1:5173/docs.html?view=performance
+http://127.0.0.1:5173/docs.html?view=looper&variant=options
+http://127.0.0.1:5173/docs.html?view=drums&variant=pattern
+```
+
+The preview uses the same components and CSS as the product. Update its fixture
+when a screen needs new representative content, then capture at 1024×600.

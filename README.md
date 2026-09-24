@@ -1,11 +1,23 @@
 # Pi-MFX
 
-**An original guitar multi-effects pedalboard for the Raspberry Pi 5.**
+**An original guitar multi-effects and performance workstation for Raspberry Pi 5.**
+
+[![Raspberry Pi 5](https://img.shields.io/badge/Raspberry%20Pi-5-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/products/raspberry-pi-5/)
+[![LV2](https://img.shields.io/badge/plugins-LV2-6c5ce7)](https://lv2plug.in/)
+[![NAM](https://img.shields.io/badge/amp%20models-NAM-e17055)](https://www.neuralampmodeler.com/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+An open-source C++ and React audio-DSP project combining LV2 plugins, Neural
+Amp Modeler (NAM) captures, cabinet impulse responses, low-latency ALSA audio,
+touchscreen control, backing tracks, a stereo looper, multitrack recording, a
+drum machine, and an optional ESP32-S3 MIDI foot controller.
 
 Pi-MFX turns a dedicated, headless Raspberry Pi 5 into a low-latency guitar
 processor: an in-process LV2 effect chain (including NAM captures and cabinet
 impulse responses) driven from a touchscreen, tablet, phone, or PC browser,
-with an optional DIY footswitch controller you build and wire yourself.
+with an optional DIY footswitch controller you build and wire yourself. A
+shared musical transport keeps tap tempo, tempo-aware LV2 effects, backing,
+looping, recording, and drums on one engine-owned clock.
 
 ![Performance at 1024×600](docs/images/performance.png)
 
@@ -17,6 +29,9 @@ with an optional DIY footswitch controller you build and wire yourself.
 - **Build any controller you can wire.** Switches, pots, sliders, expression
   pedals, encoders, and optional LEDs — mapped in the UI, not hardcoded in
   firmware.
+- **A complete practice and performance rig.** Import set lists, record a
+  stereo loop, capture multitrack projects, program drum patterns, and browse
+  the reviewed Community Presets catalog without leaving the touchscreen UI.
 
 Anyone on the same local network or hotspot can open the UI and control the Pi.
 There is no login on the LAN HTTP or WebSocket APIs.
@@ -26,7 +41,7 @@ There is no login on the LAN HTTP or WebSocket APIs.
 | | |
 | --- | --- |
 | [User guide](docs/USER_GUIDE.md) | How to use every screen |
-| [Screenshots](docs/SCREENSHOTS.md) | Every view at 1024×600 (7" LCD) |
+| [Screenshots](docs/SCREENSHOTS.md) | Current views at 1024×600 (7" LCD) |
 | [Features](docs/FEATURES.md) | What Pi-MFX does |
 | [Install](docs/INSTALL.md) | First Pi, audio HAT, kiosk, hotspot |
 | [Development](docs/DEV_FLOW.md) | PC edit → Pi rebuild loop |
@@ -63,9 +78,11 @@ Then open `http://pimfx.local:8080` (or `http://<pi-address>:8080`) from any
 browser on the network. Full instructions, including audio HAT overlays and
 kiosk mode, are in [docs/INSTALL.md](docs/INSTALL.md).
 
-To pull `dev`, rebuild, and restart later: **Settings → System → Updates**,
-`sudo bash ./scripts/pimfx.sh update` on the Pi, or **`pimfx.cmd` item 3** from
-Windows. Day-to-day editing from a PC is described in
+To update, choose **Main**, **Dev**, or **Workstation** under
+**Settings → System → Updates**, run `sudo bash ./scripts/pimfx.sh update
+--branch <name>` on the Pi, or use **`pimfx.cmd` item 3** from Windows. The
+screens shown in this repository are from the current `workstation` feature
+set. Day-to-day editing from a PC is described in
 [docs/DEV_FLOW.md](docs/DEV_FLOW.md) (double-click `pimfx.cmd`; login is stored
 only in gitignored `.pimfx-remote`).
 
