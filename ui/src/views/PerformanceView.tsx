@@ -90,18 +90,20 @@ export function PerformanceView({
     engine,
     run,
     onEdit,
+    onOpenView,
     onEditSnapshot
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     onSnapshots?: () => void;
     onEdit?: () => void;
+    onOpenView?: (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums" | "tuner") => void;
     onEditSnapshot?: (snapshotId: string) => void;
 }) {
     const { client, state } = engine;
     const bank = findBank(state);
     const preset = findPreset(state);
-    const banks = objects(state.banks);
+    const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const ui = obj(state.ui);
     const controller = obj(state.controller);
     const layout = obj(controller.performanceLayout);
@@ -162,6 +164,12 @@ export function PerformanceView({
     });
     const chainSignature = useMemo(() => signatureForChain(chain), [chain]);
     const sharedPicker = str(engine.uiSession.performancePicker);
+    const playableBankId = str(banks[0]?.id);
+    useEffect(() => {
+        if (bool(obj(bank).communityHolding) && playableBankId) {
+            void run(() => client.request("bank/select", { bankId: playableBankId }));
+        }
+    }, [state.activeBankId, playableBankId, client, run]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
         [state.activePresetId, chainSignature]
@@ -378,6 +386,12 @@ export function PerformanceView({
         if (action === "bypassAll") {
             return "bypass";
         }
+        if (action === "looperRecord" || action === "looperClear" || action === "recorderToggle" || action === "drumToggle") {
+            return "bypass";
+        }
+        if (action === "looperOverdub") {
+            return "snapshot";
+        }
         return "utility";
     };
 
@@ -406,6 +420,19 @@ export function PerformanceView({
         if (action === "reloadPreset") {
             return "RELOAD PRESET";
         }
+        if (action === "tapTempo") {
+            return `${num(state.tempo, num(obj(preset).tempo, 120)).toFixed(1)} BPM`;
+        }
+        if (action.startsWith("looper")) {
+            return str(engine.looper.status, "empty").toUpperCase();
+        }
+        if (action.startsWith("recorder")) {
+            return str(engine.recorder.status, "stopped").toUpperCase();
+        }
+        if (action.startsWith("drum")) {
+            return bool(engine.drums.fillActive) ? "FILL" : bool(engine.drums.playing)
+                ? `VAR ${num(engine.drums.activeVariation) + 1}` : "STOPPED";
+        }
         return action.toUpperCase();
     };
 
@@ -420,6 +447,28 @@ export function PerformanceView({
             snapshotMode: "SNAPSHOT MODE",
             selectPreset: "PRESET",
             selectSnapshot: "SNAPSHOT",
+            looperRecord: "LOOP RECORD",
+            looperToggle: "LOOP REC / PLAY / DUB",
+            looperPlay: "LOOP PLAY",
+            looperPlayStop: "LOOP PLAY / STOP",
+            looperOverdub: "LOOP OVERDUB",
+            looperStop: "LOOP STOP",
+            looperRestart: "LOOP RESTART",
+            looperMute: "LOOP MUTE",
+            looperUndo: "LOOP UNDO",
+            looperRedo: "LOOP REDO",
+            looperClear: "CLEAR LOOP",
+            looperView: "OPEN LOOPER",
+            recorderToggle: "REC / STOP",
+            recorderStop: "STOP RECORDING",
+            recorderView: "OPEN RECORDER",
+            drumToggle: "DRUMS START / STOP",
+            drumFill: "DRUM FILL",
+            drumVariationNext: "NEXT VARIATION",
+            drumVariationPrevious: "PREVIOUS VARIATION",
+            drumPatternNext: "NEXT DRUM PATTERN",
+            drumPatternPrevious: "PREVIOUS DRUM PATTERN",
+            drumView: "OPEN DRUM MACHINE",
             reloadPreset: "RELOAD PRESET",
             presetUp: "PRESET UP",
             presetDown: "PRESET DOWN",
@@ -708,6 +757,22 @@ export function PerformanceView({
                     && (!sessionEntry || displayBankId === str(state.activeBankId)))
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
+                    || (action === "tapTempo" && bool(engine.transport.beatPulse))
+                    || (action === "looperRecord" && ["armed", "recording"].includes(str(engine.looper.status)))
+                    || (action === "looperToggle" && ["armed", "recording", "playing", "overdubbing"].includes(str(engine.looper.status)))
+                    || (action === "looperPlay" && ["playing", "overdubbing"].includes(str(engine.looper.status)))
+                    || (action === "looperPlayStop" && ["playing", "overdubbing"].includes(str(engine.looper.status)))
+                    || (action === "looperOverdub" && str(engine.looper.status) === "overdubbing")
+                    || (action === "looperStop" && str(engine.looper.status) === "stopped")
+                    || (action === "looperRestart" && bool(engine.looper.hasLoop))
+                    || (action === "looperMute" && bool(engine.looper.muted))
+                    || (action === "looperUndo" && bool(engine.looper.canUndo))
+                    || (action === "looperRedo" && bool(engine.looper.canRedo))
+                    || (action === "looperClear" && bool(engine.looper.hasLoop))
+                    || (action === "recorderToggle" && str(engine.recorder.status) === "recording")
+                    || (action === "recorderStop" && str(engine.recorder.status) === "stopped")
+                    || (action === "drumToggle" && bool(engine.drums.playing))
+                    || (action === "drumFill" && bool(engine.drums.fillActive))
                     || (action === "selectSnapshot" && activeSnapshot === num(binding.snapshotSlot, -1)
                         && num(binding.snapshotSlot, -1) >= 0)
                     || (toggleSlot !== "" && bool(
@@ -940,8 +1005,7 @@ export function PerformanceView({
                 if (warnSnapshotWrite("Saving the preset")) {
                     return;
                 }
-                if (bool(ui.confirmPresetOverwrite, true)
-                    && !window.confirm(`Overwrite saved preset “${str(obj(preset).name, "this preset")}”?`)) {
+                if (!window.confirm(`Overwrite saved preset “${str(obj(preset).name, "this preset")}”?`)) {
                     return;
                 }
                 closeMenu();
@@ -1256,20 +1320,31 @@ export function PerformanceView({
                     return (
                         <div
                             key={id}
-                            className={`status-widget${isMeterWidget(id) ? " is-meter" : ""}`}
+                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}`}
                             style={{
-                                ...rectStyle(widget.rect),
+                                ...rectStyle(widget.rect, isMeterWidget(id) && widget.orientation === "vertical"),
                                 zIndex: pickerOpen ? 50 : undefined
                             }}
+                            role={id === "tuner" ? "button" : undefined}
+                            tabIndex={id === "tuner" ? 0 : undefined}
+                            onClick={id === "tuner" ? () => onOpenView?.("tuner") : undefined}
+                            onKeyDown={id === "tuner" ? (event) => {
+                                if (event.key === "Enter" || event.key === " ") onOpenView?.("tuner");
+                            } : undefined}
                         >
-                            {id === "currentBank" ? bankPicker
+                            {isWorkstationWidget(id) ? (
+                                <WorkstationWidget id={id} engine={engine} run={run} onOpen={onOpenView} />
+                            ) : id === "currentBank" ? bankPicker
                                 : id === "activePreset" ? presetPicker
                                     : isMeterWidget(id) ? (
                                         <LiveGainMeter
                                             client={client}
-                                            label={STATUS_WIDGET_LABELS[id]}
+                                            label={id === "inputMeter" ? "In" : "Out"}
                                             channel={id === "inputMeter" ? "input" : "output"}
+                                            orientation={widget.orientation}
                                         />
+                                    ) : id === "audioStatus" ? (
+                                        <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
                                         <>
                                             {widget.showLabel && (
@@ -1619,6 +1694,115 @@ function NamePicker({
     );
 }
 
+function isWorkstationWidget(id: string): id is "tapTempo" | "backingTrack" | "looperControl" | "recorderControl" | "drumMachine" {
+    return ["tapTempo", "backingTrack", "looperControl", "recorderControl", "drumMachine"].includes(id);
+}
+
+function WorkstationWidget({
+    id,
+    engine,
+    run,
+    onOpen
+}: {
+    id: "tapTempo" | "backingTrack" | "looperControl" | "recorderControl" | "drumMachine";
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    onOpen?: (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums") => void;
+}) {
+    const request = (command: string, payload: JsonObject = {}) => run(() => engine.client.request(command, payload));
+    const open = (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums") => (
+        <button type="button" className="workstation-widget-open" aria-label={`Open ${STATUS_WIDGET_LABELS[id]}`}
+            onClick={() => onOpen?.(view)}>↗</button>
+    );
+
+    if (id === "tapTempo") {
+        const playing = bool(engine.transport.playing);
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>TAP TEMPO</span>{open("transport")}</div>
+            <strong>{num(engine.transport.bpm, 120).toFixed(1)} <small>BPM</small></strong>
+            <div className="workstation-widget-actions">
+                <button type="button" className="btn" onClick={() => void request("tap")}>TAP</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} aria-pressed={playing}
+                    onClick={() => void request(playing ? "transport/stop" : "transport/play", { restart: true })}>
+                    {playing ? "STOP" : "PLAY"}
+                </button>
+            </div>
+        </div>;
+    }
+    if (id === "backingTrack") {
+        const track = engine.backing;
+        const loaded = bool(track.loaded);
+        const playing = bool(track.playing);
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>BACKING TRACKS</span>{open("backingTracks")}</div>
+            <strong className="marquee">{str(track.title, str(track.name, "NO TRACK"))}</strong>
+            <small>{formatWidgetTime(num(track.position))} / {formatWidgetTime(num(track.duration))}</small>
+            <div className="workstation-widget-actions three">
+                <button type="button" className="btn" onClick={() => void request("backing/previous")}>◀</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} disabled={!loaded} aria-pressed={playing}
+                    onClick={() => void request(playing ? "backing/pause" : "backing/play")}>{playing ? "PAUSE" : "PLAY"}</button>
+                <button type="button" className="btn" onClick={() => void request("backing/next")}>▶</button>
+            </div>
+        </div>;
+    }
+    if (id === "looperControl") {
+        const loop = engine.looper;
+        const status = str(loop.status, "empty");
+        const recording = status === "recording" || status === "armed";
+        const playing = status === "playing" || status === "overdubbing";
+        const hasLoop = bool(loop.hasLoop);
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>LOOPER</span>{open("looper")}</div>
+            <strong>{status.toUpperCase()}</strong><small>{num(loop.position).toFixed(1)} / {num(loop.duration).toFixed(1)}s</small>
+            <div className="workstation-widget-actions three">
+                <button type="button" className={`btn${recording ? " btn-active btn-danger" : " btn-danger"}`}
+                    aria-pressed={recording} onClick={() => void request(recording ? "looper/finish" : "looper/record")}>{recording ? "FINISH" : "REC"}</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} disabled={!hasLoop}
+                    aria-pressed={playing} onClick={() => void request(playing ? "looper/stop" : "looper/play")}>{playing ? "STOP" : "PLAY"}</button>
+                <button type="button" className={`btn${status === "overdubbing" ? " btn-active" : ""}`} disabled={!hasLoop}
+                    aria-pressed={status === "overdubbing"} onClick={() => void request("looper/overdub")}>DUB</button>
+            </div>
+        </div>;
+    }
+    if (id === "recorderControl") {
+        const recorder = engine.recorder;
+        const recording = str(recorder.status) === "recording";
+        const playing = str(recorder.playbackStatus) === "playing";
+        const projectReady = Boolean(str(recorder.projectId));
+        return <div className="workstation-widget">
+            <div className="workstation-widget-head"><span>RECORDER</span>{open("recorder")}</div>
+            <strong>{recording ? "RECORDING" : playing ? "PLAYING" : str(recorder.status, "STOPPED").toUpperCase()}</strong>
+            <small>{num(recorder.position).toFixed(1)} / {num(recorder.duration).toFixed(1)}s</small>
+            <div className="workstation-widget-actions three">
+                <button type="button" className={`btn btn-danger${recording ? " btn-active" : ""}`} disabled={!projectReady}
+                    aria-pressed={recording} onClick={() => void request(recording ? "recorder/record/stop" : "recorder/record/start")}>{recording ? "SAVE" : "REC"}</button>
+                <button type="button" className={`btn${playing ? " btn-active" : ""}`} disabled={!projectReady}
+                    aria-pressed={playing} onClick={() => void request(playing ? "recorder/playback/pause" : "recorder/playback/play")}>{playing ? "PAUSE" : "PLAY"}</button>
+                <button type="button" className="btn" disabled={!projectReady}
+                    onClick={() => void request("recorder/playback/stop")}>STOP</button>
+            </div>
+        </div>;
+    }
+    const drums = engine.drums;
+    const playing = bool(drums.playing);
+    return <div className="workstation-widget">
+        <div className="workstation-widget-head"><span>DRUM MACHINE</span>{open("drums")}</div>
+        <strong className="marquee">{str(drums.kitName, "NO KIT")}</strong>
+        <small>VAR {String.fromCharCode(65 + Math.max(0, num(drums.activeVariation)))} · {num(engine.transport.bpm, 120).toFixed(1)} BPM</small>
+        <div className="workstation-widget-actions">
+            <button type="button" className={`btn${playing ? " btn-active" : ""}`} aria-pressed={playing}
+                onClick={() => void request("drums/toggle", { restart: !playing })}>{playing ? "STOP" : "START"}</button>
+            <button type="button" className={`btn${bool(drums.fillActive) ? " btn-active" : ""}`} aria-pressed={bool(drums.fillActive)}
+                onClick={() => void request("drums/fill")}>FILL</button>
+        </div>
+    </div>;
+}
+
+function formatWidgetTime(seconds: number): string {
+    const whole = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
 function isLiveMeterText(id: string): boolean {
     return id === "cpuUsage" || id === "xruns" || id === "audioStatus" || id === "tuner";
 }
@@ -1626,17 +1810,20 @@ function isLiveMeterText(id: string): boolean {
 function LiveGainMeter({
     client,
     label,
-    channel
+    channel,
+    orientation
 }: {
     client: import("../api").EngineClient;
     label: string;
     channel: "input" | "output";
+    orientation: "vertical" | "horizontal";
 }) {
     const meters = useMeters(client);
     return (
         <GainMeter
             label={label}
             peak={channel === "input" ? num(meters.inputPeak) : num(meters.outputPeak)}
+            orientation={orientation}
         />
     );
 }
@@ -1662,6 +1849,32 @@ function LiveMeterText({
     });
 }
 
+function LiveAudioWidget({
+    engine,
+    showLabel
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    showLabel: boolean;
+}) {
+    const meters = useMeters(engine.client);
+    const requested = obj(engine.state.audio);
+    const actual = obj(engine.state.actualAudio);
+    const running = bool(meters.running, bool(engine.state.audioRunning));
+    return <div className="audio-widget-detail">
+        <div className="audio-widget-heading">
+            {showLabel && <span className="field-label mfx-performance-ui-label">AUDIO</span>}
+            <i className={`audio-widget-dot${running ? " running" : ""}`} title={running ? "Audio running" : "Audio stopped"} />
+        </div>
+        <strong className="marquee">{str(engine.state.audioInterface, str(actual.device, str(requested.device, "NO INTERFACE")))}</strong>
+        <span>{num(actual.sampleRate, num(requested.sampleRate, 48000))} Hz · {num(actual.periodFrames, num(requested.periodFrames, 0))} × {num(actual.periodCount, num(requested.periodCount, 0))}</span>
+        <span>REQUESTED {num(meters.bufferMs, num(requested.bufferMs)).toFixed(2)} ms</span>
+        <span>
+            MEASURED {num(meters.roundTripMs).toFixed(2)} ms
+            {num(meters.safetyLookaheadMs) > 0 ? ` · LIMITER ${num(meters.safetyLookaheadMs).toFixed(2)} ms` : ""}
+        </span>
+    </div>;
+}
+
 function widgetText(id: string, values: Record<string, string>): string {
     switch (id) {
         case "currentBank": return values.bank;
@@ -1676,11 +1889,14 @@ function widgetText(id: string, values: Record<string, string>): string {
     }
 }
 
-function rectStyle(rect: { x: number; y: number; width: number; height: number }): CSSProperties {
+function rectStyle(
+    rect: { x: number; y: number; width: number; height: number },
+    intrinsicWidth = false
+): CSSProperties {
     return {
         left: `${rect.x * 100}%`,
         top: `${rect.y * 100}%`,
-        width: `${rect.width * 100}%`,
+        width: intrinsicWidth ? undefined : `${rect.width * 100}%`,
         height: `${rect.height * 100}%`
     };
 }

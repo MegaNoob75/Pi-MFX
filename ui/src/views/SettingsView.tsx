@@ -37,7 +37,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel, backup and interface options" onClick={() => onOpen("ui")} />
-                <HubCard title="MODEL LIBRARY" subtitle="TONE3000 API key and sign-in" onClick={() => onOpen("tone3000")} />
+                <HubCard title="MODEL LIBRARY" subtitle="TONE3000 hosted browser and API key" onClick={() => onOpen("tone3000")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
         </div>
@@ -192,9 +192,35 @@ const HARDWARE_ACTIONS = [
     "snapshotMode",
     "bypassAll",
     "tapTempo",
-    "tuner"
+    "tuner",
+    "backingPlayPause",
+    "backingStop",
+    "backingPrevious",
+    "backingNext",
+    "backingView",
+    "looperRecord",
+    "looperToggle",
+    "looperPlay",
+    "looperPlayStop",
+    "looperOverdub",
+    "looperStop",
+    "looperRestart",
+    "looperMute",
+    "looperUndo",
+    "looperRedo",
+    "looperView",
+    "recorderToggle",
+    "recorderStop",
+    "recorderView",
+    "drumToggle",
+    "drumFill",
+    "drumVariationNext",
+    "drumVariationPrevious",
+    "drumPatternNext",
+    "drumPatternPrevious",
+    "drumView"
 ] as const;
-const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot"] as const;
+const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext", "drumPatternNext"] as const;
 const ENCODER_PUSH_ACTIONS = [
     "none",
     "select",
@@ -208,8 +234,35 @@ const ENCODER_PUSH_ACTIONS = [
     "snapshotMode",
     "bypassAll",
     "tapTempo",
-    "tuner"
+    "tuner",
+    "backingPlayPause",
+    "backingStop",
+    "backingPrevious",
+    "backingNext",
+    "backingView",
+    "looperRecord",
+    "looperToggle",
+    "looperPlay",
+    "looperPlayStop",
+    "looperOverdub",
+    "looperStop",
+    "looperRestart",
+    "looperMute",
+    "looperUndo",
+    "looperRedo",
+    "looperView",
+    "recorderToggle",
+    "recorderStop",
+    "recorderView",
+    "drumToggle",
+    "drumFill",
+    "drumVariationNext",
+    "drumVariationPrevious",
+    "drumPatternNext",
+    "drumPatternPrevious",
+    "drumView"
 ] as const;
+const HOLD_ACTIONS = [...HARDWARE_ACTIONS, "looperClear"] as const;
 
 const HARDWARE_ACTION_LABELS: Record<string, string> = {
     none: "None",
@@ -225,7 +278,34 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     snapshotMode: "Snapshot mode",
     bypassAll: "Chain bypass",
     tapTempo: "Tap tempo",
-    tuner: "Tuner"
+    tuner: "Tuner",
+    backingPlayPause: "Backing play / pause",
+    backingStop: "Backing stop",
+    backingPrevious: "Backing previous",
+    backingNext: "Backing next",
+    backingView: "Open backing tracks",
+    looperRecord: "Looper record",
+    looperToggle: "Looper record / play / overdub",
+    looperPlay: "Looper play",
+    looperPlayStop: "Looper play / stop",
+    looperOverdub: "Looper overdub",
+    looperStop: "Looper stop",
+    looperRestart: "Looper restart",
+    looperMute: "Looper mute",
+    looperUndo: "Looper undo",
+    looperRedo: "Looper redo",
+    looperClear: "Looper clear (hold)",
+    looperView: "Open looper",
+    recorderToggle: "Recorder record / stop",
+    recorderStop: "Recorder stop",
+    recorderView: "Open recorder",
+    drumToggle: "Drums start / stop",
+    drumFill: "Trigger drum fill",
+    drumVariationNext: "Next drum variation",
+    drumVariationPrevious: "Previous drum variation",
+    drumPatternNext: "Next drum pattern",
+    drumPatternPrevious: "Previous drum pattern",
+    drumView: "Open drum machine"
 };
 
 function kindListLabel(kind: string): string {
@@ -347,6 +427,9 @@ function AudioSettings({
     const [devices, setDevices] = useState<JsonObject[]>([]);
     const [draft, setDraft] = useState(audio);
     const [deviceError, setDeviceError] = useState("");
+    const livePreviewFrame = useRef<number | null>(null);
+    const pendingLivePreview = useRef<JsonObject | null>(null);
+    const livePreviewQueue = useRef<Promise<unknown>>(Promise.resolve());
 
     useEffect(() => {
         const sharedDraft = obj(obj(engine.uiSession.settings).audioDraft);
@@ -380,6 +463,65 @@ function AudioSettings({
             updateUiSessionSection(client, "settings", { audioDraft: next });
             return next;
         });
+    };
+
+    useEffect(() => () => {
+        if (livePreviewFrame.current !== null) {
+            window.cancelAnimationFrame(livePreviewFrame.current);
+        }
+    }, []);
+
+    const liveValue = (key: string, value: number) => {
+        if (!Number.isFinite(value)) return num(draft[key]);
+        if (key === "inputGainDb") return Math.max(-60, Math.min(24, value));
+        if (key === "outputGainDb") return Math.max(-60, Math.min(12, value));
+        return value;
+    };
+
+    const queueLiveRequest = (command: string, patch: JsonObject) => {
+        const request = livePreviewQueue.current
+            .catch(() => undefined)
+            .then(() => client.request(command, patch));
+        livePreviewQueue.current = request;
+        return request;
+    };
+
+    const previewLive = (key: string, value: number) => {
+        const next = liveValue(key, value);
+        set(key, next);
+        pendingLivePreview.current = { [key]: next };
+        if (livePreviewFrame.current !== null) return;
+        livePreviewFrame.current = window.requestAnimationFrame(() => {
+            livePreviewFrame.current = null;
+            const patch = pendingLivePreview.current;
+            pendingLivePreview.current = null;
+            if (!patch) return;
+            void queueLiveRequest("audio/preview", patch).catch(() => undefined);
+        });
+    };
+
+    const commitLive = (key: string, value: number) => {
+        const next = liveValue(key, value);
+        if (livePreviewFrame.current !== null) {
+            window.cancelAnimationFrame(livePreviewFrame.current);
+            livePreviewFrame.current = null;
+        }
+        pendingLivePreview.current = null;
+        void run(() => queueLiveRequest("audio/settings", { [key]: next }));
+    };
+
+    const setLiveToggle = (key: string, value: boolean) => {
+        set(key, value);
+        void run(() => queueLiveRequest("audio/settings", { [key]: value }));
+    };
+
+    const applyDraft = () => {
+        if (livePreviewFrame.current !== null) {
+            window.cancelAnimationFrame(livePreviewFrame.current);
+            livePreviewFrame.current = null;
+        }
+        pendingLivePreview.current = null;
+        void run(() => queueLiveRequest("audio/settings", { ...draft, guitarInput }));
     };
 
     return (
@@ -442,21 +584,111 @@ function AudioSettings({
                 <div className="muted">
                     Guitar is mono and copied to both headphone channels. On a Scarlett Solo the instrument jack is Input 2.
                 </div>
-                <div className="row">
+                <label className="field">
+                    <span>Input gain · {num(draft.inputGainDb).toFixed(1)} dB</span>
+                    <div className="audio-live-control">
+                        <input type="range" min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
+                            onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))} />
+                        <input className="audio-live-number" aria-label="Input gain in decibels" type="number"
+                            min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
+                            onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
+                            onBlur={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+                    </div>
+                </label>
+                <label className="field">
+                    <span>Output gain · {num(draft.outputGainDb).toFixed(1)} dB</span>
+                    <div className="audio-live-control">
+                        <input type="range" min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
+                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))} />
+                        <input className="audio-live-number" aria-label="Output gain in decibels" type="number"
+                            min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
+                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
+                            onBlur={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+                    </div>
+                </label>
+                <div className="panel stack">
+                    <h2>OUTPUT SAFETY</h2>
+                    <div className="row">
+                        <button type="button" className={`btn ${bool(draft.muteOnChange, true) ? "btn-active" : ""}`}
+                            onClick={() => setLiveToggle("muteOnChange", !bool(draft.muteOnChange, true))}>
+                            PATCH MUTE
+                        </button>
+                        <button type="button" className={`btn ${bool(draft.dcBlockerEnabled, true) ? "btn-active" : ""}`}
+                            onClick={() => setLiveToggle("dcBlockerEnabled", !bool(draft.dcBlockerEnabled, true))}>
+                            DC BLOCKER
+                        </button>
+                        <button type="button" className={`btn ${bool(draft.limiterEnabled, true) ? "btn-active" : ""}`}
+                            onClick={() => setLiveToggle("limiterEnabled", !bool(draft.limiterEnabled, true))}>
+                            SAFETY LIMITER
+                        </button>
+                    </div>
                     <label className="field">
-                        <span>Input gain (dB)</span>
-                        <input type="number" value={num(draft.inputGainDb)} onChange={(event) => set("inputGainDb", Number(event.target.value))} />
+                        <span>Patch fade out · {num(draft.patchFadeOutMs, 5).toFixed(1)} ms</span>
+                        <input type="range" min={1} max={20} step={0.5} value={num(draft.patchFadeOutMs, 5)}
+                            onChange={(event) => previewLive("patchFadeOutMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))} />
                     </label>
                     <label className="field">
-                        <span>Output gain (dB)</span>
-                        <input type="number" value={num(draft.outputGainDb)} onChange={(event) => set("outputGainDb", Number(event.target.value))} />
+                        <span>Patch fade in · {num(draft.patchFadeInMs, 8).toFixed(1)} ms</span>
+                        <input type="range" min={1} max={30} step={0.5} value={num(draft.patchFadeInMs, 8)}
+                            onChange={(event) => previewLive("patchFadeInMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))} />
                     </label>
+                    <label className="field">
+                        <span>Limiter ceiling · {num(draft.limiterCeilingDb, -1).toFixed(1)} dBFS</span>
+                        <input type="range" min={-12} max={-0.1} step={0.1} value={num(draft.limiterCeilingDb, -1)}
+                            onChange={(event) => previewLive("limiterCeilingDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))} />
+                    </label>
+                    <label className="field">
+                        <span>Look-ahead · {num(draft.limiterLookaheadMs, 0.75).toFixed(2)} ms</span>
+                        <input type="range" min={0} max={2} step={0.05} value={num(draft.limiterLookaheadMs, 0.75)}
+                            onChange={(event) => previewLive("limiterLookaheadMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))} />
+                    </label>
+                    <label className="field">
+                        <span>Limiter release · {num(draft.limiterReleaseMs, 80).toFixed(0)} ms</span>
+                        <input type="range" min={20} max={500} step={5} value={num(draft.limiterReleaseMs, 80)}
+                            onChange={(event) => previewLive("limiterReleaseMs", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))} />
+                    </label>
+                    <label className="field">
+                        <span>DC blocker · {num(draft.dcBlockerHz, 7).toFixed(1)} Hz</span>
+                        <input type="range" min={2} max={20} step={0.5} value={num(draft.dcBlockerHz, 7)}
+                            onChange={(event) => previewLive("dcBlockerHz", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))}
+                            onPointerCancel={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))} />
+                    </label>
+                    <div className="muted">
+                        Look-ahead adds the selected amount of output latency. Patch muting keeps model and preset changes silent while their DSP state settles.
+                    </div>
                 </div>
                 <div className="muted">
-                    Requested buffer {formatMs(num(draft.bufferMs))} · measured {formatMs(num(meters.roundTripMs))} · {num(meters.xruns)} xruns
+                    Requested buffer {formatMs(num(draft.bufferMs))} · measured {formatMs(num(meters.roundTripMs))}
+                    {num(meters.safetyLookaheadMs) > 0 ? ` (includes ${formatMs(num(meters.safetyLookaheadMs))} limiter)` : ""}
+                    {` · ${num(meters.xruns)} xruns`}
                 </div>
                 <div className="row">
-                    <button type="button" className="btn btn-accent" onClick={() => void run(() => client.request("audio/settings", { ...draft, guitarInput }))}>
+                    <button type="button" className="btn btn-accent" onClick={applyDraft}>
                         APPLY
                     </button>
                     <button type="button" className="btn" onClick={() => refreshDevices()}>
@@ -872,6 +1104,8 @@ function ControllerSettings({
                             <HardwareControlDetail
                                 control={selected}
                                 controller={controller}
+                                backingEnabled={bool(engine.state.backingTrackFeatureEnabled)}
+                                drumsEnabled={bool(engine.state.drumFeatureEnabled)}
                                 snapshotSlots={snapshotSlots}
                                 onPatch={patch}
                                 onRemove={() => showRemoveControl(str(selected.id))}
@@ -939,6 +1173,8 @@ function ControllerSettings({
 function HardwareControlDetail({
     control,
     controller,
+    backingEnabled,
+    drumsEnabled,
     snapshotSlots,
     onPatch,
     onRemove,
@@ -949,6 +1185,8 @@ function HardwareControlDetail({
 }: {
     control: JsonObject;
     controller: JsonObject;
+    backingEnabled: boolean;
+    drumsEnabled: boolean;
     snapshotSlots: number[];
     onPatch: (control: JsonObject) => void;
     onRemove: () => void;
@@ -968,11 +1206,15 @@ function HardwareControlDetail({
     const pair = objects(controller.controls).find((item) => str(item.id) === str(control.pairId));
     const hasPushButton = Boolean(pair && isEncoderPushKind(normalizeControlKind(str(pair.kind))));
     const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
-    const functionActions = encoder
+    const allFunctionActions = encoder
         ? ENCODER_ACTIONS
         : encoderPush
             ? ENCODER_PUSH_ACTIONS
             : HARDWARE_ACTIONS;
+    const availableAction = (item: string) => (backingEnabled || !item.startsWith("backing"))
+        && (drumsEnabled || !item.startsWith("drum"));
+    const functionActions = allFunctionActions.filter(availableAction);
+    const holdActions = HOLD_ACTIONS.filter(availableAction);
     const rawAction = str(binding.action, "none");
     const action = (functionActions as readonly string[]).includes(rawAction) ? rawAction : "none";
     const holdAction = str(binding.holdAction) === "none" ? "" : str(binding.holdAction);
@@ -1074,7 +1316,7 @@ function HardwareControlDetail({
                             value={holdAction}
                             onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, holdAction: event.target.value }, event.target.value))}
                         >
-                            {actionOptions(true, HARDWARE_ACTIONS)}
+                            {actionOptions(true, holdActions)}
                         </select>
                     </label>
                 )}
@@ -1085,7 +1327,7 @@ function HardwareControlDetail({
                             value={doubleAction}
                             onChange={(event) => patchBinding(withSnapshotSlot({ ...binding, doubleAction: event.target.value }, event.target.value))}
                         >
-                            {actionOptions(true, HARDWARE_ACTIONS)}
+                            {actionOptions(true, functionActions)}
                         </select>
                     </label>
                 )}
@@ -1173,6 +1415,8 @@ function HardwareControlDetail({
                     <HardwareControlDetail
                         control={pair}
                         controller={controller}
+                        backingEnabled={backingEnabled}
+                        drumsEnabled={drumsEnabled}
                         snapshotSlots={snapshotSlots}
                         onPatch={onPatch}
                         onRemove={() => onTogglePushButton(false)}
@@ -1253,13 +1497,9 @@ function UiSettings({
                     <input type="number" min={0.7} max={1.6} step={0.05} value={num(ui.scale, 1)}
                         onChange={(event) => save({ ...ui, scale: Number(event.target.value) })} />
                 </label>
-                <div className="row">
-                    <button type="button" className={`btn ${bool(ui.showTuner, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...ui, showTuner: !bool(ui.showTuner, true) })}>TUNER</button>
-                    <button type="button" className={`btn ${bool(ui.showLatencyMeter, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...ui, showLatencyMeter: !bool(ui.showLatencyMeter, true) })}>LATENCY</button>
-                    <button type="button" className={`btn ${bool(ui.confirmPresetOverwrite, true) ? "btn-active" : ""}`}
-                        onClick={() => save({ ...ui, confirmPresetOverwrite: !bool(ui.confirmPresetOverwrite, true) })}>CONFIRM SAVE</button>
+                <div className="muted">
+                    Tuner, latency and workstation controls are managed as Performance widgets in Layout.
+                    Overwriting an existing preset always requires confirmation.
                 </div>
                 <UiBehaviorEditor engine={engine} />
             </div>

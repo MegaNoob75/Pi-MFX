@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <string>
@@ -27,6 +28,8 @@ struct HttpResponse {
     int status = 200;
     std::string contentType = "application/json";
     std::string body;
+    std::string filePath;
+    uint64_t fileSize = 0;
     std::vector<std::pair<std::string, std::string>> extraHeaders;
 
     void json(const std::string& payload, int statusCode = 200);
@@ -77,6 +80,7 @@ private:
         std::string inbox;
         std::string outbox;
         std::string frameBuffer;   ///< reassembles fragmented WebSocket messages
+        std::ifstream responseFile; ///< bounded streaming for large downloads
         int fragmentOpcode = 0;
         bool closing = false;
     };

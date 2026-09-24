@@ -15,6 +15,9 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fno-math-errno -fno-trapping-math")
 
 option(PIMFX_NATIVE_ARCH "Tune for the build machine (leave OFF for portable builds)" OFF)
+option(PIMFX_ENABLE_MULTITRACK_RECORDER "Build the Milestone 3 multitrack recorder" ON)
+option(PIMFX_ENABLE_DRUM_MACHINE "Build the Milestone 4 drum machine" ON)
+option(PIMFX_ENABLE_COMMUNITY_CATALOG "Build the Milestone 5 community preset catalog" ON)
 
 add_executable(pimfx)
 
@@ -28,6 +31,7 @@ target_sources(pimfx PRIVATE
     src/core/Crypto.cpp
     src/core/Paths.cpp
     src/audio/MockBackend.cpp
+    src/audio/MasterOutputSafety.cpp
     src/audio/RtPriority.cpp
     src/host/UridMap.cpp
     src/host/Lv2Host.cpp
@@ -37,8 +41,16 @@ target_sources(pimfx PRIVATE
     src/control/ApiRouter.cpp
     src/midi/Mapping.cpp
     src/midi/MidiInput.cpp
+    src/transport/MusicalTransport.cpp
+    src/backing/BackingTrackPlayer.cpp
+    src/looper/StereoLooper.cpp
+    src/recorder/MultitrackRecorder.cpp
+    src/drums/DrumSequencer.cpp
+    src/drums/DrumMachine.cpp
     src/library/Tone3000.cpp
     src/library/PluginStore.cpp
+    src/community/CommunityPresetPackage.cpp
+    src/community/CommunityCatalog.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -78,9 +90,13 @@ if(PkgConfig_FOUND)
     endif()
 
     pkg_check_modules(SNDFILE IMPORTED_TARGET sndfile)
-    if(SNDFILE_FOUND)
+    pkg_check_modules(SAMPLERATE IMPORTED_TARGET samplerate)
+    if(SNDFILE_FOUND AND SAMPLERATE_FOUND)
         target_link_libraries(pimfx PRIVATE PkgConfig::SNDFILE)
-        target_compile_definitions(pimfx PRIVATE PIMFX_HAVE_SNDFILE=1)
+        target_link_libraries(pimfx PRIVATE PkgConfig::SAMPLERATE)
+        target_compile_definitions(pimfx PRIVATE PIMFX_HAVE_SNDFILE=1 PIMFX_HAVE_SAMPLERATE=1)
+    else()
+        message(STATUS "pimfx: libsndfile/libsamplerate not found; backing-track playback disabled")
     endif()
 endif()
 
@@ -131,4 +147,130 @@ target_compile_definitions(pimfx PRIVATE
     PIMFX_GIT_SHA="${PIMFX_GIT_SHA}"
 )
 
+if(PIMFX_ENABLE_MULTITRACK_RECORDER)
+    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_MULTITRACK_RECORDER=1)
+endif()
+
+if(PIMFX_ENABLE_DRUM_MACHINE)
+    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_DRUM_MACHINE=1)
+endif()
+
+if(PIMFX_ENABLE_COMMUNITY_CATALOG)
+    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_COMMUNITY_CATALOG=1)
+endif()
+
 install(TARGETS pimfx RUNTIME DESTINATION bin)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(pimfx_audio_safety_transition_test
+        tests/AudioSafetyTransitionTest.cpp
+        src/audio/MasterOutputSafety.cpp
+    )
+    target_include_directories(pimfx_audio_safety_transition_test PRIVATE src)
+    target_compile_options(pimfx_audio_safety_transition_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    add_test(NAME audio_safety_transition COMMAND pimfx_audio_safety_transition_test)
+
+    add_executable(pimfx_community_package_test
+        tests/CommunityPresetPackageTest.cpp
+        src/community/CommunityPresetPackage.cpp
+        src/model/Model.cpp
+        src/model/Storage.cpp
+        src/core/Paths.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_community_package_test PRIVATE src)
+    target_compile_options(pimfx_community_package_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_community_package_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pimfx_community_package_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME community_preset_package COMMAND pimfx_community_package_test)
+    add_executable(pimfx_transport_test
+        tests/MusicalTransportTest.cpp
+        src/transport/MusicalTransport.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(pimfx_transport_test PRIVATE src)
+    target_link_libraries(pimfx_transport_test PRIVATE Threads::Threads)
+    add_test(NAME musical_transport COMMAND pimfx_transport_test)
+    add_executable(pimfx_drum_sequencer_test
+        tests/DrumSequencerTest.cpp
+        src/drums/DrumSequencer.cpp
+    )
+    target_include_directories(pimfx_drum_sequencer_test PRIVATE src)
+    target_compile_options(pimfx_drum_sequencer_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_drum_sequencer_test PRIVATE Threads::Threads)
+    add_test(NAME drum_sequencer COMMAND pimfx_drum_sequencer_test)
+    add_executable(pimfx_drum_machine_test
+        tests/DrumMachineTest.cpp
+        src/drums/DrumMachine.cpp
+        src/drums/DrumSequencer.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_drum_machine_test PRIVATE src)
+    target_compile_options(pimfx_drum_machine_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_drum_machine_test PRIVATE Threads::Threads)
+    add_test(NAME drum_machine COMMAND pimfx_drum_machine_test)
+    add_executable(pimfx_stereo_looper_test
+        tests/StereoLooperTest.cpp
+        src/looper/StereoLooper.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_stereo_looper_test PRIVATE src)
+    target_compile_options(pimfx_stereo_looper_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_stereo_looper_test PRIVATE Threads::Threads)
+    add_test(NAME stereo_looper COMMAND pimfx_stereo_looper_test)
+    add_executable(pimfx_multitrack_recorder_test
+        tests/MultitrackRecorderTest.cpp
+        src/recorder/MultitrackRecorder.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_multitrack_recorder_test PRIVATE src)
+    target_compile_options(pimfx_multitrack_recorder_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_multitrack_recorder_test PRIVATE Threads::Threads)
+    add_test(NAME multitrack_recorder COMMAND pimfx_multitrack_recorder_test)
+    if(SNDFILE_FOUND AND SAMPLERATE_FOUND)
+        add_executable(pimfx_backing_track_test
+            tests/BackingTrackPlayerTest.cpp
+            src/backing/BackingTrackPlayer.cpp
+            src/core/Json.cpp
+            src/core/Paths.cpp
+            src/core/Log.cpp
+        )
+        target_include_directories(pimfx_backing_track_test PRIVATE src)
+        target_compile_definitions(pimfx_backing_track_test PRIVATE PIMFX_HAVE_SNDFILE=1 PIMFX_HAVE_SAMPLERATE=1)
+        target_compile_options(pimfx_backing_track_test PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+        )
+        target_link_libraries(pimfx_backing_track_test PRIVATE PkgConfig::SNDFILE PkgConfig::SAMPLERATE Threads::Threads)
+        add_test(NAME backing_track_player COMMAND pimfx_backing_track_test)
+    endif()
+endif()

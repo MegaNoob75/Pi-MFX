@@ -42,13 +42,20 @@ to be vendored it goes in `third_party/<name>/` together with its license.
   Terms of Service, Design Requirements, and Commercial Terms. Credit and thanks
   to TONE3000 and to the individual capture authors who publish there. Pi-MFX
   ships **no** TONE3000 content; models arrive only when a user downloads them
-  with their own account.
+  with their own account. Community manifests retain the provider's tone/model
+  IDs, creator, source license, filename, and checksum but never copy the asset.
+  Pi-MFX is non-commercial open-source software. TONE3000's published free tier
+  permits that class of integration through its OAuth selection/load flows and
+  bounded lists; commercial distribution requires a separate agreement.
 - **Neural Amp Modeler** — the `.nam` capture format and the NAM ecosystem are
   the work of Steven Atkinson and the NAM community. Pi-MFX hosts third-party
   NAM LV2 plugins; it does not include NAM DSP source and does not relicense any
   model.
 - **Impulse responses** — supplied by the user or downloaded from TONE3000.
   Pi-MFX bundles none.
+- **Patchstorage** — not used as an automatic Community Preset asset source.
+  Patch licenses are selected by their individual authors and cannot be assumed
+  compatible merely because a file is publicly downloadable.
 
 ## Audio HAT vendors
 
@@ -62,3 +69,6 @@ vendor code.
 Plugins are separate works with their own licenses (frequently GPL). Pi-MFX
 hosts them through the LV2 ABI; it does not include, modify, or relicense them.
 Users install plugins themselves. See [`docs/PLUGIN_LICENSES.md`](docs/PLUGIN_LICENSES.md).
+Community manifests refer to exact LV2 URIs and an allowlisted installer ID;
+they do not contain or redistribute plugin binaries. Community NAM and cabinet
+IR slots are restricted to TooB Neural Amp Modeler and TooB Cab IR respectively.

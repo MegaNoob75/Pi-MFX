@@ -10,6 +10,8 @@
 
 namespace pimfx {
 
+struct TransportBlock;
+
 /// One point on a control's scale that the plugin gave a name to, e.g. the
 /// positions of a mode switch. The UI renders these as a picker instead of a
 /// meaningless 0-4 knob.
@@ -22,13 +24,17 @@ struct PortInfo {
     uint32_t index = 0;
     std::string symbol;
     std::string name;
+    std::string comment;
     std::string unit;
+    std::string unitUri;
+    std::string unitRender;
 
     bool input = true;
     bool control = false;
     bool audio = false;
     bool atom = false;
     bool cv = false;
+    bool supportsTimePosition = false;
 
     float minimum = 0.0f;
     float maximum = 1.0f;
@@ -38,9 +44,18 @@ struct PortInfo {
     bool integer = false;
     bool enumerated = false;
     bool logarithmic = false;
+    bool sampleRate = false;
+    bool trigger = false;
+    bool notOnGui = false;
+    unsigned rangeSteps = 0;
     /// Ports the plugin marks as output-only meters: level, gain reduction,
     /// tuner pitch. The UI polls these instead of trying to edit them.
     bool meter = false;
+    /// True for delay-like time inputs whose LV2 unit can be converted from
+    /// musical note lengths without plugin-specific code.
+    bool tempoLinkCandidate = false;
+    /// Number of seconds represented by one port unit (0.001 for ms, 1 for s).
+    double secondsPerUnit = 0.0;
 
     std::vector<ScalePoint> scalePoints;
 
@@ -125,8 +140,8 @@ private:
 /// A live plugin.
 ///
 /// Instantiation, activation, and property changes happen on the control
-/// thread. Only `process()` and `setControl()` may be called from the audio
-/// thread, and both are wait-free.
+/// thread. `process()` is audio-thread-only; `setControl()` is a wait-free
+/// atomic handoff and may also be called by the control thread.
 class PluginInstance {
 public:
     ~PluginInstance();
@@ -140,8 +155,9 @@ public:
     const PluginInfo& info() const { return info_; }
     const std::string& uri() const { return info_.uri; }
 
-    /// Audio-thread safe: stores the value for the next `run()`.
+    /// Thread-safe: stores the value for the next `run()`.
     void setControl(uint32_t portIndex, float value);
+    bool setControlDeferred(uint32_t portIndex, float value);
     float control(uint32_t portIndex) const;
 
     /// Current value of an output control port, for meters and tuners.
@@ -152,6 +168,18 @@ public:
     bool setProperty(const std::string& propertyUri, const std::string& value, std::string& error);
     std::string property(const std::string& propertyUri) const;
 
+    /// Coordinates click-free property changes with the engine master mute.
+    /// Holding is control-thread safe; release/query are audio-thread safe and
+    /// only touch atomics or audio-owned bounded queues.
+    void holdPropertyChanges();
+    void releasePropertyChanges();
+    bool propertyTransitionPending() const;
+
+    /// Stages snapshot/base-preset controls until the engine master reaches
+    /// silence. applyDeferredStateChanges is audio-thread-only.
+    void beginDeferredStateChanges();
+    bool applyDeferredStateChanges();
+
     /// Queues a MIDI event for the next `run()`. Audio-thread safe.
     void pushMidi(const uint8_t* data, uint32_t size, uint32_t frameOffset);
 
@@ -159,14 +187,14 @@ public:
     /// unconnected plugin inputs receive silence and extra outputs are ignored.
     void process(const float* const* inputs, unsigned inputCount,
                  float* const* outputs, unsigned outputCount,
-                 unsigned frames);
+                 unsigned frames, const TransportBlock* transport = nullptr);
 
     unsigned audioInputs() const { return info_.audioInputs; }
     unsigned audioOutputs() const { return info_.audioOutputs; }
 
     /// Serialises control values and properties for a preset.
     Json saveState() const;
-    void loadState(const Json& state);
+    void loadState(const Json& state, bool deferControls = false);
 
 private:
     PluginInstance();

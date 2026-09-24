@@ -9,6 +9,21 @@ import { NewPresetDialog } from "./NewPresetDialog";
 
 type EditPage = "chain" | "controls" | "io";
 
+const NOTE_DIVISIONS = [
+    { beats: 4, label: "1/1" },
+    { beats: 3, label: "1/2 D" },
+    { beats: 2, label: "1/2" },
+    { beats: 1.5, label: "1/4 D" },
+    { beats: 1, label: "1/4" },
+    { beats: 0.75, label: "1/8 D" },
+    { beats: 2 / 3, label: "1/4 T" },
+    { beats: 0.5, label: "1/8" },
+    { beats: 1 / 3, label: "1/8 T" },
+    { beats: 0.375, label: "1/16 D" },
+    { beats: 0.25, label: "1/16" },
+    { beats: 1 / 6, label: "1/16 T" }
+];
+
 type BindTarget =
     | { mode: "parameter"; slotId: string; portSymbol: string; name: string; min: number; max: number }
     | { mode: "bypass"; slotId: string; name: string };
@@ -18,12 +33,14 @@ export function EditorView({
     run,
     lockChain = false,
     backRequest = 0,
+    onSnapshots,
     onPageChange
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     lockChain?: boolean;
     backRequest?: number;
+    onSnapshots?: () => void;
     onPageChange?: (page: EditPage, title?: string) => void;
 }) {
     const { client, state, catalog, library } = engine;
@@ -31,7 +48,7 @@ export function EditorView({
     const plugins = objects(catalog.plugins);
     const preset = findPreset(state);
     const bank = findBank(state);
-    const banks = objects(state.banks);
+    const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
@@ -70,7 +87,8 @@ export function EditorView({
 
     const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
     const plugin = obj(obj(selected).plugin);
-    const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control" && bool(port.input, true));
+    const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control"
+        && bool(port.input, true) && !bool(port.notOnGui));
     const properties = objects(plugin.properties);
     const models = objects(library.models);
     const aidax = objects(library.aidax);
@@ -270,9 +288,12 @@ export function EditorView({
             {page === "chain" && (
                 <>
                     <div className="editor-toolbar editor-chain-bar">
-                        {!lockChain ? (
-                            <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
-                        ) : <div />}
+                        <div className="editor-primary-actions">
+                            {!lockChain && (
+                                <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
+                            )}
+                            <button type="button" className="btn" onClick={onSnapshots}>SNAPSHOTS</button>
+                        </div>
                         <button
                             type="button"
                             className="editor-preset-name"
@@ -531,6 +552,8 @@ export function EditorView({
                                 client={client}
                                 controls={controls}
                                 bindings={parameterBindings}
+                                bpm={num(obj(state.transport).bpm, num(obj(preset).tempo, 120))}
+                                tempoEnabled={bool(state.transportFeatureEnabled)}
                                 onBindParameter={(port) => setBindTarget({
                                     mode: "parameter",
                                     slotId: str(selected.id),
@@ -891,6 +914,201 @@ function filesForPathProperty(
     return models;
 }
 
+function PathPropertyPicker({
+    slotId,
+    propertyUri,
+    current,
+    files,
+    client,
+    run
+}: {
+    slotId: string;
+    propertyUri: string;
+    current: string;
+    files: JsonObject[];
+    client: import("../api").EngineClient;
+    run: (work: () => Promise<unknown>) => Promise<void>;
+}) {
+    const [open, setOpen] = useState(false);
+    const [highlighted, setHighlighted] = useState(current);
+    const highlightedRef = useRef(current);
+    const lastSent = useRef(current);
+    const original = useRef(current);
+    const listRef = useRef<HTMLDivElement | null>(null);
+    const wheelDelta = useRef(0);
+    const lastWheelStepAt = useRef(Number.NEGATIVE_INFINITY);
+
+    useEffect(() => {
+        lastSent.current = current;
+        if (!open) {
+            highlightedRef.current = current;
+            setHighlighted(current);
+        }
+    }, [current, open]);
+
+    const previewPath = (path: string) => {
+        highlightedRef.current = path;
+        setHighlighted(path);
+        if (path === lastSent.current) {
+            return;
+        }
+        lastSent.current = path;
+        void run(() => client.request("chain/property", {
+            slotId,
+            property: propertyUri,
+            path,
+            persist: false
+        }));
+    };
+
+    const entries = [{ path: "", name: "None" }, ...files.map((file) => ({
+        path: str(file.path),
+        name: str(file.name)
+    }))];
+    const step = (direction: number) => {
+        const index = Math.max(0, entries.findIndex((entry) => entry.path === highlightedRef.current));
+        const next = Math.max(0, Math.min(entries.length - 1, index + direction));
+        if (next !== index) {
+            previewPath(entries[next].path);
+        }
+    };
+
+    const wheelStep = (deltaY: number, deltaMode: number) => {
+        if (deltaY === 0) return;
+        const direction = Math.sign(deltaY);
+        const pixels = deltaY * (deltaMode === 1 ? 16 : deltaMode === 2 ? 120 : 1);
+        if (Math.sign(wheelDelta.current) !== direction) {
+            wheelDelta.current = 0;
+        }
+        wheelDelta.current += pixels;
+        if (Math.abs(wheelDelta.current) < 32) return;
+        wheelDelta.current = 0;
+
+        // Precision wheels and trackpads report a burst of events for one gesture.
+        // Rate-limit model loads so that burst cannot skip over several profiles.
+        const now = performance.now();
+        if (now - lastWheelStepAt.current < 50) return;
+        lastWheelStepAt.current = now;
+        step(direction);
+    };
+
+    const commit = (path: string) => {
+        highlightedRef.current = path;
+        setHighlighted(path);
+        lastSent.current = path;
+        void run(() => client.request("chain/property", {
+            slotId,
+            property: propertyUri,
+            path,
+            persist: true
+        })).then(() => setOpen(false));
+    };
+
+    const cancel = () => {
+        const path = original.current;
+        lastSent.current = path;
+        void run(() => client.request("chain/property", {
+            slotId,
+            property: propertyUri,
+            path,
+            persist: false
+        })).then(() => setOpen(false));
+    };
+
+    useEffect(() => {
+        if (!open || !listRef.current) {
+            return;
+        }
+        const list = listRef.current;
+        const syncEncoderHighlight = () => {
+            const item = list.querySelector<HTMLElement>('[data-mfx-nav-cursor="true"]');
+            const path = item?.getAttribute("data-path");
+            if (path !== null && path !== undefined) {
+                previewPath(path);
+            }
+        };
+        const observer = new MutationObserver(syncEncoderHighlight);
+        observer.observe(list, { attributes: true, subtree: true, attributeFilter: ["data-mfx-nav-cursor"] });
+        const frame = window.requestAnimationFrame(() => {
+            const item = list.querySelector<HTMLElement>(`[data-path="${CSS.escape(highlighted)}"]`);
+            item?.focus({ preventScroll: true });
+            item?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        });
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
+    }, [open, highlighted]);
+
+    const highlightedName = entries.find((entry) => entry.path === highlighted)?.name ?? "None";
+
+    return (
+        <>
+            <button type="button" className="btn file-property-picker-button" onClick={() => {
+                original.current = current;
+                lastSent.current = current;
+                highlightedRef.current = current;
+                wheelDelta.current = 0;
+                lastWheelStepAt.current = Number.NEGATIVE_INFINITY;
+                setHighlighted(current);
+                setOpen(true);
+            }}>
+                {highlightedName} ▾
+            </button>
+            {open && createPortal(
+                <div
+                    className="mfx-overlay"
+                    onClick={cancel}
+                    onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancel();
+                        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                            event.preventDefault();
+                            step(event.key === "ArrowDown" ? 1 : -1);
+                        }
+                    }}
+                >
+                    <div className="mfx-overlay-card file-property-picker" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">CHOOSE MODEL</div>
+                        <div className="muted">Move through the list to audition. Click, press Enter, or press the encoder to use.</div>
+                        <div
+                            ref={listRef}
+                            className="file-property-picker-list"
+                            data-mfx-nav-list="file-property"
+                            onWheel={(event) => {
+                                if (event.deltaY === 0) return;
+                                event.preventDefault();
+                                wheelStep(event.deltaY, event.deltaMode);
+                            }}
+                        >
+                            {entries.map((entry) => (
+                                <button
+                                    key={entry.path || "none"}
+                                    type="button"
+                                    className={`mfx-overlay-option${highlighted === entry.path ? " selected" : ""}`}
+                                    data-path={entry.path}
+                                    data-mfx-nav-key={`file:${entry.path}`}
+                                    onPointerMove={() => previewPath(entry.path)}
+                                    onFocus={() => previewPath(entry.path)}
+                                    onClick={() => commit(entry.path)}
+                                >
+                                    {entry.name}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <button type="button" className="btn" onClick={cancel}>CANCEL</button>
+                            <button type="button" className="btn btn-accent" onClick={() => commit(highlighted)}>USE MODEL</button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
+        </>
+    );
+}
+
 export function EffectControls({
     selected,
     ports,
@@ -903,6 +1121,8 @@ export function EffectControls({
     client,
     controls = [],
     bindings = [],
+    bpm = 120,
+    tempoEnabled = false,
     onBindParameter
 }: {
     selected: JsonObject;
@@ -916,9 +1136,81 @@ export function EffectControls({
     client: import("../api").EngineClient;
     controls?: JsonObject[];
     bindings?: JsonObject[];
+    bpm?: number;
+    tempoEnabled?: boolean;
     onBindParameter?: (port: JsonObject) => void;
 }) {
     const slotId = str(selected.id);
+    const tempoLinks = obj(selected.tempoLinks);
+    const [previewValues, setPreviewValues] = useState<Record<string, number>>({});
+    const pendingValues = useRef(new Map<string, number>());
+    const previewFrame = useRef<number | null>(null);
+    const pendingPreview = useRef<{ symbol: string; value: number } | null>(null);
+
+    useEffect(() => () => {
+        if (previewFrame.current !== null) {
+            window.cancelAnimationFrame(previewFrame.current);
+        }
+    }, []);
+
+    useEffect(() => {
+        setPreviewValues((current) => {
+            let changed = false;
+            const next = { ...current };
+            for (const [symbol, pending] of pendingValues.current) {
+                const port = ports.find((item) => str(item.symbol) === symbol);
+                if (!port) {
+                    pendingValues.current.delete(symbol);
+                    delete next[symbol];
+                    changed = true;
+                    continue;
+                }
+                const actual = controlValue(selected, symbol, num(port.default, num(port.min)));
+                if (approximatelyEqual(actual, pending)) {
+                    pendingValues.current.delete(symbol);
+                    delete next[symbol];
+                    changed = true;
+                }
+            }
+            return changed ? next : current;
+        });
+    }, [selected, ports]);
+
+    const preview = (symbol: string, value: number) => {
+        setPreviewValues((current) => ({ ...current, [symbol]: value }));
+    };
+    const previewLive = (symbol: string, value: number) => {
+        preview(symbol, value);
+        pendingPreview.current = { symbol, value };
+        if (previewFrame.current !== null) {
+            return;
+        }
+        previewFrame.current = window.requestAnimationFrame(() => {
+            previewFrame.current = null;
+            const next = pendingPreview.current;
+            pendingPreview.current = null;
+            if (!next) {
+                return;
+            }
+            void client.request("chain/control", {
+                slotId,
+                port: next.symbol,
+                value: next.value,
+                persist: false
+            }).catch(() => undefined);
+        });
+    };
+    const clearPreview = (symbol: string) => {
+        pendingValues.current.delete(symbol);
+        setPreviewValues((current) => {
+            if (!(symbol in current)) {
+                return current;
+            }
+            const next = { ...current };
+            delete next[symbol];
+            return next;
+        });
+    };
     const boundFor = (symbol: string) => bindings.find((binding) =>
         str(binding.action) === "setParameter"
         && str(binding.slotId) === slotId
@@ -945,15 +1237,28 @@ export function EffectControls({
                     const name = str(port.name, symbol);
                     const min = num(port.min, 0);
                     const max = num(port.max, 1);
-                    const value = controlValue(selected, symbol, num(port.default, min));
+                    const actualValue = controlValue(selected, symbol, num(port.default, min));
+                    const value = previewValues[symbol] ?? actualValue;
+                    const linkedBeats = num(tempoLinks[symbol], 0);
+                    const tempoLinkCandidate = bool(port.tempoLinkCandidate);
                     const stepped = bool(port.integer) || bool(port.toggled);
+                    const points = arr(port.scalePoints).filter(isObj);
+                    const enumeration = bool(port.enumerated) && points.length > 0;
                     const apply = (next: number) => {
                         const clamped = clampPortValue(next, min, max, stepped);
+                        if (previewFrame.current !== null) {
+                            window.cancelAnimationFrame(previewFrame.current);
+                            previewFrame.current = null;
+                        }
+                        pendingPreview.current = null;
+                        preview(symbol, clamped);
+                        pendingValues.current.set(symbol, clamped);
                         void client.request("chain/control", {
                             slotId: str(selected.id),
                             port: symbol,
-                            value: clamped
-                        }).catch(() => undefined);
+                            value: clamped,
+                            persist: true
+                        }).catch(() => clearPreview(symbol));
                     };
                     const editNumber = () => {
                         void (async () => {
@@ -973,7 +1278,8 @@ export function EffectControls({
                         })();
                     };
                     return (
-                        <div key={symbol} className={`control-card field${boundFor(symbol) ? " bound" : ""}`}>
+                        <div key={symbol} title={str(port.comment) || undefined}
+                            className={`control-card field${boundFor(symbol) ? " bound" : ""}${tempoEnabled && linkedBeats > 0 ? " tempo-linked" : ""}`}>
                             <div className="control-card-head">
                                 <span
                                     onPointerDown={(event) => {
@@ -1010,12 +1316,12 @@ export function EffectControls({
                                         target.addEventListener("pointermove", move);
                                     }}
                                 >{name}</span>
-                                {!bool(port.toggled) && arr(port.scalePoints).filter(isObj).length === 0 && (
+                                {!bool(port.toggled) && !bool(port.trigger) && !enumeration && (
                                     <button type="button" className="control-value" onClick={editNumber}>
                                         {formatControl(value, port)}
                                     </button>
                                 )}
-                                {(bool(port.toggled) || arr(port.scalePoints).filter(isObj).length > 0) && (
+                                {(bool(port.toggled) || bool(port.trigger) || enumeration) && (
                                     <span className="muted">{formatControl(value, port)}</span>
                                 )}
                             </div>
@@ -1025,42 +1331,75 @@ export function EffectControls({
                                     {bool(obj(boundFor(symbol)).inverted) ? " · REV" : ""}
                                 </div>
                             )}
-                            {bool(port.toggled) ? (
+                            {tempoLinkCandidate && (
+                                <label className="tempo-link-row">
+                                    <span>TEMPO LINK</span>
+                                    <select
+                                        value={linkedBeats > 0 ? String(linkedBeats) : "0"}
+                                        disabled={!tempoEnabled}
+                                        title={tempoEnabled ? "Follow Tap Tempo" : "Enable Tap Tempo Clock in System settings"}
+                                        onChange={(event) => void run(() => client.request("chain/tempo-link", {
+                                            slotId,
+                                            port: symbol,
+                                            beats: Number(event.target.value)
+                                        }))}
+                                    >
+                                        <option value="0">MANUAL {str(port.unit, "TIME").toUpperCase()}</option>
+                                        {NOTE_DIVISIONS.map((division) => (
+                                            <option key={division.label} value={division.beats}>
+                                                {division.label} · {formatTempoLinkedValue(division.beats, bpm, port)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </label>
+                            )}
+                            {bool(port.trigger) ? (
                                 <button
                                     type="button"
-                                    className={`btn ${value >= 0.5 ? "btn-active" : ""}`}
+                                    className="btn"
                                     onClick={() => void run(() => client.request("chain/control", {
                                         slotId: str(selected.id),
                                         port: symbol,
-                                        value: value >= 0.5 ? 0 : 1
+                                        value: triggerValue(port)
                                     }))}
                                 >
-                                    {value >= 0.5 ? "ON" : "OFF"}
+                                    TRIGGER
                                 </button>
-                            ) : arr(port.scalePoints).filter(isObj).length > 0 ? (
+                            ) : bool(port.toggled) ? (
+                                <button
+                                    type="button"
+                                    className={`btn ${value > 0 ? "btn-active" : ""}`}
+                                    onClick={() => apply(value > 0
+                                        ? toggleValue(port, false)
+                                        : toggleValue(port, true))}
+                                >
+                                    {value > 0 ? "ON" : "OFF"}
+                                </button>
+                            ) : enumeration ? (
                                 <select
-                                    value={String(value)}
+                                    value={String(closestScalePointValue(points, value))}
                                     onChange={(event) => void run(() => client.request("chain/control", {
                                         slotId: str(selected.id),
                                         port: symbol,
                                         value: Number(event.target.value)
                                     }))}
                                 >
-                                    {arr(port.scalePoints).filter(isObj).map((item) => (
-                                        <option key={str(item.label, String(num(item.value)))} value={num(item.value)}>
+                                    {points.map((item) => (
+                                        <option key={`${num(item.value)}:${str(item.label)}`} value={num(item.value)}>
                                             {str(item.label, String(num(item.value)))}
                                         </option>
                                     ))}
                                 </select>
                             ) : (
-                                <input
-                                    type="range"
-                                    min={min}
-                                    max={max}
-                                    step={stepped ? 1 : "any"}
+                                <Lv2RangeControl
+                                    port={port}
                                     value={value}
-                                    aria-label={name}
-                                    onChange={(event) => apply(Number(event.target.value))}
+                                    name={name}
+                                    markerValue={isToobInputCalibration(plugin, port) ? -6 : undefined}
+                                    disabled={tempoEnabled && linkedBeats > 0}
+                                    onPreview={(next) => previewLive(symbol, next)}
+                                    onCancel={() => clearPreview(symbol)}
+                                    onCommit={apply}
                                 />
                             )}
                         </div>
@@ -1074,19 +1413,14 @@ export function EffectControls({
                 return (
                     <label key={str(property.uri)} className="field">
                         <span>{str(property.label, "File")}</span>
-                        <select
-                            value={current}
-                            onChange={(event) => void run(() => client.request("chain/property", {
-                                slotId: str(selected.id),
-                                property: str(property.uri),
-                                path: event.target.value
-                            }))}
-                        >
-                            <option value="">None</option>
-                            {files.map((file) => (
-                                <option key={str(file.path)} value={str(file.path)}>{str(file.name)}</option>
-                            ))}
-                        </select>
+                        <PathPropertyPicker
+                            slotId={str(selected.id)}
+                            propertyUri={str(property.uri)}
+                            current={current}
+                            files={files}
+                            client={client}
+                            run={run}
+                        />
                     </label>
                 );
             })}
@@ -1220,8 +1554,20 @@ function ChainIoPanel({
 }
 
 function formatControl(value: number, port: JsonObject): string {
-    const unit = str(port.unit);
+    const point = arr(port.scalePoints).filter(isObj).find((item) =>
+        approximatelyEqual(num(item.value), value));
+    if (point) {
+        return str(point.label, String(value));
+    }
     const digits = bool(port.integer) || bool(port.toggled) ? 0 : 2;
+    const render = str(port.unitRender);
+    const placeholder = /%[-+ 0#]*(?:\.(\d+))?f/;
+    if (render && placeholder.test(render)) {
+        const match = render.match(placeholder);
+        const precision = match?.[1] === undefined ? digits : Math.min(8, Number(match[1]));
+        return render.replace(placeholder, value.toFixed(precision)).replaceAll("%%", "%");
+    }
+    const unit = str(port.unit);
     return `${value.toFixed(digits)}${unit ? ` ${unit}` : ""}`;
 }
 
@@ -1232,7 +1578,168 @@ function formatEditableValue(value: number, port: JsonObject): string {
     return String(Number(value.toFixed(4)));
 }
 
+function formatTempoLinkedValue(beats: number, bpm: number, port: JsonObject): string {
+    const safeBpm = Math.max(30, Math.min(300, bpm));
+    const seconds = 60 * beats / safeBpm;
+    const converted = str(port.unitUri).endsWith("#ms") ? seconds * 1000 : seconds;
+    const value = Math.max(num(port.min, converted), Math.min(num(port.max, converted), converted));
+    return formatControl(value, port);
+}
+
 function clampPortValue(value: number, min: number, max: number, integer: boolean): number {
     const next = integer ? Math.round(value) : value;
     return Math.min(max, Math.max(min, next));
+}
+
+function approximatelyEqual(left: number, right: number): boolean {
+    return Math.abs(left - right) <= Math.max(1e-6, Math.abs(left) * 1e-6, Math.abs(right) * 1e-6);
+}
+
+function closestScalePointValue(points: JsonObject[], value: number): number {
+    return points.reduce((closest, point) => {
+        const candidate = num(point.value);
+        return Math.abs(candidate - value) < Math.abs(closest - value) ? candidate : closest;
+    }, num(points[0]?.value, value));
+}
+
+function toggleValue(port: JsonObject, on: boolean): number {
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    return Math.min(max, Math.max(min, on ? 1 : 0));
+}
+
+function triggerValue(port: JsonObject): number {
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    const candidate = max > 0 ? max : 1;
+    return Math.min(max, Math.max(min, candidate));
+}
+
+function hasLogarithmicRange(port: JsonObject): boolean {
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    return bool(port.logarithmic) && min !== 0 && max !== 0 && (min > 0) === (max > 0);
+}
+
+function isToobInputCalibration(plugin: JsonObject, port: JsonObject): boolean {
+    return str(plugin.uri) === "http://two-play.com/plugins/toob-nam"
+        && str(port.symbol) === "calibration";
+}
+
+function sliderValue(port: JsonObject, value: number): number {
+    if (!hasLogarithmicRange(port)) {
+        return value;
+    }
+    const min = num(port.min);
+    const max = num(port.max, 1);
+    const clamped = Math.min(max, Math.max(min, value));
+    return Math.log(clamped / min) / Math.log(max / min);
+}
+
+function portValue(port: JsonObject, value: number): number {
+    if (!hasLogarithmicRange(port)) {
+        return value;
+    }
+    const min = num(port.min);
+    const max = num(port.max, 1);
+    return min * Math.pow(max / min, value);
+}
+
+function Lv2RangeControl({
+    port,
+    value,
+    name,
+    markerValue,
+    disabled,
+    onPreview,
+    onCancel,
+    onCommit
+}: {
+    port: JsonObject;
+    value: number;
+    name: string;
+    markerValue?: number;
+    disabled: boolean;
+    onPreview: (value: number) => void;
+    onCancel: () => void;
+    onCommit: (value: number) => void;
+}) {
+    const logarithmic = hasLogarithmicRange(port);
+    const min = num(port.min, 0);
+    const max = num(port.max, 1);
+    const steps = Math.max(0, Math.trunc(num(port.rangeSteps)));
+    const rangeMin = logarithmic ? 0 : min;
+    const rangeMax = logarithmic ? 1 : max;
+    const step = logarithmic
+        ? steps > 1 ? 1 / (steps - 1) : "any"
+        : bool(port.integer)
+            ? 1
+            : steps > 1
+            ? (rangeMax - rangeMin) / (steps - 1)
+            : "any";
+    const external = sliderValue(port, value);
+    const markerPosition = markerValue === undefined
+        ? undefined
+        : 100 * (sliderValue(port, clampPortValue(markerValue, min, max, false)) - rangeMin)
+            / Math.max(Number.EPSILON, rangeMax - rangeMin);
+    const markerLabel = markerValue === undefined ? "" : formatControl(markerValue, port);
+    const [draft, setDraft] = useState(external);
+    const dragging = useRef(false);
+    const lastCommitted = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (!dragging.current) {
+            setDraft(external);
+        }
+    }, [external]);
+
+    const commit = (raw: number) => {
+        dragging.current = false;
+        lastCommitted.current = raw;
+        onCommit(portValue(port, raw));
+    };
+
+    const change = (raw: number) => {
+        lastCommitted.current = null;
+        setDraft(raw);
+        onPreview(portValue(port, raw));
+    };
+
+    return (
+        <div className="lv2-range-control">
+            {markerPosition !== undefined && (
+                <span
+                    className="lv2-range-marker"
+                    style={{ left: `${markerPosition}%` }}
+                    title={`Default: ${markerLabel}`}
+                    aria-hidden="true"
+                />
+            )}
+            <input
+                type="range"
+                min={rangeMin}
+                max={rangeMax}
+                step={step}
+                value={draft}
+                aria-label={name}
+                disabled={disabled}
+                onPointerDown={() => { dragging.current = true; lastCommitted.current = null; }}
+                onChange={(event) => change(Number(event.target.value))}
+                onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+                onPointerCancel={() => {
+                    dragging.current = false;
+                    lastCommitted.current = null;
+                    setDraft(external);
+                    onCancel();
+                }}
+                onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+                onBlur={(event) => {
+                    const raw = Number(event.currentTarget.value);
+                    if (lastCommitted.current === null || !approximatelyEqual(lastCommitted.current, raw)) {
+                        commit(raw);
+                    }
+                }}
+            />
+        </div>
+    );
 }

@@ -71,8 +71,8 @@ const RecommendedPack kRecommended[] = {
         "rerdavies/ToobAmp",
         "https://github.com/rerdavies/ToobAmp",
         "Raspberry Pi guitar LV2 pack: NAM A2, cab IR, delay, reverb, EQ, modulation. "
-        "Prefers the ToobAmp `dev` arm64 .deb (v1.3.85). That file is not on GitHub yet, "
-        "so INSTALL copies TooB from the latest PiPedal arm64 package without installing PiPedal."
+        "INSTALL copies the current TooB bundle from the latest PiPedal arm64 package "
+        "without installing PiPedal."
     }
 };
 
@@ -820,10 +820,13 @@ Json PluginStore::recommendedUnlocked(bool fetchLatest) {
         if (fetchLatest) {
             std::string latestError;
             if (std::string(pack.id) == "toobamp") {
-                const ToobAmpDeb deb = resolveToobAmpArm64Deb(latestError);
-                if (!deb.tag.empty()) {
-                    item.set("latestVersion", deb.tag);
-                    item.set("latestName", deb.name);
+                const Json release = httpsGet(std::string("https://api.github.com/repos/")
+                                                  + kPipedalRepo + "/releases/latest",
+                                              latestError, 20);
+                if (latestError.empty() && release.isObject()) {
+                    const Json deb = pickArm64Deb(release);
+                    item.set("latestVersion", release["tag_name"].asString());
+                    item.set("latestName", deb["name"].asString());
                 }
             } else {
                 const std::string url = std::string("https://api.github.com/repos/") + pack.repo + "/releases/latest";
@@ -921,9 +924,9 @@ bool PluginStore::installToobAmpFromPipedalDeb(std::string& error) {
         }
     }
     Json record = Json::object();
-    record.set("source", "toobamp-dev");
+    record.set("source", "pipedal-release");
     record.set("title", "ToobAmp");
-    record.set("url", "https://github.com/rerdavies/ToobAmp");
+    record.set("url", "https://github.com/rerdavies/pipedal");
     record.set("directory", "ToobAmp.lv2");
     Json directories = Json::array();
     directories.push(Json("ToobAmp.lv2"));
@@ -956,66 +959,13 @@ bool PluginStore::githubInstall(const std::string& id, std::string& error) {
         error = "ToobAmp can only be installed on the Pi";
         return false;
 #else
-        Json pipedalArgs = Json::object();
-        pipedalArgs.set("package", "pipedal");
-        std::string pipedalError;
-        const Json pipedal = helperCall("package-status", pipedalArgs, pipedalError, 10);
-        if (pipedalError.empty() && pipedal["installed"].asBool(false)) {
-            error = "the pipedal package is already installed. TooB ships inside that package; "
-                    "do not install the separate toobamp .deb over it.";
-            return false;
-        }
-
-        const ToobAmpDeb deb = resolveToobAmpArm64Deb(error);
-        if (deb.url.empty()) {
-            if (error.empty()) {
-                error = "could not find a ToobAmp NAM A2 arm64 .deb";
-            }
-            return false;
-        }
-        error.clear();
-
+        // Community presets must use the current TooB build shipped by PiPedal.
+        // Extract only ToobAmp.lv2 into Pi-MFX's private LV2 directory; never
+        // install PiPedal or fall back to the older standalone repository.
         std::string ignore;
         Json removeArgs = Json::object();
         removeArgs.set("package", "toobamp");
         helperCall("apt-remove", removeArgs, ignore, 120);
-
-        std::error_code ec;
-        fs::remove_all(fs::path(paths_.lv2Dir) / "ToobAmp.lv2", ec);
-        Json registry = loadRegistry();
-        Json remaining = Json::array();
-        for (const Json& existing : registry["bundles"].items()) {
-            bool keep = true;
-            for (const Json& dir : existing["directories"].items()) {
-                if (dir.asString() == "ToobAmp.lv2") {
-                    keep = false;
-                    break;
-                }
-            }
-            if (keep && existing["directory"].asString() != "ToobAmp.lv2") {
-                remaining.push(existing);
-            }
-        }
-        registry.set("bundles", remaining);
-        saveRegistry(registry);
-
-        const std::string filename = sanitizeFileName(deb.name.empty() ? fileName(deb.url) : deb.name);
-        const std::string dest = joinPath(joinPath(paths_.downloadsDir, "github"), filename);
-        if (httpsDownload(deb.url, dest, error)) {
-            Json args = Json::object();
-            args.set("path", dest);
-            const Json reply = helperCall("deb-install", args, error, 300);
-            removeFile(dest);
-            if (!error.empty()) {
-                return false;
-            }
-            logInfo("plugins: installed ToobAmp " + deb.tag + " from ToobAmp dev");
-            return reply["ok"].asBool(true);
-        }
-
-        logWarn("plugins: ToobAmp standalone .deb is not published (" + error
-                + "); copying TooB from the latest PiPedal arm64 package");
-        error.clear();
         return installToobAmpFromPipedalDeb(error);
 #endif
     }

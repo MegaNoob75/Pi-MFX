@@ -100,7 +100,9 @@ apt-get install -y --no-install-recommends \
 
 log "Building the engine"
 ensure_clone_writable
-as_clone_owner cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+as_clone_owner cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DPIMFX_ENABLE_DRUM_MACHINE=ON >/dev/null
 as_clone_owner cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
 
 log "Building the user interface"

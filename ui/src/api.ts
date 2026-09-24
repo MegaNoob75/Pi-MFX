@@ -8,6 +8,11 @@ export interface EngineSnapshot {
     catalog: JsonObject;
     library: JsonObject;
     meters: JsonObject;
+    transport: JsonObject;
+    backing: JsonObject;
+    looper: JsonObject;
+    recorder: JsonObject;
+    drums: JsonObject;
     uiSession: JsonObject;
 }
 
@@ -18,6 +23,11 @@ const emptySnapshot = (): EngineSnapshot => ({
     catalog: {},
     library: {},
     meters: {},
+    transport: {},
+    backing: {},
+    looper: {},
+    recorder: {},
+    drums: {},
     uiSession: {}
 });
 
@@ -33,6 +43,7 @@ export class EngineClient {
     private listeners = new Set<(snapshot: EngineSnapshot) => void>();
     private meterListeners = new Set<(meters: JsonObject) => void>();
     private navListeners = new Set<(message: JsonObject) => boolean | void>();
+    private viewListeners = new Set<(message: JsonObject) => void>();
     snapshot: EngineSnapshot = emptySnapshot();
 
     start(): void {
@@ -109,6 +120,78 @@ export class EngineClient {
         return body;
     }
 
+    subscribeUiView(listener: (message: JsonObject) => void): () => void {
+        this.viewListeners.add(listener);
+        return () => this.viewListeners.delete(listener);
+    }
+
+    async uploadBackingTrack(file: File, onProgress?: (fraction: number) => void): Promise<JsonObject> {
+        if (file.size > 64 * 1024 * 1024) throw new Error("that track is larger than the 64 MB import limit");
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("POST", "/api/backing/import");
+            request.setRequestHeader("Content-Type", "application/octet-stream");
+            request.setRequestHeader("X-PiMFX-Filename", encodeURIComponent(file.name));
+            request.upload.onprogress = (event) => {
+                if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+            };
+            request.onerror = () => reject(new Error("lost contact with the engine during import"));
+            request.onload = () => {
+                try {
+                    const parsed: unknown = JSON.parse(request.responseText);
+                    if (!isObj(parsed as Json)) throw new Error("backing-track import returned invalid JSON");
+                    const body = parsed as JsonObject;
+                    if (request.status < 200 || request.status >= 300 || !bool(body.ok, true)) {
+                        throw new Error(str(body.error, "backing-track import failed"));
+                    }
+                    this.ingest(body);
+                    onProgress?.(1);
+                    resolve(body);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            request.send(file);
+        });
+    }
+
+    async uploadDrumSample(voice: number, file: File, onProgress?: (fraction: number) => void): Promise<JsonObject> {
+        if (file.size > 32 * 1024 * 1024) throw new Error("that sample is larger than the 32 MB import limit");
+        return new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open("POST", "/api/drums/sample/import");
+            request.setRequestHeader("Content-Type", "application/octet-stream");
+            request.setRequestHeader("X-PiMFX-Filename", encodeURIComponent(file.name));
+            request.setRequestHeader("X-PiMFX-Drum-Voice", String(voice));
+            request.upload.onprogress = (event) => {
+                if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+            };
+            request.onerror = () => reject(new Error("lost contact with the engine during sample import"));
+            request.onload = () => {
+                try {
+                    const parsed: unknown = JSON.parse(request.responseText);
+                    if (!isObj(parsed as Json)) throw new Error("drum sample import returned invalid JSON");
+                    const body = parsed as JsonObject;
+                    if (request.status < 200 || request.status >= 300 || !bool(body.ok, true)) {
+                        throw new Error(str(body.error, "drum sample import failed"));
+                    }
+                    this.ingest(body); onProgress?.(1); resolve(body);
+                } catch (error) { reject(error); }
+            };
+            request.send(file);
+        });
+    }
+
+    async importDrumLibrary(file: File, relative: string): Promise<JsonObject> {
+        if (file.size > 32 * 1024 * 1024) throw new Error("sample exceeds 32 MB");
+        const response = await fetch("/api/drums/library/import", {
+            method: "POST", headers: { "Content-Type": "application/octet-stream", "X-PiMFX-Relative": encodeURIComponent(relative) }, body: file
+        });
+        const result = obj(await response.json());
+        if (!response.ok || !bool(result.ok)) throw new Error(str(result.error, "sample import failed"));
+        return result;
+    }
+
     private connect(): void {
         if (this.closed) {
             return;
@@ -142,7 +225,15 @@ export class EngineClient {
     private ingest(message: JsonObject): void {
         const type = str(message.type);
         if (type === "state") {
-            this.patch({ state: message, lastError: str(message.audioError) });
+            this.patch({
+                state: message,
+                transport: isObj(message.transport as Json) ? message.transport as JsonObject : this.snapshot.transport,
+                backing: isObj(message.backing as Json) ? message.backing as JsonObject : this.snapshot.backing,
+                looper: isObj(message.looper as Json) ? message.looper as JsonObject : this.snapshot.looper,
+                recorder: isObj(message.recorder as Json) ? message.recorder as JsonObject : this.snapshot.recorder,
+                drums: isObj(message.drums as Json) ? message.drums as JsonObject : this.snapshot.drums,
+                lastError: str(message.audioError)
+            });
             return;
         }
         if (type === "catalog") {
@@ -160,6 +251,26 @@ export class EngineClient {
             }
             return;
         }
+        if (type === "transport") {
+            this.patch({ transport: message });
+            return;
+        }
+        if (type === "backing") {
+            this.patch({ backing: message });
+            return;
+        }
+        if (type === "looper") {
+            this.patch({ looper: message });
+            return;
+        }
+        if (type === "recorder") {
+            this.patch({ recorder: message });
+            return;
+        }
+        if (type === "drums") {
+            this.patch({ drums: message });
+            return;
+        }
         if (type === "uiNav") {
             if (!bool(message.select)) {
                 const raw = Math.trunc(num(message.delta));
@@ -171,6 +282,10 @@ export class EngineClient {
             for (const listener of this.navListeners) {
                 if (listener(message) === true) break;
             }
+            return;
+        }
+        if (type === "uiView") {
+            for (const listener of this.viewListeners) listener(message);
             return;
         }
         if (type === "uiSession") {

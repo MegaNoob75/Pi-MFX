@@ -35,16 +35,10 @@ bool lockMemory(std::string& message) {
     return true;
 }
 
-bool setThreadRealtime(int priority, std::string& message) {
+int setThreadRealtime(int priority) noexcept {
     sched_param param{};
     param.sched_priority = priority;
-    const int result = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
-    if (result != 0) {
-        message = describeError("SCHED_FIFO priority " + std::to_string(priority) + " refused", result);
-        return false;
-    }
-    message = "SCHED_FIFO priority " + std::to_string(priority);
-    return true;
+    return pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
 }
 
 bool setThreadAffinity(const std::vector<int>& cpus, std::string& message) {
@@ -131,10 +125,13 @@ bool lockMemory(std::string& message) {
     return false;
 }
 
-bool setThreadRealtime(int priority, std::string& message) {
+int setThreadRealtime(int priority) noexcept {
     (void)priority;
-    message = "SCHED_FIFO is only available on Linux";
-    return false;
+#if defined(ENOTSUP)
+    return ENOTSUP;
+#else
+    return EINVAL;
+#endif
 }
 
 bool setThreadAffinity(const std::vector<int>& cpus, std::string& message) {

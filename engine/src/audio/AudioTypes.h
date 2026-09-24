@@ -9,9 +9,9 @@ namespace pimfx {
 
 /// Everything the user can change about the audio path.
 ///
-/// These map directly onto ALSA hardware parameters. The UI exposes all of
-/// them, because on a guitar rig the difference between 64 x 3 and 128 x 2 is
-/// the difference between playable and not.
+/// Hardware stream parameters plus the small set of master-output safety
+/// controls. The UI exposes them because both buffering and protection affect
+/// the feel of a live guitar rig.
 struct AudioSettings {
     /// ALSA device name, e.g. "hw:CARD=Audio,DEV=0". Empty means "pick the
     /// first usable duplex device".
@@ -48,6 +48,18 @@ struct AudioSettings {
     /// Mutes output whenever the chain is being rebuilt, so a plugin swap
     /// cannot produce a click through an amp.
     bool muteOnChange = true;
+    float patchFadeOutMs = 5.0f;
+    float patchFadeInMs = 8.0f;
+
+    /// Final master-output protection. These controls are deliberately part
+    /// of Audio settings because they affect the signal and (for look-ahead)
+    /// latency, not thread scheduling.
+    bool dcBlockerEnabled = true;
+    float dcBlockerHz = 7.0f;
+    bool limiterEnabled = true;
+    float limiterCeilingDb = -1.0f;
+    float limiterLookaheadMs = 0.75f;
+    float limiterReleaseMs = 80.0f;
 
     /// Theoretical one-way buffering, in milliseconds, for display next to the
     /// measured figure.
@@ -57,6 +69,8 @@ struct AudioSettings {
     }
 
     bool operator==(const AudioSettings& other) const {
+        // Only settings that require reopening the device participate here.
+        // Gain and safety controls are atomically updated while audio runs.
         return device == other.device
             && captureDevice == other.captureDevice
             && sampleRate == other.sampleRate

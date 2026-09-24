@@ -15,6 +15,26 @@
 namespace fs = std::filesystem;
 
 namespace pimfx {
+bool resolveLibraryPath(const std::string& path, std::string& resolved) {
+    std::error_code ec;
+    fs::path ancestor = fs::absolute(fs::path(path), ec).lexically_normal();
+    if (ec) return false;
+    std::vector<fs::path> missing;
+    for (;;) {
+        const auto status = fs::symlink_status(ancestor, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) return false;
+        if (!ec && status.type() != fs::file_type::not_found) break;
+        ec.clear();
+        const auto parent = ancestor.parent_path();
+        if (parent.empty() || parent == ancestor) return false;
+        missing.push_back(ancestor.filename()); ancestor = parent;
+    }
+    fs::path result = fs::canonical(ancestor, ec);
+    if (ec) return false;
+    for (auto it = missing.rbegin(); it != missing.rend(); ++it) result /= *it;
+    resolved = result.string(); return true;
+}
+
 namespace {
 
 std::string environment(const char* name) {
@@ -53,6 +73,11 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.layoutsDir = joinPath(root, "layouts");
     paths.backupsDir = joinPath(root, "backups");
     paths.bankExportsDir = joinPath(root, "bank-exports");
+    paths.backingTracksDir = joinPath(root, "backing-tracks");
+    paths.loopsDir = joinPath(root, "loops");
+    paths.recordingsDir = joinPath(root, "recordings");
+    paths.drumsDir = joinPath(root, "drums");
+    paths.communityDir = joinPath(root, "community");
 
     paths.webRoot = environment("PIMFX_WEB_ROOT");
     if (paths.webRoot.empty()) {
@@ -68,13 +93,17 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.aidaxDir);
     makeDirectories(paths.irsDir);
     makeDirectories(joinPath(paths.modelsDir, "TONE3000"));
-    makeDirectories(joinPath(paths.aidaxDir, "TONE3000"));
     makeDirectories(joinPath(paths.irsDir, "TONE3000"));
     makeDirectories(paths.downloadsDir);
     makeDirectories(paths.lv2Dir);
     makeDirectories(paths.layoutsDir);
     makeDirectories(paths.backupsDir);
     makeDirectories(paths.bankExportsDir);
+    makeDirectories(paths.backingTracksDir);
+    makeDirectories(paths.loopsDir);
+    makeDirectories(paths.recordingsDir);
+    makeDirectories(paths.drumsDir);
+    makeDirectories(paths.communityDir);
     return paths;
 }
 
@@ -87,6 +116,7 @@ std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json
 std::string Paths::hotspotFile() const { return joinPath(dataRoot, "hotspot.json"); }
 std::string Paths::patchstorageCacheFile() const { return joinPath(dataRoot, "patchstorage-cache.json"); }
 std::string Paths::tone3000CacheFile() const { return joinPath(dataRoot, "tone3000-cache.json"); }
+std::string Paths::tone3000AssetsFile() const { return joinPath(dataRoot, "tone3000-assets.json"); }
 
 bool fileExists(const std::string& path) {
     std::error_code ec;

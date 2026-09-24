@@ -1,4 +1,4 @@
-import { str, objects, type JsonObject } from "./json";
+import { bool, str, objects, type JsonObject } from "./json";
 
 export type PerformanceEncoderMode = "browse" | "live" | "session";
 
@@ -36,6 +36,7 @@ export function catalogIndexOf(
 export function buildPerformanceCatalog(banks: JsonObject[]): PerformanceCatalogEntry[] {
     const catalog: PerformanceCatalogEntry[] = [];
     for (const bank of banks) {
+        if (bool(bank.communityHolding)) continue;
         const bankId = str(bank.id);
         const bankName = str(bank.name, "Bank");
         const seen = new Set<string>();

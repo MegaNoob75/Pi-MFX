@@ -5,6 +5,8 @@ import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import {
     STATUS_WIDGET_IDS,
     STATUS_WIDGET_LABELS,
+    METER_WIDGET_HEIGHT,
+    METER_WIDGET_WIDTH,
     analogMinSize,
     clampRect,
     fitRectInEmptySpace,
@@ -22,10 +24,12 @@ import {
     snapshotWidgetId,
     snapshotWidgetsToJson,
     spaceRectsEvenly,
+    statusWidgetMinSize,
     statusWidgetsToJson,
     unplacedIds,
     type LayoutGroup,
-    type LayoutRect
+    type LayoutRect,
+    type MeterOrientation
 } from "../layout";
 import { GainMeter } from "./GainMeter";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
@@ -40,6 +44,7 @@ function layoutNameFromPath(path: string, fallback = "default"): string {
 
 const SNAP_PIXELS_KEY = "pimfx-layout-snap-pixels";
 const SNAP_ENABLED_KEY = "pimfx-layout-snap-enabled";
+const METER_LONG_PRESS_MS = 600;
 
 const ACTION_LABELS: Record<string, string> = {
     none: "Unassigned",
@@ -57,7 +62,12 @@ const ACTION_LABELS: Record<string, string> = {
     selectSnapshot: "Snapshot",
     reloadPreset: "Reload Preset",
     setParameter: "Set Parameter",
-    toggleEffect: "Toggle Effect"
+    toggleEffect: "Toggle Effect",
+    backingPlayPause: "Backing Play / Pause",
+    backingStop: "Backing Stop",
+    backingPrevious: "Backing Previous",
+    backingNext: "Backing Next",
+    backingView: "Open Backing Tracks"
 };
 
 function loadSnapPixels(): number {
@@ -103,6 +113,7 @@ export function LayoutEditorView({
     const [dirty, setDirty] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [meterOrientationTarget, setMeterOrientationTarget] = useState("");
     const [loadedLayoutName, setLoadedLayoutName] = useState(() => str(layout.layoutName));
     const [measurement, setMeasurement] = useState<{
         mode: string;
@@ -218,6 +229,18 @@ export function LayoutEditorView({
         lastValid: Record<string, LayoutRect>;
         startedOverlapping: Set<string>;
     } | null>(null);
+    const meterHold = useRef<{
+        timer: number;
+        pointerId: number;
+        startX: number;
+        startY: number;
+    } | null>(null);
+
+    useEffect(() => () => {
+        if (meterHold.current) {
+            window.clearTimeout(meterHold.current.timer);
+        }
+    }, []);
 
     const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
     const activeGroup = stageGroups.find((group) => group.id === activeGroupId);
@@ -280,7 +303,7 @@ export function LayoutEditorView({
         if (control) {
             return analogMinSize(normalizeControlKind(str(control.kind, "momentary")));
         }
-        return { width: 0.08, height: 0.08 };
+        return statusWidgetMinSize(id, widgets[id]?.orientation);
     };
 
     const rectForId = (id: string): LayoutRect | null => {
@@ -513,9 +536,49 @@ export function LayoutEditorView({
         });
     };
 
+    const startMeterHold = (id: string, event: ReactPointerEvent) => {
+        if (meterHold.current) {
+            window.clearTimeout(meterHold.current.timer);
+        }
+        const hold = {
+            timer: 0,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY
+        };
+        hold.timer = window.setTimeout(() => {
+            meterHold.current = null;
+            if (drag.current?.id !== id || drag.current.mode !== "move") {
+                return;
+            }
+            drag.current = null;
+            swapTargetRef.current = null;
+            setSwapTargetId(null);
+            setMeasurement(null);
+            try {
+                stageRef.current?.releasePointerCapture(hold.pointerId);
+            } catch {
+                // Pointer capture is optional.
+            }
+            setMeterOrientationTarget(id);
+        }, METER_LONG_PRESS_MS);
+        meterHold.current = hold;
+    };
+
     const onPointerMove = (event: ReactPointerEvent) => {
         if (!drag.current || !stageRef.current) {
             return;
+        }
+        if (meterHold.current) {
+            const distance = Math.hypot(
+                event.clientX - meterHold.current.startX,
+                event.clientY - meterHold.current.startY
+            );
+            if (distance <= 8) {
+                return;
+            }
+            window.clearTimeout(meterHold.current.timer);
+            meterHold.current = null;
         }
         const box = stageRef.current.getBoundingClientRect();
         const dx = (event.clientX - drag.current.startX) / box.width;
@@ -523,9 +586,18 @@ export function LayoutEditorView({
         const base = drag.current.rect;
         const id = drag.current.id;
         const min = minSizeForId(id);
+        const meterOrientation = widgets[id]?.orientation ?? "vertical";
+        const verticalOnlyResize = isMeterWidget(id) && meterOrientation === "vertical" && drag.current.mode !== "move";
+        const horizontalOnlyResize = isMeterWidget(id) && meterOrientation === "horizontal" && drag.current.mode !== "move";
         const raw = drag.current.mode === "move"
             ? { ...base, x: base.x + dx, y: base.y + dy }
-            : resizeRect(base, dx, dy, drag.current.mode === "resize-nw" ? "nw" : "se", min);
+            : resizeRect(
+                base,
+                verticalOnlyResize ? 0 : dx,
+                horizontalOnlyResize ? 0 : dy,
+                drag.current.mode === "resize-nw" ? "nw" : "se",
+                min
+            );
 
         let swapId: string | null = null;
         if (drag.current.mode === "move") {
@@ -548,7 +620,22 @@ export function LayoutEditorView({
             const group = groupForId(id);
             group?.memberIds.forEach((member) => ignore.add(member));
         }
-        const updates: Record<string, LayoutRect> = { [id]: applySnap(raw, min) };
+        const snapped = applySnap(raw, min);
+        const updates: Record<string, LayoutRect> = {
+            [id]: verticalOnlyResize
+                ? {
+                    ...snapped,
+                    x: base.x + (base.width - METER_WIDGET_WIDTH) / 2,
+                    width: METER_WIDGET_WIDTH
+                }
+                : horizontalOnlyResize
+                    ? {
+                        ...snapped,
+                        y: base.y + (base.height - METER_WIDGET_HEIGHT) / 2,
+                        height: METER_WIDGET_HEIGHT
+                    }
+                : snapped
+        };
         if (groupMode && drag.current.mode === "move") {
             const group = groupForId(id);
             if (group && group.memberIds.length > 1) {
@@ -575,7 +662,10 @@ export function LayoutEditorView({
                     }
                     const current = rectForId(other);
                     if (current) {
-                        updates[other] = sizedRect(other, current, { width: updates[id].width, height: updates[id].height });
+                        updates[other] = sizedRect(other, current, {
+                            width: verticalOnlyResize ? current.width : updates[id].width,
+                            height: horizontalOnlyResize ? current.height : updates[id].height
+                        });
                     }
                 }
             }
@@ -598,6 +688,10 @@ export function LayoutEditorView({
     };
 
     const onPointerUp = (event: ReactPointerEvent) => {
+        if (meterHold.current) {
+            window.clearTimeout(meterHold.current.timer);
+            meterHold.current = null;
+        }
         if (!drag.current) {
             return;
         }
@@ -683,6 +777,45 @@ export function LayoutEditorView({
             [id]: { ...current[id], visible: true, rect: fitted }
         }));
         setMessage("");
+        markDirty();
+    };
+
+    const applyMeterOrientation = (id: string, orientation: MeterOrientation) => {
+        const widget = widgets[id];
+        if (!widget || !isMeterWidget(id)) {
+            setMeterOrientationTarget("");
+            return;
+        }
+        if (widget.orientation === orientation) {
+            setMeterOrientationTarget("");
+            return;
+        }
+        const centerX = widget.rect.x + widget.rect.width / 2;
+        const centerY = widget.rect.y + widget.rect.height / 2;
+        const length = orientation === "horizontal"
+            ? Math.max(0.22, Math.min(0.78, widget.rect.height))
+            : Math.max(0.22, Math.min(0.78, widget.rect.width));
+        const size = orientation === "horizontal"
+            ? { width: length, height: METER_WIDGET_HEIGHT }
+            : { width: METER_WIDGET_WIDTH, height: length };
+        const min = statusWidgetMinSize(id, orientation);
+        const proposed = clampRect({
+            x: centerX - size.width / 2,
+            y: centerY - size.height / 2,
+            ...size
+        }, min);
+        const fitted = fitRectInEmptySpace(proposed, occupyExcept(id), min);
+        if (!fitted) {
+            setMessage("No empty space for that meter orientation. Make a gap first.");
+            setMeterOrientationTarget("");
+            return;
+        }
+        setWidgets((current) => ({
+            ...current,
+            [id]: { ...current[id], orientation, rect: fitted }
+        }));
+        setMeterOrientationTarget("");
+        setMessage(`${id === "inputMeter" ? "IN" : "OUT"} meter set ${orientation}.`);
         markDirty();
     };
 
@@ -843,22 +976,28 @@ export function LayoutEditorView({
         setMessage("");
     };
 
-    const itemClassName = (kind: "switch" | "status", id: string) => (
-        `layout-item ${kind}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}${groupMode && !grouped.has(id) ? " group-dim" : ""}${swapTargetId === id ? " swap-target" : ""}`
-    );
+    const itemClassName = (kind: "switch" | "status", id: string) => {
+        const meterClass = kind === "status" && isMeterWidget(id)
+            ? ` is-meter is-${widgets[id]?.orientation ?? "vertical"}`
+            : "";
+        return `layout-item ${kind}${meterClass}${selectedId === id ? " selected" : ""}${grouped.has(id) ? " grouped" : ""}${groupMode && !grouped.has(id) ? " group-dim" : ""}${swapTargetId === id ? " swap-target" : ""}`;
+    };
 
-    const resizeHandles = (id: string, rect: LayoutRect) => (
-        <>
+    const resizeHandles = (id: string, rect: LayoutRect) => {
+        const orientation = widgets[id]?.orientation ?? "vertical";
+        const verticalOnly = isMeterWidget(id) && orientation === "vertical";
+        const horizontalOnly = isMeterWidget(id) && orientation === "horizontal";
+        return <>
             <span
-                className="layout-resize layout-resize-nw"
+                className={`layout-resize ${verticalOnly ? "layout-resize-north" : horizontalOnly ? "layout-resize-west" : "layout-resize-nw"}`}
                 onPointerDown={(event) => onPointerDown(id, rect, event, "resize-nw")}
             />
             <span
-                className="layout-resize"
+                className={`layout-resize${verticalOnly ? " layout-resize-south" : horizontalOnly ? " layout-resize-east" : ""}`}
                 onPointerDown={(event) => onPointerDown(id, rect, event, "resize-se")}
             />
-        </>
-    );
+        </>;
+    };
 
     return (
         <div className="layout-editor">
@@ -1183,12 +1322,26 @@ export function LayoutEditorView({
                             <div
                                 key={id}
                                 className={itemClassName("status", id)}
-                                style={rectStyle(widget.rect, selectedId === id ? 3 : grouped.has(id) ? 2 : 1)}
-                                onPointerDown={(event) => onPointerDown(id, widget.rect, event)}
+                                style={rectStyle(
+                                    widget.rect,
+                                    selectedId === id ? 3 : grouped.has(id) ? 2 : 1,
+                                    isMeterWidget(id) && widget.orientation === "vertical"
+                                )}
+                                onPointerDown={(event) => {
+                                    onPointerDown(id, widget.rect, event);
+                                    if (isMeterWidget(id)) {
+                                        startMeterHold(id, event);
+                                    }
+                                }}
                             >
-                                <div className={`layout-item-preview layout-item-preview--status${isMeterWidget(id) ? " is-meter" : ""}`}>
+                                <div className={`layout-item-preview layout-item-preview--status${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}`}>
                                     {isMeterWidget(id) ? (
-                                        <GainMeter label={STATUS_WIDGET_LABELS[id]} peak={0.28} preview />
+                                        <GainMeter
+                                            label={id === "inputMeter" ? "In" : "Out"}
+                                            peak={0.28}
+                                            orientation={widget.orientation}
+                                            preview
+                                        />
                                     ) : (
                                         <>
                                             {widget.showLabel && (
@@ -1258,7 +1411,29 @@ export function LayoutEditorView({
                 {bool(controller.mirrorLayoutOnScreen, true)
                     ? "This layout is what the Performance screen shows."
                     : "Turn on mirror layout in Hardware Setup to show this on Performance."}
+                {stage === "performance" && " Long-press an IN or OUT meter to change its orientation."}
             </div>
+            {meterOrientationTarget && (
+                <div className="dialog-backdrop" onClick={() => setMeterOrientationTarget("")}>
+                    <div className="dialog" onClick={(event) => event.stopPropagation()}>
+                        <h2>{meterOrientationTarget === "inputMeter" ? "IN" : "OUT"} METER ORIENTATION</h2>
+                        <div className="muted">Choose how this gain meter is displayed.</div>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                            <button type="button" className="btn" onClick={() => setMeterOrientationTarget("")}>CANCEL</button>
+                            <button
+                                type="button"
+                                className={`btn ${widgets[meterOrientationTarget]?.orientation === "vertical" ? "btn-active" : ""}`}
+                                onClick={() => applyMeterOrientation(meterOrientationTarget, "vertical")}
+                            >VERTICAL</button>
+                            <button
+                                type="button"
+                                className={`btn ${widgets[meterOrientationTarget]?.orientation === "horizontal" ? "btn-active" : ""}`}
+                                onClick={() => applyMeterOrientation(meterOrientationTarget, "horizontal")}
+                            >HORIZONTAL</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {confirmDelete && (
                 <ConfirmDialog
                     title={`DELETE “${(loadedLayoutName.trim() || "default").toUpperCase()}”?`}
@@ -1360,14 +1535,20 @@ function roleForAction(action: string): SwitchRole {
     if (action === "bypassAll") {
         return "bypass";
     }
+    if (action === "looperRecord" || action === "looperClear" || action === "recorderToggle" || action === "drumToggle") {
+        return "bypass";
+    }
+    if (action === "looperOverdub") {
+        return "snapshot";
+    }
     return "utility";
 }
 
-function rectStyle(rect: LayoutRect, zIndex = 1): CSSProperties {
+function rectStyle(rect: LayoutRect, zIndex = 1, intrinsicWidth = false): CSSProperties {
     return {
         left: `${rect.x * 100}%`,
         top: `${rect.y * 100}%`,
-        width: `${rect.width * 100}%`,
+        width: intrinsicWidth ? undefined : `${rect.width * 100}%`,
         height: `${rect.height * 100}%`,
         zIndex
     };

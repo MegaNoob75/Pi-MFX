@@ -10,7 +10,12 @@ export const STATUS_WIDGET_IDS = [
     "snapshotModeStatus",
     "tuner",
     "inputMeter",
-    "outputMeter"
+    "outputMeter",
+    "tapTempo",
+    "backingTrack",
+    "looperControl",
+    "recorderControl",
+    "drumMachine"
 ] as const;
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
@@ -25,11 +30,33 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     snapshotModeStatus: "Snapshots",
     tuner: "Tuner",
     inputMeter: "Input Gain",
-    outputMeter: "Output Gain"
+    outputMeter: "Output Gain",
+    tapTempo: "Tap Tempo",
+    backingTrack: "Backing Tracks",
+    looperControl: "Looper",
+    recorderControl: "Recorder",
+    drumMachine: "Drum Machine"
 };
+
+export const METER_WIDGET_WIDTH = 0.04;
+export const METER_WIDGET_HEIGHT = 0.10;
+export type MeterOrientation = "vertical" | "horizontal";
 
 export function isMeterWidget(id: string): boolean {
     return id === "inputMeter" || id === "outputMeter";
+}
+
+export function statusWidgetMinSize(id: string, orientation: MeterOrientation = "vertical"): { width: number; height: number } {
+    if (["tapTempo", "backingTrack", "looperControl", "recorderControl", "drumMachine"].includes(id)) {
+        return { width: 0.22, height: 0.24 };
+    }
+    if (id === "audioStatus") return { width: 0.20, height: 0.18 };
+    if (isMeterWidget(id)) {
+        return orientation === "horizontal"
+            ? { width: 0.22, height: METER_WIDGET_HEIGHT }
+            : { width: METER_WIDGET_WIDTH, height: 0.22 };
+    }
+    return { width: 0.08, height: 0.08 };
 }
 
 export interface LayoutRect {
@@ -44,6 +71,7 @@ export interface StatusWidget {
     visible: boolean;
     rect: LayoutRect;
     showLabel: boolean;
+    orientation: MeterOrientation;
 }
 
 export function clampRect(rect: LayoutRect, minSize?: { width: number; height: number }): LayoutRect {
@@ -66,11 +94,12 @@ export function defaultStatusWidgets(): Record<string, StatusWidget> {
             id,
             visible: index < 4,
             showLabel: true,
+            orientation: "vertical",
             rect: clampRect(isMeterWidget(id)
                 ? {
-                    x: id === "inputMeter" ? 0.02 : 0.86,
+                    x: id === "inputMeter" ? 0.02 : 0.94,
                     y: 0.20,
-                    width: 0.12,
+                    width: METER_WIDGET_WIDTH,
                     height: 0.58
                 }
                 : {
@@ -78,7 +107,7 @@ export function defaultStatusWidgets(): Record<string, StatusWidget> {
                     y: 0.02,
                     width: 0.22,
                     height: 0.12
-                })
+                }, statusWidgetMinSize(id))
         };
     });
     return widgets;
@@ -88,20 +117,35 @@ export function readStatusWidgets(layout: JsonObject): Record<string, StatusWidg
     const stored = obj(layout.elements);
     const widgets = defaultStatusWidgets();
     for (const id of STATUS_WIDGET_IDS) {
-        const item = obj(stored[id]);
+        const current = obj(stored[id]);
+        const item = id === "looperControl" && Object.keys(current).length === 0
+            ? obj(stored.looperStatus)
+            : current;
         if (!item.id && !item.visible && !item.rect) {
             continue;
+        }
+        const orientation: MeterOrientation = isMeterWidget(id) && str(item.orientation) === "horizontal"
+            ? "horizontal"
+            : "vertical";
+        const rect = {
+            x: num(obj(item.rect).x, widgets[id].rect.x),
+            y: num(obj(item.rect).y, widgets[id].rect.y),
+            width: num(obj(item.rect).width, widgets[id].rect.width),
+            height: num(obj(item.rect).height, widgets[id].rect.height)
+        };
+        if (isMeterWidget(id) && orientation === "vertical") {
+            rect.x += (rect.width - METER_WIDGET_WIDTH) / 2;
+            rect.width = METER_WIDGET_WIDTH;
+        } else if (isMeterWidget(id)) {
+            rect.y += (rect.height - METER_WIDGET_HEIGHT) / 2;
+            rect.height = METER_WIDGET_HEIGHT;
         }
         widgets[id] = {
             id,
             visible: bool(item.visible, widgets[id].visible),
             showLabel: bool(item.showLabel, true),
-            rect: clampRect({
-                x: num(obj(item.rect).x, widgets[id].rect.x),
-                y: num(obj(item.rect).y, widgets[id].rect.y),
-                width: num(obj(item.rect).width, widgets[id].rect.width),
-                height: num(obj(item.rect).height, widgets[id].rect.height)
-            })
+            orientation,
+            rect: clampRect(rect, statusWidgetMinSize(id, orientation))
         };
     }
     return widgets;
@@ -115,6 +159,7 @@ export function statusWidgetsToJson(widgets: Record<string, StatusWidget>): Json
             id,
             visible: widget.visible,
             showLabel: widget.showLabel,
+            ...(isMeterWidget(id) ? { orientation: widget.orientation } : {}),
             rect: {
                 x: widget.rect.x,
                 y: widget.rect.y,
