@@ -2,6 +2,15 @@
 
 **An original guitar multi-effects pedalboard for the Raspberry Pi 5.**
 
+[![Raspberry Pi 5](https://img.shields.io/badge/Raspberry%20Pi-5-C51A4A?logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/products/raspberry-pi-5/)
+[![LV2](https://img.shields.io/badge/plugins-LV2-6c5ce7)](https://lv2plug.in/)
+[![NAM](https://img.shields.io/badge/amp%20models-NAM-e17055)](https://www.neuralampmodeler.com/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+An open-source C++ and React audio-DSP project combining LV2 plugins, Neural
+Amp Modeler (NAM) captures, cabinet impulse responses, low-latency ALSA audio,
+touchscreen control, and an optional ESP32-S3 MIDI foot controller.
+
 Pi-MFX turns a dedicated, headless Raspberry Pi 5 into a low-latency guitar
 processor: an in-process LV2 effect chain (including NAM captures and cabinet
 impulse responses) driven from a touchscreen, tablet, phone, or PC browser,
