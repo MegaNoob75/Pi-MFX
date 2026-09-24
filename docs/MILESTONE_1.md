@@ -1,7 +1,8 @@
 # Milestone 1: Backing-track playback foundation
 
-This checklist tracks the isolated work on `codex/milestone-1-backing-track-playback`.
-Milestone 1 is complete only after every required item is implemented and Pi-tested.
+The backing-track feature is implemented in the current `workstation` tree.
+This historical checklist now separates completed implementation from the
+remaining Raspberry Pi runtime sign-off.
 
 ## Implemented foundation
 
@@ -17,7 +18,7 @@ Milestone 1 is complete only after every required item is implemented and Pi-tes
 - [x] Integrated backing-track file manager
 - [x] Basic controller actions for play/pause, stop, previous, and next
 
-## Required before completion
+## Implemented detail
 
 ### Library and set lists
 
@@ -69,9 +70,7 @@ Milestone 1 is complete only after every required item is implemented and Pi-tes
 - [ ] Verify imported tracks continue working with network access removed
 - [ ] Verify normal effects and presets remain unchanged while backing playback is idle
 
-## Out of scope
+## Still out of scope
 
-- Tempo-stretching and key-shifting
-- Automatic tempo or key analysis
-- Transport-synchronized playback
-- Looper, recorder, drum-machine, or WikiLoops functionality
+- Tempo-stretching, key-shifting, and automatic tempo/key analysis
+- Direct WikiLoops integration
