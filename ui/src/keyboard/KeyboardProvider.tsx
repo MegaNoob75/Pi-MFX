@@ -10,6 +10,7 @@ import {
     forEachSupportedEditable,
     inferLabel,
     inferLayout,
+    suppressSystemKeyboard,
     type EditableElement
 } from "./utils";
 
@@ -115,10 +116,8 @@ export function KeyboardProvider() {
 
     useEffect(() => {
         const armTree = (root: ParentNode = document) => {
-            if (!shouldUseOnScreenKeyboard()) {
-                return;
-            }
-            forEachSupportedEditable(root, hideSystemKeyboard);
+            const usePiKeyboard = shouldUseOnScreenKeyboard();
+            forEachSupportedEditable(root, usePiKeyboard ? hideSystemKeyboard : suppressSystemKeyboard);
         };
 
         const intercept = (event: Event) => {
@@ -190,7 +189,10 @@ export function KeyboardProvider() {
             if (shouldUseOnScreenKeyboard()) {
                 armTree();
             } else {
-                forEachSupportedEditable(document, disarmForOnScreenKeyboard);
+                forEachSupportedEditable(document, (element) => {
+                    disarmForOnScreenKeyboard(element);
+                    suppressSystemKeyboard(element);
+                });
                 const current = sessionRef.current;
                 if (current) {
                     finish(current, null);

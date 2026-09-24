@@ -1,15 +1,23 @@
 #pragma once
 
 #include "audio/AudioBackend.h"
+#include "audio/MasterOutputSafety.h"
 #include "audio/RtPriority.h"
 #include "core/Json.h"
+#include "core/LatestPointerMailbox.h"
 #include "core/SpscQueue.h"
 #include "host/Lv2Host.h"
 #include "midi/Mapping.h"
 #include "midi/MidiInput.h"
 #include "model/Storage.h"
+#include "transport/MusicalTransport.h"
+#include "backing/BackingTrackPlayer.h"
+#include "looper/StereoLooper.h"
+#include "drums/DrumMachine.h"
+#include "recorder/MultitrackRecorder.h"
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -58,16 +66,40 @@ public:
     Json fullState() const;
     Json performanceState() const;   ///< the small, frequent update
     Json meterState() const;
+    Json transportState() const;
+    Json backingState() const;
+    Json looperState() const;
+    Json recorderState() const;
+    Json drumState() const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
     Json libraryState() const;
     Json diagnosticsState() const;
+    const Paths& storagePaths() const { return storage_.paths(); }
 
     // --- audio -----------------------------------------------------------
     bool applyAudioSettings(const Json& json, std::string& error);
+    void previewAudioSettings(const Json& json);
     bool applySystemSettings(const Json& json, std::string& error);
     void resetMeters();
+    bool applyTransportSettings(const Json& json, std::string& error);
+    bool transportPlay(bool restart, std::string& error);
+    bool transportStop(std::string& error);
+    bool transportRestart(std::string& error);
+    bool backingImport(const std::string& name, const std::string& bytes, std::string& error);
+    bool backingCommand(const std::string& command, const Json& payload, std::string& error);
+    bool applyLooperSettings(const Json& json, std::string& error);
+    bool looperCommand(const std::string& command, const Json& payload, std::string& error);
+    bool looperExport(const std::string& requestedName, std::string& contents,
+                      std::string& name, std::string& error) const;
+    bool recorderCommand(const std::string& command, const Json& payload, std::string& error);
+    bool recorderExport(const std::string& kind, const std::string& trackId,
+                        std::string& path, std::string& name, std::string& error);
+    bool drumImport(unsigned voice, const std::string& name, const std::string& bytes, std::string& error);
+    bool drumLibraryImport(const std::string& relative, const std::string& bytes, Json& result, std::string& error);
+    bool drumLibraryRead(const std::string& relative, std::string& bytes, std::string& error) const;
+    bool drumCommand(const std::string& command, const Json& payload, std::string& error);
 
     // --- banks and presets -----------------------------------------------
     bool selectPreset(const std::string& bankId, const std::string& presetId, std::string& error);
@@ -90,6 +122,11 @@ public:
     bool reorderBank(const std::string& bankId, int newIndex, std::string& error);
     Json exportBank(const std::string& bankId) const;
     bool importBank(const Json& json, std::string& error);
+    bool exportPresetForCommunity(const std::string& bankId, const std::string& presetId,
+                                  Preset& preset, std::string& error);
+    bool importCommunityPreset(const Json& manifest, bool incomplete,
+                               std::string& bankId, std::string& error);
+    bool uninstallCommunityPreset(const std::string& catalogId, int& removed, std::string& error);
 
     // --- chain -----------------------------------------------------------
     bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error);
@@ -100,8 +137,10 @@ public:
     bool setEffectName(const std::string& slotId, const std::string& name, std::string& error);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
+    bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
+                      double quarterNoteBeats, std::string& error);
     bool setEffectProperty(const std::string& slotId, const std::string& propertyUri,
-                           const std::string& path, std::string& error);
+                           const std::string& path, std::string& error, bool persist = true);
     bool setBypassAll(bool bypassed);
     bool bypassAll() const;
 
@@ -167,6 +206,7 @@ public:
     void tapTempo();
     TunerReading tuner() const;
     void setTunerEnabled(bool enabled);
+    void setTunerViewState(bool open, bool muted);
 
     // --- AudioProcessor --------------------------------------------------
     void processAudio(const float* const* inputs, unsigned inputChannels,
@@ -182,6 +222,7 @@ private:
         std::string id;
         std::unique_ptr<PluginInstance> plugin;
         std::atomic<bool> enabled{true};
+        std::atomic<int> pendingEnabled{-1};
     };
 
     /// A whole signal chain. Chains are built on the control thread and handed
@@ -193,19 +234,24 @@ private:
         std::vector<float*> pointersA;
         std::vector<float*> pointersB;
         unsigned channels = 2;
+        float outputGain = 1.0f;
     };
 
-    /// Values changed from the UI while audio is running, applied at the top
-    /// of the next period so a knob move never tears across a buffer.
-    struct ControlUpdate {
-        uint32_t slotIndex;
-        uint32_t portIndex;
-        float value;
+    struct RetiredChain {
+        Chain* chain = nullptr;
+        uint64_t generation = 0;
     };
 
     bool restartAudio(std::string& error);
     void publishChain(std::unique_ptr<Chain> chain);
     void collectRetiredChains();
+    bool swapPendingChainFromAudio();
+    void beginAudioTransitionBlock();
+    bool applyDeferredTransitionStateFromAudio();
+    bool activeChainTransitionPending() const;
+    void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
+                                 unsigned frames, const float* dryInput, float dryGain);
+    void configureAudioSafety(const AudioSettings& settings);
     std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error);
     void applySnapshotToChain(const Snapshot& snapshot);
     Snapshot captureCurrentChain(const std::string& name) const;
@@ -235,6 +281,7 @@ private:
     void notify();
     void notifyPerformance();
     void notifyUiNav(int delta, bool select);
+    void notifyUiView(const std::string& view);
 
     void handleMidiMessage(const MidiMessage& message);
     void handleSysEx(const std::vector<uint8_t>& sysex);
@@ -245,6 +292,7 @@ private:
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
     void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
+    void applyTempoLinksUnlocked(Preset& preset, bool deferControls = false);
     void refreshLeds();
     Json describeControllerRuntime() const;
 
@@ -259,23 +307,32 @@ private:
 
     Lv2Catalog catalog_;
     std::unique_ptr<AudioBackend> backend_;
+    std::string audioDeviceName_;
     AudioMetrics metrics_;
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 
     std::atomic<Chain*> activeChain_{nullptr};
+    LatestPointerMailbox<Chain> pendingChain_;
+    SpscQueue<RetiredChain> retiredChainQueue_{128};
+    Chain* deferredRetiredChain_ = nullptr; // audio thread only
     std::vector<std::pair<std::unique_ptr<Chain>, uint64_t>> retiredChains_;
     std::atomic<uint64_t> audioGeneration_{0};
+    std::atomic<bool> chainStateDirty_{false};
     mutable std::mutex chainMutex_;
 
-    SpscQueue<ControlUpdate> controlUpdates_{2048};
-
     std::atomic<bool> bypassAll_{false};
+    std::atomic<int> pendingBypassAll_{-1};
     std::atomic<bool> snapshotMode_{false};
     int presetReloadCount_ = 0;
     std::atomic<float> inputGain_{1.0f};
     std::atomic<float> outputGain_{1.0f};
     std::atomic<float> targetOutputGain_{1.0f};
     std::atomic<unsigned> guitarInputChannel_{1};
+
+    std::atomic<bool> muteOnChangeEnabled_{true};
+    std::atomic<bool> transitionRequested_{false};
+    std::atomic<bool> chainPublicationExpected_{false};
+    MasterOutputSafety outputSafety_;
 
     MidiInput midi_;
     ControllerRuntime controller_;
@@ -292,6 +349,11 @@ private:
     std::vector<float> tunerRing_;
     std::atomic<size_t> tunerWrite_{0};
     std::atomic<bool> tunerEnabled_{true};
+    std::atomic<bool> tunerViewOpen_{false};
+    std::atomic<bool> tunerOutputMuted_{false};
+    float tunerOutputGain_ = 1.0f;
+    float tunerDryMix_ = 0.0f;
+    std::atomic<float> tunerThreshold_{0.0025f};
     mutable std::mutex tunerMutex_;
     TunerReading tunerReading_;
 
@@ -303,9 +365,22 @@ private:
 
     std::atomic<unsigned> sampleRate_{48000};
     std::atomic<unsigned> maxFrames_{64};
-
-    std::vector<std::chrono::steady_clock::time_point> tapTimes_;
-    std::mutex tapMutex_;
+    MusicalTransport transport_;
+    std::atomic<bool> transportEnabled_{false};
+    std::unique_ptr<BackingTrackPlayer> backing_;
+    std::atomic<bool> backingEnabled_{false};
+    std::unique_ptr<StereoLooper> looper_;
+    std::unique_ptr<MultitrackRecorder> recorder_;
+    std::atomic<bool> recorderEnabled_{false};
+    std::atomic<bool> recorderOwnsTransport_{false};
+    std::atomic<bool> recorderOwnsBacking_{false};
+    std::vector<std::vector<float>> recorderBackingBus_;
+    std::vector<float*> recorderBackingPointers_;
+    std::unique_ptr<DrumMachine> drums_;
+    std::atomic<bool> drumsEnabled_{false};
+    std::atomic<bool> drumsOwnTransport_{false};
+    std::vector<std::vector<float>> recorderDrumBus_;
+    std::vector<float*> recorderDrumPointers_;
 
     struct AnalogCatch {
         bool waiting = true;

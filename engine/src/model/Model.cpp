@@ -22,6 +22,9 @@ Json EffectSlot::toJson() const {
     json.set("name", name);
     json.set("enabled", enabled);
     json.set("state", state);
+    if (tempoLinks.isObject() && tempoLinks.size() > 0) {
+        json.set("tempoLinks", tempoLinks);
+    }
     return json;
 }
 
@@ -32,6 +35,7 @@ EffectSlot EffectSlot::fromJson(const Json& json) {
     slot.name = json["name"].asString();
     slot.enabled = json["enabled"].asBool(true);
     slot.state = json["state"].isObject() ? json["state"] : Json::object();
+    slot.tempoLinks = json["tempoLinks"].isObject() ? json["tempoLinks"] : Json::object();
     return slot;
 }
 
@@ -145,6 +149,9 @@ Json Preset::toJson() const {
         bindingJson.push(binding.toJson());
     }
     json.set("parameterBindings", bindingJson);
+    if (community.isObject() && !community.members().empty()) {
+        json.set("community", community);
+    }
     json.set("activeSnapshot", activeSnapshot);
     json.set("rememberedSnapshotSlot", rememberedSnapshotSlot);
     json.set("rememberedSnapshotEnabled", rememberedSnapshotEnabled);
@@ -182,6 +189,7 @@ Preset Preset::fromJson(const Json& json) {
             preset.parameterBindings.push_back(std::move(binding));
         }
     }
+    preset.community = json["community"].isObject() ? json["community"] : Json::object();
     preset.activeSnapshot = json["activeSnapshot"].asInt(-1);
     preset.rememberedSnapshotSlot = json["rememberedSnapshotSlot"].asInt(-1);
     preset.rememberedSnapshotEnabled = json["rememberedSnapshotEnabled"].asBool(false);
@@ -193,6 +201,7 @@ Json Bank::toJson() const {
     json.set("id", id);
     json.set("name", name);
     json.set("order", order);
+    if (communityHolding) json.set("communityHolding", true);
     if (!lastPresetId.empty()) {
         json.set("lastPresetId", lastPresetId);
     }
@@ -209,6 +218,7 @@ Bank Bank::fromJson(const Json& json) {
     bank.id = json["id"].asString(newId("bank"));
     bank.name = json["name"].asString("Bank");
     bank.order = json["order"].asInt(0);
+    bank.communityHolding = json["communityHolding"].asBool(false);
     bank.lastPresetId = json["lastPresetId"].asString();
     const Json& presetJson = json["presets"];
     for (size_t i = 0; i < presetJson.size(); ++i) {
@@ -440,6 +450,14 @@ Json audioSettingsToJson(const AudioSettings& settings) {
     json.set("inputGainDb", settings.inputGainDb);
     json.set("outputGainDb", settings.outputGainDb);
     json.set("muteOnChange", settings.muteOnChange);
+    json.set("patchFadeOutMs", settings.patchFadeOutMs);
+    json.set("patchFadeInMs", settings.patchFadeInMs);
+    json.set("dcBlockerEnabled", settings.dcBlockerEnabled);
+    json.set("dcBlockerHz", settings.dcBlockerHz);
+    json.set("limiterEnabled", settings.limiterEnabled);
+    json.set("limiterCeilingDb", settings.limiterCeilingDb);
+    json.set("limiterLookaheadMs", settings.limiterLookaheadMs);
+    json.set("limiterReleaseMs", settings.limiterReleaseMs);
     json.set("bufferMs", settings.bufferMs());
     return json;
 }
@@ -456,10 +474,11 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     if (json.has("guitarInput")) {
         const int oneBased = json["guitarInput"].asInt(1);
         settings.inputChannelOffset = static_cast<unsigned>(std::max(1, oneBased) - 1);
-    } else {
-        // Older files stored inputChannelOffset but the engine never applied it.
-        // Two-channel USB boxes (Scarlett Solo) put the instrument jack on input 2.
-        settings.inputChannelOffset = settings.inputChannels >= 2 ? 1u : 0u;
+    } else if (json.has("inputChannelOffset")) {
+        // Accept the older zero-based field while preserving the fallback for
+        // partial live-setting updates that do not mention either channel key.
+        settings.inputChannelOffset = static_cast<unsigned>(
+            std::max(0, json["inputChannelOffset"].asInt(static_cast<int>(fallback.inputChannelOffset))));
     }
     if (json.has("outputChannelOffset")) settings.outputChannelOffset = static_cast<unsigned>(json["outputChannelOffset"].asInt(0));
     if (json.has("useMmap")) settings.useMmap = json["useMmap"].asBool(fallback.useMmap);
@@ -467,6 +486,14 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     if (json.has("inputGainDb")) settings.inputGainDb = json["inputGainDb"].asFloat(fallback.inputGainDb);
     if (json.has("outputGainDb")) settings.outputGainDb = json["outputGainDb"].asFloat(fallback.outputGainDb);
     if (json.has("muteOnChange")) settings.muteOnChange = json["muteOnChange"].asBool(fallback.muteOnChange);
+    if (json.has("patchFadeOutMs")) settings.patchFadeOutMs = json["patchFadeOutMs"].asFloat(fallback.patchFadeOutMs);
+    if (json.has("patchFadeInMs")) settings.patchFadeInMs = json["patchFadeInMs"].asFloat(fallback.patchFadeInMs);
+    if (json.has("dcBlockerEnabled")) settings.dcBlockerEnabled = json["dcBlockerEnabled"].asBool(fallback.dcBlockerEnabled);
+    if (json.has("dcBlockerHz")) settings.dcBlockerHz = json["dcBlockerHz"].asFloat(fallback.dcBlockerHz);
+    if (json.has("limiterEnabled")) settings.limiterEnabled = json["limiterEnabled"].asBool(fallback.limiterEnabled);
+    if (json.has("limiterCeilingDb")) settings.limiterCeilingDb = json["limiterCeilingDb"].asFloat(fallback.limiterCeilingDb);
+    if (json.has("limiterLookaheadMs")) settings.limiterLookaheadMs = json["limiterLookaheadMs"].asFloat(fallback.limiterLookaheadMs);
+    if (json.has("limiterReleaseMs")) settings.limiterReleaseMs = json["limiterReleaseMs"].asFloat(fallback.limiterReleaseMs);
 
     // Clamp to values the engine can actually run, so a hand-edited settings
     // file cannot leave the service unable to start.
@@ -475,6 +502,14 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     settings.periodCount = std::max(2u, std::min(16u, settings.periodCount));
     settings.inputChannels = std::max(1u, std::min(64u, settings.inputChannels));
     settings.outputChannels = std::max(1u, std::min(64u, settings.outputChannels));
+    settings.inputGainDb = std::max(-60.0f, std::min(24.0f, settings.inputGainDb));
+    settings.outputGainDb = std::max(-60.0f, std::min(12.0f, settings.outputGainDb));
+    settings.patchFadeOutMs = std::max(1.0f, std::min(20.0f, settings.patchFadeOutMs));
+    settings.patchFadeInMs = std::max(1.0f, std::min(30.0f, settings.patchFadeInMs));
+    settings.dcBlockerHz = std::max(2.0f, std::min(20.0f, settings.dcBlockerHz));
+    settings.limiterCeilingDb = std::max(-12.0f, std::min(-0.1f, settings.limiterCeilingDb));
+    settings.limiterLookaheadMs = std::max(0.0f, std::min(2.0f, settings.limiterLookaheadMs));
+    settings.limiterReleaseMs = std::max(20.0f, std::min(500.0f, settings.limiterReleaseMs));
     if (settings.inputChannelOffset >= settings.inputChannels) {
         settings.inputChannelOffset = settings.inputChannels - 1;
     }
@@ -515,15 +550,16 @@ Json UiSettings::toJson() const {
     json.set("customThemes", customThemes);
     json.set("ledColors", ledColors.isObject() ? ledColors : Json::object());
     json.set("scale", scale);
-    json.set("showTuner", showTuner);
-    json.set("showLatencyMeter", showLatencyMeter);
-    json.set("confirmPresetOverwrite", confirmPresetOverwrite);
+    json.set("menuOrder", menuOrder.isArray() ? menuOrder : Json::array());
+    json.set("shortcuts", shortcuts.isObject() ? shortcuts : Json::object());
     json.set("startupView", startupView);
     json.set("virtualSwitchCount", virtualSwitchCount);
     json.set("performanceEncoder", performanceEncoder);
     json.set("encoderStepsPerDetent", encoderStepsPerDetent);
     json.set("analogDeadband", analogDeadband);
     json.set("switchDebounceMs", switchDebounceMs);
+    json.set("communityAuthor", communityAuthor);
+    json.set("tuner", tuner.isObject() ? tuner : Json::object());
     return json;
 }
 
@@ -536,9 +572,8 @@ UiSettings UiSettings::fromJson(const Json& json) {
     settings.customThemes = json["customThemes"].isArray() ? json["customThemes"] : Json::array();
     settings.ledColors = json["ledColors"].isObject() ? json["ledColors"] : Json::object();
     settings.scale = std::max(0.6, std::min(2.0, json["scale"].asDouble(1.0)));
-    settings.showTuner = json["showTuner"].asBool(true);
-    settings.showLatencyMeter = json["showLatencyMeter"].asBool(true);
-    settings.confirmPresetOverwrite = json["confirmPresetOverwrite"].asBool(true);
+    settings.menuOrder = json["menuOrder"].isArray() ? json["menuOrder"] : Json::array();
+    settings.shortcuts = json["shortcuts"].isObject() ? json["shortcuts"] : Json::object();
     settings.startupView = json["startupView"].asString("performance");
     settings.virtualSwitchCount = std::max(1, std::min(64, json["virtualSwitchCount"].asInt(8)));
     const std::string encoderMode = json["performanceEncoder"].asString("browse");
@@ -548,6 +583,9 @@ UiSettings UiSettings::fromJson(const Json& json) {
     settings.encoderStepsPerDetent = std::max(1, std::min(8, json["encoderStepsPerDetent"].asInt(1)));
     settings.analogDeadband = std::max(0, std::min(16, json["analogDeadband"].asInt(0)));
     settings.switchDebounceMs = std::max(0, std::min(80, json["switchDebounceMs"].asInt(0)));
+    settings.communityAuthor = json["communityAuthor"].asString();
+    if (settings.communityAuthor.size() > 120) settings.communityAuthor.resize(120);
+    settings.tuner = json["tuner"].isObject() ? json["tuner"] : Json::object();
     return settings;
 }
 
@@ -559,6 +597,8 @@ Json SystemSettings::toJson() const {
     json.set("workerThreadPriority", workerThreadPriority);
     json.set("lockMemory", lockMemory);
     json.set("holdCpuLatency", holdCpuLatency);
+    json.set("sharedTransportEnabled", sharedTransportEnabled);
+    json.set("backingTracksEnabled", backingTracksEnabled);
     return json;
 }
 
@@ -570,15 +610,63 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     settings.workerThreadPriority = std::max(1, std::min(94, json["workerThreadPriority"].asInt(70)));
     settings.lockMemory = json["lockMemory"].asBool(true);
     settings.holdCpuLatency = json["holdCpuLatency"].asBool(true);
+    // These compatibility fields may be false in settings saved while the
+    // milestones were under test. Completed services are now always enabled;
+    // Backing Tracks still reports unavailable when decoder libraries are absent.
+    settings.sharedTransportEnabled = true;
+    settings.backingTracksEnabled = true;
+    return settings;
+}
+
+Json TransportSettings::toJson() const {
+    Json json = Json::object();
+    json.set("beatsPerBar", beatsPerBar);
+    json.set("beatUnit", beatUnit);
+    json.set("countInBars", countInBars);
+    json.set("metronomeEnabled", metronomeEnabled);
+    json.set("quantizationEnabled", quantizationEnabled);
+    return json;
+}
+
+TransportSettings TransportSettings::fromJson(const Json& json) {
+    TransportSettings settings;
+    settings.beatsPerBar = std::max(1, std::min(32, json["beatsPerBar"].asInt(4)));
+    const int unit = json["beatUnit"].asInt(4);
+    settings.beatUnit = unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16 || unit == 32
+        ? unit : 4;
+    settings.countInBars = std::max(0, std::min(8, json["countInBars"].asInt(0)));
+    settings.metronomeEnabled = json["metronomeEnabled"].asBool(false);
+    settings.quantizationEnabled = json["quantizationEnabled"].asBool(false);
+    return settings;
+}
+
+Json LooperSettings::toJson() const {
+    Json json = Json::object();
+    json.set("quantization", quantization);
+    json.set("countIn", countIn);
+    json.set("level", level);
+    json.set("feedback", feedback);
+    return json;
+}
+
+LooperSettings LooperSettings::fromJson(const Json& json) {
+    LooperSettings settings;
+    const std::string quantization = json["quantization"].asString("free");
+    settings.quantization = quantization == "beat" || quantization == "bar" ? quantization : "free";
+    settings.countIn = json["countIn"].asBool(false);
+    settings.level = std::max(0.0f, std::min(1.5f, json["level"].asFloat(1.0f)));
+    settings.feedback = std::max(0.0f, std::min(1.0f, json["feedback"].asFloat(1.0f)));
     return settings;
 }
 
 Json Settings::toJson() const {
     Json json = Json::object();
-    json.set("version", 1);
+    json.set("version", 3);
     json.set("audio", audioSettingsToJson(audio));
     json.set("ui", ui.toJson());
     json.set("system", system.toJson());
+    json.set("transport", transport.toJson());
+    json.set("looper", looper.toJson());
     json.set("controller", controller.toJson());
     json.set("activeBankId", activeBankId);
     json.set("activePresetId", activePresetId);
@@ -590,6 +678,8 @@ Settings Settings::fromJson(const Json& json) {
     settings.audio = audioSettingsFromJson(json["audio"], AudioSettings());
     settings.ui = UiSettings::fromJson(json["ui"]);
     settings.system = SystemSettings::fromJson(json["system"]);
+    settings.transport = TransportSettings::fromJson(json["transport"]);
+    settings.looper = LooperSettings::fromJson(json["looper"]);
     settings.controller = ControllerConfig::fromJson(json["controller"]);
     settings.activeBankId = json["activeBankId"].asString();
     settings.activePresetId = json["activePresetId"].asString();

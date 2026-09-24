@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "community/CommunityPresetPackage.h"
 
 #include "core/Log.h"
 
@@ -14,7 +15,7 @@ namespace pimfx {
 namespace {
 
 constexpr size_t kTunerRingSize = 16384;
-constexpr float kTunerMinFrequency = 60.0f;   // below a dropped-B seven string
+constexpr float kTunerMinFrequency = 35.0f;   // below a standard four-string bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
 constexpr int kRequiredControllerFirmwareMajor = 1;
 constexpr int kRequiredControllerFirmwareMinor = 1;
@@ -22,6 +23,62 @@ constexpr const char* kRequiredControllerFirmwareVersion = "1.1";
 
 float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
+}
+
+const char* audioFailureDescription(AudioFailureCategory category) {
+    switch (category) {
+        case AudioFailureCategory::StartCapture:
+            return "cannot start capture";
+        case AudioFailureCategory::PreparePlaybackAfterXrun:
+            return "cannot prepare playback after xrun";
+        case AudioFailureCategory::PrepareCaptureAfterXrun:
+            return "cannot prepare capture after xrun";
+        case AudioFailureCategory::RelinkAfterXrun:
+            return "cannot re-link capture and playback after xrun";
+        case AudioFailureCategory::RestartCaptureAfterXrun:
+            return "cannot restart capture after xrun";
+        case AudioFailureCategory::None:
+            break;
+    }
+    return "audio stream failed";
+}
+
+std::string formatAudioFailure(const AudioFailure& failure) {
+    std::string message = audioFailureDescription(failure.category);
+    if (failure.errorCode != 0) {
+        message += ": ";
+        message += std::strerror(failure.errorCode);
+    }
+    return message;
+}
+
+bool tempoLinkedPortValue(const PortInfo& port, double quarterNoteBeats,
+                          double bpm, float& value) {
+    if (!port.tempoLinkCandidate || port.secondsPerUnit <= 0.0
+        || !std::isfinite(quarterNoteBeats) || quarterNoteBeats <= 0.0
+        || !std::isfinite(bpm) || bpm <= 0.0) {
+        return false;
+    }
+    const double seconds = 60.0 * quarterNoteBeats / bpm;
+    value = static_cast<float>(std::max<double>(port.minimum,
+        std::min<double>(port.maximum, seconds / port.secondsPerUnit)));
+    return true;
+}
+
+void applyTempoLinksToPlugin(const EffectSlot& slot, PluginInstance& plugin, double bpm) {
+    if (!slot.tempoLinks.isObject()) {
+        return;
+    }
+    for (const Json::Member& link : slot.tempoLinks.members()) {
+        for (const PortInfo& port : plugin.info().ports) {
+            float value = 0.0f;
+            if (port.symbol == link.first
+                && tempoLinkedPortValue(port, link.second.asDouble(), bpm, value)) {
+                plugin.setControl(port.index, value);
+                break;
+            }
+        }
+    }
 }
 
 std::string sanitizeRelDir(const std::string& text) {
@@ -37,6 +94,8 @@ std::string sanitizeRelDir(const std::string& text) {
 }
 
 std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
+    if (kind == "drumsample") return joinPath(paths.drumsDir, "samples");
+    if (kind == "drumkit") return joinPath(paths.drumsDir, "kits");
     if (kind == "ir") {
         return paths.irsDir;
     }
@@ -58,12 +117,16 @@ std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
     if (kind == "bank") {
         return paths.bankExportsDir;
     }
+    if (kind == "backing") {
+        return paths.backingTracksDir;
+    }
     return paths.modelsDir;
 }
 
 std::string libraryKindName(const std::string& kind) {
     if (kind == "ir" || kind == "aidax" || kind == "plugin"
-        || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank") {
+        || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank"
+        || kind == "backing" || kind == "drumsample" || kind == "drumkit") {
         return kind;
     }
     return "model";
@@ -77,7 +140,9 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
     }
     for (const std::string& root : {
              paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir,
-             paths.layoutsDir, paths.backupsDir, paths.bankExportsDir, paths.themesDir()}) {
+             paths.layoutsDir, paths.backupsDir, paths.bankExportsDir,
+             paths.backingTracksDir, paths.drumsDir, joinPath(paths.drumsDir, "samples"),
+             joinPath(paths.drumsDir, "kits"), paths.themesDir()}) {
         std::error_code rootEc;
         const auto base = std::filesystem::weakly_canonical(std::filesystem::path(root), rootEc);
         if (!rootEc && candidate == base) {
@@ -174,7 +239,16 @@ Json rewritePluginStateFiles(Storage& storage, const Json& state,
     return out;
 }
 
-Json libraryDirNode(const std::string& abs, const std::string& rel) {
+bool pathInsideRoot(const std::string& path, const std::string& root) {
+    std::string baseText, candidateText;
+    if (!resolveLibraryPath(root, baseText) || !resolveLibraryPath(path, candidateText)) return false;
+    const std::filesystem::path base(baseText), candidate(candidateText);
+    auto a = base.begin(), b = candidate.begin();
+    for (; a != base.end(); ++a, ++b) if (b == candidate.end() || *a != *b) return false;
+    return true;
+}
+
+Json libraryDirNode(const std::string& abs, const std::string& rel, bool locked = false) {
     Json node = Json::object();
     node.set("name", rel.empty() ? std::string() : fileName(abs));
     node.set("relative", rel);
@@ -193,11 +267,11 @@ Json libraryDirNode(const std::string& abs, const std::string& rel) {
     });
     for (const auto& entry : entries) {
         const std::string name = entry.path().filename().string();
-        if (hiddenLibraryName(name) || !entry.is_directory(ec)) {
+        if (hiddenLibraryName(name) || (locked && entry.is_symlink(ec)) || !entry.is_directory(ec)) {
             continue;
         }
         const std::string childRel = rel.empty() ? name : rel + "/" + name;
-        children.push(libraryDirNode(entry.path().string(), childRel));
+        children.push(libraryDirNode(entry.path().string(), childRel, locked));
     }
     node.set("children", children);
     return node;
@@ -224,21 +298,23 @@ std::string assignedPresetForControl(const ControllerConfig& config,
 
 const char* kNoteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
-TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate) {
+TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate, float threshold) {
     TunerReading reading;
     if (samples.size() < 1024 || sampleRate == 0) {
         return reading;
     }
 
-    // Autocorrelation over the guitar's range. It is not the most accurate
-    // method published, but it is stable on a plucked string, cheap enough to
-    // run continuously, and independent of the audio thread.
+    // YIN-style cumulative mean normalized difference. Choosing the first
+    // strong periodic minimum avoids the octave/subharmonic jumps caused by
+    // selecting the globally strongest autocorrelation lag.
     double energy = 0.0;
+    double mean = 0.0;
     for (float sample : samples) {
         energy += static_cast<double>(sample) * sample;
+        mean += sample;
     }
     const double rms = std::sqrt(energy / samples.size());
-    if (rms < 0.0025) {
+    if (rms < threshold) {
         return reading; // silence, or noise floor
     }
 
@@ -248,25 +324,55 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
         return reading;
     }
 
-    double bestScore = 0.0;
-    size_t bestLag = 0;
-    for (size_t lag = minLag; lag < maxLag; ++lag) {
-        double correlation = 0.0;
+    mean /= static_cast<double>(samples.size());
+    std::vector<double> difference(maxLag + 1, 0.0);
+    for (size_t lag = 1; lag < maxLag; ++lag) {
+        double sum = 0.0;
         for (size_t i = 0; i + lag < samples.size(); ++i) {
-            correlation += static_cast<double>(samples[i]) * samples[i + lag];
+            const double delta = (static_cast<double>(samples[i]) - mean)
+                               - (static_cast<double>(samples[i + lag]) - mean);
+            sum += delta * delta;
         }
-        correlation /= static_cast<double>(samples.size() - lag);
-        if (correlation > bestScore) {
-            bestScore = correlation;
+        difference[lag] = sum;
+    }
+
+    double cumulative = 0.0;
+    size_t bestLag = 0;
+    double bestValue = 1.0;
+    for (size_t lag = 1; lag < maxLag; ++lag) {
+        cumulative += difference[lag];
+        difference[lag] = cumulative > 0.0
+            ? difference[lag] * static_cast<double>(lag) / cumulative
+            : 1.0;
+    }
+    for (size_t lag = minLag; lag < maxLag; ++lag) {
+        if (difference[lag] < bestValue) {
+            bestValue = difference[lag];
             bestLag = lag;
+        }
+        if (difference[lag] < 0.18) {
+            while (lag + 1 < maxLag && difference[lag + 1] < difference[lag]) ++lag;
+            bestLag = lag;
+            bestValue = difference[lag];
+            break;
         }
     }
 
-    if (bestLag == 0 || bestScore < energy / samples.size() * 0.35) {
+    if (bestLag == 0 || bestValue > 0.32) {
         return reading;
     }
 
-    const double frequency = static_cast<double>(sampleRate) / static_cast<double>(bestLag);
+    double refinedLag = static_cast<double>(bestLag);
+    if (bestLag > minLag && bestLag + 1 < maxLag) {
+        const double left = difference[bestLag - 1];
+        const double center = difference[bestLag];
+        const double right = difference[bestLag + 1];
+        const double denominator = left - 2.0 * center + right;
+        if (std::abs(denominator) > 1.0e-12) {
+            refinedLag += 0.5 * (left - right) / denominator;
+        }
+    }
+    const double frequency = static_cast<double>(sampleRate) / refinedLag;
     if (frequency < kTunerMinFrequency || frequency > kTunerMaxFrequency) {
         return reading;
     }
@@ -291,13 +397,12 @@ bool isContinuousKind(ControlKind kind) {
 
 bool followLatchPosition(const std::string& action) {
     return action == "bypassAll"
-        || action == "tuner"
         || action == "snapshotMode"
         || action == "toggleEffect"
         || action == "setParameter";
 }
 
-float mappedBindingValue(const ActionRequest& request) {
+float mappedBindingValue(const ActionRequest& request, const PortInfo* port = nullptr) {
     float visual = isContinuousKind(request.kind) ? request.value
                  : (request.pressed ? 1.0f : 0.0f);
     visual = std::max(0.0f, std::min(1.0f, visual));
@@ -306,8 +411,14 @@ float mappedBindingValue(const ActionRequest& request) {
     if (request.fromPresetBind && request.binding.inverted) {
         visual = 1.0f - visual;
     }
-    return request.binding.minimum
-         + visual * (request.binding.maximum - request.binding.minimum);
+    const float minimum = request.binding.minimum;
+    const float maximum = request.binding.maximum;
+    if (port && port->logarithmic && minimum != 0.0f && maximum != 0.0f
+        && ((minimum > 0.0f) == (maximum > 0.0f))) {
+        return static_cast<float>(minimum * std::pow(
+            static_cast<double>(maximum) / minimum, visual));
+    }
+    return minimum + visual * (maximum - minimum);
 }
 
 bool latchOn(const ActionRequest& request) {
@@ -318,7 +429,18 @@ bool latchOn(const ActionRequest& request) {
 
 Engine::Engine(Paths paths)
     : storage_(std::move(paths)),
-      tunerRing_(kTunerRingSize, 0.0f) {}
+      tunerRing_(kTunerRingSize, 0.0f),
+      backing_(std::make_unique<BackingTrackPlayer>(storage_.paths().backingTracksDir)),
+      looper_(std::make_unique<StereoLooper>(storage_.paths().loopsDir)) {
+#ifdef PIMFX_ENABLE_MULTITRACK_RECORDER
+    recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
+    recorderEnabled_.store(true, std::memory_order_relaxed);
+#endif
+#ifdef PIMFX_ENABLE_DRUM_MACHINE
+    drums_ = std::make_unique<DrumMachine>(storage_.paths().drumsDir);
+    drumsEnabled_.store(true, std::memory_order_relaxed);
+#endif
+}
 
 Engine::~Engine() {
     stop();
@@ -331,6 +453,15 @@ void Engine::setStateListener(StateListener listener) {
 
 bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
+    tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
+        settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
+    configureAudioSafety(settings_.audio);
+    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
+    looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
+                       settings_.looper.level, settings_.looper.feedback);
+    looper_->start();
+    if (recorder_) recorder_->start();
     banks_ = storage_.loadBanks();
     brokenBankFiles_ = storage_.brokenBankFiles();
 
@@ -345,6 +476,15 @@ bool Engine::start(std::string& error) {
         if (bank && !bank->presets.empty()) {
             activePresetId_ = bank->presets.front().id;
         }
+    }
+
+    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
+    transport_.setCountInBars(settings_.transport.countInBars);
+    transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
+    transport_.setQuantizationEnabled(settings_.transport.quantizationEnabled);
+    if (const Preset* preset = activePreset()) {
+        transport_.setBpm(preset->tempo);
     }
 
     std::string catalogError;
@@ -367,14 +507,11 @@ bool Engine::start(std::string& error) {
     }
 
     backend_ = createAudioBackend();
-    backend_->setFailureHandler([this](const std::string& message) {
-        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-        audioError_ = message;
-        notify();
-    });
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
-    targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb), std::memory_order_relaxed);
+    const Preset* gainPreset = activePreset();
+    targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb
+        + (gainPreset ? gainPreset->outputGainDb : 0.0f)), std::memory_order_relaxed);
     outputGain_.store(targetOutputGain_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
@@ -414,6 +551,9 @@ bool Engine::start(std::string& error) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
+    if (backing_) backing_->stop();
+    if (looper_) looper_->stop();
+    if (recorder_) recorder_->stop();
     if (tunerThread_.joinable()) {
         tunerThread_.join();
     }
@@ -433,6 +573,13 @@ void Engine::stop() {
 
     Chain* chain = activeChain_.exchange(nullptr);
     delete chain;
+    delete pendingChain_.clear();
+    delete deferredRetiredChain_;
+    deferredRetiredChain_ = nullptr;
+    RetiredChain retired;
+    while (retiredChainQueue_.pop(retired)) {
+        delete retired.chain;
+    }
     retiredChains_.clear();
     latencyGuard_.reset();
 }
@@ -448,6 +595,24 @@ bool Engine::restartAudio(std::string& error) {
     }
 
     backend_->stop();
+
+    // A chain's scratch buffers are sized for the old period. With audio
+    // stopped it is safe to dispose of every published/retired chain before
+    // opening a stream that may negotiate a different block size.
+    {
+        std::lock_guard<std::mutex> lock(chainMutex_);
+        delete activeChain_.exchange(nullptr, std::memory_order_acq_rel);
+        delete pendingChain_.clear();
+        delete deferredRetiredChain_;
+        deferredRetiredChain_ = nullptr;
+        RetiredChain retired;
+        while (retiredChainQueue_.pop(retired)) delete retired.chain;
+        retiredChains_.clear();
+    }
+    const bool awaitingChain = activePreset() != nullptr;
+    chainPublicationExpected_.store(awaitingChain, std::memory_order_release);
+    outputSafety_.resetTransition(awaitingChain);
+    transitionRequested_.store(false, std::memory_order_relaxed);
 
     backend_->configureRealtime(settings_.system.audioThreadPriority);
 
@@ -468,6 +633,13 @@ bool Engine::restartAudio(std::string& error) {
     settings_.audio.device = actual.device;
     settings_.audio.inputChannels = actual.inputChannels;
     settings_.audio.outputChannels = actual.outputChannels;
+    audioDeviceName_ = actual.device;
+    for (const AudioDeviceInfo& device : backend_->enumerateDevices()) {
+        if (device.id == actual.device) {
+            audioDeviceName_ = device.name.empty() ? device.id : device.name;
+            break;
+        }
+    }
     if (settings_.audio.inputChannelOffset >= settings_.audio.inputChannels) {
         settings_.audio.inputChannelOffset = settings_.audio.inputChannels - 1;
     }
@@ -491,9 +663,12 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
 
     const AudioSettings previous = settings_.audio;
     settings_.audio = audioSettingsFromJson(json, settings_.audio);
+    configureAudioSafety(settings_.audio);
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
-    targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb), std::memory_order_relaxed);
+    const Preset* currentPreset = activePreset();
+    targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb
+        + (currentPreset ? currentPreset->outputGainDb : 0.0f)), std::memory_order_relaxed);
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
     const bool needsRestart = previous != settings_.audio;
@@ -503,6 +678,11 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
             // Put the working configuration back rather than leaving the user
             // with silence and a dialog.
             settings_.audio = previous;
+            configureAudioSafety(settings_.audio);
+            inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
+            targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb
+                + (currentPreset ? currentPreset->outputGainDb : 0.0f)), std::memory_order_relaxed);
+            guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
             std::string recoveryError;
             if (!restartAudio(recoveryError)) {
                 audioError_ = restartError;
@@ -519,9 +699,44 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
     return true;
 }
 
+void Engine::previewAudioSettings(const Json& json) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+
+    // Preview only values backed by atomics. Hardware stream fields in the
+    // payload are deliberately ignored so dragging a control can never reopen
+    // ALSA or persist settings on every pointer event.
+    const AudioSettings preview = audioSettingsFromJson(json, settings_.audio);
+    configureAudioSafety(preview);
+    inputGain_.store(dbToGain(preview.inputGainDb), std::memory_order_relaxed);
+    const Preset* currentPreset = activePreset();
+    targetOutputGain_.store(dbToGain(preview.outputGainDb
+        + (currentPreset ? currentPreset->outputGainDb : 0.0f)), std::memory_order_relaxed);
+}
+
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const bool wasTransportEnabled = transportEnabled_.load(std::memory_order_acquire);
+    const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
+    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    if (recorder_) recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
+        backingEnabled_.load(std::memory_order_acquire));
+    if (backingEnabled_.load(std::memory_order_acquire) && !wasBackingEnabled) {
+        backing_->start();
+    } else if (!backingEnabled_.load(std::memory_order_acquire) && wasBackingEnabled) {
+        backing_->stopPlayback();
+        backing_->stop();
+    }
+    if (!settings_.system.sharedTransportEnabled) {
+        transport_.stop();
+    } else if (!wasTransportEnabled) {
+        transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
+        transport_.setCountInBars(settings_.transport.countInBars);
+        transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
+        transport_.setQuantizationEnabled(settings_.transport.quantizationEnabled);
+        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
+    }
 
     if (settings_.system.holdCpuLatency && !latencyGuard_) {
         latencyGuard_ = std::make_unique<rt::CpuLatencyGuard>();
@@ -540,6 +755,57 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     return error.empty();
 }
 
+bool Engine::applyTransportSettings(const Json& json, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    TransportSettings next = TransportSettings::fromJson(json);
+    const double nextBpm = json.has("bpm") ? json["bpm"].asDouble(transport_.bpm()) : transport_.bpm();
+    settings_.transport = next;
+    transport_.setBpm(nextBpm);
+    transport_.setTimeSignature(next.beatsPerBar, next.beatUnit);
+    transport_.setCountInBars(next.countInBars);
+    transport_.setMetronomeEnabled(next.metronomeEnabled);
+    transport_.setQuantizationEnabled(next.quantizationEnabled);
+    if (Preset* preset = activePreset()) {
+        preset->tempo = transport_.bpm();
+        applyTempoLinksUnlocked(*preset);
+        requestBankPersist(false);
+    }
+    persistSettings();
+    notifyPerformance();
+    return true;
+}
+
+bool Engine::transportPlay(bool restart, std::string& error) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    transport_.play(restart);
+    return true;
+}
+
+bool Engine::transportStop(std::string& error) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    transport_.stop();
+    return true;
+}
+
+bool Engine::transportRestart(std::string& error) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "shared transport is disabled";
+        return false;
+    }
+    transport_.restart();
+    return true;
+}
+
 void Engine::resetMeters() {
     metrics_.xruns.store(0, std::memory_order_relaxed);
     metrics_.dspLoadPeak.store(0.0f, std::memory_order_relaxed);
@@ -548,23 +814,74 @@ void Engine::resetMeters() {
 void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     sampleRate_.store(sampleRate, std::memory_order_release);
     maxFrames_.store(maxFrames, std::memory_order_release);
+    outputSafety_.prepare(sampleRate);
+    transport_.setSampleRate(sampleRate);
+    if (backing_) backing_->prepare(sampleRate);
+    looper_->prepare(sampleRate);
+    if (recorder_) {
+        recorder_->prepare(sampleRate, maxFrames);
+        recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
+            backingEnabled_.load(std::memory_order_acquire));
+        recorder_->setSourceAvailable(MultitrackRecorder::Source::Drum,
+            drumsEnabled_.load(std::memory_order_acquire));
+        recorderBackingBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
+        recorderBackingPointers_.clear();
+        for (auto& channel : recorderBackingBus_) recorderBackingPointers_.push_back(channel.data());
+        recorderDrumBus_.assign(2, std::vector<float>(maxFrames, 0.0f));
+        recorderDrumPointers_.clear();
+        for (auto& channel : recorderDrumBus_) recorderDrumPointers_.push_back(channel.data());
+    }
+    if (drums_) drums_->prepare(sampleRate);
 }
 
 void Engine::releaseResources() {}
+
+void Engine::applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
+                                     unsigned frames, const float* dryInput, float dryGain) {
+    const bool allowFadeIn = outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted
+        && pendingChain_.peek() == nullptr
+        && !chainPublicationExpected_.load(std::memory_order_acquire)
+        && deferredRetiredChain_ == nullptr
+        && !transitionRequested_.load(std::memory_order_acquire)
+        && !activeChainTransitionPending();
+    const bool tunerOpen = tunerViewOpen_.load(std::memory_order_relaxed);
+    const bool tunerMuted = tunerOutputMuted_.load(std::memory_order_relaxed);
+    const float dryTarget = tunerOpen && !tunerMuted && dryInput ? 1.0f : 0.0f;
+    const float target = tunerOpen && tunerMuted ? 0.0f : 1.0f;
+    const float step = 1.0f / std::max(1.0f,
+        static_cast<float>(sampleRate_.load(std::memory_order_relaxed)) * 0.005f);
+    for (unsigned frame = 0; frame < frames; ++frame) {
+        if (tunerDryMix_ < dryTarget) tunerDryMix_ = std::min(dryTarget, tunerDryMix_ + step);
+        else if (tunerDryMix_ > dryTarget) tunerDryMix_ = std::max(dryTarget, tunerDryMix_ - step);
+        for (unsigned channel = 0; channel < outputChannels; ++channel) {
+            if (dryInput && tunerDryMix_ > 0.0f) {
+                const float dry = dryInput[frame] * dryGain;
+                outputs[channel][frame] += (dry - outputs[channel][frame]) * tunerDryMix_;
+            }
+        }
+    }
+    // Dry tuner audio still passes through the final DC blocker/limiter.
+    outputSafety_.process(outputs, outputChannels, frames, allowFadeIn);
+    for (unsigned frame = 0; frame < frames; ++frame) {
+        if (tunerOutputGain_ < target) tunerOutputGain_ = std::min(target, tunerOutputGain_ + step);
+        else if (tunerOutputGain_ > target) tunerOutputGain_ = std::max(target, tunerOutputGain_ - step);
+        for (unsigned channel = 0; channel < outputChannels; ++channel) {
+            outputs[channel][frame] *= tunerOutputGain_;
+        }
+    }
+}
 
 void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                           float* const* outputs, unsigned outputChannels,
                           unsigned frames) {
     audioGeneration_.fetch_add(1, std::memory_order_release);
+    beginAudioTransitionBlock();
+
+    const bool transportEnabled = transportEnabled_.load(std::memory_order_acquire);
+    const TransportBlock transportBlock = transportEnabled
+        ? transport_.beginAudioBlock(frames) : TransportBlock{};
 
     Chain* chain = activeChain_.load(std::memory_order_acquire);
-
-    ControlUpdate update;
-    while (controlUpdates_.pop(update)) {
-        if (chain && update.slotIndex < chain->slots.size()) {
-            chain->slots[update.slotIndex]->plugin->setControl(update.portIndex, update.value);
-        }
-    }
 
     const unsigned channels = chain ? chain->channels : std::min(outputChannels, 2u);
     const float inputGain = inputGain_.load(std::memory_order_relaxed);
@@ -573,6 +890,13 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         guitar = 0;
     } else if (guitar >= inputChannels) {
         guitar = inputChannels - 1;
+    }
+
+    const bool recorderCapturing = recorder_ && recorderEnabled_.load(std::memory_order_relaxed)
+        && recorder_->beginCapture(frames, transportEnabled ? transportBlock.timelineFrame : 0);
+    if (recorderCapturing && inputChannels > 0) {
+        const float* rawInput = inputs[guitar];
+        recorder_->captureSource(MultitrackRecorder::Source::Raw, &rawInput, 1, frames);
     }
 
     const auto copyGuitar = [&](float* destination) {
@@ -589,7 +913,10 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         const float* source = inputs[guitar];
         size_t write = tunerWrite_.load(std::memory_order_relaxed);
         for (unsigned frame = 0; frame < frames; ++frame) {
-            tunerRing_[write] = source[frame];
+            // Analyse the same gain-adjusted guitar signal used by the dry
+            // tuner passthrough. Otherwise a quiet interface input remains
+            // close to the detector noise floor even after Input Gain is set.
+            tunerRing_[write] = source[frame] * inputGain;
             write = (write + 1) % kTunerRingSize;
         }
         tunerWrite_.store(write, std::memory_order_release);
@@ -603,6 +930,47 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             } else {
                 std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
             }
+        }
+        if (recorderCapturing) {
+            recorder_->captureSource(MultitrackRecorder::Source::Processed,
+                reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+        }
+        looper_->process(reinterpret_cast<const float* const*>(outputs), outputChannels,
+                         outputs, outputChannels, frames,
+                         transportEnabled ? &transportBlock : nullptr);
+        if (transportEnabled) {
+            for (unsigned channel = 0; channel < outputChannels; ++channel) {
+                for (unsigned frame = 0; frame < frames; ++frame) {
+                    outputs[channel][frame] += transport_.metronomeSample(transportBlock, frame);
+                }
+            }
+        }
+        if (backingEnabled_.load(std::memory_order_relaxed)) {
+            backing_->render(outputs, outputChannels, frames,
+                recorderCapturing ? recorderBackingPointers_.data() : nullptr,
+                recorderCapturing ? static_cast<unsigned>(recorderBackingPointers_.size()) : 0);
+            if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
+                reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
+                static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+        }
+        if (drumsEnabled_.load(std::memory_order_relaxed) && drums_) {
+            drums_->render(outputs, outputChannels,
+                recorderCapturing ? recorderDrumPointers_.data() : nullptr,
+                recorderCapturing ? static_cast<unsigned>(recorderDrumPointers_.size()) : 0,
+                frames, transportBlock);
+            if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Drum,
+                reinterpret_cast<const float* const*>(recorderDrumPointers_.data()),
+                static_cast<unsigned>(recorderDrumPointers_.size()), frames);
+        }
+        if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
+            recorder_->renderPlayback(outputs, outputChannels, frames);
+        }
+        applyMasterOutputSafety(outputs, outputChannels, frames,
+            inputChannels > 0 ? inputs[guitar] : nullptr, inputGain);
+        if (recorderCapturing) {
+            recorder_->captureSource(MultitrackRecorder::Source::Master,
+                reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+            recorder_->finishCapture();
         }
         return;
     }
@@ -639,7 +1007,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                                   std::min(pluginInputs, channels),
                                   destination->data(),
                                   std::min(pluginOutputs, channels),
-                                  frames);
+                                  frames, transportEnabled ? &transportBlock : nullptr);
 
             // A mono plugin in a stereo chain feeds both sides rather than
             // silencing the right channel.
@@ -655,11 +1023,9 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         rendered = source;
     }
 
-    // Ramp the output gain rather than stepping it, so a fader move or a
-    // mute-on-change never produces a click.
-    const float target = bypassAll_.load(std::memory_order_relaxed)
-                       ? targetOutputGain_.load(std::memory_order_relaxed)
-                       : targetOutputGain_.load(std::memory_order_relaxed);
+    // Ramp ordinary output-level changes rather than stepping the fader. The
+    // separate final master transition below handles preset/property muting.
+    const float target = targetOutputGain_.load(std::memory_order_relaxed);
     float gain = outputGain_.load(std::memory_order_relaxed);
     const float step = (target - gain) / static_cast<float>(std::max(1u, frames));
 
@@ -671,6 +1037,47 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         }
     }
     outputGain_.store(target, std::memory_order_relaxed);
+    if (recorderCapturing) {
+        recorder_->captureSource(MultitrackRecorder::Source::Processed,
+            reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+    }
+    looper_->process(reinterpret_cast<const float* const*>(rendered->data()), channels,
+                     outputs, outputChannels, frames,
+                     transportEnabled ? &transportBlock : nullptr);
+    if (transportEnabled) {
+        for (unsigned channel = 0; channel < outputChannels; ++channel) {
+            for (unsigned frame = 0; frame < frames; ++frame) {
+                outputs[channel][frame] += transport_.metronomeSample(transportBlock, frame);
+            }
+        }
+    }
+    if (backingEnabled_.load(std::memory_order_relaxed)) {
+        backing_->render(outputs, outputChannels, frames,
+            recorderCapturing ? recorderBackingPointers_.data() : nullptr,
+            recorderCapturing ? static_cast<unsigned>(recorderBackingPointers_.size()) : 0);
+        if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Backing,
+            reinterpret_cast<const float* const*>(recorderBackingPointers_.data()),
+            static_cast<unsigned>(recorderBackingPointers_.size()), frames);
+    }
+    if (drumsEnabled_.load(std::memory_order_relaxed) && drums_) {
+        drums_->render(outputs, outputChannels,
+            recorderCapturing ? recorderDrumPointers_.data() : nullptr,
+            recorderCapturing ? static_cast<unsigned>(recorderDrumPointers_.size()) : 0,
+            frames, transportBlock);
+        if (recorderCapturing) recorder_->captureSource(MultitrackRecorder::Source::Drum,
+            reinterpret_cast<const float* const*>(recorderDrumPointers_.data()),
+            static_cast<unsigned>(recorderDrumPointers_.size()), frames);
+    }
+    if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
+        recorder_->renderPlayback(outputs, outputChannels, frames);
+    }
+    applyMasterOutputSafety(outputs, outputChannels, frames,
+        inputChannels > 0 ? inputs[guitar] : nullptr, inputGain);
+    if (recorderCapturing) {
+        recorder_->captureSource(MultitrackRecorder::Source::Master,
+            reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
+        recorder_->finishCapture();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -683,6 +1090,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
 
     chain->channels = channels;
+    chain->outputGain = dbToGain(settings_.audio.outputGainDb + preset.outputGainDb);
     chain->bufferA.assign(channels, std::vector<float>(frames, 0.0f));
     chain->bufferB.assign(channels, std::vector<float>(frames, 0.0f));
     chain->pointersA.resize(channels);
@@ -707,6 +1115,9 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             continue;
         }
         plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
+        if (transportEnabled_.load(std::memory_order_acquire)) {
+            applyTempoLinksToPlugin(slot, *plugin, preset.tempo);
+        }
 
         auto chainSlot = std::make_unique<ChainSlot>();
         chainSlot->id = slot.id;
@@ -720,19 +1131,25 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
 }
 
 void Engine::publishChain(std::unique_ptr<Chain> chain) {
-    std::lock_guard<std::mutex> lock(chainMutex_);
-    Chain* previous = activeChain_.exchange(chain.release(), std::memory_order_acq_rel);
-    if (previous) {
-        // The audio thread may still be inside the old chain. It is retired
-        // with the current generation and freed once the audio thread has
-        // published two further periods, by which point it cannot be in use.
-        retiredChains_.emplace_back(std::unique_ptr<Chain>(previous),
-                                    audioGeneration_.load(std::memory_order_acquire));
+    if (!chain) {
+        return;
     }
+    std::lock_guard<std::mutex> lock(chainMutex_);
+    // Only the latest unpublished chain matters. Superseded chains have never
+    // been visible to the audio thread, so they can be destroyed here.
+    pendingChain_.publish(std::move(chain));
+    chainPublicationExpected_.store(false, std::memory_order_release);
+    transitionRequested_.store(true, std::memory_order_release);
 }
 
 void Engine::collectRetiredChains() {
     std::lock_guard<std::mutex> lock(chainMutex_);
+    RetiredChain retired;
+    while (retiredChainQueue_.pop(retired)) {
+        if (retired.chain) {
+            retiredChains_.emplace_back(std::unique_ptr<Chain>(retired.chain), retired.generation);
+        }
+    }
     const uint64_t now = audioGeneration_.load(std::memory_order_acquire);
     const bool audioRunning = backend_ && backend_->isRunning();
 
@@ -742,6 +1159,94 @@ void Engine::collectRetiredChains() {
                            return !audioRunning || now > entry.second + 2;
                        }),
         retiredChains_.end());
+}
+
+bool Engine::swapPendingChainFromAudio() {
+    if (deferredRetiredChain_) {
+        const RetiredChain deferred{deferredRetiredChain_,
+                                    audioGeneration_.load(std::memory_order_relaxed)};
+        if (!retiredChainQueue_.push(deferred)) {
+            return false;
+        }
+        deferredRetiredChain_ = nullptr;
+    }
+
+    Chain* next = pendingChain_.take();
+    if (!next) {
+        return true;
+    }
+
+    Chain* previous = activeChain_.exchange(next, std::memory_order_acq_rel);
+    targetOutputGain_.store(next->outputGain, std::memory_order_relaxed);
+    // Serializing and broadcasting state is not realtime-safe. Let the
+    // housekeeping thread publish the newly active chain after this block.
+    chainStateDirty_.store(true, std::memory_order_release);
+    if (previous) {
+        const RetiredChain retired{previous, audioGeneration_.load(std::memory_order_relaxed)};
+        if (!retiredChainQueue_.push(retired)) {
+            // Never destroy on the realtime thread. A further swap is held
+            // until this single deferred pointer enters the bounded queue.
+            deferredRetiredChain_ = previous;
+        }
+    }
+    return true;
+}
+
+void Engine::beginAudioTransitionBlock() {
+    const bool requested = transitionRequested_.exchange(false, std::memory_order_acq_rel);
+    if (!muteOnChangeEnabled_.load(std::memory_order_acquire)) {
+        outputSafety_.resetTransition(false);
+        swapPendingChainFromAudio();
+        applyDeferredTransitionStateFromAudio();
+        return;
+    }
+
+    if (requested) outputSafety_.beginFadeOut();
+
+    if (outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted) {
+        const bool chainReady = swapPendingChainFromAudio();
+        if (chainReady) applyDeferredTransitionStateFromAudio();
+    }
+}
+
+bool Engine::applyDeferredTransitionStateFromAudio() {
+    bool changed = false;
+    const int bypass = pendingBypassAll_.exchange(-1, std::memory_order_acq_rel);
+    if (bypass >= 0) {
+        bypassAll_.store(bypass != 0, std::memory_order_relaxed);
+        changed = true;
+    }
+    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            const int enabled = slot->pendingEnabled.exchange(-1, std::memory_order_acq_rel);
+            if (enabled >= 0) {
+                slot->enabled.store(enabled != 0, std::memory_order_relaxed);
+                changed = true;
+            }
+            if (slot->plugin) {
+                changed = slot->plugin->applyDeferredStateChanges() || changed;
+            }
+        }
+    }
+    if (changed) chainStateDirty_.store(true, std::memory_order_release);
+    return changed;
+}
+
+bool Engine::activeChainTransitionPending() const {
+    if (bypassAll_.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    const Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain) {
+        return false;
+    }
+    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+        if (slot->enabled.load(std::memory_order_relaxed)
+            && slot->plugin && slot->plugin->propertyTransitionPending()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,7 +1324,9 @@ void Engine::syncPresetFromChain() {
             continue;
         }
         stored->state = slot->plugin->saveState();
-        stored->enabled = slot->enabled.load(std::memory_order_relaxed);
+        const int pendingEnabled = slot->pendingEnabled.load(std::memory_order_acquire);
+        stored->enabled = pendingEnabled >= 0
+            ? pendingEnabled != 0 : slot->enabled.load(std::memory_order_relaxed);
     }
 }
 
@@ -964,17 +1471,37 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
     bank->lastPresetId = target->id;
+    if (transportEnabled_.load(std::memory_order_acquire)) {
+        transport_.setBpm(target->tempo);
+    }
+
+    // Build the remembered snapshot directly into the unpublished chain. Once
+    // publication is deferred until silence, applying it through activeChain_
+    // would otherwise modify the outgoing preset during the fade.
+    Preset effectivePreset = *target;
+    if (target->rememberedSnapshotEnabled && target->rememberedSnapshotSlot >= 0) {
+        if (Snapshot* snapshot = findSnapshotBySlot(*target, target->rememberedSnapshotSlot)) {
+            for (EffectSlot& slot : effectivePreset.chain) {
+                if (!snapshot->slots.has(slot.id)) continue;
+                const Json& state = snapshot->slots[slot.id];
+                slot.state = state;
+                slot.enabled = state["enabled"].asBool(true);
+            }
+            target->activeSnapshot = snapshot->slot;
+        } else {
+            forgetRememberedSnapshot(*target);
+            target->activeSnapshot = -1;
+        }
+    } else {
+        target->activeSnapshot = -1;
+    }
 
     std::string chainError;
-    std::unique_ptr<Chain> chain = buildChain(*target, chainError);
+    std::unique_ptr<Chain> chain = buildChain(effectivePreset, chainError);
     if (!chainError.empty()) {
         logWarn("preset '" + target->name + "': " + chainError);
     }
     publishChain(std::move(chain));
-    applyRememberedSnapshotUnlocked(*target);
-
-    targetOutputGain_.store(dbToGain(settings_.audio.outputGainDb + target->outputGainDb),
-                            std::memory_order_relaxed);
 
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
@@ -1042,25 +1569,29 @@ bool Engine::selectBank(const std::string& bankId, std::string& error) {
 }
 
 bool Engine::stepBank(int delta, std::string& error) {
-    if (banks_.empty()) {
+    std::vector<const Bank*> playable;
+    for (const Bank& bank : banks_) {
+        if (!bank.communityHolding && !bank.presets.empty()) playable.push_back(&bank);
+    }
+    if (playable.empty()) {
         error = "no banks";
         return false;
     }
     int index = 0;
-    for (size_t i = 0; i < banks_.size(); ++i) {
-        if (banks_[i].id == activeBankId_) {
+    for (size_t i = 0; i < playable.size(); ++i) {
+        if (playable[i]->id == activeBankId_) {
             index = static_cast<int>(i);
             break;
         }
     }
-    const int count = static_cast<int>(banks_.size());
+    const int count = static_cast<int>(playable.size());
     index = ((index + delta) % count + count) % count;
-    const Bank& bank = banks_[static_cast<size_t>(index)];
-    if (bank.presets.empty()) {
-        error = "that bank is empty";
-        return false;
-    }
-    return selectBank(bank.id, error);
+    return selectBank(playable[static_cast<size_t>(index)]->id, error);
+}
+
+void Engine::configureAudioSafety(const AudioSettings& settings) {
+    muteOnChangeEnabled_.store(settings.muteOnChange, std::memory_order_release);
+    outputSafety_.configure(settings, sampleRate_.load(std::memory_order_acquire));
 }
 
 bool Engine::stepSnapshot(int delta, std::string& error) {
@@ -1226,26 +1757,62 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
         error = "no such preset";
         return false;
     }
-    if (bank->presets.size() <= 1) {
-        error = "a bank must keep at least one preset";
-        return false;
-    }
-
     const auto found = std::find_if(bank->presets.begin(), bank->presets.end(),
                                     [&](const Preset& preset) { return preset.id == presetId; });
     if (found == bank->presets.end()) {
         error = "no such preset";
         return false;
     }
+    if (bank->presets.size() <= 1 && !bank->communityHolding
+        && (!found->community.isObject() || found->community.members().empty())) {
+        error = "a bank must keep at least one preset";
+        return false;
+    }
 
+    const Json removedCommunity = found->community;
     const bool wasActive = presetId == activePresetId_;
     bank->presets.erase(found);
     storage_.saveBank(*bank);
 
+    auto dependencyStillUsed = [&](const std::string& group, const std::string& name) {
+        for (const Bank& candidateBank : banks_) {
+            for (const Preset& candidatePreset : candidateBank.presets) {
+                for (const Json& dependency : candidatePreset.community["dependencies"][group].items()) {
+                    if (dependency["expectedFilename"].asString() == name) return true;
+                }
+            }
+        }
+        return false;
+    };
+    auto removeDependencies = [&](const std::string& group) {
+        for (const Json& dependency : removedCommunity["dependencies"][group].items()) {
+            const std::string name = dependency["expectedFilename"].asString();
+            if (name.empty() || fileName(name) != name || dependencyStillUsed(group, name)) continue;
+            const std::string kind = dependency["kind"].asString(group == "irs" ? "ir" : "model");
+            const std::string root = kind == "ir" ? storage_.paths().irsDir : storage_.paths().modelsDir;
+            removeFile(joinPath(joinPath(root, "Community"), name));
+        }
+    };
+    removeDependencies("tone3000");
+    removeDependencies("irs");
+
     if (wasActive) {
-        activePresetId_ = bank->presets.front().id;
+        if (bank->presets.empty()) {
+            const auto playable = std::find_if(banks_.begin(), banks_.end(), [&](const Bank& candidate) {
+                return candidate.id != bank->id && !candidate.communityHolding && !candidate.presets.empty();
+            });
+            if (playable != banks_.end()) {
+                activeBankId_ = playable->id;
+                activePresetId_ = playable->presets.front().id;
+            } else {
+                activePresetId_.clear();
+            }
+        } else {
+            activePresetId_ = bank->presets.front().id;
+        }
         std::string chainError;
-        publishChain(buildChain(bank->presets.front(), chainError));
+        if (Preset* next = activePreset()) publishChain(buildChain(*next, chainError));
+        settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
         persistSettings();
     }
@@ -1306,7 +1873,7 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         notify();
         return true;
     }
-    if (source->presets.size() < 2) {
+    if (source->presets.size() < 2 && !source->communityHolding) {
         error = "a bank must keep at least one preset";
         return false;
     }
@@ -1476,6 +2043,119 @@ bool Engine::importBank(const Json& json, std::string& error) {
     }
     banks_.push_back(std::move(bank));
     notify();
+    return true;
+}
+
+static float normalizePortValue(const PortInfo& port, float value) {
+    float normalized = std::max(port.minimum, std::min(port.maximum, value));
+    if (port.toggled) {
+        const float off = std::max(port.minimum, std::min(port.maximum, 0.0f));
+        const float on = std::max(port.minimum, std::min(port.maximum, 1.0f));
+        normalized = value > 0.0f ? on : off;
+    } else if (port.enumerated && !port.scalePoints.empty()) {
+        const ScalePoint* closest = &port.scalePoints.front();
+        for (const ScalePoint& point : port.scalePoints) {
+            if (std::abs(point.value - value) < std::abs(closest->value - value)) {
+                closest = &point;
+            }
+        }
+        normalized = closest->value;
+    } else if (port.integer) {
+        normalized = std::round(normalized);
+    }
+    return std::max(port.minimum, std::min(port.maximum, normalized));
+}
+
+bool Engine::exportPresetForCommunity(const std::string& bankId, const std::string& presetId,
+                                      Preset& exported, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* preset = nullptr;
+    for (Bank& bank : banks_) {
+        if (bank.id != bankId) continue;
+        for (Preset& candidate : bank.presets) {
+            if (candidate.id == presetId) { preset = &candidate; break; }
+        }
+        break;
+    }
+    if (!preset) {
+        error = "that local preset was not found";
+        return false;
+    }
+    if (preset->community.isObject() && !preset->community.members().empty()) {
+        error = "community-installed presets cannot be submitted again";
+        return false;
+    }
+    if (bankId == activeBankId_ && presetId == activePresetId_) syncPresetFromChain();
+    exported = *preset;
+    exported.activeSnapshot = -1;
+    exported.rememberedSnapshotSlot = -1;
+    exported.rememberedSnapshotEnabled = false;
+    exported.community = Json::object();
+    return true;
+}
+
+bool Engine::importCommunityPreset(const Json& manifest, bool incomplete,
+                                   std::string& bankId, std::string& error) {
+    if (!CommunityPresetPackage::validate(manifest, error)) return false;
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+
+    Preset preset = CommunityPresetPackage::presetFromManifest(manifest);
+    preset.id = newId("preset");
+    Json provenance = Json::object();
+    provenance.set("catalogId", manifest["id"].asString());
+    provenance.set("author", manifest["author"].asString());
+    provenance.set("license", manifest["license"].asString());
+    provenance.set("manifestSha256", CommunityPresetPackage::checksum(manifest));
+    provenance.set("incomplete", incomplete);
+    provenance.set("dependencies", manifest["dependencies"]);
+    preset.community = provenance;
+
+    Bank* bank = nullptr;
+    for (Bank& candidate : banks_) {
+        if (candidate.communityHolding) { bank = &candidate; break; }
+    }
+    if (!bank) {
+        Bank created;
+        created.id = newId("bank");
+        created.name = "Community";
+        created.order = static_cast<int>(banks_.size());
+        created.communityHolding = true;
+        banks_.push_back(std::move(created));
+        bank = &banks_.back();
+    }
+    bank->lastPresetId = preset.id;
+    bank->presets.push_back(std::move(preset));
+    if (!storage_.saveBank(*bank)) {
+        error = "could not write the community bank";
+        return false;
+    }
+    bankId = bank->id;
+    notify();
+    return true;
+}
+
+bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    removed = 0;
+    std::vector<std::string> presetIds;
+    for (const Bank& bank : banks_) {
+        for (const Preset& preset : bank.presets) {
+            if (preset.community["catalogId"].asString() == catalogId) presetIds.push_back(preset.id);
+        }
+    }
+    if (presetIds.empty()) { error = "that community preset is not installed"; return false; }
+    for (const std::string& presetId : presetIds) {
+        Bank* bank = findBankForPreset(presetId);
+        if (bank && bank->presets.size() <= 1 && !bank->communityHolding) {
+            Preset placeholder;
+            placeholder.id = newId("preset");
+            placeholder.name = "Preset 1";
+            bank->presets.push_back(std::move(placeholder));
+            storage_.saveBank(*bank);
+        }
+        if (!deletePreset(presetId, error)) return false;
+        ++removed;
+    }
     return true;
 }
 
@@ -1663,7 +2343,12 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         if (slot->id == slotId) {
-            slot->enabled.store(enabled, std::memory_order_relaxed);
+            if (muteOnChangeEnabled_.load(std::memory_order_acquire)) {
+                slot->pendingEnabled.store(enabled ? 1 : 0, std::memory_order_release);
+                transitionRequested_.store(true, std::memory_order_release);
+            } else {
+                slot->enabled.store(enabled, std::memory_order_relaxed);
+            }
             if (Preset* preset = activePreset()) {
                 if (EffectSlot* stored = preset->findSlot(slotId)) {
                     stored->enabled = enabled;
@@ -1717,18 +2402,26 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             if (!port.control || !port.input || port.symbol != portSymbol) {
                 continue;
             }
-            const float clamped = std::max(port.minimum, std::min(port.maximum, value));
-            // Queued rather than written directly: the audio thread applies it
-            // between periods so a moving knob cannot land mid-buffer.
-            if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
-                slot.plugin->setControl(port.index, clamped);
-            }
-            if (persist) {
+            const float clamped = normalizePortValue(port, value);
+            // setControl only updates the atomic value consumed at the start
+            // of the next plugin run. Updating it here also makes the immediate
+            // state acknowledgement report the requested toggle/slider value.
+            slot.plugin->setControl(port.index, clamped);
+            bool clearedTempoLink = false;
+            if (persist && !port.trigger) {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 writeStoredControlUnlocked(slotId, portSymbol, clamped);
+                if (Preset* preset = activePreset(); preset && preset->activeSnapshot < 0) {
+                    if (EffectSlot* stored = preset->findSlot(slotId);
+                        stored && stored->tempoLinks.has(portSymbol)) {
+                        stored->tempoLinks.remove(portSymbol);
+                        clearedTempoLink = true;
+                    }
+                }
                 requestBankPersist(false);
             }
-            notifyPerformance();
+            if (clearedTempoLink) notify();
+            else notifyPerformance();
             return true;
         }
         error = "no such control on this effect";
@@ -1736,6 +2429,79 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
     }
     error = "no such effect";
     return false;
+}
+
+bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymbol,
+                          double quarterNoteBeats, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        error = "Tap Tempo Clock is disabled";
+        return false;
+    }
+    Preset* preset = activePreset();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    if (preset->activeSnapshot >= 0) {
+        error = "return to the base preset before changing Tempo Link";
+        return false;
+    }
+    EffectSlot* stored = preset->findSlot(slotId);
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!stored || !chain) {
+        error = "no such effect";
+        return false;
+    }
+    for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
+        ChainSlot& live = *chain->slots[slotIndex];
+        if (live.id != slotId || !live.plugin) continue;
+        for (const PortInfo& port : live.plugin->info().ports) {
+            if (port.symbol != portSymbol || !port.control || !port.input) continue;
+            if (quarterNoteBeats <= 0.0) {
+                writeStoredControlUnlocked(slotId, portSymbol, live.plugin->control(port.index));
+                stored->tempoLinks.remove(portSymbol);
+            } else {
+                float value = 0.0f;
+                if (!tempoLinkedPortValue(port, quarterNoteBeats, transport_.bpm(), value)) {
+                    error = "that control does not provide compatible LV2 time units";
+                    return false;
+                }
+                stored->tempoLinks.set(portSymbol, Json(quarterNoteBeats));
+                live.plugin->setControl(port.index, value);
+            }
+            requestBankPersist(true);
+            notify();
+            return true;
+        }
+        error = "no such control on this effect";
+        return false;
+    }
+    error = "no such effect";
+    return false;
+}
+
+void Engine::applyTempoLinksUnlocked(Preset& preset, bool deferControls) {
+    if (!transportEnabled_.load(std::memory_order_acquire)) return;
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain) return;
+    const double bpm = transport_.bpm();
+    for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
+        ChainSlot& live = *chain->slots[slotIndex];
+        const EffectSlot* stored = preset.findSlot(live.id);
+        if (!stored || !live.plugin || !stored->tempoLinks.isObject()) continue;
+        for (const Json::Member& link : stored->tempoLinks.members()) {
+            for (const PortInfo& port : live.plugin->info().ports) {
+                float value = 0.0f;
+                if (port.symbol == link.first
+                    && tempoLinkedPortValue(port, link.second.asDouble(), bpm, value)) {
+                    if (deferControls) live.plugin->setControlDeferred(port.index, value);
+                    else live.plugin->setControl(port.index, value);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& error) {
@@ -1760,14 +2526,41 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
             const float current = slot.plugin->control(port.index);
             const float span = port.maximum - port.minimum;
             float step = span == 0.0f ? 0.01f : span / 64.0f;
-            if (port.integer || port.enumerated) {
+            if (port.enumerated && !port.scalePoints.empty()) {
+                size_t selected = 0;
+                for (size_t point = 1; point < port.scalePoints.size(); ++point) {
+                    if (std::abs(port.scalePoints[point].value - current)
+                        < std::abs(port.scalePoints[selected].value - current)) {
+                        selected = point;
+                    }
+                }
+                const long nextIndex = std::max<long>(0, std::min<long>(
+                    static_cast<long>(port.scalePoints.size()) - 1,
+                    static_cast<long>(selected) + delta));
+                return setControlValue(request.binding.slotId, request.binding.portSymbol,
+                                       port.scalePoints[static_cast<size_t>(nextIndex)].value,
+                                       error, false);
+            }
+            if (port.integer) {
                 step = 1.0f;
+            } else if (port.rangeSteps > 1) {
+                step = span / static_cast<float>(port.rangeSteps - 1);
             }
             if (port.toggled) {
                 return setControlValue(request.binding.slotId, request.binding.portSymbol,
                                        delta > 0 ? port.maximum : port.minimum, error, false);
             }
-            const float next = current + static_cast<float>(delta) * step;
+            float next = current + static_cast<float>(delta) * step;
+            if (port.logarithmic && port.minimum != 0.0f && port.maximum != 0.0f
+                && ((port.minimum > 0.0f) == (port.maximum > 0.0f))) {
+                const unsigned steps = port.rangeSteps > 1 ? port.rangeSteps : 65;
+                const double ratio = static_cast<double>(port.maximum) / port.minimum;
+                const double position = std::log(static_cast<double>(current) / port.minimum)
+                                      / std::log(ratio);
+                const double nextPosition = std::max(0.0, std::min(1.0,
+                    position + static_cast<double>(delta) / static_cast<double>(steps - 1)));
+                next = static_cast<float>(port.minimum * std::pow(ratio, nextPosition));
+            }
             if (!setControlValue(request.binding.slotId, request.binding.portSymbol, next, error, false)) {
                 return false;
             }
@@ -1782,7 +2575,7 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
 }
 
 bool Engine::setEffectProperty(const std::string& slotId, const std::string& propertyUri,
-                               const std::string& path, std::string& error) {
+                               const std::string& path, std::string& error, bool persist) {
     std::string resolved = path;
     if (!path.empty()) {
         resolved = resolvePluginFilePath(storage_, propertyUri, path, error);
@@ -1800,23 +2593,37 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
         if (slot->id != slotId || !slot->plugin) {
             continue;
         }
+        const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
+        if (mutedTransition) {
+            // Hold the patch:Set inside the plugin host until the master has
+            // reached absolute silence. The audio thread releases it from the
+            // Muted state without taking a lock.
+            slot->plugin->holdPropertyChanges();
+        }
         if (!slot->plugin->setProperty(propertyUri, resolved, error)) {
+            if (mutedTransition) slot->plugin->releasePropertyChanges();
             return false;
         }
-        if (Preset* preset = activePreset()) {
-            if (EffectSlot* stored = preset->findSlot(slotId)) {
-                Json properties = stored->state["properties"].isObject()
-                                ? stored->state["properties"] : Json::object();
-                properties.set(propertyUri, Json(resolved));
-                Json state = stored->state.isObject() ? stored->state : Json::object();
-                state.set("properties", properties);
-                stored->state = state;
+        if (mutedTransition) {
+            transitionRequested_.store(true, std::memory_order_release);
+        }
+        if (persist) {
+            if (Preset* preset = activePreset()) {
+                if (EffectSlot* stored = preset->findSlot(slotId)) {
+                    Json properties = stored->state["properties"].isObject()
+                                    ? stored->state["properties"] : Json::object();
+                    properties.set(propertyUri, Json(resolved));
+                    Json state = stored->state.isObject() ? stored->state : Json::object();
+                    state.set("properties", properties);
+                    stored->state = state;
+                }
             }
         }
-        {
+        if (persist) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             requestBankPersist(true);
         }
+        if (backing_) backing_->refreshPlaylist();
         notify();
         return true;
     }
@@ -1825,7 +2632,12 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
 }
 
 bool Engine::setBypassAll(bool bypassed) {
-    bypassAll_.store(bypassed, std::memory_order_relaxed);
+    if (muteOnChangeEnabled_.load(std::memory_order_acquire)) {
+        pendingBypassAll_.store(bypassed ? 1 : 0, std::memory_order_release);
+        transitionRequested_.store(true, std::memory_order_release);
+    } else {
+        bypassAll_.store(bypassed, std::memory_order_relaxed);
+    }
     refreshLeds();
     notifyPerformance();
     return true;
@@ -1890,6 +2702,8 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
     if (!chain) {
         return;
     }
+    const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
+    bool stateLoaded = false;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         if (!slot->plugin) {
             continue;
@@ -1898,9 +2712,14 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
         if (!stored) {
             continue;
         }
-        slot->plugin->loadState(rewritePluginStateFiles(storage_, stored->state));
-        slot->enabled.store(stored->enabled, std::memory_order_relaxed);
+        if (mutedTransition) slot->plugin->beginDeferredStateChanges();
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, stored->state), mutedTransition);
+        if (mutedTransition) slot->pendingEnabled.store(stored->enabled ? 1 : 0, std::memory_order_release);
+        else slot->enabled.store(stored->enabled, std::memory_order_relaxed);
+        stateLoaded = true;
     }
+    if (mutedTransition && stateLoaded) transitionRequested_.store(true, std::memory_order_release);
+    applyTempoLinksUnlocked(preset, mutedTransition);
     preset.activeSnapshot = -1;
     armAnalogCatchUnlocked();
 }
@@ -1976,14 +2795,23 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
     if (!chain) {
         return;
     }
+    const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
+    bool stateLoaded = false;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         if (!slot->plugin || !snapshot.slots.has(slot->id)) {
             continue;
         }
         const Json& state = snapshot.slots[slot->id];
-        slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_));
-        slot->enabled.store(state["enabled"].asBool(true), std::memory_order_relaxed);
+        if (mutedTransition) slot->plugin->beginDeferredStateChanges();
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_),
+                                mutedTransition);
+        const bool enabled = state["enabled"].asBool(true);
+        if (mutedTransition) slot->pendingEnabled.store(enabled ? 1 : 0, std::memory_order_release);
+        else slot->enabled.store(enabled, std::memory_order_relaxed);
+        stateLoaded = true;
     }
+    if (mutedTransition && stateLoaded) transitionRequested_.store(true, std::memory_order_release);
+    if (Preset* preset = activePreset()) applyTempoLinksUnlocked(*preset, mutedTransition);
     armAnalogCatchUnlocked();
 }
 
@@ -2564,6 +3392,33 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "bypassAll" && request.action != "tapTempo"
         && request.action != "tuner" && request.action != "toggleEffect"
         && request.action != "reloadPreset"
+        && request.action != "backingPlayPause"
+        && request.action != "backingStop"
+        && request.action != "backingPrevious"
+        && request.action != "backingNext"
+        && request.action != "backingView"
+        && request.action != "looperRecord"
+        && request.action != "looperToggle"
+        && request.action != "looperPlay"
+        && request.action != "looperPlayStop"
+        && request.action != "looperOverdub"
+        && request.action != "looperStop"
+        && request.action != "looperRestart"
+        && request.action != "looperMute"
+        && request.action != "looperUndo"
+        && request.action != "looperRedo"
+        && request.action != "looperClear"
+        && request.action != "looperView"
+        && request.action != "recorderToggle"
+        && request.action != "recorderStop"
+        && request.action != "recorderView"
+        && request.action != "drumToggle"
+        && request.action != "drumFill"
+        && request.action != "drumVariationNext"
+        && request.action != "drumVariationPrevious"
+        && request.action != "drumPatternNext"
+        && request.action != "drumPatternPrevious"
+        && request.action != "drumView"
         && request.action != "navigate"
         && request.action != "select") {
         if (binding.snapshotSlot >= 0) {
@@ -2658,7 +3513,10 @@ void Engine::runAction(const ActionRequest& incoming) {
             if (chain) {
                 for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
                     if (slot->id == binding.slotId) {
-                        enabled = !slot->enabled.load(std::memory_order_relaxed);
+                        const int pending = slot->pendingEnabled.load(std::memory_order_acquire);
+                        const bool current = pending >= 0
+                            ? pending != 0 : slot->enabled.load(std::memory_order_relaxed);
+                        enabled = !current;
                         break;
                     }
                 }
@@ -2670,7 +3528,21 @@ void Engine::runAction(const ActionRequest& incoming) {
             nudgeEncoderParameter(request, error);
         } else {
             const bool persist = request.persist && !isContinuousKind(request.kind);
-            setControlValue(binding.slotId, binding.portSymbol, mappedBindingValue(request), error, persist);
+            const PortInfo* boundPort = nullptr;
+            if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                    if (slot->id != binding.slotId || !slot->plugin) continue;
+                    for (const PortInfo& port : slot->plugin->info().ports) {
+                        if (port.control && port.input && port.symbol == binding.portSymbol) {
+                            boundPort = &port;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+            setControlValue(binding.slotId, binding.portSymbol,
+                            mappedBindingValue(request, boundPort), error, persist);
             notifyPerformance();
         }
     } else if (request.action == "bypassAll") {
@@ -2688,12 +3560,76 @@ void Engine::runAction(const ActionRequest& incoming) {
     } else if (request.action == "tapTempo") {
         tapTempo();
     } else if (request.action == "tuner") {
-        if (latching) {
-            setTunerEnabled(latchOn(request));
-        } else {
-            setTunerEnabled(!tunerEnabled_.load(std::memory_order_relaxed));
+        notifyUiView("tunerToggle");
+    } else if (request.action == "backingPlayPause") {
+        if (backingEnabled_.load(std::memory_order_acquire)) {
+            if (backing_->state()["playing"].asBool()) backing_->pause(); else backing_->play();
+            refreshLeds();
         }
-        notify();
+    } else if (request.action == "backingStop") {
+        if (backingEnabled_.load(std::memory_order_acquire)) { backing_->stopPlayback(); refreshLeds(); }
+    } else if (request.action == "backingNext") {
+        if (backingEnabled_.load(std::memory_order_acquire)) {
+            if (request.kind == ControlKind::Encoder && encoderDelta < 0) backing_->previous(); else backing_->next();
+        }
+    } else if (request.action == "backingPrevious") {
+        if (backingEnabled_.load(std::memory_order_acquire)) {
+            if (request.kind == ControlKind::Encoder && encoderDelta < 0) backing_->next(); else backing_->previous();
+        }
+    } else if (request.action == "backingView") {
+        if (backingEnabled_.load(std::memory_order_acquire)) notifyUiView("backingTracks");
+    } else if (request.action.rfind("looper", 0) == 0) {
+        if (request.action == "looperView") {
+            notifyUiView("looper");
+        } else {
+            std::string command;
+            if (request.action == "looperRecord") command = "record";
+            else if (request.action == "looperToggle") command = "toggle";
+            else if (request.action == "looperPlay") command = "play";
+            else if (request.action == "looperPlayStop") command = "playStop";
+            else if (request.action == "looperOverdub") command = "overdub";
+            else if (request.action == "looperStop") command = "stop";
+            else if (request.action == "looperRestart") command = "restart";
+            else if (request.action == "looperMute") command = "mute";
+            else if (request.action == "looperUndo") command = "undo";
+            else if (request.action == "looperRedo") command = "redo";
+            else if (request.action == "looperClear" && request.fromHold) command = "clear";
+            if (!command.empty()) {
+                Json payload = Json::object();
+                if (command == "clear") payload.set("confirmed", true);
+                looperCommand(command, payload, error);
+                refreshLeds();
+            } else if (request.action == "looperClear") {
+                error = "looper clear must be assigned as a hold action";
+            }
+        }
+    } else if (request.action.rfind("recorder", 0) == 0 && recorder_) {
+        if (request.action == "recorderView") {
+            notifyUiView("recorder");
+        } else {
+            const bool active = recorder_->recording();
+            const std::string command = request.action == "recorderStop"
+                ? "record/stop" : active ? "record/stop" : "record/start";
+            recorderCommand(command, Json::object(), error);
+            refreshLeds();
+        }
+    } else if (request.action.rfind("drum", 0) == 0 && drums_) {
+        if (request.action == "drumView") {
+            notifyUiView("drums");
+        } else if (request.action == "drumToggle") {
+            drumCommand("toggle", Json::object(), error);
+        } else if (request.action == "drumFill") {
+            drumCommand("fill", Json::object(), error);
+        } else {
+            const int current = drumState()["activeVariation"].asInt(0);
+            const bool previous = request.action == "drumVariationPrevious"
+                               || request.action == "drumPatternPrevious"
+                               || (request.kind == ControlKind::Encoder && encoderDelta < 0);
+            Json payload = Json::object();
+            payload.set("variation", (current + (previous ? 3 : 1)) % 4);
+            drumCommand("variation", payload, error);
+        }
+        refreshLeds();
     } else if (request.action == "none") {
         return;
     }
@@ -2784,6 +3720,55 @@ void Engine::refreshLeds() {
             } else if (control.binding.action == "bypassAll") {
                 state.on = bypassAll_.load(std::memory_order_relaxed);
                 colourRole = "bypass";
+            } else if (control.binding.action == "tapTempo"
+                       && transportEnabled_.load(std::memory_order_acquire)) {
+                state.on = transport_.beatPulse();
+                colourRole = "utility";
+            } else if (control.binding.action == "backingPlayPause"
+                       && backingEnabled_.load(std::memory_order_acquire)) {
+                state.on = backing_->state()["playing"].asBool(false);
+                colourRole = "utility";
+            } else if (control.binding.action.rfind("looper", 0) == 0) {
+                const Json looperState = looper_->state();
+                const std::string looperStatus = looperState["status"].asString("empty");
+                if (control.binding.action == "looperRecord" || control.binding.action == "looperToggle") {
+                    state.on = looperStatus == "armed" || looperStatus == "recording";
+                    colourRole = looperStatus == "armed" || looperStatus == "recording" ? "danger"
+                        : looperStatus == "overdubbing" ? "snapshot" : "utility";
+                } else if (control.binding.action == "looperOverdub") {
+                    state.on = looperStatus == "overdubbing";
+                    colourRole = "snapshot";
+                } else if (control.binding.action == "looperPlay" || control.binding.action == "looperPlayStop") {
+                    state.on = looperStatus == "playing" || looperStatus == "overdubbing";
+                    colourRole = "utility";
+                } else if (control.binding.action == "looperStop") {
+                    state.on = looperStatus == "stopped";
+                    colourRole = "bypass";
+                } else if (control.binding.action == "looperMute") {
+                    state.on = looperState["muted"].asBool(false);
+                    colourRole = "bypass";
+                } else if (control.binding.action == "looperRestart") {
+                    state.on = looperState["hasLoop"].asBool(false);
+                    colourRole = "navigation";
+                } else if (control.binding.action == "looperUndo") {
+                    state.on = looperState["canUndo"].asBool(false);
+                    colourRole = "utility";
+                } else if (control.binding.action == "looperRedo") {
+                    state.on = looperState["canRedo"].asBool(false);
+                    colourRole = "utility";
+                } else if (control.binding.action == "looperClear") {
+                    state.on = looperState["hasLoop"].asBool(false);
+                    colourRole = "danger";
+                }
+            } else if (control.binding.action.rfind("recorder", 0) == 0 && recorder_) {
+                const bool active = recorder_->recording();
+                state.on = control.binding.action == "recorderStop" ? !active : active;
+                colourRole = active ? "danger" : "utility";
+            } else if (control.binding.action.rfind("drum", 0) == 0 && drums_) {
+                const Json drums = drumState();
+                state.on = control.binding.action == "drumFill"
+                    ? drums["fillActive"].asBool(false) : drums["playing"].asBool(false);
+                colourRole = control.binding.action == "drumFill" ? "snapshot" : "utility";
             }
             break;
         }
@@ -2825,6 +3810,8 @@ bool Engine::applyUiSettings(const Json& json, std::string& error) {
         }
     }
     settings_.ui = UiSettings::fromJson(merged);
+    tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
+        settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
     applyControllerFeel();
     if (settings_.ui.performanceEncoder != "session") {
         sessionPresets_.clear();
@@ -2890,6 +3877,13 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
 bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
                               const std::string& contents, const std::string& directory,
                               std::string& storedPath, std::string& error) {
+    if (kind == "backing") {
+        error = "backing tracks must use the binary import endpoint";
+        return false;
+    }
+    if (kind == "drumsample" || kind == "drumkit") {
+        error = "use the drum sample importer or kit designer"; return false;
+    }
     const std::string root = libraryRootForKind(storage_.paths(), kind);
 
     const std::string safeName = sanitizeFileName(name);
@@ -2940,6 +3934,7 @@ Json Engine::readLibraryFile(const std::string& path, std::string& error) {
 }
 
 bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that file is not in the Pi-MFX library";
         return false;
@@ -2962,6 +3957,10 @@ bool Engine::deleteLibraryFile(const std::string& path, std::string& error) {
         error = "could not delete the file";
         return false;
     }
+    if (backing_) {
+        backing_->fileDeleted(path);
+        backing_->refreshPlaylist();
+    }
     notify();
     return true;
 }
@@ -2970,6 +3969,9 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string dir = rel.empty() ? root : joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && !pathInsideRoot(dir, root)) {
+        error = "folder is outside the drum library"; return Json();
+    }
     if (!storage_.isPathInLibrary(dir) && dir != root) {
         error = "that folder is not in the library";
         return Json();
@@ -2987,6 +3989,7 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             break;
         }
         const std::string name = entry.path().filename().string();
+        if ((kind == "drumsample" || kind == "drumkit") && entry.is_symlink(ec)) continue;
         if (hiddenLibraryName(name)) {
             continue;
         }
@@ -2999,6 +4002,14 @@ Json Engine::libraryList(const std::string& kind, const std::string& directory, 
             item.set("type", "dir");
             folders.push(item);
         } else if (entry.is_regular_file(ec)) {
+            if (kind == "drumsample" && lowerCopy(entry.path().extension().string()) != ".wav") continue;
+            if (kind == "backing") {
+                const std::string extension = lowerCopy(entry.path().extension().string());
+                if (extension != ".wav" && extension != ".flac"
+                    && extension != ".mp3" && extension != ".ogg") {
+                    continue;
+                }
+            }
             item.set("type", "file");
             item.set("bytes", static_cast<int64_t>(std::filesystem::file_size(entry.path(), ec)));
             files.push(item);
@@ -3026,7 +4037,7 @@ Json Engine::libraryTree(const std::string& kind, std::string& error) {
     }
     Json json = Json::object();
     json.set("kind", libraryKindName(kind));
-    json.set("root", libraryDirNode(root, std::string()));
+    json.set("root", libraryDirNode(root, std::string(), kind == "drumsample" || kind == "drumkit"));
     error.clear();
     return json;
 }
@@ -3039,6 +4050,9 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
         return false;
     }
     const std::string dir = joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && !pathInsideRoot(dir, root)) {
+        error = "folder is outside the drum library"; return false;
+    }
     if (!makeDirectories(dir) || !storage_.isPathInLibrary(dir)) {
         error = "could not create that folder";
         return false;
@@ -3048,6 +4062,8 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
 }
 
 bool Engine::libraryRename(const std::string& path, const std::string& newName, std::string& error) {
+    if (isLibraryRootPath(storage_.paths(), path)) { error = "cannot rename a library root"; return false; }
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -3058,6 +4074,15 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
         return false;
     }
     const std::string dest = joinPath(parentPath(path), safe);
+    if (pathInsideRoot(path, joinPath(storage_.paths().drumsDir, "samples"))) {
+        std::error_code sampleEc;
+        if (std::filesystem::is_regular_file(path, sampleEc) && lowerCopy(std::filesystem::path(dest).extension().string()) != ".wav") {
+            error = "drum samples must keep the WAV extension"; return false;
+        }
+        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
+            error = "that name already exists in the sample library"; return false;
+        }
+    }
     if (!storage_.isPathInLibrary(dest)) {
         error = "that name cannot be used";
         return false;
@@ -3068,12 +4093,14 @@ bool Engine::libraryRename(const std::string& path, const std::string& newName, 
         error = "could not rename that";
         return false;
     }
+    if (backing_) backing_->fileMoved(path, dest);
     notify();
     return true;
 }
 
 bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                          std::string& error) {
+    if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -3081,11 +4108,20 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     const std::string rel = sanitizeRelDir(directory);
     const std::string destDir = rel.empty() ? root : joinPath(root, rel);
+    if ((kind == "drumsample" || kind == "drumkit") && (!pathInsideRoot(path, root) || !pathInsideRoot(destDir, root))) {
+        error = "moves must stay inside this drum library"; return false;
+    }
     if (!makeDirectories(destDir) || !storage_.isPathInLibrary(destDir)) {
         error = "that folder is not in the library";
         return false;
     }
     const std::string dest = joinPath(destDir, fileName(path));
+    if (kind == "drumsample" || kind == "drumkit") {
+        std::error_code sampleEc;
+        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
+            error = "destination already exists; drum files are never overwritten"; return false;
+        }
+    }
     if (!storage_.isPathInLibrary(dest)) {
         error = "could not move that there";
         return false;
@@ -3096,40 +4132,21 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         error = "could not move that";
         return false;
     }
+    if (backing_) backing_->fileMoved(path, dest);
     notify();
     return true;
 }
 
 void Engine::tapTempo() {
-    std::lock_guard<std::mutex> lock(tapMutex_);
-    const auto now = std::chrono::steady_clock::now();
-
-    // Taps more than two seconds apart start a new count rather than averaging
-    // across a pause.
-    if (!tapTimes_.empty()
-        && std::chrono::duration_cast<std::chrono::milliseconds>(now - tapTimes_.back()).count() > 2000) {
-        tapTimes_.clear();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!transportEnabled_.load(std::memory_order_acquire)) {
+        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
     }
-    tapTimes_.push_back(now);
-    if (tapTimes_.size() > 4) {
-        tapTimes_.erase(tapTimes_.begin());
-    }
-    if (tapTimes_.size() < 2) {
-        return;
-    }
-
-    double total = 0.0;
-    for (size_t i = 1; i < tapTimes_.size(); ++i) {
-        total += std::chrono::duration<double>(tapTimes_[i] - tapTimes_[i - 1]).count();
-    }
-    const double average = total / static_cast<double>(tapTimes_.size() - 1);
-    if (average <= 0.0) {
-        return;
-    }
-
-    const double bpm = std::max(30.0, std::min(300.0, 60.0 / average));
+    const double bpm = transport_.tap();
     if (Preset* preset = activePreset()) {
         preset->tempo = bpm;
+        applyTempoLinksUnlocked(*preset);
+        requestBankPersist(false);
     }
     notifyPerformance();
 }
@@ -3143,8 +4160,17 @@ void Engine::setTunerEnabled(bool enabled) {
     tunerEnabled_.store(enabled, std::memory_order_relaxed);
 }
 
+void Engine::setTunerViewState(bool open, bool muted) {
+    tunerViewOpen_.store(open, std::memory_order_relaxed);
+    tunerOutputMuted_.store(muted, std::memory_order_relaxed);
+}
+
 void Engine::tunerThread() {
     std::vector<float> window(4096, 0.0f);
+    TunerReading stable;
+    int pendingMidi = -1;
+    int pendingCount = 0;
+    int invalidCount = 0;
 
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
@@ -3158,7 +4184,42 @@ void Engine::tunerThread() {
             window[i] = tunerRing_[index];
         }
 
-        const TunerReading reading = analysePitch(window, sampleRate_.load(std::memory_order_acquire));
+        TunerReading reading = analysePitch(window, sampleRate_.load(std::memory_order_acquire),
+            tunerThreshold_.load(std::memory_order_relaxed));
+        if (reading.valid && stable.valid) {
+            if (reading.midiNote == stable.midiNote) {
+                reading.frequency = stable.frequency * 0.62f + reading.frequency * 0.38f;
+                const double midi = 69.0 + 12.0 * std::log2(reading.frequency / 440.0);
+                reading.cents = static_cast<float>((midi - reading.midiNote) * 100.0);
+                pendingMidi = -1;
+                pendingCount = 0;
+                stable = reading;
+                invalidCount = 0;
+            } else {
+                if (pendingMidi == reading.midiNote) ++pendingCount;
+                else { pendingMidi = reading.midiNote; pendingCount = 1; }
+                if (pendingCount >= 3) {
+                    stable = reading;
+                    invalidCount = 0;
+                    pendingMidi = -1;
+                    pendingCount = 0;
+                } else {
+                    reading = stable;
+                }
+            }
+        } else if (reading.valid) {
+            stable = reading;
+            invalidCount = 0;
+        } else {
+            ++invalidCount;
+            if (stable.valid && invalidCount < 5) {
+                reading = stable;
+            } else {
+                stable = reading;
+                pendingMidi = -1;
+                pendingCount = 0;
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(tunerMutex_);
             tunerReading_ = reading;
@@ -3172,11 +4233,49 @@ void Engine::housekeepingThread() {
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
 
+        AudioRealtimeStatus realtimeStatus;
+        if (backend_ && backend_->takeRealtimeStatus(realtimeStatus)) {
+            if (realtimeStatus.errorCode == 0) {
+                logInfo("audio thread: SCHED_FIFO priority "
+                        + std::to_string(realtimeStatus.priority));
+            } else {
+                logWarn("audio thread: SCHED_FIFO priority "
+                        + std::to_string(realtimeStatus.priority) + " refused: "
+                        + std::strerror(realtimeStatus.errorCode)
+                        + " (expect dropouts under load)");
+            }
+        }
+
+        AudioFailure failure;
+        if (backend_ && backend_->takeFailure(failure)) {
+            const std::string message = formatAudioFailure(failure);
+            logError("audio: " + message);
+            {
+                std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                audioError_ = message;
+                notify();
+            }
+            audioRetryLog = 0;
+        }
+
         for (const ActionRequest& request : controller_.pollHolds()) {
             runAction(request);
         }
         collectRetiredChains();
+        if (chainStateDirty_.exchange(false, std::memory_order_acq_rel)) {
+            notify();
+        }
         flushBankPersistIfDue();
+        if (recorderOwnsTransport_.load(std::memory_order_acquire) && recorder_
+            && !recorder_->recording() && !recorder_->playing()) {
+            transport_.stop();
+            recorderOwnsTransport_.store(false, std::memory_order_release);
+        }
+        if (recorderOwnsBacking_.load(std::memory_order_acquire) && recorder_
+            && !recorder_->recording()) {
+            backing_->stopPlayback();
+            recorderOwnsBacking_.store(false, std::memory_order_release);
+        }
 
         // Meters update several times a second; the full state only changes
         // when something actually changes, so it is not sent on a timer.
@@ -3184,7 +4283,24 @@ void Engine::housekeepingThread() {
             std::lock_guard<std::mutex> lock(listenerMutex_);
             if (listener_) {
                 listener_(meterState());
+                if (transportEnabled_.load(std::memory_order_acquire)) {
+                    listener_(transportState());
+                }
+                if (backingEnabled_.load(std::memory_order_acquire)) {
+                    listener_(backing_->state());
+                }
+                listener_(looperState());
+                if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
+                    listener_(recorderState());
+                }
+                if (drumsEnabled_.load(std::memory_order_acquire) && drums_) {
+                    listener_(drumState());
+                }
             }
+            if (transportEnabled_.load(std::memory_order_acquire)
+                || backingEnabled_.load(std::memory_order_acquire)
+                || recorderEnabled_.load(std::memory_order_acquire)
+                || drumsEnabled_.load(std::memory_order_acquire)) refreshLeds();
         }
 
         // USB interfaces often appear after the service has already started.
@@ -3226,6 +4342,13 @@ bool Engine::persistSettings() {
 }
 
 void Engine::notify() {
+    // publishChain() now hands ownership to the audio thread. Broadcasting
+    // before that swap would serialize the outgoing chain alongside the new
+    // preset metadata. The swap marks chainStateDirty_, and housekeeping sends
+    // one coherent state as soon as the new chain is active.
+    if (pendingChain_.peek() != nullptr) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(listenerMutex_);
     if (listener_) {
         listener_(fullState());
@@ -3237,6 +4360,9 @@ void Engine::publishState() {
 }
 
 void Engine::notifyPerformance() {
+    if (pendingChain_.peek() != nullptr) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(listenerMutex_);
     if (listener_) {
         listener_(performanceState());
@@ -3276,8 +4402,25 @@ Json Engine::fullState() const {
     json.set("activePresetId", activePresetId_);
 
     json.set("audio", audioSettingsToJson(settings_.audio));
+    if (backend_) json.set("actualAudio", audioSettingsToJson(backend_->actualSettings()));
+    json.set("audioInterface", audioDeviceName_.empty() ? settings_.audio.device : audioDeviceName_);
     json.set("ui", settings_.ui.toJson());
     json.set("system", settings_.system.toJson());
+    json.set("transportSettings", settings_.transport.toJson());
+    json.set("transportFeatureEnabled", transportEnabled_.load(std::memory_order_acquire));
+    if (transportEnabled_.load(std::memory_order_acquire)) json.set("transport", transport_.state());
+    json.set("backingTrackFeatureEnabled", backingEnabled_.load(std::memory_order_acquire));
+    if (backingEnabled_.load(std::memory_order_acquire)) json.set("backing", backing_->state());
+    json.set("looper", looperState());
+    json.set("recorderFeatureEnabled", recorderEnabled_.load(std::memory_order_acquire));
+    if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
+    json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
+    if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
+#if defined(PIMFX_ENABLE_COMMUNITY_CATALOG)
+    json.set("communityCatalogFeatureEnabled", true);
+#else
+    json.set("communityCatalogFeatureEnabled", false);
+#endif
     json.set("controller", describeControllerRuntime());
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -3309,6 +4452,7 @@ Json Engine::fullState() const {
             if (const Preset* preset = activePreset()) {
                 if (const EffectSlot* stored = preset->findSlot(slot->id)) {
                     slotJson.set("name", stored->name);
+                    slotJson.set("tempoLinks", stored->tempoLinks);
                 }
             }
             slotJson.set("plugin", slot->plugin->info().toJson(true));
@@ -3347,7 +4491,7 @@ Json Engine::performanceState() const {
     json.set("presetReloadCount", presetReloadCount_);
 
     if (const Preset* preset = activePreset()) {
-        json.set("tempo", preset->tempo);
+        json.set("tempo", transportEnabled_.load(std::memory_order_acquire) ? transport_.bpm() : preset->tempo);
         json.set("activeSnapshot", preset->activeSnapshot);
     }
 
@@ -3373,6 +4517,263 @@ Json Engine::performanceState() const {
     return json;
 }
 
+Json Engine::transportState() const {
+    return transport_.state();
+}
+
+void Engine::notifyUiView(const std::string& view) {
+    std::lock_guard<std::mutex> lock(listenerMutex_);
+    if (!listener_) return;
+    Json json = Json::object();
+    json.set("type", "uiView");
+    json.set("view", view);
+    listener_(json);
+}
+
+Json Engine::backingState() const { return backing_ ? backing_->state() : Json::object(); }
+
+bool Engine::backingImport(const std::string& name, const std::string& bytes, std::string& error) {
+    if (!backingEnabled_.load(std::memory_order_acquire)) { error = "backing tracks are disabled"; return false; }
+    return backing_->importFile(name, bytes, error);
+}
+
+bool Engine::backingCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!backingEnabled_.load(std::memory_order_acquire)) { error = "backing tracks are disabled"; return false; }
+    if (command == "play") backing_->play();
+    else if (command == "pause") backing_->pause();
+    else if (command == "stop") backing_->stopPlayback();
+    else if (command == "restart") backing_->restart();
+    else if (command == "seek") backing_->seek(payload["seconds"].asDouble(0.0));
+    else if (command == "level") return backing_->updateTrackSettings(Json::object({{"level", payload["level"]}}), error);
+    else if (command == "bpm") return backing_->updateTrackSettings(Json::object({{"bpm", payload["bpm"]}}), error);
+    else if (command == "loop") return backing_->updateTrackSettings(Json::object({
+        {"loopEnabled", payload["enabled"]}, {"loopStart", payload["start"]}, {"loopEnd", payload["end"]}
+    }), error);
+    else if (command == "metadata") return backing_->updateTrackSettings(payload, error);
+    else if (command == "next") backing_->next();
+    else if (command == "previous") backing_->previous();
+    else if (command == "rescan") backing_->refreshPlaylist();
+    else if (command == "load") return backing_->load(payload["path"].asString(), error);
+    else if (command == "setlist/load") return backing_->loadSetListEntry(payload["index"].asInt(-1), error);
+    else if (command.rfind("setlist/", 0) == 0) return backing_->setListCommand(command.substr(8), payload, error);
+    else { error = "unknown backing-track command"; return false; }
+    return true;
+}
+
+Json Engine::looperState() const {
+    Json state = looper_->state();
+    const double bpm = transport_.bpm();
+    const double beatSeconds = 60.0 / bpm * 4.0 / std::max(1, settings_.transport.beatUnit);
+    const double beats = state["duration"].asDouble(0.0) / beatSeconds;
+    state.set("bpm", bpm);
+    state.set("beats", beats);
+    state.set("bars", beats / std::max(1, settings_.transport.beatsPerBar));
+    return state;
+}
+
+bool Engine::applyLooperSettings(const Json& json, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    settings_.looper = LooperSettings::fromJson(json);
+    looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
+                       settings_.looper.level, settings_.looper.feedback);
+    if (!persistSettings()) {
+        error = "could not save looper settings";
+        return false;
+    }
+    return true;
+}
+
+bool Engine::looperCommand(const std::string& command, const Json& payload, std::string& error) {
+    std::string resolved = command;
+    if (resolved == "toggle") {
+        const Json current = looper_->state();
+        const std::string status = current["status"].asString("empty");
+        if (status == "recording" || status == "armed") resolved = "finish";
+        else if (status == "playing" || status == "overdubbing") resolved = "overdub";
+        else resolved = current["hasLoop"].asBool(false) ? "play" : "record";
+    } else if (resolved == "playStop") {
+        const std::string status = looper_->state()["status"].asString("empty");
+        resolved = status == "playing" || status == "overdubbing"
+            || status == "recording" || status == "armed" ? "stop" : "play";
+    }
+
+    StereoLooper::Action action;
+    if (resolved == "record") action = StereoLooper::Action::Record;
+    else if (resolved == "finish") action = StereoLooper::Action::Finish;
+    else if (resolved == "play") action = StereoLooper::Action::Play;
+    else if (resolved == "overdub") action = StereoLooper::Action::Overdub;
+    else if (resolved == "stop") action = StereoLooper::Action::Stop;
+    else if (resolved == "restart") action = StereoLooper::Action::Restart;
+    else if (resolved == "mute") action = StereoLooper::Action::Mute;
+    else if (resolved == "undo") action = StereoLooper::Action::Undo;
+    else if (resolved == "redo") action = StereoLooper::Action::Redo;
+    else if (resolved == "clear") {
+        if (!payload["confirmed"].asBool(false)) {
+            error = "clear requires confirmation";
+            return false;
+        }
+        action = StereoLooper::Action::Clear;
+    } else if (resolved == "save") {
+        return looper_->save(payload["name"].asString("loop"), error);
+    } else if (resolved == "load") {
+        return looper_->load(payload["name"].asString(), error);
+    } else if (resolved == "rename") {
+        return looper_->renameSaved(payload["name"].asString(), payload["nextName"].asString(), error);
+    } else if (resolved == "delete") {
+        if (!payload["confirmed"].asBool(false)) { error = "delete requires confirmation"; return false; }
+        return looper_->deleteSaved(payload["name"].asString(), error);
+    } else {
+        error = "unknown looper command";
+        return false;
+    }
+
+    if ((action == StereoLooper::Action::Record || action == StereoLooper::Action::Overdub)
+        && looper_->wantsTransport() && transportEnabled_.load(std::memory_order_acquire)) {
+        const bool restart = action == StereoLooper::Action::Record && looper_->wantsCountIn();
+        transport_.play(restart);
+    }
+    return looper_->enqueue(action, error);
+}
+
+bool Engine::looperExport(const std::string& requestedName, std::string& contents,
+                          std::string& name, std::string& error) const {
+    std::string path = looper_->savedPath();
+    if (!requestedName.empty()) {
+        const std::string safe = sanitizeFileName(fileName(requestedName));
+        if (safe != requestedName || safe.size() < 4 || safe.substr(safe.size() - 4) != ".wav") {
+            error = "that saved loop name cannot be exported";
+            return false;
+        }
+        path = joinPath(storage_.paths().loopsDir, safe);
+    }
+    if (path.empty() || !readFile(path, contents)) {
+        error = "save the loop before exporting it";
+        return false;
+    }
+    name = fileName(path);
+    return true;
+}
+
+Json Engine::recorderState() const {
+    if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
+        Json state = Json::object();
+        state.set("type", "recorder");
+        state.set("status", "disabled");
+        return state;
+    }
+    Json state = recorder_->state();
+    if (backingEnabled_.load(std::memory_order_acquire) && backing_) {
+        const Json backing = backing_->state();
+        state.set("backingAvailable", backing["available"]);
+        state.set("backingLoaded", backing["loaded"]);
+        state.set("backingPlaying", backing["playing"]);
+        state.set("backingName", backing["name"]);
+    }
+    return state;
+}
+
+bool Engine::recorderCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
+        error = "multitrack recorder is disabled";
+        return false;
+    }
+    const bool transportWasPlaying = transport_.playing();
+    const bool recordWithBacking = command == "record/start" && payload["playBacking"].asBool();
+    if (recordWithBacking) {
+        if (!backingEnabled_.load(std::memory_order_acquire) || !backing_) {
+            error = "backing tracks are disabled";
+            return false;
+        }
+        if (!backing_->state()["loaded"].asBool()) {
+            error = "load a backing track before using Record With Backing";
+            return false;
+        }
+        backing_->prepareRestart();
+        for (int attempt = 0; attempt < 150 && !backing_->bufferedToPlay(); ++attempt)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (!backing_->bufferedToPlay()) {
+            error = "backing track did not become ready in time";
+            return false;
+        }
+    }
+    const bool ok = recorder_->command(command, payload, error);
+    if (!ok) return false;
+    if (recordWithBacking) {
+        backing_->play();
+        recorderOwnsBacking_.store(true, std::memory_order_release);
+    }
+    if ((command == "record/start" || command == "playback/play")
+        && transportEnabled_.load(std::memory_order_acquire) && !transportWasPlaying) {
+        transport_.play(false);
+        recorderOwnsTransport_.store(true, std::memory_order_release);
+    }
+    if ((command == "record/stop" || command == "playback/pause" || command == "playback/stop")
+        && recorderOwnsTransport_.load(std::memory_order_acquire)
+        && !recorder_->recording() && !recorder_->playing()) {
+        transport_.stop();
+        recorderOwnsTransport_.store(false, std::memory_order_release);
+    }
+    if (command == "record/stop" && recorderOwnsBacking_.load(std::memory_order_acquire)) {
+        backing_->stopPlayback();
+        recorderOwnsBacking_.store(false, std::memory_order_release);
+    }
+    return true;
+}
+
+bool Engine::recorderExport(const std::string& kind, const std::string& trackId,
+                            std::string& path, std::string& name, std::string& error) {
+    if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
+        error = "multitrack recorder is disabled";
+        return false;
+    }
+    return recorder_->exportFile(kind, trackId, path, name, error);
+}
+
+Json Engine::drumState() const {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        Json state = Json::object(); state.set("type", "drums"); state.set("available", false); return state;
+    }
+    return drums_->state();
+}
+
+bool Engine::drumImport(unsigned voice, const std::string& name,
+                        const std::string& bytes, std::string& error) {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        error = "drum machine is disabled"; return false;
+    }
+    return drums_->importSample(voice, name, bytes, error);
+}
+
+bool Engine::drumLibraryImport(const std::string& relative, const std::string& bytes, Json& result, std::string& error) {
+    if (!drums_) { error = "drum machine is disabled"; return false; }
+    return drums_->importLibrarySample(relative, bytes, result, error);
+}
+
+bool Engine::drumLibraryRead(const std::string& relative, std::string& bytes, std::string& error) const {
+    if (!drums_) { error = "drum machine is disabled"; return false; }
+    return drums_->readLibrarySample(relative, bytes, error);
+}
+
+bool Engine::drumCommand(const std::string& command, const Json& payload, std::string& error) {
+    if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
+        error = "drum machine is disabled"; return false;
+    }
+    const bool wasPlaying = drums_->playing();
+    const bool ok = drums_->command(command, payload, error);
+    if (!ok) return false;
+    const bool isPlaying = drums_->playing();
+    if (!wasPlaying && isPlaying && transportEnabled_.load(std::memory_order_acquire)) {
+        if (!transport_.playing()) {
+            transport_.play(payload["restart"].asBool(true));
+            drumsOwnTransport_.store(true, std::memory_order_release);
+        }
+    } else if (wasPlaying && !isPlaying && drumsOwnTransport_.load(std::memory_order_acquire)) {
+        transport_.stop();
+        drumsOwnTransport_.store(false, std::memory_order_release);
+    }
+    return true;
+}
+
 Json Engine::meterState() const {
     Json json = Json::object();
     json.set("type", "meters");
@@ -3384,14 +4785,24 @@ Json Engine::meterState() const {
     json.set("running", metrics_.running.load(std::memory_order_relaxed));
 
     const unsigned rate = sampleRate_.load(std::memory_order_acquire);
-    const uint32_t frames = metrics_.roundTripFrames.load(std::memory_order_relaxed);
-    json.set("roundTripFrames", static_cast<int>(frames));
-    json.set("roundTripMs", rate > 0 ? (1000.0 * frames) / rate : 0.0);
+    const uint32_t hardwareFrames = metrics_.roundTripFrames.load(std::memory_order_relaxed);
+    const uint32_t lookaheadFrames = outputSafety_.limiterEnabled()
+        ? outputSafety_.lookaheadFrames() : 0;
+    const uint32_t totalFrames = hardwareFrames + lookaheadFrames;
+    json.set("hardwareRoundTripFrames", static_cast<int>(hardwareFrames));
+    json.set("safetyLookaheadFrames", static_cast<int>(lookaheadFrames));
+    json.set("roundTripFrames", static_cast<int>(totalFrames));
+    json.set("hardwareRoundTripMs", rate > 0 ? (1000.0 * hardwareFrames) / rate : 0.0);
+    json.set("safetyLookaheadMs", rate > 0 ? (1000.0 * lookaheadFrames) / rate : 0.0);
+    json.set("roundTripMs", rate > 0 ? (1000.0 * totalFrames) / rate : 0.0);
     json.set("bufferMs", settings_.audio.bufferMs());
 
     const TunerReading reading = tuner();
     Json tunerJson = Json::object();
     tunerJson.set("enabled", tunerEnabled_.load(std::memory_order_relaxed));
+    tunerJson.set("outputMuted", tunerOutputMuted_.load(std::memory_order_relaxed));
+    tunerJson.set("dryPassthrough", tunerViewOpen_.load(std::memory_order_relaxed)
+        && !tunerOutputMuted_.load(std::memory_order_relaxed));
     tunerJson.set("valid", reading.valid);
     tunerJson.set("frequency", reading.frequency);
     tunerJson.set("note", reading.noteName);

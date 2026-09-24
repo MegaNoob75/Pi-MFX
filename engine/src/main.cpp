@@ -1,6 +1,7 @@
 #include "Engine.h"
 #include "control/ApiRouter.h"
 #include "control/HttpServer.h"
+#include "community/CommunityCatalog.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "library/PluginStore.h"
@@ -120,8 +121,9 @@ int main(int argc, char** argv) {
 
     Tone3000Client tone3000(paths);
     PluginStore plugins(paths);
+    CommunityCatalog community(paths);
     HttpServer server;
-    ApiRouter router(engine, tone3000, plugins, server);
+    ApiRouter router(engine, tone3000, plugins, community, server);
     router.attach();
 
     if (!server.start(port, paths.webRoot, error)) {

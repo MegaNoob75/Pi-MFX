@@ -22,6 +22,9 @@ struct EffectSlot {
     std::string name;      ///< user-visible name, defaults to the plugin's own
     bool enabled = true;
     Json state = Json::object();
+    /// Port symbol -> duration in quarter-note beats. Missing means the port
+    /// remains in its native millisecond/second mode.
+    Json tempoLinks = Json::object();
 
     Json toJson() const;
     static EffectSlot fromJson(const Json& json);
@@ -67,6 +70,9 @@ struct Preset {
     std::vector<EffectSlot> chain;
     std::vector<Snapshot> snapshots;
     std::vector<ParameterBinding> parameterBindings;
+    /// Provenance and completion state for an imported community preset.
+    /// Empty for presets created locally.
+    Json community = Json::object();
     /// Layout slot of the snapshot currently applied to the live chain, or -1.
     int activeSnapshot = -1;
     /// Last Snapshot-view choice for this preset. Performance re-press toggles it.
@@ -88,6 +94,7 @@ struct Bank {
     std::string id;
     std::string name = "Bank";
     int order = 0; ///< user-facing list order; lower values appear first
+    bool communityHolding = false; ///< staging only; excluded from performance use
     /// Last preset loaded in this bank, so returning to it restores that slot.
     std::string lastPresetId;
     std::vector<Preset> presets;
@@ -250,9 +257,10 @@ struct UiSettings {
     Json customThemes = Json::array();
     Json ledColors = Json::object();
     double scale = 1.0;
-    bool showTuner = true;
-    bool showLatencyMeter = true;
-    bool confirmPresetOverwrite = true;
+    /// Stable menu ids and header shortcuts. Stored on the Pi so every
+    /// connected screen sees the same workstation navigation.
+    Json menuOrder = Json::array();
+    Json shortcuts = Json::object();
     std::string startupView = "performance";
     /// Number of on-screen performance switches when no physical controller is
     /// connected, so a tablet alone is still a complete control surface.
@@ -269,6 +277,10 @@ struct UiSettings {
     /// Extra milliseconds to ignore after a switch or encoder click. Firmware
     /// already debounces; this is for noisy MIDI or cheap switches.
     int switchDebounceMs = 0;
+    /// Default author for Community Preset manifests. Stored on the Pi so it
+    /// follows the rig across browsers, while remaining editable per share.
+    std::string communityAuthor;
+    Json tuner = Json::object();
 
     Json toJson() const;
     static UiSettings fromJson(const Json& json);
@@ -286,15 +298,41 @@ struct SystemSettings {
     int workerThreadPriority = 70;
     bool lockMemory = true;
     bool holdCpuLatency = true;
-
+    /// Retained in the settings schema for backward compatibility. Completed
+    /// workstation services are enabled automatically rather than by debug UI.
+    bool sharedTransportEnabled = true;
+    bool backingTracksEnabled = true;
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
+};
+
+struct TransportSettings {
+    int beatsPerBar = 4;
+    int beatUnit = 4;
+    int countInBars = 0;
+    bool metronomeEnabled = false;
+    bool quantizationEnabled = false;
+
+    Json toJson() const;
+    static TransportSettings fromJson(const Json& json);
+};
+
+struct LooperSettings {
+    std::string quantization = "free";
+    bool countIn = false;
+    float level = 1.0f;
+    float feedback = 1.0f;
+
+    Json toJson() const;
+    static LooperSettings fromJson(const Json& json);
 };
 
 struct Settings {
     AudioSettings audio;
     UiSettings ui;
     SystemSettings system;
+    TransportSettings transport;
+    LooperSettings looper;
     ControllerConfig controller;
 
     std::string activeBankId;

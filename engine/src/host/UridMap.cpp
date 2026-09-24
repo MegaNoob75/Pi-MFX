@@ -14,12 +14,12 @@ uint32_t UridMap::map(const std::string& uri) {
     return id;
 }
 
-std::string UridMap::unmap(uint32_t urid) const {
+const char* UridMap::unmap(uint32_t urid) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (urid == 0 || urid >= uris_.size()) {
-        return std::string();
+        return nullptr;
     }
-    return uris_[urid];
+    return uris_[urid].c_str();
 }
 
 } // namespace pimfx

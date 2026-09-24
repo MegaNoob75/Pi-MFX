@@ -1,11 +1,15 @@
 #include "host/Lv2Host.h"
+#include "transport/MusicalTransport.h"
 
 #include "core/Log.h"
 #include "core/SpscQueue.h"
+#include "host/Lv2WorkerTransitionState.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -21,6 +25,8 @@
 #include <lv2/options/options.h>
 #include <lv2/parameters/parameters.h>
 #include <lv2/patch/patch.h>
+#include <lv2/time/time.h>
+#include <lv2/units/units.h>
 #include <lv2/urid/urid.h>
 #include <lv2/worker/worker.h>
 #include <chrono>
@@ -35,6 +41,9 @@ Json PortInfo::toJson() const {
     json.set("index", static_cast<int>(index));
     json.set("symbol", symbol);
     json.set("name", name);
+    if (!comment.empty()) {
+        json.set("comment", comment);
+    }
     json.set("input", input);
     json.set("kind", audio ? "audio" : (atom ? "atom" : (cv ? "cv" : "control")));
     if (control) {
@@ -45,10 +54,23 @@ Json PortInfo::toJson() const {
         json.set("integer", integer);
         json.set("enumerated", enumerated);
         json.set("logarithmic", logarithmic);
+        json.set("sampleRate", sampleRate);
+        json.set("trigger", trigger);
+        json.set("notOnGui", notOnGui);
+        if (rangeSteps > 0) {
+            json.set("rangeSteps", static_cast<int>(rangeSteps));
+        }
         json.set("meter", meter);
         if (!unit.empty()) {
             json.set("unit", unit);
         }
+        if (!unitUri.empty()) {
+            json.set("unitUri", unitUri);
+        }
+        if (!unitRender.empty()) {
+            json.set("unitRender", unitRender);
+        }
+        json.set("tempoLinkCandidate", tempoLinkCandidate);
         if (!scalePoints.empty()) {
             Json points = Json::array();
             for (const ScalePoint& point : scalePoints) {
@@ -184,6 +206,9 @@ public:
     explicit ByteRing(size_t capacity) : buffer_(capacity) {}
 
     bool write(const void* data, uint32_t size) {
+        if (size > buffer_.size() - sizeof(uint32_t)) {
+            return false;
+        }
         const size_t needed = sizeof(uint32_t) + size;
         if (available() < needed) {
             return false;
@@ -207,6 +232,15 @@ public:
         readRaw(cursor, out.data(), size);
         read_.store(cursor, std::memory_order_release);
         return true;
+    }
+
+    size_t maximumMessageSize() const {
+        return buffer_.size() - sizeof(uint32_t) - 1;
+    }
+
+    bool empty() const {
+        return read_.load(std::memory_order_acquire)
+            == write_.load(std::memory_order_acquire);
     }
 
 private:
@@ -247,6 +281,11 @@ struct PropertyMessage {
     char value[1024];
 };
 
+struct DeferredControlMessage {
+    uint32_t portIndex = 0;
+    float value = 0.0f;
+};
+
 struct MidiMessage {
     uint32_t frame;
     uint8_t size;
@@ -269,6 +308,10 @@ struct Lv2Catalog::Impl {
     LilvNode* integer = nullptr;
     LilvNode* enumeration = nullptr;
     LilvNode* logarithmic = nullptr;
+    LilvNode* sampleRate = nullptr;
+    LilvNode* trigger = nullptr;
+    LilvNode* notOnGui = nullptr;
+    LilvNode* rangeSteps = nullptr;
     LilvNode* patchWritable = nullptr;
     LilvNode* rdfsLabel = nullptr;
     LilvNode* rdfsRange = nullptr;
@@ -276,14 +319,20 @@ struct Lv2Catalog::Impl {
     LilvNode* atomPath = nullptr;
     LilvNode* atomSupports = nullptr;
     LilvNode* midiEvent = nullptr;
+    LilvNode* timePosition = nullptr;
+    LilvNode* unitsUnit = nullptr;
+    LilvNode* unitsSymbol = nullptr;
+    LilvNode* unitsRender = nullptr;
     LilvNode* fileTypeProperty = nullptr;
     LilvNode* modFileTypes = nullptr;
 
     ~Impl() {
         LilvNode* nodes[] = {audioPort, controlPort, atomPort, cvPort, inputPort, outputPort,
-                             toggled, integer, enumeration, logarithmic, patchWritable,
+                             toggled, integer, enumeration, logarithmic, sampleRate,
+                             trigger, notOnGui, rangeSteps, patchWritable,
                              rdfsLabel, rdfsRange, rdfsComment, atomPath, atomSupports,
-                             midiEvent, fileTypeProperty, modFileTypes};
+                             midiEvent, timePosition, unitsUnit, unitsSymbol, unitsRender,
+                             fileTypeProperty, modFileTypes};
         for (LilvNode* node : nodes) {
             if (node) {
                 lilv_node_free(node);
@@ -374,6 +423,10 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.integer = lilv_new_uri(impl.world, LV2_CORE__integer);
         impl.enumeration = lilv_new_uri(impl.world, LV2_CORE__enumeration);
         impl.logarithmic = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#logarithmic");
+        impl.sampleRate = lilv_new_uri(impl.world, LV2_CORE__sampleRate);
+        impl.trigger = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#trigger");
+        impl.notOnGui = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#notOnGUI");
+        impl.rangeSteps = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/port-props#rangeSteps");
         impl.patchWritable = lilv_new_uri(impl.world, LV2_PATCH__writable);
         impl.rdfsLabel = lilv_new_uri(impl.world, "http://www.w3.org/2000/01/rdf-schema#label");
         impl.rdfsRange = lilv_new_uri(impl.world, "http://www.w3.org/2000/01/rdf-schema#range");
@@ -381,6 +434,10 @@ bool Lv2Catalog::rescan(std::string& error) {
         impl.atomPath = lilv_new_uri(impl.world, LV2_ATOM__Path);
         impl.atomSupports = lilv_new_uri(impl.world, LV2_ATOM__supports);
         impl.midiEvent = lilv_new_uri(impl.world, LV2_MIDI__MidiEvent);
+        impl.timePosition = lilv_new_uri(impl.world, LV2_TIME__Position);
+        impl.unitsUnit = lilv_new_uri(impl.world, LV2_UNITS__unit);
+        impl.unitsSymbol = lilv_new_uri(impl.world, LV2_UNITS__symbol);
+        impl.unitsRender = lilv_new_uri(impl.world, LV2_UNITS__render);
         impl.fileTypeProperty = lilv_new_uri(impl.world, "http://lv2plug.in/ns/ext/patch#fileType");
         impl.modFileTypes = lilv_new_uri(impl.world, "http://moddevices.com/ns/mod#fileTypes");
     }
@@ -433,6 +490,12 @@ bool Lv2Catalog::rescan(std::string& error) {
                 portInfo.name = lilv_node_as_string(label);
                 lilv_node_free(label);
             }
+            if (LilvNodes* comments = lilv_port_get_value(plugin, port, impl.rdfsComment)) {
+                if (const LilvNode* first = lilv_nodes_get_first(comments)) {
+                    portInfo.comment = lilv_node_as_string(first);
+                }
+                lilv_nodes_free(comments);
+            }
             portInfo.input = lilv_port_is_a(plugin, port, impl.inputPort);
             portInfo.audio = lilv_port_is_a(plugin, port, impl.audioPort);
             portInfo.control = lilv_port_is_a(plugin, port, impl.controlPort);
@@ -450,16 +513,77 @@ bool Lv2Catalog::rescan(std::string& error) {
                 && lilv_port_supports_event(plugin, port, impl.midiEvent)) {
                 info.hasMidiInput = true;
             }
+            if (portInfo.atom && portInfo.input) {
+                portInfo.supportsTimePosition = lilv_port_supports_event(plugin, port, impl.timePosition);
+            }
 
             if (portInfo.control) {
-                portInfo.minimum = minimums[index];
-                portInfo.maximum = maximums[index];
-                portInfo.defaultValue = defaults[index];
+                portInfo.minimum = std::isfinite(minimums[index]) ? minimums[index] : 0.0f;
+                portInfo.maximum = std::isfinite(maximums[index]) ? maximums[index] : 1.0f;
+                if (portInfo.maximum < portInfo.minimum) {
+                    std::swap(portInfo.minimum, portInfo.maximum);
+                }
+                portInfo.defaultValue = std::isfinite(defaults[index])
+                    ? std::max(portInfo.minimum, std::min(portInfo.maximum, defaults[index]))
+                    : portInfo.minimum;
+                if (info.uri == "http://two-play.com/plugins/toob-nam"
+                    && portInfo.symbol == "calibration") {
+                    // TooB publishes this control as the ambiguous "Value".
+                    // Keep its documented -6 dBu starting point explicit even
+                    // when an older installed bundle omits the expected default.
+                    portInfo.name = "Input Calibration Level";
+                    portInfo.defaultValue = std::max(portInfo.minimum,
+                        std::min(portInfo.maximum, -6.0f));
+                }
                 portInfo.toggled = lilv_port_has_property(plugin, port, impl.toggled);
                 portInfo.integer = lilv_port_has_property(plugin, port, impl.integer);
                 portInfo.enumerated = lilv_port_has_property(plugin, port, impl.enumeration);
                 portInfo.logarithmic = lilv_port_has_property(plugin, port, impl.logarithmic);
+                portInfo.sampleRate = lilv_port_has_property(plugin, port, impl.sampleRate);
+                portInfo.trigger = lilv_port_has_property(plugin, port, impl.trigger);
+                portInfo.notOnGui = lilv_port_has_property(plugin, port, impl.notOnGui);
                 portInfo.meter = !portInfo.input;
+
+                if (LilvNodes* steps = lilv_port_get_value(plugin, port, impl.rangeSteps)) {
+                    if (const LilvNode* first = lilv_nodes_get_first(steps);
+                        first && lilv_node_is_int(first)) {
+                        const int count = lilv_node_as_int(first);
+                        portInfo.rangeSteps = count > 0 ? static_cast<unsigned>(count) : 0;
+                    }
+                    lilv_nodes_free(steps);
+                }
+
+                if (LilvNodes* units = lilv_port_get_value(plugin, port, impl.unitsUnit)) {
+                    if (const LilvNode* unit = lilv_nodes_get_first(units)) {
+                        if (lilv_node_is_uri(unit)) {
+                            portInfo.unitUri = lilv_node_as_uri(unit);
+                        }
+                        if (LilvNode* symbol = lilv_world_get(impl.world, unit, impl.unitsSymbol, nullptr)) {
+                            portInfo.unit = lilv_node_as_string(symbol);
+                            lilv_node_free(symbol);
+                        }
+                        if (LilvNode* render = lilv_world_get(impl.world, unit, impl.unitsRender, nullptr)) {
+                            portInfo.unitRender = lilv_node_as_string(render);
+                            lilv_node_free(render);
+                        }
+                    }
+                    lilv_nodes_free(units);
+                }
+                const std::string unitSymbol = toLower(portInfo.unit);
+                if (portInfo.unitUri == LV2_UNITS__ms || unitSymbol == "ms") {
+                    portInfo.secondsPerUnit = 0.001;
+                    if (portInfo.unit.empty()) portInfo.unit = "ms";
+                } else if (portInfo.unitUri == LV2_UNITS__s || unitSymbol == "s") {
+                    portInfo.secondsPerUnit = 1.0;
+                    if (portInfo.unit.empty()) portInfo.unit = "s";
+                }
+
+                const std::string pluginText = info.name + " " + info.className + " " + info.uri;
+                const std::string portText = portInfo.name + " " + portInfo.symbol;
+                portInfo.tempoLinkCandidate = portInfo.input
+                    && portInfo.secondsPerUnit > 0.0
+                    && mentions(pluginText, {"delay", "echo"})
+                    && mentions(portText, {"delay", "time", "tap"});
 
                 if (LilvScalePoints* points = lilv_port_get_scale_points(plugin, port)) {
                     LILV_FOREACH(scale_points, pointIterator, points) {
@@ -467,7 +591,9 @@ bool Lv2Catalog::rescan(std::string& error) {
                         ScalePoint scalePoint;
                         scalePoint.value = lilv_node_as_float(lilv_scale_point_get_value(point));
                         scalePoint.label = lilv_node_as_string(lilv_scale_point_get_label(point));
-                        portInfo.scalePoints.push_back(std::move(scalePoint));
+                        if (std::isfinite(scalePoint.value)) {
+                            portInfo.scalePoints.push_back(std::move(scalePoint));
+                        }
                     }
                     lilv_scale_points_free(points);
                     std::sort(portInfo.scalePoints.begin(), portInfo.scalePoints.end(),
@@ -553,6 +679,12 @@ bool Lv2Catalog::rescan(std::string& error) {
 }
 
 struct PluginInstance::Impl {
+    static constexpr size_t kWorkerRequestBufferSize = 64 * 1024;
+    // Responses are normally small pointer-bearing records, but extra queue
+    // headroom preserves event boundaries during rapid model changes.
+    static constexpr size_t kWorkerResponseBufferSize = 256 * 1024;
+    static constexpr size_t kPendingPropertyCapacity = 32;
+
     Lv2Catalog* catalog = nullptr;
     const LilvPlugin* plugin = nullptr;
     LilvInstance* instance = nullptr;
@@ -582,19 +714,31 @@ struct PluginInstance::Impl {
     LV2_Atom_Forge forge{};
 
     SpscQueue<PropertyMessage> propertyQueue{32};
+    SpscQueue<DeferredControlMessage> deferredControls{2048};
+    std::atomic<bool> propertyChangesHeld{false};
+    // Audio-thread-owned staging. Repeated changes to the same property are
+    // coalesced here while a worker transaction is active, so a NAM plugin
+    // never has multiple model load/swap/free cycles in flight at once.
+    std::array<PropertyMessage, kPendingPropertyCapacity> pendingProperties{};
+    size_t pendingPropertyCount = 0;
+    Lv2WorkerTransitionState propertyTransition;
     SpscQueue<MidiMessage> midiQueue{256};
     std::vector<std::pair<std::string, std::string>> propertyValues;
     mutable std::mutex propertyMutex;
 
     // Worker extension.
     const LV2_Worker_Interface* workerInterface = nullptr;
-    ByteRing workRequests{64 * 1024};
-    ByteRing workResponses{64 * 1024};
+    ByteRing workRequests{kWorkerRequestBufferSize};
+    ByteRing workResponses{kWorkerResponseBufferSize};
+    // Reserved before activation. std::vector storage has the same fundamental
+    // alignment as the previously working implementation, and resize remains
+    // allocation-free because no ring message can exceed the reservation.
     std::vector<uint8_t> workerScratch;
     std::thread workerThread;
     std::mutex workerMutex;
     std::condition_variable workerSignal;
     std::atomic<bool> workerRunning{false};
+    std::atomic<bool> workerBusy{false};
 
     LV2_URID_Map uridMap{};
     LV2_URID_Unmap uridUnmap{};
@@ -620,6 +764,16 @@ struct PluginInstance::Impl {
         LV2_URID bufSequenceSize = 0;
         LV2_URID paramSampleRate = 0;
         LV2_URID unitsFrame = 0;
+        LV2_URID timePosition = 0;
+        LV2_URID timeFrame = 0;
+        LV2_URID timeSpeed = 0;
+        LV2_URID timeBar = 0;
+        LV2_URID timeBarBeat = 0;
+        LV2_URID timeBeat = 0;
+        LV2_URID timeBeatUnit = 0;
+        LV2_URID timeBeatsPerBar = 0;
+        LV2_URID timeBeatsPerMinute = 0;
+        LV2_URID timeFramesPerSecond = 0;
     } urids;
 
     float sampleRateValue = 48000.0f;
@@ -654,7 +808,6 @@ struct PluginInstance::Impl {
         if (!impl->workRequests.write(data, size)) {
             return LV2_WORKER_ERR_NO_SPACE;
         }
-        impl->workerSignal.notify_one();
         return LV2_WORKER_SUCCESS;
     }
 
@@ -662,14 +815,21 @@ struct PluginInstance::Impl {
                                      uint32_t size,
                                      const void* data) {
         Impl* impl = static_cast<Impl*>(handle);
-        return impl->workResponses.write(data, size)
-            ? LV2_WORKER_SUCCESS
-            : LV2_WORKER_ERR_NO_SPACE;
+        if (size > impl->workResponses.maximumMessageSize()) {
+            logWarn("lv2 worker: response exceeds preallocated queue capacity ("
+                    + std::to_string(size) + " bytes)");
+            return LV2_WORKER_ERR_NO_SPACE;
+        }
+        if (!impl->workResponses.write(data, size)) {
+            logWarn("lv2 worker: response queue is full; response was rejected");
+            return LV2_WORKER_ERR_NO_SPACE;
+        }
+        return LV2_WORKER_SUCCESS;
     }
 
     void runCycle(const float* const* inputs, unsigned inputCount,
                   float* const* outputs, unsigned outputCount,
-                  unsigned frames);
+                  unsigned frames, const TransportBlock* transport);
 };
 
 namespace {
@@ -679,12 +839,7 @@ LV2_URID uridMapCallback(LV2_URID_Map_Handle handle, const char* uri) {
 }
 
 const char* uridUnmapCallback(LV2_URID_Unmap_Handle handle, LV2_URID urid) {
-    // The plugin only borrows this string for the duration of the call, but a
-    // few hold it longer, so it is cached per instance rather than returned
-    // from a temporary.
-    static thread_local std::string cached;
-    cached = static_cast<UridMap*>(handle)->unmap(urid);
-    return cached.c_str();
+    return static_cast<UridMap*>(handle)->unmap(urid);
 }
 
 } // namespace
@@ -720,6 +875,17 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     std::unique_ptr<PluginInstance> self(new PluginInstance());
     Impl& impl = *self->impl_;
     self->info_ = *info;
+    for (PortInfo& port : self->info_.ports) {
+        if (port.control && port.sampleRate) {
+            const float rate = static_cast<float>(sampleRate);
+            port.minimum *= rate;
+            port.maximum *= rate;
+            port.defaultValue *= rate;
+            for (ScalePoint& point : port.scalePoints) {
+                point.value *= rate;
+            }
+        }
+    }
 
     impl.catalog = &catalog;
     impl.plugin = plugin;
@@ -746,6 +912,16 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.urids.bufSequenceSize = urids.map(LV2_BUF_SIZE__sequenceSize);
     impl.urids.paramSampleRate = urids.map(LV2_PARAMETERS__sampleRate);
     impl.urids.unitsFrame = urids.map("http://lv2plug.in/ns/extensions/units#frame");
+    impl.urids.timePosition = urids.map(LV2_TIME__Position);
+    impl.urids.timeFrame = urids.map(LV2_TIME__frame);
+    impl.urids.timeSpeed = urids.map(LV2_TIME__speed);
+    impl.urids.timeBar = urids.map(LV2_TIME__bar);
+    impl.urids.timeBarBeat = urids.map(LV2_TIME__barBeat);
+    impl.urids.timeBeat = urids.map(LV2_TIME__beat);
+    impl.urids.timeBeatUnit = urids.map(LV2_TIME__beatUnit);
+    impl.urids.timeBeatsPerBar = urids.map(LV2_TIME__beatsPerBar);
+    impl.urids.timeBeatsPerMinute = urids.map(LV2_TIME__beatsPerMinute);
+    impl.urids.timeFramesPerSecond = urids.map(LV2_TIME__framesPerSecond);
 
     impl.uridMap.handle = &urids;
     impl.uridMap.map = uridMapCallback;
@@ -812,7 +988,9 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
             }
         } else if (port.atom) {
             if (port.input) {
-                impl.atomInputPort = static_cast<int>(port.index);
+                if (impl.atomInputPort < 0 || port.supportsTimePosition) {
+                    impl.atomInputPort = static_cast<int>(port.index);
+                }
             } else {
                 impl.atomOutputPort = static_cast<int>(port.index);
             }
@@ -847,10 +1025,10 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     // do it on the worker thread so the audio thread never waits on a file.
     if (const void* extension = lilv_instance_get_extension_data(impl.instance, LV2_WORKER__interface)) {
         impl.workerInterface = static_cast<const LV2_Worker_Interface*>(extension);
+        impl.workerScratch.reserve(impl.workResponses.maximumMessageSize());
         impl.workerRunning.store(true);
         Impl* raw = &impl;
         impl.workerThread = std::thread([raw]() {
-            std::string message;
             // Below the audio thread on purpose: a long load must never delay
             // the next period.
             std::vector<uint8_t> request;
@@ -859,6 +1037,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                     std::unique_lock<std::mutex> lock(raw->workerMutex);
                     raw->workerSignal.wait_for(lock, std::chrono::milliseconds(20));
                 }
+                raw->workerBusy.store(true, std::memory_order_release);
                 while (raw->workRequests.read(request)) {
                     raw->workerInterface->work(lilv_instance_get_handle(raw->instance),
                                                Impl::respond,
@@ -866,9 +1045,10 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                                                static_cast<uint32_t>(request.size()),
                                                request.data());
                 }
+                raw->workerBusy.store(false, std::memory_order_release);
             }
+            raw->workerBusy.store(false, std::memory_order_release);
         });
-        impl.workerScratch.reserve(65536);
     }
 
     lilv_instance_activate(impl.instance);
@@ -882,6 +1062,10 @@ void PluginInstance::setControl(uint32_t portIndex, float value) {
         return;
     }
     impl.staged[portIndex].store(value, std::memory_order_relaxed);
+}
+
+bool PluginInstance::setControlDeferred(uint32_t portIndex, float value) {
+    return impl_->deferredControls.push({portIndex, value});
 }
 
 float PluginInstance::control(uint32_t portIndex) const {
@@ -960,9 +1144,44 @@ std::string PluginInstance::property(const std::string& propertyUri) const {
     return std::string();
 }
 
+void PluginInstance::holdPropertyChanges() {
+    impl_->propertyChangesHeld.store(true, std::memory_order_release);
+}
+
+void PluginInstance::releasePropertyChanges() {
+    impl_->propertyChangesHeld.store(false, std::memory_order_release);
+}
+
+bool PluginInstance::propertyTransitionPending() const {
+    const Impl& impl = *impl_;
+    return impl.propertyChangesHeld.load(std::memory_order_acquire)
+        || !impl.deferredControls.empty()
+        || !impl.propertyQueue.empty()
+        || impl.pendingPropertyCount != 0
+        || impl.propertyTransition.active();
+}
+
+void PluginInstance::beginDeferredStateChanges() {
+    impl_->propertyChangesHeld.store(true, std::memory_order_release);
+}
+
+bool PluginInstance::applyDeferredStateChanges() {
+    Impl& impl = *impl_;
+    bool changed = false;
+    DeferredControlMessage control;
+    while (impl.deferredControls.pop(control)) {
+        if (control.portIndex < impl.staged.size() && impl.isControlInput[control.portIndex]) {
+            impl.staged[control.portIndex].store(control.value, std::memory_order_relaxed);
+            changed = true;
+        }
+    }
+    const bool wasHeld = impl.propertyChangesHeld.exchange(false, std::memory_order_acq_rel);
+    return changed || wasHeld;
+}
+
 void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
                                     float* const* outputs, unsigned outputCount,
-                                    unsigned frames) {
+                                    unsigned frames, const TransportBlock* transport) {
     for (size_t i = 0; i < audioInputPorts.size(); ++i) {
         const float* source = i < inputCount ? inputs[i] : silentInputs[i].data();
         lilv_instance_connect_port(instance, audioInputPorts[i], const_cast<float*>(source));
@@ -977,6 +1196,31 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
         LV2_Atom_Forge_Frame sequenceFrame;
         lv2_atom_forge_sequence_head(&forge, &sequenceFrame, urids.unitsFrame);
 
+        if (transport) {
+            LV2_Atom_Forge_Frame positionFrame;
+            lv2_atom_forge_frame_time(&forge, 0);
+            lv2_atom_forge_object(&forge, &positionFrame, 0, urids.timePosition);
+            lv2_atom_forge_key(&forge, urids.timeFrame);
+            lv2_atom_forge_long(&forge, transport->frame);
+            lv2_atom_forge_key(&forge, urids.timeSpeed);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->speed));
+            lv2_atom_forge_key(&forge, urids.timeBar);
+            lv2_atom_forge_long(&forge, transport->bar);
+            lv2_atom_forge_key(&forge, urids.timeBarBeat);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->barBeat));
+            lv2_atom_forge_key(&forge, urids.timeBeat);
+            lv2_atom_forge_double(&forge, transport->beat);
+            lv2_atom_forge_key(&forge, urids.timeBeatUnit);
+            lv2_atom_forge_int(&forge, transport->beatUnit);
+            lv2_atom_forge_key(&forge, urids.timeBeatsPerBar);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->beatsPerBar));
+            lv2_atom_forge_key(&forge, urids.timeBeatsPerMinute);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->bpm));
+            lv2_atom_forge_key(&forge, urids.timeFramesPerSecond);
+            lv2_atom_forge_float(&forge, static_cast<float>(transport->framesPerSecond));
+            lv2_atom_forge_pop(&forge, &positionFrame);
+        }
+
         MidiMessage midi;
         while (midiQueue.pop(midi)) {
             lv2_atom_forge_frame_time(&forge, static_cast<int64_t>(midi.frame));
@@ -984,8 +1228,37 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
             lv2_atom_forge_write(&forge, midi.data, midi.size);
         }
 
-        PropertyMessage property;
-        while (propertyQueue.pop(property)) {
+        PropertyMessage property{};
+        while (!propertyChangesHeld.load(std::memory_order_acquire)
+               && propertyQueue.pop(property)) {
+            propertyTransition.begin();
+            size_t pending = 0;
+            for (; pending < pendingPropertyCount; ++pending) {
+                if (pendingProperties[pending].propertyUrid == property.propertyUrid) {
+                    pendingProperties[pending] = property;
+                    break;
+                }
+            }
+            if (pending == pendingPropertyCount) {
+                if (pendingPropertyCount < pendingProperties.size()) {
+                    pendingProperties[pendingPropertyCount++] = property;
+                } else {
+                    // The producer queue has the same bounded capacity. This
+                    // only affects a plugin exposing more than 32 distinct
+                    // path properties changed during one worker transaction;
+                    // retain the newest value without allocating or blocking.
+                    pendingProperties.back() = property;
+                }
+            }
+        }
+
+        const bool workerPipelineIdle = propertyTransition.canDispatch(
+            workerInterface != nullptr, workerBusy.load(std::memory_order_acquire),
+            workRequests.empty(), workResponses.empty());
+        if (pendingPropertyCount > 0 && workerPipelineIdle) {
+            property = pendingProperties[0];
+            pendingProperties[0] = pendingProperties[--pendingPropertyCount];
+
             LV2_Atom_Forge_Frame objectFrame;
             lv2_atom_forge_frame_time(&forge, 0);
             lv2_atom_forge_object(&forge, &objectFrame, 0, urids.patchSet);
@@ -1009,22 +1282,30 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
     lilv_instance_run(instance, frames);
 
     if (workerInterface) {
-        while (workResponses.read(workerScratch)) {
+        // Bound response handling to one transaction per block. In
+        // particular, NAM's response swaps the active model and schedules the
+        // previous model for destruction; draining a burst here can overlap
+        // those lifetimes even though the callback itself never xruns.
+        if (workResponses.read(workerScratch)) {
             if (workerInterface->work_response) {
                 workerInterface->work_response(lilv_instance_get_handle(instance),
                                                static_cast<uint32_t>(workerScratch.size()),
-                                               workerScratch.data());
+                                               workerScratch.empty() ? nullptr : workerScratch.data());
             }
         }
         if (workerInterface->end_run) {
             workerInterface->end_run(lilv_instance_get_handle(instance));
         }
     }
+
+    propertyTransition.update(propertyQueue.empty(), pendingPropertyCount,
+                              workerBusy.load(std::memory_order_acquire),
+                              workRequests.empty(), workResponses.empty());
 }
 
 void PluginInstance::process(const float* const* inputs, unsigned inputCount,
                              float* const* outputs, unsigned outputCount,
-                             unsigned frames) {
+                             unsigned frames, const TransportBlock* transport) {
     Impl& impl = *impl_;
     if (!impl.instance) {
         return;
@@ -1035,8 +1316,17 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
             impl.live[i] = impl.staged[i].load(std::memory_order_relaxed);
         }
     }
+    for (const PortInfo& port : info_.ports) {
+        if (port.control && port.input && port.trigger) {
+            // A trigger is visible for exactly one run. Exchange before the
+            // run so a new press arriving concurrently remains queued for the
+            // following block rather than being accidentally cleared.
+            impl.live[port.index] = impl.staged[port.index].exchange(
+                port.defaultValue, std::memory_order_acq_rel);
+        }
+    }
 
-    impl.runCycle(inputs, inputCount, outputs, outputCount, frames);
+    impl.runCycle(inputs, inputCount, outputs, outputCount, frames, transport);
 }
 
 Json PluginInstance::saveState() const {
@@ -1044,7 +1334,7 @@ Json PluginInstance::saveState() const {
     Json controls = Json::object();
     for (const PortInfo& port : info_.ports) {
         if (port.control && port.input) {
-            controls.set(port.symbol, Json(control(port.index)));
+            controls.set(port.symbol, Json(port.trigger ? port.defaultValue : control(port.index)));
         }
     }
     state.set("controls", controls);
@@ -1062,15 +1352,41 @@ Json PluginInstance::saveState() const {
     return state;
 }
 
-void PluginInstance::loadState(const Json& state) {
+void PluginInstance::loadState(const Json& state, bool deferControls) {
     const Json& controls = state["controls"];
     for (const PortInfo& port : info_.ports) {
         if (!port.control || !port.input) {
             continue;
         }
         if (controls.has(port.symbol)) {
-            const float value = controls[port.symbol].asFloat(port.defaultValue);
-            setControl(port.index, std::max(port.minimum, std::min(port.maximum, value)));
+            const float requested = controls[port.symbol].asFloat(port.defaultValue);
+            float value = std::max(port.minimum, std::min(port.maximum, requested));
+            if (port.trigger) {
+                value = port.defaultValue;
+            } else if (port.toggled) {
+                value = requested > 0.0f
+                    ? std::max(port.minimum, std::min(port.maximum, 1.0f))
+                    : std::max(port.minimum, std::min(port.maximum, 0.0f));
+            } else if (port.enumerated && !port.scalePoints.empty()) {
+                const ScalePoint* closest = &port.scalePoints.front();
+                for (const ScalePoint& point : port.scalePoints) {
+                    if (std::abs(point.value - requested) < std::abs(closest->value - requested)) {
+                        closest = &point;
+                    }
+                }
+                value = closest->value;
+            } else if (port.integer) {
+                value = std::round(value);
+            }
+            value = std::max(port.minimum, std::min(port.maximum, value));
+            if (deferControls) {
+                // A state has far fewer controls than this bounded queue. If a
+                // malformed plugin exceeds it, retain silence rather than
+                // applying part of the snapshot before the fade completes.
+                setControlDeferred(port.index, value);
+            } else {
+                setControl(port.index, value);
+            }
         }
     }
 
@@ -1108,6 +1424,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog&, const std::s
 }
 
 void PluginInstance::setControl(uint32_t, float) {}
+bool PluginInstance::setControlDeferred(uint32_t, float) { return false; }
 float PluginInstance::control(uint32_t) const { return 0.0f; }
 float PluginInstance::readOutput(uint32_t) const { return 0.0f; }
 void PluginInstance::pushMidi(const uint8_t*, uint32_t, uint32_t) {}
@@ -1116,9 +1433,15 @@ bool PluginInstance::setProperty(const std::string&, const std::string&, std::st
     return false;
 }
 std::string PluginInstance::property(const std::string&) const { return std::string(); }
-void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned) {}
+void PluginInstance::holdPropertyChanges() {}
+void PluginInstance::releasePropertyChanges() {}
+bool PluginInstance::propertyTransitionPending() const { return false; }
+void PluginInstance::beginDeferredStateChanges() {}
+bool PluginInstance::applyDeferredStateChanges() { return false; }
+void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned,
+                             const TransportBlock*) {}
 Json PluginInstance::saveState() const { return Json::object(); }
-void PluginInstance::loadState(const Json&) {}
+void PluginInstance::loadState(const Json&, bool) {}
 
 #endif
 

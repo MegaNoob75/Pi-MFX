@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 namespace pimfx {
 
@@ -16,12 +16,14 @@ namespace pimfx {
 class UridMap {
 public:
     uint32_t map(const std::string& uri);
-    std::string unmap(uint32_t urid) const;
+    const char* unmap(uint32_t urid) const;
 
 private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, uint32_t> ids_;
-    std::vector<std::string> uris_{std::string()}; // index 0 is reserved by LV2
+    // deque insertion preserves references to existing elements, so pointers
+    // returned by unmap remain valid for the lifetime of this map.
+    std::deque<std::string> uris_{std::string()}; // index 0 is reserved by LV2
 };
 
 } // namespace pimfx

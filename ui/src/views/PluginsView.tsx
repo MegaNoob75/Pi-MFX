@@ -22,7 +22,7 @@ const INSTALL_PACKAGES: InstallPackage[] = [
         package: "toobamp",
         source: "github",
         title: "ToobAmp",
-        description: "Raspberry Pi guitar pack with NAM A2, cab IR, delay, reverb and EQ. Installs from ToobAmp/PiPedal until a standalone apt package exists.",
+        description: "Raspberry Pi guitar pack with NAM A2, cab IR, delay, reverb and EQ. Extracted from the latest PiPedal ARM64 release without installing PiPedal.",
         plugins: [
             "TooB NAM", "TooB Neural Amp", "TooB Cab", "TooB Convolution", "TooB Delay",
             "TooB Chorus", "TooB Flanger", "TooB Phaser", "TooB Tremolo", "TooB Tuner",

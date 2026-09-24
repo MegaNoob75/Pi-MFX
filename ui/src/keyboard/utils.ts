@@ -48,6 +48,11 @@ export function armForOnScreenKeyboard(element: EditableElement): void {
     element.readOnly = true;
 }
 
+export function suppressSystemKeyboard(element: EditableElement): void {
+    element.setAttribute("inputmode", "none");
+    element.setAttribute("virtualkeyboardpolicy", "manual");
+}
+
 export function disarmForOnScreenKeyboard(element: EditableElement): void {
     if (element.getAttribute(OSK_ATTR) !== "1") {
         return;

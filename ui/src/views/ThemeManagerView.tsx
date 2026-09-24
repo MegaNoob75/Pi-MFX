@@ -15,6 +15,7 @@ import {
     MultiFXThemeSurface,
     saveCustomMultiFXTheme,
     saveMultiFXTheme,
+    resolveTheme,
     themePaintToCss,
     validateMultiFXTheme,
     MULTIFX_FONT_OPTIONS,
@@ -37,7 +38,7 @@ import {
     validateMultiFXKeyboardTheme
 } from "../keyboard/keyboardTheme";
 import type { EngineSnapshot } from "../api";
-import { obj, str, type JsonObject } from "../json";
+import { arr, obj, str, type JsonObject } from "../json";
 import { updateUiSessionSection } from "../uiSession";
 import { LibraryJsonPicker } from "./LibraryManager";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -119,7 +120,14 @@ export default function ThemeManagerView({
     engine?: EngineSnapshot & { client: import("../api").EngineClient };
     run?: (work: () => Promise<unknown>) => Promise<void>;
 }) {
-    const originalRef = useRef<MultiFXThemeDefinition>(loadMultiFXTheme());
+    const piUi = obj(engine?.state.ui);
+    const piTheme = engine
+        ? resolveTheme(str(piUi.themeId, "Pi-MFX Purple"), arr(piUi.customThemes))
+        : loadMultiFXTheme();
+    const piCustomThemes = arr(piUi.customThemes)
+        .map(validateMultiFXTheme)
+        .filter((item): item is MultiFXThemeDefinition => Boolean(item));
+    const originalRef = useRef<MultiFXThemeDefinition>(cloneTheme(piTheme));
 
     const [theme, setTheme] = useState<MultiFXThemeDefinition>(
         () => cloneTheme(originalRef.current)
@@ -133,7 +141,7 @@ export default function ThemeManagerView({
         useState<ThemeBrowseMode>("STYLE");
 
     const [customThemes, setCustomThemes] = useState<MultiFXThemeDefinition[]>(
-        () => loadCustomMultiFXThemes()
+        () => engine ? piCustomThemes : loadCustomMultiFXThemes()
     );
     const [keyboardTheme, setKeyboardTheme] = useState<MultiFXKeyboardThemeDefinition>(
         () => keyboardThemeFromUITheme(originalRef.current)
@@ -152,6 +160,22 @@ export default function ThemeManagerView({
     const themeLibrariesReady = useRef(false);
     const lastSharedTheme = useRef("");
     const lastSharedKeyboardTheme = useRef("");
+
+    useEffect(() => {
+        if (!engine) return;
+        const active = resolveTheme(
+            str(obj(engine.state.ui).themeId, "Pi-MFX Purple"),
+            arr(obj(engine.state.ui).customThemes)
+        );
+        originalRef.current = cloneTheme(active);
+        setActiveName(active.name);
+        saveMultiFXTheme(active);
+        const nextCustomThemes = arr(obj(engine.state.ui).customThemes)
+            .map(validateMultiFXTheme)
+            .filter((item): item is MultiFXThemeDefinition => Boolean(item));
+        setCustomThemes(nextCustomThemes);
+        window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(nextCustomThemes, null, 2));
+    }, [engine?.state.ui]);
 
     useEffect(() => {
         if (!engine) {
@@ -409,12 +433,12 @@ export default function ThemeManagerView({
             return;
         }
 
-        originalRef.current = cloneTheme(theme);
-        setActiveName(theme.name);
-        syncThemeUi({ activeName: theme.name });
         const custom = saveCustomMultiFXTheme(theme);
         setCustomThemes(custom);
         if (!persistTheme) {
+            originalRef.current = cloneTheme(theme);
+            setActiveName(theme.name);
+            syncThemeUi({ activeName: theme.name });
             setMessage(`"${theme.name}" is now the active theme.`);
             return;
         }
@@ -422,6 +446,9 @@ export default function ThemeManagerView({
         setMessage("Saving theme on the Pi...");
         try {
             await persistTheme(theme);
+            originalRef.current = cloneTheme(theme);
+            setActiveName(theme.name);
+            syncThemeUi({ activeName: theme.name });
             setMessage(
                 `"${theme.name}" is active on every screen and on the floorboard LEDs.`
             );
@@ -1032,8 +1059,7 @@ export default function ThemeManagerView({
                                 display: "grid",
                                 gridTemplateColumns:
                                     "repeat(3, minmax(0, 1fr))",
-                                gridTemplateRows:
-                                    "repeat(5, minmax(0, 1fr))",
+                                gridAutoRows: "minmax(0, 1fr)",
                                 gap:
                                     "calc(7px * var(--mfx-ui-scale, 1))"
                             }}
@@ -1129,6 +1155,18 @@ export default function ThemeManagerView({
                                     updateColor("danger", v)
                                 }
                             />
+                            <ColorField label="Icon" value={theme.colors.icon}
+                                onChange={(v) => updateColor("icon", v)} />
+                            <ColorField label="Icon Active" value={theme.colors.iconActive}
+                                onChange={(v) => updateColor("iconActive", v)} />
+                            <ColorField label="Shortcut BG" value={theme.colors.shortcutBackground}
+                                onChange={(v) => updateColor("shortcutBackground", v)} />
+                            <ColorField label="Shortcut Border" value={theme.colors.shortcutBorder}
+                                onChange={(v) => updateColor("shortcutBorder", v)} />
+                            <ColorField label="Shortcut Active BG" value={theme.colors.shortcutActiveBackground}
+                                onChange={(v) => updateColor("shortcutActiveBackground", v)} />
+                            <ColorField label="Shortcut Active Border" value={theme.colors.shortcutActiveBorder}
+                                onChange={(v) => updateColor("shortcutActiveBorder", v)} />
                         </div>}
 
                         {editorTab === "SURFACES" && (

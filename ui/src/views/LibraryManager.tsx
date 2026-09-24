@@ -4,7 +4,7 @@ import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
 
-export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank";
+export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing" | "drumsample" | "drumkit";
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -30,7 +30,18 @@ export function joinLibraryDir(parent: string, name: string): string {
     return parent ? `${parent}/${leaf}` : leaf;
 }
 
+export function safeLibraryFolderName(name: string): string {
+    const cleaned = name
+        .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, " ")
+        .replace(/\s+/g, " ")
+        .replace(/^\.+|\.+$/g, "")
+        .trim();
+    return cleaned.slice(0, 96).trim() || "TONE3000";
+}
+
 export function libraryRootLabel(kind: LibraryKind): string {
+    if (kind === "drumsample") return "drums/samples";
+    if (kind === "drumkit") return "drums/kits";
     if (kind === "ir") {
         return "irs";
     }
@@ -51,6 +62,9 @@ export function libraryRootLabel(kind: LibraryKind): string {
     }
     if (kind === "bank") {
         return "bank-exports";
+    }
+    if (kind === "backing") {
+        return "backing-tracks";
     }
     return "models";
 }
@@ -147,28 +161,28 @@ export function FilesView({
 
 export function LibraryFileManager({
     engine,
-    run
+    run,
+    kinds = ["model", "aidax", "ir"]
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
+    kinds?: LibraryKind[];
 }) {
-    const [kind, setKind] = useState<LibraryKind>("model");
+    const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
+    const [kind, setKind] = useState<LibraryKind>(availableKinds[0]?.id ?? "model");
     return (
         <div className="panel stack">
             <div className="muted">
-                NAM files live in models. AIDA-X files live in aidax. Impulse responses live in irs.
+                NAM files live in models. Impulse responses live in irs.
+                {kinds.includes("aidax") && " AIDA-X files live in aidax."}
                 Drag between the two panes, or long-press a row for more actions.
             </div>
             <div className="row explorer-kind-tabs">
-                <button type="button" className={`btn ${kind === "model" ? "btn-active" : ""}`} onClick={() => setKind("model")}>
-                    NAM
-                </button>
-                <button type="button" className={`btn ${kind === "aidax" ? "btn-active" : ""}`} onClick={() => setKind("aidax")}>
-                    AIDA-X
-                </button>
-                <button type="button" className={`btn ${kind === "ir" ? "btn-active" : ""}`} onClick={() => setKind("ir")}>
-                    IRs
-                </button>
+                {availableKinds.map((item) => (
+                    <button key={item.id} type="button" className={`btn ${kind === item.id ? "btn-active" : ""}`} onClick={() => setKind(item.id)}>
+                        {item.label}
+                    </button>
+                ))}
             </div>
             <LibraryBrowser engine={engine} run={run} kind={kind} />
         </div>
@@ -186,19 +200,25 @@ export function LibraryFolderPicker({
     run,
     kind,
     value,
+    createFolderName,
     onPick,
-    onClose
+    onClose,
+    kinds = ["model", "aidax", "ir"]
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     kind: LibraryKind;
     value: string;
+    createFolderName?: string;
     onPick: (directory: string, kind: LibraryKind) => void;
     onClose: () => void;
+    kinds?: LibraryKind[];
 }) {
     const [activeKind, setActiveKind] = useState<LibraryKind>(kind === "plugin" ? "model" : kind);
     const [directory, setDirectory] = useState(value || "TONE3000");
+    const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
     const title = activeKind === "ir" ? "IR FOLDER" : activeKind === "aidax" ? "AIDA-X FOLDER" : "NAM FOLDER";
+    const suggestedFolder = createFolderName ? safeLibraryFolderName(createFolderName) : "";
     return (
         <div className="dialog-backdrop" onClick={onClose}>
             <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
@@ -207,7 +227,7 @@ export function LibraryFolderPicker({
                     Choose the folder under {libraryRootLabel(activeKind)}/ where files should be saved.
                 </div>
                 <div className="row explorer-kind-tabs">
-                    {PICKER_KINDS.map((item) => (
+                    {availableKinds.map((item) => (
                         <button
                             key={item.id}
                             type="button"
@@ -229,8 +249,28 @@ export function LibraryFolderPicker({
                     directory={directory}
                     onDirectoryChange={setDirectory}
                 />
-                <div className="row" style={{ justifyContent: "flex-end" }}>
+                <div className="library-picker-actions">
                     <button type="button" className="btn" onClick={onClose}>CANCEL</button>
+                    {suggestedFolder && (
+                        <button
+                            type="button"
+                            className="btn btn-accent library-picker-create"
+                            title={`Create ${suggestedFolder} and save there`}
+                            onClick={() => {
+                                const target = joinLibraryDir(directory, suggestedFolder);
+                                void run(async () => {
+                                    await engine.client.request("library/mkdir", {
+                                        kind: activeKind,
+                                        directory: target
+                                    });
+                                    onPick(target, activeKind);
+                                    onClose();
+                                });
+                            }}
+                        >
+                            <span>SAVE IN NEW “{suggestedFolder}” FOLDER</span>
+                        </button>
+                    )}
                     <button
                         type="button"
                         className="btn btn-accent"
@@ -403,7 +443,8 @@ export function LibraryBrowser({
     picker = false,
     dualDefault = true,
     directory: controlledDir,
-    onDirectoryChange
+    onDirectoryChange,
+    onFileSelect
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
@@ -412,6 +453,7 @@ export function LibraryBrowser({
     dualDefault?: boolean;
     directory?: string;
     onDirectoryChange?: (directory: string) => void;
+    onFileSelect?: (item: JsonObject) => void;
 }) {
     const [internalDir, setInternalDir] = useState("");
     const [rightDir, setRightDir] = useState("TONE3000");
@@ -439,6 +481,32 @@ export function LibraryBrowser({
     const [menu, setMenu] = useState<{ x: number; y: number; item: LibraryItem | null } | null>(null);
     const [confirm, setConfirm] = useState<{ title: string; body: string; run: () => void } | null>(null);
     const uploadRef = useRef<HTMLInputElement | null>(null);
+    const folderUploadRef = useRef<HTMLInputElement | null>(null);
+    const [importReport, setImportReport] = useState("");
+    const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+    const [pendingDirectory, setPendingDirectory] = useState("");
+    const [deviceSelection, setDeviceSelection] = useState("");
+    const deviceAudio = useRef<HTMLAudioElement | null>(null);
+    const deviceTimer = useRef<number>();
+    const deviceUrl = useRef("");
+    const stopDevicePreview = () => {
+        window.clearTimeout(deviceTimer.current); deviceAudio.current?.pause(); deviceAudio.current = null;
+        if (deviceUrl.current) URL.revokeObjectURL(deviceUrl.current);
+        deviceUrl.current = "";
+    };
+    useEffect(() => () => stopDevicePreview(), []);
+    const previewDeviceFile = (file: File) => {
+        stopDevicePreview(); setDeviceSelection(file.webkitRelativePath || file.name);
+        if (!/\.wav$/i.test(file.name)) return;
+        deviceUrl.current = URL.createObjectURL(file);
+        const sound = new Audio(deviceUrl.current); sound.loop = true; deviceAudio.current = sound;
+        void sound.play().catch(() => setError("Could not preview that WAV on this browser."));
+        deviceTimer.current = window.setTimeout(stopDevicePreview, 5000);
+    };
+    const selectItem = (item: LibraryItem) => {
+        setSelected(item);
+        if (str(item.type) === "file") onFileSelect?.(item);
+    };
 
     const activeDirectory = activePane === "right" && dual ? rightDir : directory;
     const setActiveDirectory = (next: string) => {
@@ -493,6 +561,9 @@ export function LibraryBrowser({
     const work = (task: () => Promise<unknown>) => {
         void run(async () => {
             await task();
+            if (kind === "backing") {
+                await engine.client.request("backing/rescan");
+            }
             await refresh();
             await engine.client.request("library").catch(() => undefined);
         });
@@ -541,24 +612,46 @@ export function LibraryBrowser({
         if (!items.length) {
             return;
         }
-        const folders = items.filter((item) => str(item.type) === "dir").length;
-        const label = items.length === 1
-            ? `“${str(items[0].name)}”`
-            : `${items.length} items`;
-        setConfirm({
-            title: items.length === 1 && folders ? "DELETE FOLDER" : "DELETE",
-            body: folders
-                ? `Delete ${label}${folders ? " and any folders inside" : ""}? This cannot be undone.`
-                : `Delete ${label}? This cannot be undone.`,
-            run: () => {
-                work(async () => {
-                    for (const item of items) {
-                        await engine.client.request("library/delete", { path: str(item.path) });
-                    }
-                    setSelected(null);
-                    setCheckedPaths([]);
-                });
-            }
+        void run(async () => {
+            const impact = await engine.client.request("library/delete-impact", {
+                paths: items.map((item) => str(item.path))
+            });
+            const affected = objects(impact.affectedPresets);
+            const folders = items.filter((item) => str(item.type) === "dir").length;
+            const label = items.length === 1 ? `“${str(items[0].name)}”` : `${items.length} items`;
+            const names = affected.slice(0, 3).map((item) => `“${str(item.presetName)}”`).join(", ");
+            const more = affected.length > 3 ? ` and ${affected.length - 3} more` : "";
+            const normalWarning = folders
+                ? `Delete ${label} and any folders inside? This cannot be undone.`
+                : `Delete ${label}? This cannot be undone.`;
+            const dependencyWarning = affected.length
+                ? `The ${affected.length === 1 ? "Community Preset" : `${affected.length} Community Presets`} ${names}${more} ${affected.length === 1 ? "needs" : "need"} these files. Continuing will also remove ${affected.length === 1 ? "that preset" : "those presets"} so the device is not left with broken presets.`
+                : "";
+            setConfirm({
+                title: affected.length ? "DELETE FILES AND PRESETS" : items.length === 1 && folders ? "DELETE FOLDER" : "DELETE",
+                body: dependencyWarning || normalWarning,
+                run: () => {
+                    work(async () => {
+                        const removedBanks = new Set<string>();
+                        for (const preset of affected) {
+                            const bankId = str(preset.bankId);
+                            if (Number(preset.bankPresetCount) <= 1) {
+                                if (!removedBanks.has(bankId)) {
+                                    await engine.client.request("bank/delete", { bankId });
+                                    removedBanks.add(bankId);
+                                }
+                            } else {
+                                await engine.client.request("preset/delete", { presetId: str(preset.presetId) });
+                            }
+                        }
+                        for (const item of items) {
+                            await engine.client.request("library/delete", { path: str(item.path) });
+                        }
+                        setSelected(null);
+                        setCheckedPaths([]);
+                    });
+                }
+            });
         });
     };
 
@@ -586,13 +679,32 @@ export function LibraryBrowser({
 
     const moveItemTo = (item: LibraryItem, destDir: string) => moveItemsTo([item], destDir);
 
-    const uploadFiles = (files: FileList | File[], destDir: string) => {
+    const uploadFiles = (files: FileList | File[], destDir: string, confirmed = false) => {
         const list = Array.from(files);
         if (!list.length) {
             return;
         }
+        if (kind === "drumsample" && !confirmed) {
+            setPendingFiles(list); setPendingDirectory(destDir); setDeviceSelection(""); return;
+        }
         work(async () => {
+            let imported = 0, duplicates = 0, ignored = 0, failed = 0;
+            let lastError = "";
             for (const file of list) {
+                if (kind === "drumsample") {
+                    if (!/\.wav$/i.test(file.name)) { ignored++; continue; }
+                    const relative = joinLibraryDir(destDir, file.webkitRelativePath || file.name);
+                    try {
+                        const result = await engine.client.importDrumLibrary(file, relative);
+                        if (result.duplicate) duplicates++; else imported++;
+                    } catch (caught) { failed++; lastError = `${relative}: ${caught instanceof Error ? caught.message : String(caught)}`; }
+                    setImportReport(`${imported} imported · ${duplicates} duplicates skipped · ${ignored} non-WAV skipped · ${failed} failed${lastError ? ` (${lastError})` : ""}`);
+                    continue;
+                }
+                if (kind === "backing") {
+                    await engine.client.uploadBackingTrack(file);
+                    continue;
+                }
                 const data = await readBase64(file);
                 await engine.client.request("library/upload", {
                     kind,
@@ -633,6 +745,16 @@ export function LibraryBrowser({
 
     return (
         <div className={`explorer ${dual && !picker ? "explorer-dual" : ""}`}>
+            {pendingFiles.length > 0 && <div className="dialog-backdrop"><div className="dialog drum-import-dialog">
+                <h2>IMPORT DRUM SAMPLES</h2>
+                <div className="muted">Destination: drums/samples/{pendingDirectory} · Select a file to preview for five seconds. Folder hierarchy is preserved; identical files are skipped.</div>
+                <div className="drum-import-list">{pendingFiles.map((file, index) => <div className="row" key={`${file.webkitRelativePath || file.name}-${index}`}>
+                    <button type="button" className={`btn${deviceSelection === (file.webkitRelativePath || file.name) ? " btn-active" : ""}`} onClick={() => previewDeviceFile(file)}>{file.webkitRelativePath || file.name}</button>
+                    <button type="button" className="btn btn-danger" aria-label={`Exclude ${file.name}`} onClick={() => { stopDevicePreview(); setPendingFiles((items) => items.filter((_, i) => i !== index)); }}>×</button>
+                </div>)}</div>
+                <div className="row"><button type="button" className="btn" onClick={() => { stopDevicePreview(); setPendingFiles([]); }}>CANCEL</button>
+                    <button type="button" className="btn btn-accent" onClick={() => { stopDevicePreview(); const files = pendingFiles; setPendingFiles([]); uploadFiles(files, pendingDirectory, true); }}>IMPORT {pendingFiles.filter((file) => /\.wav$/i.test(file.name)).length} WAV FILES</button></div>
+            </div></div>}
             <div className="explorer-toolbar">
                 <div className="explorer-toolbar-main">
                     {!picker && (
@@ -682,11 +804,17 @@ export function LibraryBrowser({
                                 MOVE{targets.length > 1 ? ` (${targets.length})` : ""}
                             </button>
                             <button type="button" className="btn" onClick={() => uploadRef.current?.click()}>UPLOAD</button>
+                            {kind === "drumsample" && <>
+                                <button type="button" className="btn" onClick={() => folderUploadRef.current?.click()}>IMPORT FOLDER</button>
+                                <input ref={(node) => { folderUploadRef.current = node; node?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
+                                    onChange={(event) => { if (event.target.files) uploadFiles(event.target.files, activeDirectory); event.target.value = ""; }} />
+                            </>}
                             <input
                                 ref={uploadRef}
                                 type="file"
                                 hidden
                                 multiple
+                                accept={kind === "drumsample" ? ".wav" : undefined}
                                 onChange={(event) => {
                                     if (event.target.files) {
                                         uploadFiles(event.target.files, activeDirectory);
@@ -731,6 +859,7 @@ export function LibraryBrowser({
                 </div>
             )}
             {busy && <div className="muted">Loading…</div>}
+            {importReport && <div className="muted" role="status">{importReport}</div>}
             <div className="explorer-panes">
                 <ExplorerPane
                     kind={kind}
@@ -745,9 +874,14 @@ export function LibraryBrowser({
                     active={activePane === "left"}
                     onActivate={() => setActivePane("left")}
                     onDirectory={setDirectory}
-                    onSelect={setSelected}
+                    onSelect={selectItem}
                     onToggleChecked={toggleChecked}
                     onOpenFolder={setDirectory}
+                    onOpenFile={(item) => {
+                        if (kind === "backing") {
+                            work(() => engine.client.request("backing/load", { path: str(item.path) }));
+                        }
+                    }}
                     onMenu={openMenu}
                     onDropDirectory={dropOnDirectory}
                 />
@@ -765,9 +899,14 @@ export function LibraryBrowser({
                         active={activePane === "right"}
                         onActivate={() => setActivePane("right")}
                         onDirectory={setRightDir}
-                        onSelect={setSelected}
+                        onSelect={selectItem}
                         onToggleChecked={toggleChecked}
                         onOpenFolder={setRightDir}
+                        onOpenFile={(item) => {
+                            if (kind === "backing") {
+                                work(() => engine.client.request("backing/load", { path: str(item.path) }));
+                            }
+                        }}
                         onMenu={openMenu}
                         onDropDirectory={dropOnDirectory}
                     />
@@ -787,6 +926,12 @@ export function LibraryBrowser({
                     >
                         {menu.item && str(menu.item.type) === "dir" && (
                             <button type="button" onClick={() => { setActiveDirectory(str(menu.item!.relative)); setMenu(null); }}>OPEN</button>
+                        )}
+                        {menu.item && kind === "backing" && str(menu.item.type) === "file" && (
+                            <button type="button" disabled={!str(engine.backing.activeSetListId)} onClick={() => {
+                                work(() => engine.client.request("backing/setlist/add", { path: str(menu.item!.path) }));
+                                setMenu(null);
+                            }}>ADD TO SET LIST</button>
                         )}
                         {menu.item && (
                             <button type="button" onClick={() => { void renameItem(menu.item!); setMenu(null); }}>RENAME</button>
@@ -859,6 +1004,7 @@ function ExplorerPane({
     onSelect,
     onToggleChecked,
     onOpenFolder,
+    onOpenFile,
     onMenu,
     onDropDirectory
 }: {
@@ -877,6 +1023,7 @@ function ExplorerPane({
     onSelect: (item: LibraryItem) => void;
     onToggleChecked: (item: LibraryItem) => void;
     onOpenFolder: (directory: string) => void;
+    onOpenFile: (item: LibraryItem) => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem | null) => void;
     onDropDirectory: (destDir: string, event: DragEvent) => void;
 }) {
@@ -946,7 +1093,15 @@ function ExplorerPane({
                             selected={selectedPath === str(file.path)}
                             checked={checkedPaths.includes(str(file.path))}
                             multiSelect={multiSelect}
-                            onSelect={() => (multiSelect ? onToggleChecked(file) : onSelect(file))}
+                            onSelect={() => {
+                                if (multiSelect) {
+                                    onToggleChecked(file);
+                                } else if (selectedPath === str(file.path)) {
+                                    onOpenFile(file);
+                                } else {
+                                    onSelect(file);
+                                }
+                            }}
                             onToggleChecked={() => onToggleChecked(file)}
                             onMenu={onMenu}
                         />
