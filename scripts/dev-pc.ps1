@@ -17,8 +17,8 @@ if (-not $branch) {
 }
 
 Write-Host "Branch  $branch"
-if ($branch -ne "dev") {
-    Write-Host "You are not on 'dev'. In GitHub Desktop, switch to dev before committing." -ForegroundColor Yellow
+if ($branch -ne "workstation" -and $branch -notlike "codex/milestone-*") {
+    Write-Host "Current workstation work normally uses 'workstation' or a codex/milestone-* branch." -ForegroundColor Yellow
 }
 
 Write-Host ""

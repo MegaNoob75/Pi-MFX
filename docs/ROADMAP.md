@@ -1,183 +1,132 @@
 # Pi-MFX feature roadmap
 
-This roadmap extends Pi-MFX from a guitar multi-effects unit into a performance,
-practice, recording, and community-sharing workstation. The existing low-latency
-guitar path remains the priority: new playback and recording work must not block
-the realtime audio callback or destabilize normal preset use.
+Pi-MFX has moved from a pedalboard-only UI to a performance, practice, and
+recording workstation. Milestones 0-5 are implemented in the current
+`workstation` tree. They remain feature-gated where appropriate, and native
+Raspberry Pi validation is tracked separately from implementation.
 
-## Development strategy
+| Milestone | Current repository state | Remaining release gate |
+| --- | --- | --- |
+| 0 · Shared transport | Implemented | Pi tempo-aware LV2, touch, encoder, CPU, and XRun validation |
+| 1 · Backing tracks | Implemented | Pi format matrix and sustained playback/XRun validation |
+| 2 · Stereo looper | Implemented | Pi audio, quantization, save/load, and controller validation |
+| 3 · Multitrack recorder | Implemented | Pi storage, recovery, export, long-take, and XRun validation |
+| 4 · Drum machine | Implemented | Pi sample/kit workflow, timing, controller, CPU, and XRun validation |
+| 5 · Community Presets | Implemented | Pi install/TONE3000/offline/touch validation and catalog operations |
+| 6 · External backing sources | Not started | Provider-supported integration and licensing design |
 
-- Keep `main` for releases and `dev` for the current usable development version.
-- Develop this roadmap on a separate long-lived feature branch.
-- Divide the work into milestones that can be tested and merged independently.
-- Keep new file formats versioned and backward compatible.
-- Feature-gate incomplete views and engine services so ordinary effects use stays
-  unchanged while a milestone is under development.
-- Validate latency, CPU use, xruns, storage behavior, and hardware controls on a
-  Raspberry Pi before calling an audio milestone complete.
+## Development and release strategy
 
-## Milestone 0: shared musical transport and completed tap tempo
+- `main` is the release branch, `dev` is the pedalboard development line, and
+  `workstation` carries the integrated workstation feature set.
+- Milestone branches are integrated into `workstation` one at a time after
+  focused validation; `dev` and `main` move only through deliberate promotion.
+- New file formats stay versioned and backward compatible.
+- File I/O, network access, decoding, persistence, waveform generation, export,
+  and resampling stay outside `Engine::processAudio()`.
+- A passing desktop UI build proves the web code compiles. It does not prove
+  Raspberry Pi ALSA, LV2, touch, physical-controller, latency, or XRun behavior.
 
-Tap tempo is already available in the engine, API, Performance View, and Hardware
-Setup. It currently calculates and stores a preset BPM, but it is not yet a shared
-clock for effects and other musical features.
+## Milestone 0: shared musical transport
 
-Add one engine-owned transport containing:
+Implemented:
 
-- BPM, tap history, time signature, play state, beat, bar, and sample position
-- sample-accurate clock information for the audio engine
+- Engine-owned BPM, tap history, time signature, play state, beat/bar, and
+  sample position
+- Count-in, metronome, quantization preference, and hardware actions
+- Shared transport state across connected UIs
 - LV2 time-position delivery for compatible tempo-aware effects
-- count-in, metronome, and optional quantization settings
-- future MIDI clock input/output support
-- state messages for all connected UIs and hardware indicators
+- One clock for backing, looper, recorder, and drums
 
-This transport becomes the sole timing authority for the looper, backing tracks,
-recorder, drum machine, and future accompaniment engine.
+Open validation: confirm compatible LV2 plugins track tempo on the Pi without
+audio interruptions and exercise all transport hardware/LED states.
 
-Completion criteria:
+## Milestone 1: backing-track playback
 
-- Tap tempo remains assignable in Hardware Setup.
-- The displayed BPM and transport agree across connected UIs.
-- Compatible time-based effects follow tempo without interrupting audio.
-- Tempo changes cannot allocate memory or perform disk/network work in the realtime
-  callback.
+Implemented:
 
-## Milestone 1: backing-track playback foundation
+- WAV, FLAC, MP3, and Ogg import; mono/multichannel conversion and resampling
+- Play, pause, stop, seek, restart, waveform, metadata, level, and loop region
+- Named set lists with reorderable entries and Previous/Next hardware actions
+- Independent post-chain stereo routing and bounded decode buffers
+- File management, rename/move/delete repair, and underrun reporting
 
-Add an engine-owned player and a Backing Tracks view:
-
-- WAV, FLAC, MP3, and Ogg import and playback
-- play, pause, stop, seek, restart, and loop-region controls
-- waveform, duration, position, level, and track metadata
-- manual BPM plus later tempo/key analysis
-- independent routing and level so tracks do not pass through the guitar chain
-- set-list and playlist support
-- hardware actions for transport, previous/next track, and backing-track view
-
-Audio must be decoded and streamed outside the realtime callback into bounded
-buffers. Loss of network access must not affect already imported tracks.
+Open validation is listed in [MILESTONE_1.md](MILESTONE_1.md).
 
 ## Milestone 2: stereo looper
 
-Add an engine looper and dedicated Looper View:
+Implemented:
 
-- record, play, overdub, stop, undo, redo, and clear
-- free-length and beat/bar-quantized operation
-- optional count-in, loop level, and overdub feedback
-- waveform and unmistakable armed/recording/playing/overdubbing states
-- safe save and export
-- hardware actions and LED states for all performance-critical commands
-- hold or confirmation for destructive clear operations
+- One stereo loop with record, finish/play, overdub, stop, restart, mute,
+  undo/redo, and guarded clear
+- Free, next-beat, and next-bar modes using the shared transport
+- Count-in, loop level, overdub feedback, waveform, save/export, and library
+- Hardware actions and performance-widget states
 
-The first release is one stereo loop. Multiple synchronized loops can be evaluated
-after the single-loop implementation is stable on the Pi.
+Open validation: Pi audio timing, long loops, quantized boundaries, controller
+LED states, save/load/export, CPU load, and XRuns.
 
 ## Milestone 3: multitrack recorder
 
-Reuse the transport, buffering, waveform, and file-writing foundations to add:
+Implemented:
 
-- raw guitar input, processed guitar output, backing-track, drum, and master sources
-- multiple independently armed tracks
-- WAV recording, mute, solo, level, pan, rename, and delete
-- timeline with basic trim, split, move, and fades
-- individual stem export and stereo mix export
-- remaining-storage and write-speed warnings
-- recovery metadata for interrupted recordings or power loss
+- Raw guitar, processed guitar, backing, drum, and master sources
+- Project/take storage with independent arm, mute, solo, level, and pan
+- Synchronized Record with Backing workflow
+- Timeline editing, recovery metadata, stem export, and stereo mix export
+- Remaining-storage and write-status reporting
 
-This is initially a performance recorder, not a complete DAW. Per-track effect
-chains and advanced editing are later features.
+Open validation: sustained multitrack writes, recovery after interrupted takes,
+large exports, storage exhaustion behavior, controller actions, CPU, and XRuns.
 
 ## Milestone 4: drum machine
 
-First release:
+Implemented:
 
-- sample-based kits and a 16/32/64-step pattern editor
-- velocity, accents, swing, fills, and humanization
-- pattern variations and song-section chains
-- transport synchronization and count-in
-- start/stop, fill, variation, and pattern hardware actions
-- routing to the recorder and master output
+- User sample library and custom kits
+- 16/32/64-step patterns with velocity, accents, swing, and humanization
+- Fills, four variations, song-section chains, count-in, and transport sync
+- Recorder/master routing plus hardware actions
 
-Later accompaniment release:
+Open validation: Pi sample import/preview, kit changes, timing under load,
+pattern/song persistence, physical controls, CPU, and XRuns.
 
-- chord chart and song-section editor
-- generated drum, bass, and optional keyboard parts
-- intros, endings, fills, variations, key changes, and tempo changes
-- an original Pi-MFX workflow and implementation rather than reused JJazzLab code
+Generated bass/keyboard accompaniment, intros/endings, and a full chord-chart
+arranger remain future work.
 
 ## Milestone 5: community preset catalog
 
-### Package contents
+Implemented:
 
-A shared preset package is declarative data only:
+- Fixed reviewed catalog with cached offline browsing
+- Strict declarative manifest validation, checksums, compatibility, and limits
+- Trusted PluginStore and TONE3000 dependency resolution
+- Short-lived reviewed installation plans and Community-bank provenance
+- Share Preset manifest creation and human-reviewed GitHub submission flow
+- Duplicate-name/content protection and uninstall cleanup
 
-- versioned Pi-MFX preset, snapshot, assignment, tempo, and gain settings
-- effect LV2 URIs and identifiers from the trusted Pi-MFX plugin catalog
-- TONE3000 model IDs, architecture, and expected filenames
-- IR source identifiers where a supported provider offers stable identifiers
-- author, description, tags, license, compatibility information, and checksums
-- optional safely re-encoded preview image and audio
+Security and publishing details are in [MILESTONE_5.md](MILESTONE_5.md).
 
-Packages must never contain plugins, models, IRs, executables, scripts, installer
-commands, HTML, JavaScript, SVG, symlinks, or arbitrary download URLs.
+## Milestone 6: external backing-track sources
 
-### Submission and publishing
-
-- The Pi-MFX UI creates the manifest from the active preset and provides a
-  **SHARE PRESET** flow.
-- A signed-in user submits to a quarantine service, not directly to the public
-  repository.
-- Apply account verification, rate limits, size/count limits, archive safety,
-  schema validation, malware scanning, duplicate checks, and content review.
-- Safely decode/re-encode preview media and reconstruct a clean package rather
-  than publishing the uploaded archive.
-- Test-load the declarative preset in an isolated Pi-MFX environment without
-  executing uploader-supplied code.
-- Require human approval initially. A publishing bot is the only writer to the
-  protected public catalog repository.
-
-### Installation
-
-The UI displays an installation plan before making changes:
-
-1. Validate compatibility and list all requirements.
-2. Match effects only against the trusted Plugins catalog.
-3. Install approved missing effects through the existing Plugins code.
-4. Resolve supported NAM and IR references through the existing TONE3000 code,
-   respecting authentication, licensing, and availability.
-5. Ask the user to locate unavailable assets; never silently substitute them.
-6. Import into a new community bank without overwriting user data.
-7. Roll back cleanly or mark the preset incomplete if a dependency cannot be
-   installed.
-
-No GitHub credential or shared publishing secret is stored on the Pi.
-
-## Milestone 6: WikiLoops and other backing-track sources
-
-First establish local backing-track import. Direct WikiLoops access is added only
-through an official supported integration that preserves user authentication,
+Local backing-track import comes first. Direct WikiLoops or another provider is
+only appropriate through a supported integration that preserves authentication,
 download limits, attribution, licensing, and remix lineage.
 
-If direct integration is not available, Pi-MFX can still:
+If a direct integration is unavailable, Pi-MFX can still support a safe workflow
+that opens the provider page and imports a file the signed-in user legitimately
+downloaded. Imported media must pass through the same bounded local validation
+path as ordinary backing tracks.
 
-- open a selected track on WikiLoops
-- import a file the signed-in user legitimately downloaded
-- retain track ID, creator attribution, source link, and collaboration lineage
-
-Provider downloads must pass through the same safe local media-import path used by
-ordinary backing tracks.
-
-## Cross-feature requirements
+## Cross-feature release requirements
 
 - One engine transport and sample clock; no competing timers in individual views
-- Explicit audio routing for guitar, loop, backing track, drums, recorder, and master
-- No filesystem, network, decoding, allocation, or locking hazards in realtime code
-- Bounded memory and disk queues with visible overrun/error reporting
-- Versioned project, recording, and community-preset formats
-- Recoverable destructive operations wherever practical
-- Hardware Setup actions and visible feedback for every live-performance command
-- Backups include user-created loops, recordings, songs, and imported presets, with
-  large media made optional when necessary
-- Existing effects, presets, snapshots, controller behavior, and offline operation
-  remain usable throughout development
-
+- Explicit routing for guitar, loop, backing, drums, recorder, and master
+- No filesystem, network, decode, allocation, persistence, export, resample, or
+  waveform work in the realtime callback
+- Bounded queues with visible overrun/underrun and recovery behavior
+- Versioned, recoverable project, recording, drum, and community formats
+- Hardware Setup actions and visible feedback for live-performance commands
+- Backups that account for large user media without silently omitting data
+- Existing effects, presets, snapshots, controller behavior, and offline use
+  remain stable when workstation services are idle

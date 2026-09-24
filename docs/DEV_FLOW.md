@@ -4,7 +4,7 @@ Two machines, one job:
 
 | Machine | What it is for |
 | --- | --- |
-| **This Windows PC** | Edit code in Cursor, commit on **`dev`**, push with GitHub Desktop |
+| **This Windows PC** | Edit the current workstation feature set, normally on **`workstation`** or a `codex/milestone-*` branch |
 | **Raspberry Pi 5** | Real audio, LV2 plugins, latency. Pull, rebuild, open the UI in a browser |
 
 You do **not** need to build the C++ engine on Windows. Guitar I/O only exists on the Pi.
@@ -21,7 +21,7 @@ You do **not** need to build the C++ engine on Windows. Guitar I/O only exists o
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone -b dev https://github.com/MegaNoob75/Pi-MFX.git
+git clone -b workstation https://github.com/MegaNoob75/Pi-MFX.git
 cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 sudo reboot
@@ -50,7 +50,7 @@ Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS i
 ### On Windows (how to develop without MobaXterm)
 
 1. Install **OpenSSH Client** (Windows Settings → Optional features) so `ssh` and `scp` work in a Command Prompt.
-2. Clone this repo on the PC (GitHub Desktop or `git clone -b dev …`).
+2. Clone this repo on the PC (GitHub Desktop or `git clone -b workstation …`).
 3. Confirm you can log into the Pi from a prompt: `ssh YOUR_USER@YOUR_PI_HOST` (hostname `pimfx.local` or the Pi’s IP).
 4. Double-click **`pimfx.cmd`** at the repo root.
 
@@ -63,7 +63,7 @@ The numbered items match **`scripts/pimfx.sh` on the Pi**. The Windows script on
 | 0 | Copy this PC’s tree over SSH, then `pimfx.sh rebuild` (no git pull, no push) |
 | 1 | `pimfx.sh complete` (install + touchscreen) |
 | 2 | `pimfx.sh install` |
-| 3 | `pimfx.sh update --branch dev` |
+| 3 | Choose `main`, `dev`, or `workstation`, then run the matching update |
 | 4 | `pimfx.sh rebuild` |
 | 5 | `pimfx.sh display` |
 | 5r | `pimfx.sh display-refresh` |
@@ -82,14 +82,15 @@ The numbered items match **`scripts/pimfx.sh` on the Pi**. The Windows script on
 ```powershell
 .\pimfx.cmd
 .\sync-to-pi.cmd
-.\scripts\pimfx-win.ps1 -Action "update -y --branch dev"
+.\scripts\pimfx-win.ps1 -Action "update -y --branch workstation"
 ```
 
 After a copy or update, open `http://pimfx.local:8080` (or `http://<pi-ip>:8080`) and hard-refresh.
 
 ### On the PC (when you do want GitHub)
 
-1. GitHub Desktop: branch **`dev`** (not `main`).
+1. GitHub Desktop: use **`workstation`** for the integrated feature set, or the
+   active `codex/milestone-*` branch for isolated milestone work.
 2. Edit in Cursor.
 3. Desktop: **Commit** → **Push origin**.
 
@@ -102,15 +103,19 @@ cd ~/Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
 
-Pick **3) Update**, or run `sudo bash ./scripts/pimfx.sh update` **from `~/Pi-MFX`**. That pulls `dev`, rebuilds, copies the binary and UI, and restarts the service. Your banks and settings in `/var/lib/pimfx` are left alone. The same job is **Settings → System → Updates** in the UI.
+Pick **3) Update** and choose the branch, or run `sudo bash
+./scripts/pimfx.sh update --branch workstation` **from `~/Pi-MFX`**. That
+pulls the selected branch, rebuilds, copies the binary and UI, and restarts the
+service. Your banks and settings in `/var/lib/pimfx` are left alone. The same
+job is **Settings → System → Updates** in the UI.
 
 If the Pi has copies from this PC (`sync-to-pi.ps1` or MobaXterm), `git pull` can refuse to overwrite them. Either pick **4) Rebuild local files** (no pull), or throw the copies away and match GitHub:
 
 ```bash
 cd ~/Pi-MFX
 git fetch origin
-git reset --hard origin/dev
-sudo bash ./scripts/pimfx.sh update
+git reset --hard origin/workstation
+sudo bash ./scripts/pimfx.sh update --branch workstation
 ```
 
 ### Test
@@ -126,13 +131,12 @@ journalctl -u pimfx -n 40 --no-pager
 
 ---
 
-## When `dev` is good enough for `main`
+## Promoting the workstation tree
 
-1. On the PC, push `dev`.
-2. GitHub Desktop: **Branch → Create pull request**, or open  
-   https://github.com/MegaNoob75/Pi-MFX/pull/new/dev
-3. Base **main** ← compare **dev**. Merge when you are happy.
-4. On the Pi, if you ever want the Pi to track `main` instead:
+Keep milestone work isolated until its focused checks and Pi validation are
+complete. Integrate it into `workstation` deliberately. Move `dev` or `main`
+only when you intentionally promote that feature set for broader use or a
+release. To make a Pi track `main` instead:
 
 ```bash
 cd ~/Pi-MFX
@@ -141,19 +145,24 @@ git pull
 sudo bash ./scripts/update.sh
 ```
 
-For day-to-day work, stay on **`dev`** on both the PC and the Pi.
+For the current workstation feature set, keep both the PC and Pi on
+**`workstation`** unless you are deliberately testing another branch.
 
 ---
 
 ## Optional: look at the UI on Windows only
 
-This uses a **mock** audio backend (silence). Useful later when the UI folder has a full app. It will not test guitar latency.
+The normal page expects an engine at port 8080. For documentation and visual
+work without an engine, use the read-only fixture:
 
 ```powershell
 cd ui
 npm install
 npm run dev
 ```
+
+Open `http://127.0.0.1:5173/docs.html?view=performance`. Neither workflow tests
+Pi audio, LV2 loading, physical controls, latency, or XRuns.
 
 ---
 
@@ -186,4 +195,4 @@ npm run dev
 | `scripts/install-hotspot.sh` | Pi | Wi-Fi hotspot helper used by Settings |
 | `scripts/status.sh` | Pi, any time | Branch, service, cards |
 | `scripts/uninstall.sh` | Pi | Same as menu item Remove |
-| `scripts/dev-pc.ps1` | Windows, optional | Reminds you of the PC steps and checks you are on `dev` |
+| `scripts/dev-pc.ps1` | Windows, optional | Prints the PC-side checklist and current branch |

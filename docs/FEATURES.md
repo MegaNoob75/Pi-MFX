@@ -1,63 +1,79 @@
 # Features
 
-Pi-MFX is a headless guitar multi-effects system for a dedicated Raspberry Pi 5.
+Pi-MFX is a headless guitar multi-effects and performance workstation for a
+dedicated Raspberry Pi 5. The browser UI is designed for a 1024×600 touchscreen
+but also works from phones, tablets, and computers on the same trusted network.
 
-Planned performance, recording, accompaniment, and community-sharing work is
-tracked in [ROADMAP.md](ROADMAP.md).
-
-## Audio
+## Audio and effects
 
 - Direct ALSA `hw:` capture and playback from one realtime thread
 - USB class-compliant interfaces and I2S HATs
-- User-set sample rate, period size, and period count
-- Measured round-trip latency and xrun count in **Settings → System → Audio**
-- OS hardening (governor, RT limits, PipeWire masked) from `scripts/pimfx.sh`
+- User-selected input channel, sample rate, period size, and period count
+- Measured driver round-trip latency, live meters, and XRun diagnostics
+- In-process serial LV2 chain with bypass, input/output gain, and generic LV2 controls
+- NAM, AIDA-X, and cabinet-IR file properties for compatible plugins
+- Live, nonpersistent control and model audition followed by explicit persistence
+- Tempo-link controls for compatible time-based effects
 
-## Effects
+## Banks, presets, snapshots, and community
 
-- In-process LV2 host (serial chain)
-- NAM captures and cabinet IRs through plugins you install
-- **Plugins** installs LV2 packages from Raspberry Pi OS, recommended GitHub
-  packs, and PatchStorage
-- Hide unused plugins without uninstalling apt packages
-- Per-preset I/O, bypass, and parameter assignment
+- Reorderable banks and presets with drag-and-drop between banks
+- Per-preset chain, tempo, controller assignments, input/output, and snapshots
+- Six-slot snapshot manager plus a dedicated Performance snapshot layout
+- Reviewed Community Presets catalog with dependency plans and provenance
+- Share Preset manifest creation without putting GitHub credentials on the Pi
 
-## Banks, presets, snapshots
+## Performance and navigation
 
-- Banks of presets with NEW bank / NEW preset
-- Snapshot manager and snapshot mode on Performance
-- Snapshot tiles are part of the freeform layout
+- Freeform Performance stage with status, meters, switches, pots, sliders, and encoders
+- Named layout files, groups, resizing, pixel snapping, and separate snapshot layout
+- Up to five shortcuts on each side of the header
+- Reorderable navigation drawer and shared focus for touchscreen or physical encoder
+- Full-screen tuner with reference frequency and mute/dry-passthrough behavior
 
-## Performance and layout
+## Musical workstation
 
-- Freeform Performance stage: bank, preset, status, analog, and switch widgets
-- Named layout files under `/var/lib/pimfx/layouts/`
-- **SAVE LAYOUT** writes the current named file (or creates `default`) and
-  syncs the live controller so the Pi and floorboard match
-- **SAVE AS** / **LOAD** use the same sync, including widget groups
-- Groups persist with the named file and `controller.json`
+- Engine-owned shared transport: BPM, tap history, time signature, count-in,
+  metronome, sample position, and LV2 time-position delivery
+- Backing-track import for WAV, FLAC, MP3, and Ogg, with metadata, waveform,
+  seeking, loop region, set lists, and independent level
+- One stereo looper with free/beat/bar operation, count-in, overdub, undo/redo,
+  mute, save, export, and a saved-loop library
+- Multitrack recorder for raw/processed guitar, backing, drums, and master,
+  with projects, arming, mute/solo, level/pan, takes, and export
+- Drum machine with user samples, kits, 16/32/64-step patterns, velocity,
+  accents, swing, humanization, fills, four variations, and song chains
+- Hardware actions and visible states for transport, backing, looper, recorder,
+  drums, tuner, banks, presets, snapshots, and effects
 
-## Library and files
+## Models, plugins, and files
 
-- Model Library for TONE3000 NAM / AIDA-X / IR downloads
-- **Files** browser for local NAM, AIDA-X, and IR folders
-- TONE3000 API key lives in **Settings → Model Library**
+- TONE3000 catalog and authenticated downloads into the local model library
+- Two-pane file manager for NAM, AIDA-X, IR, backing, drum, and related assets
+- LV2 plugin inventory, hide/unhide, rescan, Raspberry Pi OS packages,
+  recommended GitHub packs, and PatchStorage browsing
+- Dependency-impact checks before deleting library content
 
-## Controller
+## Controller and interface
 
 - Optional ESP32-S3 USB-MIDI floorboard
-- Hardware Setup maps switches, pots, sliders, expression, encoders, LEDs
-- Layout is visual only; actions stay in Hardware Setup / the preset
+- Learn and mapping for momentary/latching switches, pots, sliders, expression
+  pedals, encoders, encoder buttons, and LEDs
+- Custom themes, on-screen keyboard modes, interface feel, and backup/restore
+- Multiple connected UIs share navigation and editor session state
 
 ## System
 
-- Wi-Fi join and **PI-MFX** hotspot from **Settings → System → WIFI / HOTSPOT**
-- **Settings → System → Updates** checks git and rebuilds on the Pi
-- Themes, on-screen keyboard, backup/restore
-- Optional 7" 1024×600 kiosk, boot logo, and faster boot
+- Wi-Fi join and PI-MFX hotspot control
+- In-app branch-aware updates for `main`, `dev`, and `workstation`
+- Reboot/shutdown controls, audio-thread status, memory-lock and latency diagnostics
+- Optional touchscreen session, boot logo, quiet boot, and OS realtime tuning
 
-## Network
+## Network and validation boundary
 
-The UI is an unauthenticated control surface. Anyone on the same LAN or
-hotspot can change presets, audio, and system settings. Put the Pi on a
-trusted network.
+The LAN HTTP and WebSocket APIs do not have a login. Anyone on the same LAN or
+hotspot can control audio and system settings, so use a trusted network.
+
+Implementation in the repository is not the same as Raspberry Pi sign-off.
+Actual audio formats, LV2 plugins, touch/encoder behavior, CPU load, latency,
+storage performance, and XRuns must be validated on the target Pi.
