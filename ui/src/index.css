@@ -2219,6 +2219,24 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     border: none;
 }
 
+.lv2-range-control {
+    position: relative;
+    min-height: 32px;
+}
+
+.lv2-range-marker {
+    position: absolute;
+    z-index: 2;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    transform: translateX(-1px);
+    border-radius: 2px;
+    background: var(--mfx-cyan);
+    box-shadow: 0 0 4px color-mix(in srgb, var(--mfx-cyan) 65%, transparent);
+    pointer-events: none;
+}
+
 .audio-live-control {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 84px;

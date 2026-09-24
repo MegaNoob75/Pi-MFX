@@ -1369,11 +1369,9 @@ export function EffectControls({
                                 <button
                                     type="button"
                                     className={`btn ${value > 0 ? "btn-active" : ""}`}
-                                    onClick={() => void run(() => client.request("chain/control", {
-                                        slotId: str(selected.id),
-                                        port: symbol,
-                                        value: value > 0 ? toggleValue(port, false) : toggleValue(port, true)
-                                    }))}
+                                    onClick={() => apply(value > 0
+                                        ? toggleValue(port, false)
+                                        : toggleValue(port, true))}
                                 >
                                     {value > 0 ? "ON" : "OFF"}
                                 </button>
@@ -1397,6 +1395,7 @@ export function EffectControls({
                                     port={port}
                                     value={value}
                                     name={name}
+                                    markerValue={isToobInputCalibration(plugin, port) ? -6 : undefined}
                                     disabled={tempoEnabled && linkedBeats > 0}
                                     onPreview={(next) => previewLive(symbol, next)}
                                     onCancel={() => clearPreview(symbol)}
@@ -1622,6 +1621,11 @@ function hasLogarithmicRange(port: JsonObject): boolean {
     return bool(port.logarithmic) && min !== 0 && max !== 0 && (min > 0) === (max > 0);
 }
 
+function isToobInputCalibration(plugin: JsonObject, port: JsonObject): boolean {
+    return str(plugin.uri) === "http://two-play.com/plugins/toob-nam"
+        && str(port.symbol) === "calibration";
+}
+
 function sliderValue(port: JsonObject, value: number): number {
     if (!hasLogarithmicRange(port)) {
         return value;
@@ -1645,6 +1649,7 @@ function Lv2RangeControl({
     port,
     value,
     name,
+    markerValue,
     disabled,
     onPreview,
     onCancel,
@@ -1653,6 +1658,7 @@ function Lv2RangeControl({
     port: JsonObject;
     value: number;
     name: string;
+    markerValue?: number;
     disabled: boolean;
     onPreview: (value: number) => void;
     onCancel: () => void;
@@ -1672,6 +1678,11 @@ function Lv2RangeControl({
             ? (rangeMax - rangeMin) / (steps - 1)
             : "any";
     const external = sliderValue(port, value);
+    const markerPosition = markerValue === undefined
+        ? undefined
+        : 100 * (sliderValue(port, clampPortValue(markerValue, min, max, false)) - rangeMin)
+            / Math.max(Number.EPSILON, rangeMax - rangeMin);
+    const markerLabel = markerValue === undefined ? "" : formatControl(markerValue, port);
     const [draft, setDraft] = useState(external);
     const dragging = useRef(false);
     const lastCommitted = useRef<number | null>(null);
@@ -1695,30 +1706,40 @@ function Lv2RangeControl({
     };
 
     return (
-        <input
-            type="range"
-            min={rangeMin}
-            max={rangeMax}
-            step={step}
-            value={draft}
-            aria-label={name}
-            disabled={disabled}
-            onPointerDown={() => { dragging.current = true; lastCommitted.current = null; }}
-            onChange={(event) => change(Number(event.target.value))}
-            onPointerUp={(event) => commit(Number(event.currentTarget.value))}
-            onPointerCancel={() => {
-                dragging.current = false;
-                lastCommitted.current = null;
-                setDraft(external);
-                onCancel();
-            }}
-            onKeyUp={(event) => commit(Number(event.currentTarget.value))}
-            onBlur={(event) => {
-                const raw = Number(event.currentTarget.value);
-                if (lastCommitted.current === null || !approximatelyEqual(lastCommitted.current, raw)) {
-                    commit(raw);
-                }
-            }}
-        />
+        <div className="lv2-range-control">
+            {markerPosition !== undefined && (
+                <span
+                    className="lv2-range-marker"
+                    style={{ left: `${markerPosition}%` }}
+                    title={`Default: ${markerLabel}`}
+                    aria-hidden="true"
+                />
+            )}
+            <input
+                type="range"
+                min={rangeMin}
+                max={rangeMax}
+                step={step}
+                value={draft}
+                aria-label={name}
+                disabled={disabled}
+                onPointerDown={() => { dragging.current = true; lastCommitted.current = null; }}
+                onChange={(event) => change(Number(event.target.value))}
+                onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+                onPointerCancel={() => {
+                    dragging.current = false;
+                    lastCommitted.current = null;
+                    setDraft(external);
+                    onCancel();
+                }}
+                onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+                onBlur={(event) => {
+                    const raw = Number(event.currentTarget.value);
+                    if (lastCommitted.current === null || !approximatelyEqual(lastCommitted.current, raw)) {
+                        commit(raw);
+                    }
+                }}
+            />
+        </div>
     );
 }

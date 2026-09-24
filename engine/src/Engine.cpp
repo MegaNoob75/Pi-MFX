@@ -540,7 +540,7 @@ void Engine::stop() {
 
     Chain* chain = activeChain_.exchange(nullptr);
     delete chain;
-    delete pendingChain_.exchange(nullptr);
+    delete pendingChain_.clear();
     delete deferredRetiredChain_;
     deferredRetiredChain_ = nullptr;
     RetiredChain retired;
@@ -569,7 +569,7 @@ bool Engine::restartAudio(std::string& error) {
     {
         std::lock_guard<std::mutex> lock(chainMutex_);
         delete activeChain_.exchange(nullptr, std::memory_order_acq_rel);
-        delete pendingChain_.exchange(nullptr, std::memory_order_acq_rel);
+        delete pendingChain_.clear();
         delete deferredRetiredChain_;
         deferredRetiredChain_ = nullptr;
         RetiredChain retired;
@@ -578,10 +578,7 @@ bool Engine::restartAudio(std::string& error) {
     }
     const bool awaitingChain = activePreset() != nullptr;
     chainPublicationExpected_.store(awaitingChain, std::memory_order_release);
-    patchTransitionGain_ = awaitingChain ? 0.0f : 1.0f;
-    patchTransitionState_.store(awaitingChain ? PatchTransitionState::Muted
-                                              : PatchTransitionState::Running,
-                                std::memory_order_relaxed);
+    outputSafety_.resetTransition(awaitingChain);
     transitionRequested_.store(false, std::memory_order_relaxed);
 
     backend_->configureRealtime(settings_.system.audioThreadPriority);
@@ -784,15 +781,7 @@ void Engine::resetMeters() {
 void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     sampleRate_.store(sampleRate, std::memory_order_release);
     maxFrames_.store(maxFrames, std::memory_order_release);
-    updateAudioSafetyCoefficients(sampleRate);
-    limiterDelayFrames_ = std::max<size_t>(2, static_cast<size_t>(
-        std::ceil(static_cast<double>(sampleRate) * kMaxLimiterLookaheadMs / 1000.0)) + 1);
-    limiterDelay_.assign(limiterDelayFrames_ * kMaxSafetyChannels, 0.0f);
-    limiterWriteFrame_ = 0;
-    dcPreviousInput_.fill(0.0f);
-    dcPreviousOutput_.fill(0.0f);
-    limiterGain_ = 1.0f;
-    limiterHoldFrames_ = 0;
+    outputSafety_.prepare(sampleRate);
     transport_.setSampleRate(sampleRate);
     if (backing_) backing_->prepare(sampleRate);
     looper_->prepare(sampleRate);
@@ -816,110 +805,13 @@ void Engine::releaseResources() {}
 
 void Engine::applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                      unsigned frames) {
-    const unsigned channels = std::min(outputChannels, kMaxSafetyChannels);
-    const bool dcEnabled = dcBlockerEnabled_.load(std::memory_order_relaxed);
-    const float dcPole = dcBlockerPole_.load(std::memory_order_relaxed);
-    const bool limiterEnabled = limiterEnabled_.load(std::memory_order_relaxed);
-    const float ceiling = limiterCeilingGain_.load(std::memory_order_relaxed);
-    const float releaseStep = limiterReleaseStep_.load(std::memory_order_relaxed);
-    const size_t requestedLookahead = limiterLookaheadFramesTarget_.load(std::memory_order_relaxed);
-    const size_t lookahead = limiterDelay_.empty() ? 0
-        : std::min(requestedLookahead, limiterDelayFrames_ - 1);
-
-    PatchTransitionState transition = patchTransitionState_.load(std::memory_order_relaxed);
-    if (transition == PatchTransitionState::Muted
-        && pendingChain_.load(std::memory_order_acquire) == nullptr
+    const bool allowFadeIn = outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted
+        && pendingChain_.peek() == nullptr
         && !chainPublicationExpected_.load(std::memory_order_acquire)
         && deferredRetiredChain_ == nullptr
         && !transitionRequested_.load(std::memory_order_acquire)
-        && !activeChainTransitionPending()) {
-        transition = PatchTransitionState::FadingIn;
-        patchTransitionState_.store(transition, std::memory_order_relaxed);
-    }
-
-    const float fadeOutStep = patchFadeOutStep_.load(std::memory_order_relaxed);
-    const float fadeInStep = patchFadeInStep_.load(std::memory_order_relaxed);
-
-    for (unsigned frame = 0; frame < frames; ++frame) {
-        float linkedPeak = 0.0f;
-        for (unsigned channel = 0; channel < channels; ++channel) {
-            float sample = outputs[channel][frame];
-            if (!std::isfinite(sample)) {
-                sample = 0.0f;
-            }
-
-            const float blocked = sample - dcPreviousInput_[channel]
-                                + dcPole * dcPreviousOutput_[channel];
-            dcPreviousInput_[channel] = sample;
-            dcPreviousOutput_[channel] = std::isfinite(blocked) ? blocked : 0.0f;
-            const float safeSample = dcEnabled ? dcPreviousOutput_[channel] : sample;
-            outputs[channel][frame] = safeSample;
-            linkedPeak = std::max(linkedPeak, std::fabs(safeSample));
-
-            if (!limiterDelay_.empty()) {
-                limiterDelay_[limiterWriteFrame_ * kMaxSafetyChannels + channel] = safeSample;
-            }
-        }
-
-        if (limiterEnabled) {
-            const float requiredGain = linkedPeak > ceiling && linkedPeak > 0.0f
-                ? ceiling / linkedPeak : 1.0f;
-            if (requiredGain < limiterGain_) {
-                limiterGain_ = requiredGain;
-            }
-            if (requiredGain < 0.999999f) {
-                limiterHoldFrames_ = static_cast<unsigned>(lookahead);
-            } else if (limiterHoldFrames_ > 0) {
-                --limiterHoldFrames_;
-            } else {
-                limiterGain_ += (1.0f - limiterGain_) * releaseStep;
-            }
-        } else {
-            limiterGain_ = 1.0f;
-            limiterHoldFrames_ = 0;
-        }
-
-        if (transition == PatchTransitionState::FadingOut) {
-            patchTransitionGain_ = std::max(0.0f, patchTransitionGain_ - fadeOutStep);
-            if (patchTransitionGain_ <= 0.0f) {
-                patchTransitionGain_ = 0.0f;
-                transition = PatchTransitionState::Muted;
-            }
-        } else if (transition == PatchTransitionState::FadingIn) {
-            patchTransitionGain_ = std::min(1.0f, patchTransitionGain_ + fadeInStep);
-            if (patchTransitionGain_ >= 1.0f) {
-                patchTransitionGain_ = 1.0f;
-                transition = PatchTransitionState::Running;
-            }
-        } else if (transition == PatchTransitionState::Muted) {
-            patchTransitionGain_ = 0.0f;
-        } else {
-            patchTransitionGain_ = 1.0f;
-        }
-
-        const size_t readFrame = limiterDelay_.empty() ? 0
-            : (limiterWriteFrame_ + limiterDelayFrames_ - lookahead) % limiterDelayFrames_;
-        for (unsigned channel = 0; channel < channels; ++channel) {
-            float sample = outputs[channel][frame];
-            if (limiterEnabled && !limiterDelay_.empty()) {
-                sample = limiterDelay_[readFrame * kMaxSafetyChannels + channel] * limiterGain_;
-                // Emergency bound for pathological discontinuities. Under
-                // normal operation the envelope reaches the ceiling first.
-                sample = std::max(-ceiling, std::min(ceiling, sample));
-            }
-            outputs[channel][frame] = sample * patchTransitionGain_;
-        }
-        for (unsigned channel = channels; channel < outputChannels; ++channel) {
-            float sample = outputs[channel][frame];
-            outputs[channel][frame] = std::isfinite(sample) ? sample * patchTransitionGain_ : 0.0f;
-        }
-
-        if (!limiterDelay_.empty()) {
-            limiterWriteFrame_ = (limiterWriteFrame_ + 1) % limiterDelayFrames_;
-        }
-    }
-
-    patchTransitionState_.store(transition, std::memory_order_relaxed);
+        && !activeChainTransitionPending();
+    outputSafety_.process(outputs, outputChannels, frames, allowFadeIn);
 }
 
 void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
@@ -933,13 +825,6 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         ? transport_.beginAudioBlock(frames) : TransportBlock{};
 
     Chain* chain = activeChain_.load(std::memory_order_acquire);
-
-    ControlUpdate update;
-    while (controlUpdates_.pop(update)) {
-        if (chain && update.slotIndex < chain->slots.size()) {
-            chain->slots[update.slotIndex]->plugin->setControl(update.portIndex, update.value);
-        }
-    }
 
     const unsigned channels = chain ? chain->channels : std::min(outputChannels, 2u);
     const float inputGain = inputGain_.load(std::memory_order_relaxed);
@@ -1190,8 +1075,7 @@ void Engine::publishChain(std::unique_ptr<Chain> chain) {
     std::lock_guard<std::mutex> lock(chainMutex_);
     // Only the latest unpublished chain matters. Superseded chains have never
     // been visible to the audio thread, so they can be destroyed here.
-    Chain* superseded = pendingChain_.exchange(chain.release(), std::memory_order_acq_rel);
-    delete superseded;
+    pendingChain_.publish(std::move(chain));
     chainPublicationExpected_.store(false, std::memory_order_release);
     transitionRequested_.store(true, std::memory_order_release);
 }
@@ -1225,7 +1109,7 @@ bool Engine::swapPendingChainFromAudio() {
         deferredRetiredChain_ = nullptr;
     }
 
-    Chain* next = pendingChain_.exchange(nullptr, std::memory_order_acq_rel);
+    Chain* next = pendingChain_.take();
     if (!next) {
         return true;
     }
@@ -1249,31 +1133,41 @@ bool Engine::swapPendingChainFromAudio() {
 void Engine::beginAudioTransitionBlock() {
     const bool requested = transitionRequested_.exchange(false, std::memory_order_acq_rel);
     if (!muteOnChangeEnabled_.load(std::memory_order_acquire)) {
-        patchTransitionGain_ = 1.0f;
-        patchTransitionState_.store(PatchTransitionState::Running, std::memory_order_relaxed);
+        outputSafety_.resetTransition(false);
         swapPendingChainFromAudio();
-        if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
-            for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                if (slot->plugin) slot->plugin->releasePropertyChanges();
-            }
-        }
+        applyDeferredTransitionStateFromAudio();
         return;
     }
 
-    PatchTransitionState state = patchTransitionState_.load(std::memory_order_relaxed);
-    if (requested && (state == PatchTransitionState::Running
-                      || state == PatchTransitionState::FadingIn)) {
-        state = PatchTransitionState::FadingOut;
-        patchTransitionState_.store(state, std::memory_order_relaxed);
-    }
+    if (requested) outputSafety_.beginFadeOut();
 
-    if (state == PatchTransitionState::Muted && swapPendingChainFromAudio()) {
-        if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
-            for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                if (slot->plugin) slot->plugin->releasePropertyChanges();
+    if (outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted) {
+        const bool chainReady = swapPendingChainFromAudio();
+        if (chainReady) applyDeferredTransitionStateFromAudio();
+    }
+}
+
+bool Engine::applyDeferredTransitionStateFromAudio() {
+    bool changed = false;
+    const int bypass = pendingBypassAll_.exchange(-1, std::memory_order_acq_rel);
+    if (bypass >= 0) {
+        bypassAll_.store(bypass != 0, std::memory_order_relaxed);
+        changed = true;
+    }
+    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            const int enabled = slot->pendingEnabled.exchange(-1, std::memory_order_acq_rel);
+            if (enabled >= 0) {
+                slot->enabled.store(enabled != 0, std::memory_order_relaxed);
+                changed = true;
+            }
+            if (slot->plugin) {
+                changed = slot->plugin->applyDeferredStateChanges() || changed;
             }
         }
     }
+    if (changed) chainStateDirty_.store(true, std::memory_order_release);
+    return changed;
 }
 
 bool Engine::activeChainTransitionPending() const {
@@ -1368,7 +1262,9 @@ void Engine::syncPresetFromChain() {
             continue;
         }
         stored->state = slot->plugin->saveState();
-        stored->enabled = slot->enabled.load(std::memory_order_relaxed);
+        const int pendingEnabled = slot->pendingEnabled.load(std::memory_order_acquire);
+        stored->enabled = pendingEnabled >= 0
+            ? pendingEnabled != 0 : slot->enabled.load(std::memory_order_relaxed);
     }
 }
 
@@ -1633,36 +1529,7 @@ bool Engine::stepBank(int delta, std::string& error) {
 
 void Engine::configureAudioSafety(const AudioSettings& settings) {
     muteOnChangeEnabled_.store(settings.muteOnChange, std::memory_order_release);
-    patchFadeOutMs_.store(settings.patchFadeOutMs, std::memory_order_relaxed);
-    patchFadeInMs_.store(settings.patchFadeInMs, std::memory_order_relaxed);
-    dcBlockerEnabled_.store(settings.dcBlockerEnabled, std::memory_order_relaxed);
-    dcBlockerHz_.store(settings.dcBlockerHz, std::memory_order_relaxed);
-    limiterEnabled_.store(settings.limiterEnabled, std::memory_order_relaxed);
-    limiterCeilingDb_.store(settings.limiterCeilingDb, std::memory_order_relaxed);
-    limiterLookaheadMs_.store(settings.limiterLookaheadMs, std::memory_order_relaxed);
-    limiterReleaseMs_.store(settings.limiterReleaseMs, std::memory_order_relaxed);
-    updateAudioSafetyCoefficients(sampleRate_.load(std::memory_order_acquire));
-}
-
-void Engine::updateAudioSafetyCoefficients(unsigned sampleRate) {
-    const float rate = static_cast<float>(std::max(1u, sampleRate));
-    const float dcHz = dcBlockerHz_.load(std::memory_order_relaxed);
-    dcBlockerPole_.store(std::exp(-6.28318530718f * dcHz / rate), std::memory_order_relaxed);
-    limiterCeilingGain_.store(dbToGain(limiterCeilingDb_.load(std::memory_order_relaxed)),
-                              std::memory_order_relaxed);
-    const float releaseSeconds = limiterReleaseMs_.load(std::memory_order_relaxed) * 0.001f;
-    limiterReleaseStep_.store(
-        1.0f - std::exp(-1.0f / std::max(1.0f, releaseSeconds * rate)),
-        std::memory_order_relaxed);
-    limiterLookaheadFramesTarget_.store(static_cast<unsigned>(std::lround(
-        limiterLookaheadMs_.load(std::memory_order_relaxed) * rate / 1000.0f)),
-        std::memory_order_relaxed);
-    patchFadeOutStep_.store(1.0f / std::max(1.0f,
-        patchFadeOutMs_.load(std::memory_order_relaxed) * rate / 1000.0f),
-        std::memory_order_relaxed);
-    patchFadeInStep_.store(1.0f / std::max(1.0f,
-        patchFadeInMs_.load(std::memory_order_relaxed) * rate / 1000.0f),
-        std::memory_order_relaxed);
+    outputSafety_.configure(settings, sampleRate_.load(std::memory_order_acquire));
 }
 
 bool Engine::stepSnapshot(int delta, std::string& error) {
@@ -2414,12 +2281,12 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         if (slot->id == slotId) {
-            if (enabled && muteOnChangeEnabled_.load(std::memory_order_acquire)
-                && slot->plugin) {
-                slot->plugin->holdPropertyChanges();
+            if (muteOnChangeEnabled_.load(std::memory_order_acquire)) {
+                slot->pendingEnabled.store(enabled ? 1 : 0, std::memory_order_release);
                 transitionRequested_.store(true, std::memory_order_release);
+            } else {
+                slot->enabled.store(enabled, std::memory_order_relaxed);
             }
-            slot->enabled.store(enabled, std::memory_order_relaxed);
             if (Preset* preset = activePreset()) {
                 if (EffectSlot* stored = preset->findSlot(slotId)) {
                     stored->enabled = enabled;
@@ -2474,11 +2341,10 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
                 continue;
             }
             const float clamped = normalizePortValue(port, value);
-            // Queued rather than written directly: the audio thread applies it
-            // between periods so a moving knob cannot land mid-buffer.
-            if (!controlUpdates_.push({static_cast<uint32_t>(index), port.index, clamped})) {
-                slot.plugin->setControl(port.index, clamped);
-            }
+            // setControl only updates the atomic value consumed at the start
+            // of the next plugin run. Updating it here also makes the immediate
+            // state acknowledgement report the requested toggle/slider value.
+            slot.plugin->setControl(port.index, clamped);
             bool clearedTempoLink = false;
             if (persist && !port.trigger) {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
@@ -2540,9 +2406,7 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
                     return false;
                 }
                 stored->tempoLinks.set(portSymbol, Json(quarterNoteBeats));
-                if (!controlUpdates_.push({static_cast<uint32_t>(slotIndex), port.index, value})) {
-                    live.plugin->setControl(port.index, value);
-                }
+                live.plugin->setControl(port.index, value);
             }
             requestBankPersist(true);
             notify();
@@ -2555,7 +2419,7 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
     return false;
 }
 
-void Engine::applyTempoLinksUnlocked(Preset& preset) {
+void Engine::applyTempoLinksUnlocked(Preset& preset, bool deferControls) {
     if (!transportEnabled_.load(std::memory_order_acquire)) return;
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) return;
@@ -2569,9 +2433,8 @@ void Engine::applyTempoLinksUnlocked(Preset& preset) {
                 float value = 0.0f;
                 if (port.symbol == link.first
                     && tempoLinkedPortValue(port, link.second.asDouble(), bpm, value)) {
-                    if (!controlUpdates_.push({static_cast<uint32_t>(slotIndex), port.index, value})) {
-                        live.plugin->setControl(port.index, value);
-                    }
+                    if (deferControls) live.plugin->setControlDeferred(port.index, value);
+                    else live.plugin->setControl(port.index, value);
                     break;
                 }
             }
@@ -2707,15 +2570,12 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
 }
 
 bool Engine::setBypassAll(bool bypassed) {
-    if (!bypassed && muteOnChangeEnabled_.load(std::memory_order_acquire)) {
-        if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
-            for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                if (slot->plugin) slot->plugin->holdPropertyChanges();
-            }
-        }
+    if (muteOnChangeEnabled_.load(std::memory_order_acquire)) {
+        pendingBypassAll_.store(bypassed ? 1 : 0, std::memory_order_release);
         transitionRequested_.store(true, std::memory_order_release);
+    } else {
+        bypassAll_.store(bypassed, std::memory_order_relaxed);
     }
-    bypassAll_.store(bypassed, std::memory_order_relaxed);
     refreshLeds();
     notifyPerformance();
     return true;
@@ -2790,13 +2650,14 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
         if (!stored) {
             continue;
         }
-        if (mutedTransition) slot->plugin->holdPropertyChanges();
-        slot->plugin->loadState(rewritePluginStateFiles(storage_, stored->state));
-        slot->enabled.store(stored->enabled, std::memory_order_relaxed);
+        if (mutedTransition) slot->plugin->beginDeferredStateChanges();
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, stored->state), mutedTransition);
+        if (mutedTransition) slot->pendingEnabled.store(stored->enabled ? 1 : 0, std::memory_order_release);
+        else slot->enabled.store(stored->enabled, std::memory_order_relaxed);
         stateLoaded = true;
     }
     if (mutedTransition && stateLoaded) transitionRequested_.store(true, std::memory_order_release);
-    applyTempoLinksUnlocked(preset);
+    applyTempoLinksUnlocked(preset, mutedTransition);
     preset.activeSnapshot = -1;
     armAnalogCatchUnlocked();
 }
@@ -2879,13 +2740,16 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
             continue;
         }
         const Json& state = snapshot.slots[slot->id];
-        if (mutedTransition) slot->plugin->holdPropertyChanges();
-        slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_));
-        slot->enabled.store(state["enabled"].asBool(true), std::memory_order_relaxed);
+        if (mutedTransition) slot->plugin->beginDeferredStateChanges();
+        slot->plugin->loadState(rewritePluginStateFiles(storage_, state, &missingPluginFiles_),
+                                mutedTransition);
+        const bool enabled = state["enabled"].asBool(true);
+        if (mutedTransition) slot->pendingEnabled.store(enabled ? 1 : 0, std::memory_order_release);
+        else slot->enabled.store(enabled, std::memory_order_relaxed);
         stateLoaded = true;
     }
     if (mutedTransition && stateLoaded) transitionRequested_.store(true, std::memory_order_release);
-    if (Preset* preset = activePreset()) applyTempoLinksUnlocked(*preset);
+    if (Preset* preset = activePreset()) applyTempoLinksUnlocked(*preset, mutedTransition);
     armAnalogCatchUnlocked();
 }
 
@@ -3587,7 +3451,10 @@ void Engine::runAction(const ActionRequest& incoming) {
             if (chain) {
                 for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
                     if (slot->id == binding.slotId) {
-                        enabled = !slot->enabled.load(std::memory_order_relaxed);
+                        const int pending = slot->pendingEnabled.load(std::memory_order_acquire);
+                        const bool current = pending >= 0
+                            ? pending != 0 : slot->enabled.load(std::memory_order_relaxed);
+                        enabled = !current;
                         break;
                     }
                 }
@@ -4376,7 +4243,7 @@ void Engine::notify() {
     // before that swap would serialize the outgoing chain alongside the new
     // preset metadata. The swap marks chainStateDirty_, and housekeeping sends
     // one coherent state as soon as the new chain is active.
-    if (pendingChain_.load(std::memory_order_acquire) != nullptr) {
+    if (pendingChain_.peek() != nullptr) {
         return;
     }
     std::lock_guard<std::mutex> lock(listenerMutex_);
@@ -4390,7 +4257,7 @@ void Engine::publishState() {
 }
 
 void Engine::notifyPerformance() {
-    if (pendingChain_.load(std::memory_order_acquire) != nullptr) {
+    if (pendingChain_.peek() != nullptr) {
         return;
     }
     std::lock_guard<std::mutex> lock(listenerMutex_);
@@ -4816,8 +4683,8 @@ Json Engine::meterState() const {
 
     const unsigned rate = sampleRate_.load(std::memory_order_acquire);
     const uint32_t hardwareFrames = metrics_.roundTripFrames.load(std::memory_order_relaxed);
-    const uint32_t lookaheadFrames = limiterEnabled_.load(std::memory_order_relaxed)
-        ? limiterLookaheadFramesTarget_.load(std::memory_order_relaxed) : 0;
+    const uint32_t lookaheadFrames = outputSafety_.limiterEnabled()
+        ? outputSafety_.lookaheadFrames() : 0;
     const uint32_t totalFrames = hardwareFrames + lookaheadFrames;
     json.set("hardwareRoundTripFrames", static_cast<int>(hardwareFrames));
     json.set("safetyLookaheadFrames", static_cast<int>(lookaheadFrames));

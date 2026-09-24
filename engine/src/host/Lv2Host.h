@@ -140,8 +140,8 @@ private:
 /// A live plugin.
 ///
 /// Instantiation, activation, and property changes happen on the control
-/// thread. Only `process()` and `setControl()` may be called from the audio
-/// thread, and both are wait-free.
+/// thread. `process()` is audio-thread-only; `setControl()` is a wait-free
+/// atomic handoff and may also be called by the control thread.
 class PluginInstance {
 public:
     ~PluginInstance();
@@ -155,8 +155,9 @@ public:
     const PluginInfo& info() const { return info_; }
     const std::string& uri() const { return info_.uri; }
 
-    /// Audio-thread safe: stores the value for the next `run()`.
+    /// Thread-safe: stores the value for the next `run()`.
     void setControl(uint32_t portIndex, float value);
+    bool setControlDeferred(uint32_t portIndex, float value);
     float control(uint32_t portIndex) const;
 
     /// Current value of an output control port, for meters and tuners.
@@ -174,6 +175,11 @@ public:
     void releasePropertyChanges();
     bool propertyTransitionPending() const;
 
+    /// Stages snapshot/base-preset controls until the engine master reaches
+    /// silence. applyDeferredStateChanges is audio-thread-only.
+    void beginDeferredStateChanges();
+    bool applyDeferredStateChanges();
+
     /// Queues a MIDI event for the next `run()`. Audio-thread safe.
     void pushMidi(const uint8_t* data, uint32_t size, uint32_t frameOffset);
 
@@ -188,7 +194,7 @@ public:
 
     /// Serialises control values and properties for a preset.
     Json saveState() const;
-    void loadState(const Json& state);
+    void loadState(const Json& state, bool deferControls = false);
 
 private:
     PluginInstance();

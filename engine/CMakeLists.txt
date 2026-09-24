@@ -31,6 +31,7 @@ target_sources(pimfx PRIVATE
     src/core/Crypto.cpp
     src/core/Paths.cpp
     src/audio/MockBackend.cpp
+    src/audio/MasterOutputSafety.cpp
     src/audio/RtPriority.cpp
     src/host/UridMap.cpp
     src/host/Lv2Host.cpp
@@ -162,6 +163,17 @@ install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(pimfx_audio_safety_transition_test
+        tests/AudioSafetyTransitionTest.cpp
+        src/audio/MasterOutputSafety.cpp
+    )
+    target_include_directories(pimfx_audio_safety_transition_test PRIVATE src)
+    target_compile_options(pimfx_audio_safety_transition_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    add_test(NAME audio_safety_transition COMMAND pimfx_audio_safety_transition_test)
+
     add_executable(pimfx_community_package_test
         tests/CommunityPresetPackageTest.cpp
         src/community/CommunityPresetPackage.cpp

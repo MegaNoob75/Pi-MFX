@@ -1,8 +1,10 @@
 #pragma once
 
 #include "audio/AudioBackend.h"
+#include "audio/MasterOutputSafety.h"
 #include "audio/RtPriority.h"
 #include "core/Json.h"
+#include "core/LatestPointerMailbox.h"
 #include "core/SpscQueue.h"
 #include "host/Lv2Host.h"
 #include "midi/Mapping.h"
@@ -219,6 +221,7 @@ private:
         std::string id;
         std::unique_ptr<PluginInstance> plugin;
         std::atomic<bool> enabled{true};
+        std::atomic<int> pendingEnabled{-1};
     };
 
     /// A whole signal chain. Chains are built on the control thread and handed
@@ -238,31 +241,16 @@ private:
         uint64_t generation = 0;
     };
 
-    enum class PatchTransitionState : uint8_t {
-        Running,
-        FadingOut,
-        Muted,
-        FadingIn,
-    };
-
-    /// Values changed from the UI while audio is running, applied at the top
-    /// of the next period so a knob move never tears across a buffer.
-    struct ControlUpdate {
-        uint32_t slotIndex;
-        uint32_t portIndex;
-        float value;
-    };
-
     bool restartAudio(std::string& error);
     void publishChain(std::unique_ptr<Chain> chain);
     void collectRetiredChains();
     bool swapPendingChainFromAudio();
     void beginAudioTransitionBlock();
+    bool applyDeferredTransitionStateFromAudio();
     bool activeChainTransitionPending() const;
     void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                  unsigned frames);
     void configureAudioSafety(const AudioSettings& settings);
-    void updateAudioSafetyCoefficients(unsigned sampleRate);
     std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error);
     void applySnapshotToChain(const Snapshot& snapshot);
     Snapshot captureCurrentChain(const std::string& name) const;
@@ -303,7 +291,7 @@ private:
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
     void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
-    void applyTempoLinksUnlocked(Preset& preset);
+    void applyTempoLinksUnlocked(Preset& preset, bool deferControls = false);
     void refreshLeds();
     Json describeControllerRuntime() const;
 
@@ -323,7 +311,7 @@ private:
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 
     std::atomic<Chain*> activeChain_{nullptr};
-    std::atomic<Chain*> pendingChain_{nullptr};
+    LatestPointerMailbox<Chain> pendingChain_;
     SpscQueue<RetiredChain> retiredChainQueue_{128};
     Chain* deferredRetiredChain_ = nullptr; // audio thread only
     std::vector<std::pair<std::unique_ptr<Chain>, uint64_t>> retiredChains_;
@@ -331,9 +319,8 @@ private:
     std::atomic<bool> chainStateDirty_{false};
     mutable std::mutex chainMutex_;
 
-    SpscQueue<ControlUpdate> controlUpdates_{2048};
-
     std::atomic<bool> bypassAll_{false};
+    std::atomic<int> pendingBypassAll_{-1};
     std::atomic<bool> snapshotMode_{false};
     int presetReloadCount_ = 0;
     std::atomic<float> inputGain_{1.0f};
@@ -342,34 +329,9 @@ private:
     std::atomic<unsigned> guitarInputChannel_{1};
 
     std::atomic<bool> muteOnChangeEnabled_{true};
-    std::atomic<float> patchFadeOutMs_{5.0f};
-    std::atomic<float> patchFadeInMs_{8.0f};
     std::atomic<bool> transitionRequested_{false};
     std::atomic<bool> chainPublicationExpected_{false};
-    std::atomic<PatchTransitionState> patchTransitionState_{PatchTransitionState::Running};
-    float patchTransitionGain_ = 1.0f; // audio thread only
-
-    static constexpr unsigned kMaxSafetyChannels = 64;
-    static constexpr float kMaxLimiterLookaheadMs = 2.0f;
-    std::atomic<bool> dcBlockerEnabled_{true};
-    std::atomic<float> dcBlockerHz_{7.0f};
-    std::atomic<bool> limiterEnabled_{true};
-    std::atomic<float> limiterCeilingDb_{-1.0f};
-    std::atomic<float> limiterLookaheadMs_{0.75f};
-    std::atomic<float> limiterReleaseMs_{80.0f};
-    std::atomic<float> dcBlockerPole_{0.9991f};
-    std::atomic<float> limiterCeilingGain_{0.8913f};
-    std::atomic<float> limiterReleaseStep_{0.00026f};
-    std::atomic<unsigned> limiterLookaheadFramesTarget_{36};
-    std::atomic<float> patchFadeOutStep_{1.0f / 240.0f};
-    std::atomic<float> patchFadeInStep_{1.0f / 384.0f};
-    std::vector<float> limiterDelay_;
-    size_t limiterDelayFrames_ = 1;
-    size_t limiterWriteFrame_ = 0;
-    std::array<float, kMaxSafetyChannels> dcPreviousInput_{};
-    std::array<float, kMaxSafetyChannels> dcPreviousOutput_{};
-    float limiterGain_ = 1.0f;
-    unsigned limiterHoldFrames_ = 0;
+    MasterOutputSafety outputSafety_;
 
     MidiInput midi_;
     ControllerRuntime controller_;

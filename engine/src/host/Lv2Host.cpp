@@ -3,6 +3,7 @@
 
 #include "core/Log.h"
 #include "core/SpscQueue.h"
+#include "host/Lv2WorkerTransitionState.h"
 
 #include <algorithm>
 #include <array>
@@ -280,6 +281,11 @@ struct PropertyMessage {
     char value[1024];
 };
 
+struct DeferredControlMessage {
+    uint32_t portIndex = 0;
+    float value = 0.0f;
+};
+
 struct MidiMessage {
     uint32_t frame;
     uint8_t size;
@@ -520,6 +526,15 @@ bool Lv2Catalog::rescan(std::string& error) {
                 portInfo.defaultValue = std::isfinite(defaults[index])
                     ? std::max(portInfo.minimum, std::min(portInfo.maximum, defaults[index]))
                     : portInfo.minimum;
+                if (info.uri == "http://two-play.com/plugins/toob-nam"
+                    && portInfo.symbol == "calibration") {
+                    // TooB publishes this control as the ambiguous "Value".
+                    // Keep its documented -6 dBu starting point explicit even
+                    // when an older installed bundle omits the expected default.
+                    portInfo.name = "Input Calibration Level";
+                    portInfo.defaultValue = std::max(portInfo.minimum,
+                        std::min(portInfo.maximum, -6.0f));
+                }
                 portInfo.toggled = lilv_port_has_property(plugin, port, impl.toggled);
                 portInfo.integer = lilv_port_has_property(plugin, port, impl.integer);
                 portInfo.enumerated = lilv_port_has_property(plugin, port, impl.enumeration);
@@ -699,13 +714,14 @@ struct PluginInstance::Impl {
     LV2_Atom_Forge forge{};
 
     SpscQueue<PropertyMessage> propertyQueue{32};
+    SpscQueue<DeferredControlMessage> deferredControls{2048};
     std::atomic<bool> propertyChangesHeld{false};
     // Audio-thread-owned staging. Repeated changes to the same property are
     // coalesced here while a worker transaction is active, so a NAM plugin
     // never has multiple model load/swap/free cycles in flight at once.
     std::array<PropertyMessage, kPendingPropertyCapacity> pendingProperties{};
     size_t pendingPropertyCount = 0;
-    bool propertyWorkerTransitionActive = false; // audio thread only
+    Lv2WorkerTransitionState propertyTransition;
     SpscQueue<MidiMessage> midiQueue{256};
     std::vector<std::pair<std::string, std::string>> propertyValues;
     mutable std::mutex propertyMutex;
@@ -1048,6 +1064,10 @@ void PluginInstance::setControl(uint32_t portIndex, float value) {
     impl.staged[portIndex].store(value, std::memory_order_relaxed);
 }
 
+bool PluginInstance::setControlDeferred(uint32_t portIndex, float value) {
+    return impl_->deferredControls.push({portIndex, value});
+}
+
 float PluginInstance::control(uint32_t portIndex) const {
     const Impl& impl = *impl_;
     if (portIndex >= impl.staged.size()) {
@@ -1135,9 +1155,28 @@ void PluginInstance::releasePropertyChanges() {
 bool PluginInstance::propertyTransitionPending() const {
     const Impl& impl = *impl_;
     return impl.propertyChangesHeld.load(std::memory_order_acquire)
+        || !impl.deferredControls.empty()
         || !impl.propertyQueue.empty()
         || impl.pendingPropertyCount != 0
-        || impl.propertyWorkerTransitionActive;
+        || impl.propertyTransition.active();
+}
+
+void PluginInstance::beginDeferredStateChanges() {
+    impl_->propertyChangesHeld.store(true, std::memory_order_release);
+}
+
+bool PluginInstance::applyDeferredStateChanges() {
+    Impl& impl = *impl_;
+    bool changed = false;
+    DeferredControlMessage control;
+    while (impl.deferredControls.pop(control)) {
+        if (control.portIndex < impl.staged.size() && impl.isControlInput[control.portIndex]) {
+            impl.staged[control.portIndex].store(control.value, std::memory_order_relaxed);
+            changed = true;
+        }
+    }
+    const bool wasHeld = impl.propertyChangesHeld.exchange(false, std::memory_order_acq_rel);
+    return changed || wasHeld;
 }
 
 void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
@@ -1192,7 +1231,7 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
         PropertyMessage property{};
         while (!propertyChangesHeld.load(std::memory_order_acquire)
                && propertyQueue.pop(property)) {
-            propertyWorkerTransitionActive = true;
+            propertyTransition.begin();
             size_t pending = 0;
             for (; pending < pendingPropertyCount; ++pending) {
                 if (pendingProperties[pending].propertyUrid == property.propertyUrid) {
@@ -1213,10 +1252,9 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
             }
         }
 
-        const bool workerPipelineIdle = !workerInterface
-            || (!workerBusy.load(std::memory_order_acquire)
-                && workRequests.empty()
-                && workResponses.empty());
+        const bool workerPipelineIdle = propertyTransition.canDispatch(
+            workerInterface != nullptr, workerBusy.load(std::memory_order_acquire),
+            workRequests.empty(), workResponses.empty());
         if (pendingPropertyCount > 0 && workerPipelineIdle) {
             property = pendingProperties[0];
             pendingProperties[0] = pendingProperties[--pendingPropertyCount];
@@ -1260,14 +1298,9 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
         }
     }
 
-    if (propertyWorkerTransitionActive
-        && propertyQueue.empty()
-        && pendingPropertyCount == 0
-        && !workerBusy.load(std::memory_order_acquire)
-        && workRequests.empty()
-        && workResponses.empty()) {
-        propertyWorkerTransitionActive = false;
-    }
+    propertyTransition.update(propertyQueue.empty(), pendingPropertyCount,
+                              workerBusy.load(std::memory_order_acquire),
+                              workRequests.empty(), workResponses.empty());
 }
 
 void PluginInstance::process(const float* const* inputs, unsigned inputCount,
@@ -1319,7 +1352,7 @@ Json PluginInstance::saveState() const {
     return state;
 }
 
-void PluginInstance::loadState(const Json& state) {
+void PluginInstance::loadState(const Json& state, bool deferControls) {
     const Json& controls = state["controls"];
     for (const PortInfo& port : info_.ports) {
         if (!port.control || !port.input) {
@@ -1345,7 +1378,15 @@ void PluginInstance::loadState(const Json& state) {
             } else if (port.integer) {
                 value = std::round(value);
             }
-            setControl(port.index, std::max(port.minimum, std::min(port.maximum, value)));
+            value = std::max(port.minimum, std::min(port.maximum, value));
+            if (deferControls) {
+                // A state has far fewer controls than this bounded queue. If a
+                // malformed plugin exceeds it, retain silence rather than
+                // applying part of the snapshot before the fade completes.
+                setControlDeferred(port.index, value);
+            } else {
+                setControl(port.index, value);
+            }
         }
     }
 
@@ -1383,6 +1424,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog&, const std::s
 }
 
 void PluginInstance::setControl(uint32_t, float) {}
+bool PluginInstance::setControlDeferred(uint32_t, float) { return false; }
 float PluginInstance::control(uint32_t) const { return 0.0f; }
 float PluginInstance::readOutput(uint32_t) const { return 0.0f; }
 void PluginInstance::pushMidi(const uint8_t*, uint32_t, uint32_t) {}
@@ -1394,10 +1436,12 @@ std::string PluginInstance::property(const std::string&) const { return std::str
 void PluginInstance::holdPropertyChanges() {}
 void PluginInstance::releasePropertyChanges() {}
 bool PluginInstance::propertyTransitionPending() const { return false; }
+void PluginInstance::beginDeferredStateChanges() {}
+bool PluginInstance::applyDeferredStateChanges() { return false; }
 void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned,
                              const TransportBlock*) {}
 Json PluginInstance::saveState() const { return Json::object(); }
-void PluginInstance::loadState(const Json&) {}
+void PluginInstance::loadState(const Json&, bool) {}
 
 #endif
 

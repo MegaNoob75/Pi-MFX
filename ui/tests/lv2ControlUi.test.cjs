@@ -16,6 +16,12 @@ assert.match(editor, /bool\(port\.trigger\)[\s\S]*TRIGGER/,
     'trigger ports must render as one-shot buttons');
 assert.match(editor, /value > 0 \? "ON" : "OFF"/,
     'LV2 toggles must treat all positive values as on');
+assert.match(editor, /bool\(port\.toggled\)[\s\S]*onClick=\{\(\) => apply\(value > 0/,
+    'toggle buttons must use the optimistic pending-value path on the first click');
+assert.match(editor, /isToobInputCalibration\(plugin, port\) \? -6 : undefined/,
+    'TooB input calibration must show its documented -6 dBu reference marker');
+assert.match(host, /portInfo\.name = "Input Calibration Level";[\s\S]*std::min\(portInfo\.maximum, -6\.0f\)/,
+    'TooB input calibration must expose a clear label and -6 dBu default');
 assert.match(editor, /!bool\(port\.notOnGui\)/,
     'ports marked notOnGUI must be omitted from the main editor');
 assert.match(snapshot, /!bool\(port\.notOnGui\)/,
@@ -60,6 +66,8 @@ assert.match(host, /port\.trigger[\s\S]*\.exchange\([\s\S]*port\.defaultValue/,
     'trigger values must automatically reset after one audio block');
 assert.match(engine, /port\.enumerated && !port\.scalePoints\.empty\(\)/,
     'engine value validation must constrain enumerations to their scale points');
+assert.match(engine, /slot\.plugin->setControl\(port\.index, clamped\)[\s\S]*notifyPerformance\(\)/,
+    'engine acknowledgement must expose the requested control value immediately');
 assert.match(engine, /port\.rangeSteps > 1/,
     'hardware encoders must honor declared range steps');
 assert.match(engine, /mappedBindingValue\(request, boundPort\)/,
