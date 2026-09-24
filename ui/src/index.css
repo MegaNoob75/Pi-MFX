@@ -709,7 +709,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     min-width: 0;
     min-height: var(--mfx-touch);
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 44px));
+    grid-template-columns: repeat(5, minmax(0, 44px));
     justify-content: center;
     align-items: center;
     gap: clamp(2px, .55vw, 6px);
@@ -1167,6 +1167,58 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 
 .muted {
     color: var(--mfx-muted);
+}
+
+/* Dedicated global tuner ------------------------------------------------ */
+.status-widget[role="button"] { cursor: pointer; }
+.status-widget[role="button"]:focus-visible { outline: 2px solid var(--mfx-cyan); outline-offset: 2px; }
+.tuner-view { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.tuner-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tuner-tabs button { min-height: 42px; border: 1px solid var(--mfx-border); border-radius: 8px; background: var(--mfx-panel); color: var(--mfx-muted); font-weight: 900; }
+.tuner-tabs button.active { color: var(--mfx-text); border-color: var(--mfx-cyan); background: color-mix(in srgb, var(--mfx-cyan) 18%, var(--mfx-panel)); }
+.tuner-stage { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(90px, 1fr) auto minmax(70px, .65fr) auto auto; align-items: center; text-align: center; padding: clamp(8px, 2vh, 20px); border: 1px solid var(--mfx-border); border-radius: 12px; background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--mfx-panel) 80%, var(--mfx-cyan) 8%), var(--mfx-background)); overflow: hidden; }
+.tuner-status-row { width: 100%; display: flex; justify-content: space-between; color: var(--mfx-muted); font-size: .72rem; letter-spacing: .08em; }
+.tuner-status-row strong { color: var(--mfx-cyan); }
+.tuner-status-row .muted-output { color: #ffb347; }
+.tuner-note { font-size: clamp(5rem, 21vh, 11rem); line-height: .84; font-weight: 950; letter-spacing: -.06em; font-variant-numeric: tabular-nums; text-shadow: 0 0 32px color-mix(in srgb, var(--mfx-cyan) 32%, transparent); }
+.tuner-direction { min-height: 1.5em; color: #ffb347; font-size: clamp(1rem, 3.5vh, 1.8rem); font-weight: 950; letter-spacing: .16em; }
+.tuner-view.is-in-tune .tuner-direction, .tuner-view.is-in-tune .tuner-note { color: #5dff91; text-shadow: 0 0 28px rgba(55,255,122,.42); }
+.tuner-display { width: min(88%, 760px); margin: auto; }
+.tuner-scale { position: relative; height: 54px; border-radius: 28px; background: linear-gradient(90deg, #d14 0 12%, #e98b2a 34%, #42d779 47% 53%, #e98b2a 66%, #d14 88%); box-shadow: inset 0 0 0 3px rgba(0,0,0,.28); }
+.tuner-scale::after { content: "−50                                      +50"; position: absolute; inset: auto 8px -20px; color: var(--mfx-muted); font-size: .68rem; white-space: pre; }
+.tuner-scale > i { position: absolute; z-index: 2; top: -11px; bottom: -11px; width: 5px; border-radius: 4px; background: white; box-shadow: 0 0 15px #fff; transform: translateX(-50%); transition: left 70ms linear; }
+.tuner-scale > b { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: #07120b; }
+.tuner-readouts { display: flex; justify-content: center; gap: clamp(24px, 7vw, 90px); }
+.tuner-readouts div { display: grid; gap: 2px; min-width: 110px; }
+.tuner-readouts span, .tuner-input > span { color: var(--mfx-muted); font-size: .68rem; letter-spacing: .12em; }
+.tuner-readouts strong { font-size: clamp(1rem, 3vh, 1.6rem); font-variant-numeric: tabular-nums; }
+.tuner-input { width: min(70%, 520px); margin: auto; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; }
+.tuner-input > div { height: 10px; overflow: hidden; border-radius: 6px; background: var(--mfx-panel); }
+.tuner-input i { display: block; height: 100%; background: linear-gradient(90deg, var(--mfx-cyan), #5dff91, #ffb347); transition: width 80ms linear; }
+.tuner-settings { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; padding-bottom: 12px; overflow-y: auto; }
+.tuner-settings .panel:first-child, .tuner-settings .panel:last-child { grid-column: 1 / -1; }
+.tuner-style-grid { display: grid; grid-template-columns: repeat(6, minmax(80px,1fr)); gap: 8px; }
+.tuner-style-grid button { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--mfx-border); border-radius: 8px; background: var(--mfx-background); color: var(--mfx-muted); font-weight: 800; }
+.tuner-style-grid button.active { border-color: var(--mfx-cyan); color: var(--mfx-text); box-shadow: inset 0 0 0 1px var(--mfx-cyan); }
+.tuner-style-grid i { position: relative; display: block; height: 32px; overflow: hidden; border-radius: 5px; background: color-mix(in srgb, var(--mfx-panel) 70%, black); }
+.tuner-style-grid i::before { content: ""; position: absolute; left: 50%; top: 4px; bottom: 4px; width: 2px; background: #5dff91; }
+.tuner-style-grid .preview-arc { border-radius: 32px 32px 4px 4px; }
+.tuner-style-grid .preview-strobe { background: repeating-linear-gradient(90deg,var(--mfx-cyan) 0 5px,transparent 5px 10px); }
+.tuner-style-grid .preview-minimal::before { top: 14px; bottom: 14px; }
+.tuner-style-grid .preview-stage { box-shadow: inset 0 0 20px var(--mfx-cyan); }
+.tuner-range { display: grid; grid-template-columns: minmax(160px,1fr) minmax(180px,2fr) 60px; align-items: center; gap: 10px; }
+.tuner-option-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.tuner-style-strobe .tuner-scale { opacity: .5; }
+.tuner-strobe { height: 46px; margin-top: -50px; border-radius: 6px; background: repeating-linear-gradient(90deg,var(--mfx-cyan) 0 8px,transparent 8px 16px); background-position-x: var(--strobe-offset); opacity: .72; transition: background-position 80ms linear; }
+.tuner-style-minimal .tuner-status-row, .tuner-style-minimal .tuner-readouts, .tuner-style-minimal .tuner-input { opacity: .45; }
+.tuner-style-stage .tuner-stage { background: #020302; }
+.tuner-style-arc .tuner-scale { border-radius: 100% 100% 12px 12px; transform: perspective(280px) rotateX(18deg); }
+@media (max-width: 760px), (max-height: 620px) {
+    .tuner-settings { grid-template-columns: 1fr; }
+    .tuner-settings .panel { grid-column: 1 !important; }
+    .tuner-style-grid { grid-template-columns: repeat(3, 1fr); }
+    .tuner-note { font-size: clamp(4rem, 18vh, 7rem); }
+    .tuner-stage { grid-template-rows: auto minmax(64px,1fr) auto minmax(48px,.5fr) auto auto; }
 }
 
 .danger {

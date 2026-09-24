@@ -768,6 +768,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         engine_.setTunerEnabled(payload["enabled"].asBool(true));
         return Json::object();
     }
+    if (command == "tuner/output") {
+        engine_.setTunerViewState(payload["open"].asBool(false), payload["muted"].asBool(false));
+        return Json::object();
+    }
     if (command.rfind("plugins/", 0) == 0) {
         return pluginsCommand(command.substr(8), payload, ok, error);
     }

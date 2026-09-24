@@ -86,10 +86,10 @@ assert.deepEqual(nestedBack('controller', { controllerPage: 'diagnostics' }), { 
 assert.deepEqual(nestedBack('system', { systemPage: 'realtime' }), { systemPage: 'hub' });
 assert.equal(nestedBack('controller', { controllerPage: 'hub' }), null);
 
-const menuIds = ['performance', 'transport', 'backingTracks', 'looper', 'recorder', 'drums', 'community', 'banks', 'edit', 'library', 'plugins', 'files', 'settings', 'about'];
+const menuIds = ['performance', 'transport', 'backingTracks', 'looper', 'recorder', 'drums', 'community', 'tuner', 'banks', 'edit', 'library', 'plugins', 'files', 'settings', 'about'];
 const compiledSanitizers = ts.transpileModule(`
 const MENU_IDS = ${JSON.stringify(menuIds)};
-const SHORTCUT_LIMIT = 4;
+const SHORTCUT_LIMIT = 5;
 ${sanitizeOrderCallback.getText(source)}
 ${sanitizeShortcutsCallback.getText(source)}
 return { sanitizedMenuOrder, sanitizedShortcuts };
@@ -100,7 +100,7 @@ assert.deepEqual(order.slice(0, 2), ['drums', 'performance']);
 assert.equal(new Set(order).size, menuIds.length, 'menu ids must be unique');
 assert.equal(order.length, menuIds.length, 'new menu destinations must be appended');
 assert.deepEqual(sanitizers.sanitizedShortcuts(['drums', 'drums', 'about', 'files', 'settings', 'plugins']),
-    ['drums', 'about', 'files', 'settings'], 'shortcut areas must deduplicate and cap at four');
+    ['drums', 'about', 'files', 'settings', 'plugins'], 'shortcut areas must deduplicate and cap at five');
 assert.deepEqual(sanitizers.sanitizedShortcuts(['drums', 'about'], new Set(['drums'])), ['about'],
     'the same shortcut cannot occupy both sides');
 console.log('Menu navigation regression tests passed');

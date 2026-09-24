@@ -97,7 +97,7 @@ export function PerformanceView({
     run: (work: () => Promise<unknown>) => Promise<void>;
     onSnapshots?: () => void;
     onEdit?: () => void;
-    onOpenView?: (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums") => void;
+    onOpenView?: (view: "transport" | "backingTracks" | "looper" | "recorder" | "drums" | "tuner") => void;
     onEditSnapshot?: (snapshotId: string) => void;
 }) {
     const { client, state } = engine;
@@ -1325,6 +1325,12 @@ export function PerformanceView({
                                 ...rectStyle(widget.rect, isMeterWidget(id) && widget.orientation === "vertical"),
                                 zIndex: pickerOpen ? 50 : undefined
                             }}
+                            role={id === "tuner" ? "button" : undefined}
+                            tabIndex={id === "tuner" ? 0 : undefined}
+                            onClick={id === "tuner" ? () => onOpenView?.("tuner") : undefined}
+                            onKeyDown={id === "tuner" ? (event) => {
+                                if (event.key === "Enter" || event.key === " ") onOpenView?.("tuner");
+                            } : undefined}
                         >
                             {isWorkstationWidget(id) ? (
                                 <WorkstationWidget id={id} engine={engine} run={run} onOpen={onOpenView} />

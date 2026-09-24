@@ -280,6 +280,7 @@ struct UiSettings {
     /// Default author for Community Preset manifests. Stored on the Pi so it
     /// follows the rig across browsers, while remaining editable per share.
     std::string communityAuthor;
+    Json tuner = Json::object();
 
     Json toJson() const;
     static UiSettings fromJson(const Json& json);

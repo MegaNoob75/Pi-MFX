@@ -15,7 +15,7 @@ namespace pimfx {
 namespace {
 
 constexpr size_t kTunerRingSize = 16384;
-constexpr float kTunerMinFrequency = 60.0f;   // below a dropped-B seven string
+constexpr float kTunerMinFrequency = 35.0f;   // below a standard four-string bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
 constexpr int kRequiredControllerFirmwareMajor = 1;
 constexpr int kRequiredControllerFirmwareMinor = 1;
@@ -298,21 +298,23 @@ std::string assignedPresetForControl(const ControllerConfig& config,
 
 const char* kNoteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
-TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate) {
+TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate, float threshold) {
     TunerReading reading;
     if (samples.size() < 1024 || sampleRate == 0) {
         return reading;
     }
 
-    // Autocorrelation over the guitar's range. It is not the most accurate
-    // method published, but it is stable on a plucked string, cheap enough to
-    // run continuously, and independent of the audio thread.
+    // YIN-style cumulative mean normalized difference. Choosing the first
+    // strong periodic minimum avoids the octave/subharmonic jumps caused by
+    // selecting the globally strongest autocorrelation lag.
     double energy = 0.0;
+    double mean = 0.0;
     for (float sample : samples) {
         energy += static_cast<double>(sample) * sample;
+        mean += sample;
     }
     const double rms = std::sqrt(energy / samples.size());
-    if (rms < 0.0025) {
+    if (rms < threshold) {
         return reading; // silence, or noise floor
     }
 
@@ -322,25 +324,55 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
         return reading;
     }
 
-    double bestScore = 0.0;
-    size_t bestLag = 0;
-    for (size_t lag = minLag; lag < maxLag; ++lag) {
-        double correlation = 0.0;
+    mean /= static_cast<double>(samples.size());
+    std::vector<double> difference(maxLag + 1, 0.0);
+    for (size_t lag = 1; lag < maxLag; ++lag) {
+        double sum = 0.0;
         for (size_t i = 0; i + lag < samples.size(); ++i) {
-            correlation += static_cast<double>(samples[i]) * samples[i + lag];
+            const double delta = (static_cast<double>(samples[i]) - mean)
+                               - (static_cast<double>(samples[i + lag]) - mean);
+            sum += delta * delta;
         }
-        correlation /= static_cast<double>(samples.size() - lag);
-        if (correlation > bestScore) {
-            bestScore = correlation;
+        difference[lag] = sum;
+    }
+
+    double cumulative = 0.0;
+    size_t bestLag = 0;
+    double bestValue = 1.0;
+    for (size_t lag = 1; lag < maxLag; ++lag) {
+        cumulative += difference[lag];
+        difference[lag] = cumulative > 0.0
+            ? difference[lag] * static_cast<double>(lag) / cumulative
+            : 1.0;
+    }
+    for (size_t lag = minLag; lag < maxLag; ++lag) {
+        if (difference[lag] < bestValue) {
+            bestValue = difference[lag];
             bestLag = lag;
+        }
+        if (difference[lag] < 0.18) {
+            while (lag + 1 < maxLag && difference[lag + 1] < difference[lag]) ++lag;
+            bestLag = lag;
+            bestValue = difference[lag];
+            break;
         }
     }
 
-    if (bestLag == 0 || bestScore < energy / samples.size() * 0.35) {
+    if (bestLag == 0 || bestValue > 0.32) {
         return reading;
     }
 
-    const double frequency = static_cast<double>(sampleRate) / static_cast<double>(bestLag);
+    double refinedLag = static_cast<double>(bestLag);
+    if (bestLag > minLag && bestLag + 1 < maxLag) {
+        const double left = difference[bestLag - 1];
+        const double center = difference[bestLag];
+        const double right = difference[bestLag + 1];
+        const double denominator = left - 2.0 * center + right;
+        if (std::abs(denominator) > 1.0e-12) {
+            refinedLag += 0.5 * (left - right) / denominator;
+        }
+    }
+    const double frequency = static_cast<double>(sampleRate) / refinedLag;
     if (frequency < kTunerMinFrequency || frequency > kTunerMaxFrequency) {
         return reading;
     }
@@ -365,7 +397,6 @@ bool isContinuousKind(ControlKind kind) {
 
 bool followLatchPosition(const std::string& action) {
     return action == "bypassAll"
-        || action == "tuner"
         || action == "snapshotMode"
         || action == "toggleEffect"
         || action == "setParameter";
@@ -422,6 +453,8 @@ void Engine::setStateListener(StateListener listener) {
 
 bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
+    tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
+        settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
     configureAudioSafety(settings_.audio);
     backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
@@ -804,14 +837,38 @@ void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
 void Engine::releaseResources() {}
 
 void Engine::applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
-                                     unsigned frames) {
+                                     unsigned frames, const float* dryInput, float dryGain) {
     const bool allowFadeIn = outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted
         && pendingChain_.peek() == nullptr
         && !chainPublicationExpected_.load(std::memory_order_acquire)
         && deferredRetiredChain_ == nullptr
         && !transitionRequested_.load(std::memory_order_acquire)
         && !activeChainTransitionPending();
+    const bool tunerOpen = tunerViewOpen_.load(std::memory_order_relaxed);
+    const bool tunerMuted = tunerOutputMuted_.load(std::memory_order_relaxed);
+    const float dryTarget = tunerOpen && !tunerMuted && dryInput ? 1.0f : 0.0f;
+    const float target = tunerOpen && tunerMuted ? 0.0f : 1.0f;
+    const float step = 1.0f / std::max(1.0f,
+        static_cast<float>(sampleRate_.load(std::memory_order_relaxed)) * 0.005f);
+    for (unsigned frame = 0; frame < frames; ++frame) {
+        if (tunerDryMix_ < dryTarget) tunerDryMix_ = std::min(dryTarget, tunerDryMix_ + step);
+        else if (tunerDryMix_ > dryTarget) tunerDryMix_ = std::max(dryTarget, tunerDryMix_ - step);
+        for (unsigned channel = 0; channel < outputChannels; ++channel) {
+            if (dryInput && tunerDryMix_ > 0.0f) {
+                const float dry = dryInput[frame] * dryGain;
+                outputs[channel][frame] += (dry - outputs[channel][frame]) * tunerDryMix_;
+            }
+        }
+    }
+    // Dry tuner audio still passes through the final DC blocker/limiter.
     outputSafety_.process(outputs, outputChannels, frames, allowFadeIn);
+    for (unsigned frame = 0; frame < frames; ++frame) {
+        if (tunerOutputGain_ < target) tunerOutputGain_ = std::min(target, tunerOutputGain_ + step);
+        else if (tunerOutputGain_ > target) tunerOutputGain_ = std::max(target, tunerOutputGain_ - step);
+        for (unsigned channel = 0; channel < outputChannels; ++channel) {
+            outputs[channel][frame] *= tunerOutputGain_;
+        }
+    }
 }
 
 void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
@@ -856,7 +913,10 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         const float* source = inputs[guitar];
         size_t write = tunerWrite_.load(std::memory_order_relaxed);
         for (unsigned frame = 0; frame < frames; ++frame) {
-            tunerRing_[write] = source[frame];
+            // Analyse the same gain-adjusted guitar signal used by the dry
+            // tuner passthrough. Otherwise a quiet interface input remains
+            // close to the detector noise floor even after Input Gain is set.
+            tunerRing_[write] = source[frame] * inputGain;
             write = (write + 1) % kTunerRingSize;
         }
         tunerWrite_.store(write, std::memory_order_release);
@@ -905,7 +965,8 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
             recorder_->renderPlayback(outputs, outputChannels, frames);
         }
-        applyMasterOutputSafety(outputs, outputChannels, frames);
+        applyMasterOutputSafety(outputs, outputChannels, frames,
+            inputChannels > 0 ? inputs[guitar] : nullptr, inputGain);
         if (recorderCapturing) {
             recorder_->captureSource(MultitrackRecorder::Source::Master,
                 reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
@@ -1010,7 +1071,8 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
     if (recorderEnabled_.load(std::memory_order_relaxed) && recorder_) {
         recorder_->renderPlayback(outputs, outputChannels, frames);
     }
-    applyMasterOutputSafety(outputs, outputChannels, frames);
+    applyMasterOutputSafety(outputs, outputChannels, frames,
+        inputChannels > 0 ? inputs[guitar] : nullptr, inputGain);
     if (recorderCapturing) {
         recorder_->captureSource(MultitrackRecorder::Source::Master,
             reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
@@ -3498,12 +3560,7 @@ void Engine::runAction(const ActionRequest& incoming) {
     } else if (request.action == "tapTempo") {
         tapTempo();
     } else if (request.action == "tuner") {
-        if (latching) {
-            setTunerEnabled(latchOn(request));
-        } else {
-            setTunerEnabled(!tunerEnabled_.load(std::memory_order_relaxed));
-        }
-        notify();
+        notifyUiView("tunerToggle");
     } else if (request.action == "backingPlayPause") {
         if (backingEnabled_.load(std::memory_order_acquire)) {
             if (backing_->state()["playing"].asBool()) backing_->pause(); else backing_->play();
@@ -3753,6 +3810,8 @@ bool Engine::applyUiSettings(const Json& json, std::string& error) {
         }
     }
     settings_.ui = UiSettings::fromJson(merged);
+    tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
+        settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
     applyControllerFeel();
     if (settings_.ui.performanceEncoder != "session") {
         sessionPresets_.clear();
@@ -4101,8 +4160,17 @@ void Engine::setTunerEnabled(bool enabled) {
     tunerEnabled_.store(enabled, std::memory_order_relaxed);
 }
 
+void Engine::setTunerViewState(bool open, bool muted) {
+    tunerViewOpen_.store(open, std::memory_order_relaxed);
+    tunerOutputMuted_.store(muted, std::memory_order_relaxed);
+}
+
 void Engine::tunerThread() {
     std::vector<float> window(4096, 0.0f);
+    TunerReading stable;
+    int pendingMidi = -1;
+    int pendingCount = 0;
+    int invalidCount = 0;
 
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
@@ -4116,7 +4184,42 @@ void Engine::tunerThread() {
             window[i] = tunerRing_[index];
         }
 
-        const TunerReading reading = analysePitch(window, sampleRate_.load(std::memory_order_acquire));
+        TunerReading reading = analysePitch(window, sampleRate_.load(std::memory_order_acquire),
+            tunerThreshold_.load(std::memory_order_relaxed));
+        if (reading.valid && stable.valid) {
+            if (reading.midiNote == stable.midiNote) {
+                reading.frequency = stable.frequency * 0.62f + reading.frequency * 0.38f;
+                const double midi = 69.0 + 12.0 * std::log2(reading.frequency / 440.0);
+                reading.cents = static_cast<float>((midi - reading.midiNote) * 100.0);
+                pendingMidi = -1;
+                pendingCount = 0;
+                stable = reading;
+                invalidCount = 0;
+            } else {
+                if (pendingMidi == reading.midiNote) ++pendingCount;
+                else { pendingMidi = reading.midiNote; pendingCount = 1; }
+                if (pendingCount >= 3) {
+                    stable = reading;
+                    invalidCount = 0;
+                    pendingMidi = -1;
+                    pendingCount = 0;
+                } else {
+                    reading = stable;
+                }
+            }
+        } else if (reading.valid) {
+            stable = reading;
+            invalidCount = 0;
+        } else {
+            ++invalidCount;
+            if (stable.valid && invalidCount < 5) {
+                reading = stable;
+            } else {
+                stable = reading;
+                pendingMidi = -1;
+                pendingCount = 0;
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(tunerMutex_);
             tunerReading_ = reading;
@@ -4697,6 +4800,9 @@ Json Engine::meterState() const {
     const TunerReading reading = tuner();
     Json tunerJson = Json::object();
     tunerJson.set("enabled", tunerEnabled_.load(std::memory_order_relaxed));
+    tunerJson.set("outputMuted", tunerOutputMuted_.load(std::memory_order_relaxed));
+    tunerJson.set("dryPassthrough", tunerViewOpen_.load(std::memory_order_relaxed)
+        && !tunerOutputMuted_.load(std::memory_order_relaxed));
     tunerJson.set("valid", reading.valid);
     tunerJson.set("frequency", reading.frequency);
     tunerJson.set("note", reading.noteName);

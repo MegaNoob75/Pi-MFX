@@ -206,6 +206,7 @@ public:
     void tapTempo();
     TunerReading tuner() const;
     void setTunerEnabled(bool enabled);
+    void setTunerViewState(bool open, bool muted);
 
     // --- AudioProcessor --------------------------------------------------
     void processAudio(const float* const* inputs, unsigned inputChannels,
@@ -249,7 +250,7 @@ private:
     bool applyDeferredTransitionStateFromAudio();
     bool activeChainTransitionPending() const;
     void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
-                                 unsigned frames);
+                                 unsigned frames, const float* dryInput, float dryGain);
     void configureAudioSafety(const AudioSettings& settings);
     std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error);
     void applySnapshotToChain(const Snapshot& snapshot);
@@ -348,6 +349,11 @@ private:
     std::vector<float> tunerRing_;
     std::atomic<size_t> tunerWrite_{0};
     std::atomic<bool> tunerEnabled_{true};
+    std::atomic<bool> tunerViewOpen_{false};
+    std::atomic<bool> tunerOutputMuted_{false};
+    float tunerOutputGain_ = 1.0f;
+    float tunerDryMix_ = 0.0f;
+    std::atomic<float> tunerThreshold_{0.0025f};
     mutable std::mutex tunerMutex_;
     TunerReading tunerReading_;
 

@@ -27,6 +27,7 @@ import { LooperView } from "./views/LooperView";
 import { RecorderView } from "./views/RecorderView";
 import { DrumMachineView } from "./views/DrumMachineView";
 import { CommunityPresetsView } from "./views/CommunityPresetsView";
+import { TunerView } from "./views/TunerView";
 import { installResponsiveSizing } from "./responsive";
 import { MenuIcon, type MenuIconName } from "./theme/MenuIcon";
 
@@ -47,12 +48,13 @@ export type View =
     | "recorder"
     | "drums"
     | "community"
+    | "tuner"
     | "about";
 
 type EditSubpage = "chain" | "controls" | "io";
 
 type MenuId = "performance" | "transport" | "backingTracks" | "looper" | "recorder"
-    | "drums" | "community" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
+    | "drums" | "community" | "tuner" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
 
 type MenuEntry = {
     id: MenuId;
@@ -71,6 +73,7 @@ const MENU_ENTRIES: readonly MenuEntry[] = [
     { id: "recorder", view: "recorder", label: "RECORDER", subtitle: "Capture and mix multitrack performances", icon: "recorder", feature: "recorder" },
     { id: "drums", view: "drums", label: "DRUM MACHINE", subtitle: "Kits, patterns, fills and song chains", icon: "drums", feature: "drums" },
     { id: "community", view: "community", label: "COMMUNITY PRESETS", subtitle: "Browse, review, install and share presets", icon: "community", feature: "community" },
+    { id: "tuner", view: "tuner", label: "TUNER", subtitle: "Full-screen tuner and global tuner settings", icon: "tuner" },
     { id: "banks", view: "banks", label: "BANKS / PRESETS", subtitle: "Organize banks and presets", icon: "banks" },
     { id: "edit", view: "edit", label: "PRESET EDITOR", subtitle: "Plugins, controls and signal chain", icon: "edit" },
     { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "Manage local NAM and IR files or browse TONE3000", icon: "library" },
@@ -81,7 +84,7 @@ const MENU_ENTRIES: readonly MenuEntry[] = [
 ] as const;
 
 const MENU_IDS = MENU_ENTRIES.map((entry) => entry.id);
-const SHORTCUT_LIMIT = 4;
+const SHORTCUT_LIMIT = 5;
 
 function sanitizedMenuOrder(value: unknown): MenuId[] {
     const seen = new Set<MenuId>();
@@ -116,6 +119,7 @@ const titles: Record<string, string> = {
     recorder: "RECORDER",
     drums: "DRUM MACHINE",
     community: "COMMUNITY PRESETS",
+    tuner: "TUNER",
     banks: "BANKS / PRESETS",
     edit: "PRESET EDITOR",
     snapshots: "SNAPSHOTS",
@@ -140,7 +144,7 @@ const titles: Record<string, string> = {
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
-    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "community", "audio", "controller", "layout", "theme", "keyboard", "ui",
+    "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "community", "tuner", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "about"
 ]);
 
@@ -414,12 +418,31 @@ export function App() {
     const openMenuView = (next: View) => goTo(next, true);
 
     useEffect(() => engine.client.subscribeUiView((message) => {
+        if (str(message.view) === "tunerToggle") {
+            if (view === "tuner") {
+                const nextHistory = history.slice(0, -1);
+                const nextView = history[history.length - 1] ?? "performance";
+                setHistory(nextHistory);
+                setView(nextView);
+                engine.client.updateUiSession({ view: nextView, menuOpen: false, viewHistory: nextHistory });
+            } else {
+                goTo("tuner");
+            }
+        }
         if (str(message.view) === "backingTracks" && backingEnabled) goTo("backingTracks");
         if (str(message.view) === "looper") goTo("looper");
         if (str(message.view) === "recorder" && recorderEnabled) goTo("recorder");
         if (str(message.view) === "drums" && drumsEnabled) goTo("drums");
         if (str(message.view) === "community" && communityEnabled) goTo("community");
-    }), [engine.client, backingEnabled, recorderEnabled, drumsEnabled, communityEnabled, view]);
+    }), [engine.client, backingEnabled, recorderEnabled, drumsEnabled, communityEnabled, view, history]);
+
+    useEffect(() => {
+        const mute = view === "tuner" && bool(obj(obj(engine.state.ui).tuner).muteOnOpen, true);
+        void engine.client.request("tuner/output", { open: view === "tuner", muted: mute }).catch(() => undefined);
+        return () => {
+            if (view === "tuner") void engine.client.request("tuner/output", { open: false, muted: false }).catch(() => undefined);
+        };
+    }, [view, engine.client, engine.state.ui]);
 
     const finishBack = () => {
         setHistory((stack) => {
@@ -575,7 +598,7 @@ export function App() {
         const originalDestination = zone === "left" ? leftShortcuts : rightShortcuts;
         const destination = zone === "left" ? nextLeft : nextRight;
         if (destination.length >= SHORTCUT_LIMIT && !destination.includes(drag.id)) {
-            setToast(`The ${zone} shortcut area already has four icons.`);
+            setToast(`The ${zone} shortcut area already has ${SHORTCUT_LIMIT} icons.`);
             return;
         }
         let index = shortcutTarget ? destination.indexOf(shortcutTarget) : destination.length;
@@ -843,6 +866,7 @@ export function App() {
                 {view === "recorder" && recorderEnabled && <RecorderView engine={engine} run={run} />}
                 {view === "drums" && drumsEnabled && <DrumMachineView engine={engine} run={run} />}
                 {view === "community" && communityEnabled && <CommunityPresetsView engine={engine} run={run} />}
+                {view === "tuner" && <TunerView engine={engine} run={run} />}
                 {view === "banks" && <BanksView engine={engine} run={run} />}
                 {view === "edit" && (
                     <EditorView

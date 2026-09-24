@@ -559,6 +559,7 @@ Json UiSettings::toJson() const {
     json.set("analogDeadband", analogDeadband);
     json.set("switchDebounceMs", switchDebounceMs);
     json.set("communityAuthor", communityAuthor);
+    json.set("tuner", tuner.isObject() ? tuner : Json::object());
     return json;
 }
 
@@ -584,6 +585,7 @@ UiSettings UiSettings::fromJson(const Json& json) {
     settings.switchDebounceMs = std::max(0, std::min(80, json["switchDebounceMs"].asInt(0)));
     settings.communityAuthor = json["communityAuthor"].asString();
     if (settings.communityAuthor.size() > 120) settings.communityAuthor.resize(120);
+    settings.tuner = json["tuner"].isObject() ? json["tuner"] : Json::object();
     return settings;
 }
 
