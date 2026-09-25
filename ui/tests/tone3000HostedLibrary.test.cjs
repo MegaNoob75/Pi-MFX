@@ -11,6 +11,8 @@ const router = fs.readFileSync(path.join(__dirname, '../../engine/src/control/Ap
 const installer = fs.readFileSync(path.join(__dirname, '../../scripts/pimfx.sh'), 'utf8');
 
 assert.match(view, /prompt: "select_tone"/, 'Model Library must launch the hosted Select flow');
+assert.match(view, /architecture: "2"/,
+    'hosted browsing must request NAM A2 models supported by the PiPedal TooB bundle');
 assert.match(view, /menubar: "true"/, 'hosted browsing must provide navigation and close controls');
 assert.match(view, /preview: "true"/, 'hosted browsing must enable TONE3000 previews');
 assert.match(view, /redirectUri: thisPageRedirect\(\)/,
