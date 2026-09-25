@@ -131,6 +131,7 @@ export function SnapshotEditView({
                 <div className="snapshot-edit-controls page-scroll">
                     {selected && (
                         <EffectControls
+                            engine={engine}
                             selected={selected}
                             ports={ports}
                             properties={properties}

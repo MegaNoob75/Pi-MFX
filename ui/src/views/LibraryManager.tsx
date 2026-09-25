@@ -441,20 +441,27 @@ export function LibraryBrowser({
     run,
     kind,
     picker = false,
+    filePicker = false,
     dualDefault = true,
     directory: controlledDir,
     onDirectoryChange,
-    onFileSelect
+    onFileSelect,
+    selectedPath: controlledSelectedPath,
+    allowedFilePaths
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     kind: LibraryKind;
     picker?: boolean;
+    filePicker?: boolean;
     dualDefault?: boolean;
     directory?: string;
     onDirectoryChange?: (directory: string) => void;
     onFileSelect?: (item: JsonObject) => void;
+    selectedPath?: string;
+    allowedFilePaths?: string[];
 }) {
+    const explorerRef = useRef<HTMLDivElement | null>(null);
     const [internalDir, setInternalDir] = useState("");
     const [rightDir, setRightDir] = useState("TONE3000");
     const directory = controlledDir ?? internalDir;
@@ -464,7 +471,7 @@ export function LibraryBrowser({
             setInternalDir(next);
         }
     };
-    const [dual, setDual] = useState(!picker && dualDefault);
+    const [dual, setDual] = useState(!picker && !filePicker && dualDefault);
     const [tree, setTree] = useState<TreeNode | null>(null);
     const [leftFolders, setLeftFolders] = useState<LibraryItem[]>([]);
     const [leftFiles, setLeftFiles] = useState<LibraryItem[]>([]);
@@ -472,6 +479,7 @@ export function LibraryBrowser({
     const [rightFiles, setRightFiles] = useState<LibraryItem[]>([]);
     const [activePane, setActivePane] = useState<"left" | "right">("left");
     const [selected, setSelected] = useState<LibraryItem | null>(null);
+    const selectedPath = str(selected?.path, controlledSelectedPath ?? "");
     const [multiSelect, setMultiSelect] = useState(false);
     const [checkedPaths, setCheckedPaths] = useState<string[]>([]);
     const [moving, setMoving] = useState<LibraryItem | null>(null);
@@ -489,6 +497,11 @@ export function LibraryBrowser({
     const deviceAudio = useRef<HTMLAudioElement | null>(null);
     const deviceTimer = useRef<number>();
     const deviceUrl = useRef("");
+    const pickerWheelDelta = useRef(0);
+    const pickerWheelAt = useRef(Number.NEGATIVE_INFINITY);
+    const allowedPathSet = useMemo(() => allowedFilePaths
+        ? new Set(allowedFilePaths.map((path) => path.replace(/\\/g, "/").toLowerCase()))
+        : null, [allowedFilePaths]);
     const stopDevicePreview = () => {
         window.clearTimeout(deviceTimer.current); deviceAudio.current?.pause(); deviceAudio.current = null;
         if (deviceUrl.current) URL.revokeObjectURL(deviceUrl.current);
@@ -506,6 +519,36 @@ export function LibraryBrowser({
     const selectItem = (item: LibraryItem) => {
         setSelected(item);
         if (str(item.type) === "file") onFileSelect?.(item);
+    };
+    const stepFilePicker = (direction: number) => {
+        const items = [...leftFolders, ...leftFiles];
+        if (items.length === 0) return;
+        const index = items.findIndex((item) => str(item.path) === selectedPath);
+        const start = index >= 0 ? index : direction > 0 ? -1 : items.length;
+        const next = Math.max(0, Math.min(items.length - 1, start + direction));
+        selectItem(items[next]);
+    };
+    const activateFilePickerSelection = () => {
+        const item = [...leftFolders, ...leftFiles].find((entry) => str(entry.path) === selectedPath);
+        if (!item) return;
+        if (str(item.type) === "file") {
+            selectItem(item);
+        } else {
+            setDirectory(str(item.relative));
+        }
+    };
+    const wheelFilePicker = (deltaY: number, deltaMode: number) => {
+        if (!filePicker || deltaY === 0) return;
+        const direction = Math.sign(deltaY);
+        const pixels = deltaY * (deltaMode === 1 ? 16 : deltaMode === 2 ? 120 : 1);
+        if (Math.sign(pickerWheelDelta.current) !== direction) pickerWheelDelta.current = 0;
+        pickerWheelDelta.current += pixels;
+        if (Math.abs(pickerWheelDelta.current) < 32) return;
+        pickerWheelDelta.current = 0;
+        const now = performance.now();
+        if (now - pickerWheelAt.current < 50) return;
+        pickerWheelAt.current = now;
+        stepFilePicker(direction);
     };
 
     const activeDirectory = activePane === "right" && dual ? rightDir : directory;
@@ -526,7 +569,10 @@ export function LibraryBrowser({
         const result = await engine.client.request("library/list", { kind, directory: dir });
         const listed = obj(result);
         const folders = objects(listed.folders).sort((a, b) => str(a.name).localeCompare(str(b.name)));
-        const files = objects(listed.files).sort((a, b) => str(a.name).localeCompare(str(b.name)));
+        const files = objects(listed.files)
+            .filter((item) => !allowedPathSet
+                || allowedPathSet.has(str(item.path).replace(/\\/g, "/").toLowerCase()))
+            .sort((a, b) => str(a.name).localeCompare(str(b.name)));
         if (pane === "right") {
             setRightFolders(folders);
             setRightFiles(files);
@@ -556,7 +602,40 @@ export function LibraryBrowser({
     useEffect(() => {
         void refresh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [engine.client, kind, directory, rightDir, dual, picker]);
+    }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet]);
+
+    useEffect(() => {
+        setSelected(null);
+    }, [directory, kind]);
+
+    useEffect(() => {
+        if (!filePicker) return;
+        const explorer = explorerRef.current;
+        const list = explorer?.querySelector<HTMLElement>(".explorer-list");
+        if (!explorer || !list) return;
+        const frame = window.requestAnimationFrame(() => list.focus({ preventScroll: true }));
+        const syncEncoderHighlight = () => {
+            const row = list.querySelector<HTMLElement>('[data-mfx-nav-cursor="true"][data-library-path]');
+            if (row?.getAttribute("data-mfx-nav-remote") === "true") return;
+            const path = row?.getAttribute("data-library-path");
+            if (!path) return;
+            const item = [...leftFolders, ...leftFiles].find((entry) => str(entry.path) === path);
+            if (item) selectItem(item);
+        };
+        const observer = new MutationObserver(syncEncoderHighlight);
+        observer.observe(list, { attributes: true, subtree: true, attributeFilter: ["data-mfx-nav-cursor"] });
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
+    }, [filePicker, directory, leftFolders, leftFiles]);
+
+    useEffect(() => {
+        if (!filePicker || !selectedPath) return;
+        const row = explorerRef.current?.querySelector<HTMLElement>(
+            `[data-library-path="${CSS.escape(selectedPath)}"]`);
+        row?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    }, [filePicker, selectedPath]);
 
     const work = (task: () => Promise<unknown>) => {
         void run(async () => {
@@ -741,10 +820,15 @@ export function LibraryBrowser({
         }
     };
 
-    const selectedLabel = selected ? str(selected.name) : "nothing selected";
+    const selectedLabel = selected
+        ? str(selected.name)
+        : controlledSelectedPath
+        ? str([...leftFolders, ...leftFiles].find((item) => str(item.path) === controlledSelectedPath)?.name,
+            controlledSelectedPath.split(/[\\/]/).pop() || "nothing selected")
+        : "nothing selected";
 
     return (
-        <div className={`explorer ${dual && !picker ? "explorer-dual" : ""}`}>
+        <div ref={explorerRef} className={`explorer ${dual && !picker && !filePicker ? "explorer-dual" : ""}`}>
             {pendingFiles.length > 0 && <div className="dialog-backdrop"><div className="dialog drum-import-dialog">
                 <h2>IMPORT DRUM SAMPLES</h2>
                 <div className="muted">Destination: drums/samples/{pendingDirectory} · Select a file to preview for five seconds. Folder hierarchy is preserved; identical files are skipped.</div>
@@ -755,7 +839,7 @@ export function LibraryBrowser({
                 <div className="row"><button type="button" className="btn" onClick={() => { stopDevicePreview(); setPendingFiles([]); }}>CANCEL</button>
                     <button type="button" className="btn btn-accent" onClick={() => { stopDevicePreview(); const files = pendingFiles; setPendingFiles([]); uploadFiles(files, pendingDirectory, true); }}>IMPORT {pendingFiles.filter((file) => /\.wav$/i.test(file.name)).length} WAV FILES</button></div>
             </div></div>}
-            <div className="explorer-toolbar">
+            {!filePicker && <div className="explorer-toolbar">
                 <div className="explorer-toolbar-main">
                     {!picker && (
                         <button
@@ -830,7 +914,7 @@ export function LibraryBrowser({
                         SPLIT VIEW
                     </button>
                 )}
-            </div>
+            </div>}
             {(moving || movingItems.length > 0) && (
                 <div className="row explorer-move-bar">
                     <div className="muted" style={{ flex: 1 }}>
@@ -845,7 +929,7 @@ export function LibraryBrowser({
             {error && (
                 <div className="row">
                     <div className="danger" style={{ flex: 1 }}>{error}</div>
-                    {/does not exist/i.test(error) && activeDirectory && (
+                    {!filePicker && /does not exist/i.test(error) && activeDirectory && (
                         <button
                             type="button"
                             className="btn btn-accent"
@@ -868,7 +952,8 @@ export function LibraryBrowser({
                     folders={leftFolders}
                     files={picker ? [] : leftFiles}
                     picker={picker}
-                    selectedPath={str(selected?.path)}
+                    readOnly={filePicker}
+                    selectedPath={selectedPath}
                     checkedPaths={checkedPaths}
                     multiSelect={multiSelect}
                     active={activePane === "left"}
@@ -878,12 +963,17 @@ export function LibraryBrowser({
                     onToggleChecked={toggleChecked}
                     onOpenFolder={setDirectory}
                     onOpenFile={(item) => {
-                        if (kind === "backing") {
+                        if (filePicker) {
+                            selectItem(item);
+                        } else if (kind === "backing") {
                             work(() => engine.client.request("backing/load", { path: str(item.path) }));
                         }
                     }}
                     onMenu={openMenu}
                     onDropDirectory={dropOnDirectory}
+                    onStepSelection={filePicker ? stepFilePicker : undefined}
+                    onActivateSelection={filePicker ? activateFilePickerSelection : undefined}
+                    onWheelSelection={filePicker ? wheelFilePicker : undefined}
                 />
                 {dual && !picker && (
                     <ExplorerPane
@@ -893,6 +983,7 @@ export function LibraryBrowser({
                         folders={rightFolders}
                         files={rightFiles}
                         picker={false}
+                        readOnly={false}
                         selectedPath={str(selected?.path)}
                         checkedPaths={checkedPaths}
                         multiSelect={multiSelect}
@@ -995,6 +1086,7 @@ function ExplorerPane({
     folders,
     files,
     picker,
+    readOnly = false,
     selectedPath,
     checkedPaths,
     multiSelect,
@@ -1006,7 +1098,10 @@ function ExplorerPane({
     onOpenFolder,
     onOpenFile,
     onMenu,
-    onDropDirectory
+    onDropDirectory,
+    onStepSelection,
+    onActivateSelection,
+    onWheelSelection
 }: {
     kind: LibraryKind;
     tree: TreeNode | null;
@@ -1014,6 +1109,7 @@ function ExplorerPane({
     folders: LibraryItem[];
     files: LibraryItem[];
     picker: boolean;
+    readOnly?: boolean;
     selectedPath: string;
     checkedPaths: string[];
     multiSelect: boolean;
@@ -1026,6 +1122,9 @@ function ExplorerPane({
     onOpenFile: (item: LibraryItem) => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem | null) => void;
     onDropDirectory: (destDir: string, event: DragEvent) => void;
+    onStepSelection?: (direction: number) => void;
+    onActivateSelection?: () => void;
+    onWheelSelection?: (deltaY: number, deltaMode: number) => void;
 }) {
     const crumbs = useMemo(() => ["", ...directory.split("/").filter(Boolean)], [directory]);
     let crumbPath = "";
@@ -1033,9 +1132,9 @@ function ExplorerPane({
         <div
             className={`explorer-pane ${active ? "explorer-pane-active" : ""}`}
             onPointerDown={onActivate}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => onDropDirectory(directory, event)}
-            onContextMenu={(event) => {
+            onDragOver={readOnly ? undefined : (event) => event.preventDefault()}
+            onDrop={readOnly ? undefined : (event) => onDropDirectory(directory, event)}
+            onContextMenu={readOnly ? undefined : (event) => {
                 event.preventDefault();
                 onMenu(event, null);
             }}
@@ -1070,7 +1169,27 @@ function ExplorerPane({
                         />
                     )}
                 </div>
-                <div className="explorer-list">
+                <div
+                    className="explorer-list"
+                    tabIndex={readOnly ? -1 : undefined}
+                    data-mfx-nav-default={readOnly ? "true" : undefined}
+                    onKeyDown={onStepSelection ? (event) => {
+                        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onStepSelection(event.key === "ArrowDown" ? 1 : -1);
+                        } else if (event.key === "Enter") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onActivateSelection?.();
+                        }
+                    } : undefined}
+                    onWheel={onWheelSelection ? (event) => {
+                        if (event.deltaY === 0) return;
+                        event.preventDefault();
+                        onWheelSelection(event.deltaY, event.deltaMode);
+                    } : undefined}
+                >
                     {folders.map((folder) => (
                         <ExplorerRow
                             key={str(folder.path, str(folder.relative))}
@@ -1079,11 +1198,12 @@ function ExplorerPane({
                             checked={checkedPaths.includes(str(folder.path))}
                             multiSelect={multiSelect}
                             folder
+                            readOnly={readOnly}
                             onSelect={() => (multiSelect ? onToggleChecked(folder) : onSelect(folder))}
                             onToggleChecked={() => onToggleChecked(folder)}
                             onOpen={() => onOpenFolder(str(folder.relative))}
                             onMenu={onMenu}
-                            onDrop={(event) => onDropDirectory(str(folder.relative), event)}
+                            onDrop={readOnly ? undefined : (event) => onDropDirectory(str(folder.relative), event)}
                         />
                     ))}
                     {!picker && files.map((file) => (
@@ -1093,6 +1213,7 @@ function ExplorerPane({
                             selected={selectedPath === str(file.path)}
                             checked={checkedPaths.includes(str(file.path))}
                             multiSelect={multiSelect}
+                            readOnly={readOnly}
                             onSelect={() => {
                                 if (multiSelect) {
                                     onToggleChecked(file);
@@ -1177,6 +1298,7 @@ function ExplorerRow({
     checked = false,
     multiSelect = false,
     folder = false,
+    readOnly = false,
     onSelect,
     onToggleChecked,
     onOpen,
@@ -1188,6 +1310,7 @@ function ExplorerRow({
     checked?: boolean;
     multiSelect?: boolean;
     folder?: boolean;
+    readOnly?: boolean;
     onSelect: () => void;
     onToggleChecked?: () => void;
     onOpen?: () => void;
@@ -1202,8 +1325,11 @@ function ExplorerRow({
             type="button"
             className={`explorer-row ${selected ? "selected" : ""}${checked ? " is-checked" : ""}`}
             style={{ touchAction: "none", WebkitTouchCallout: "none" }}
-            draggable
-            onDragStart={(event) => {
+            data-library-path={str(item.path)}
+            data-library-type={folder ? "dir" : "file"}
+            data-mfx-nav-key={`${folder ? "folder" : "file"}:${str(item.relative, str(item.path))}`}
+            draggable={!readOnly}
+            onDragStart={readOnly ? undefined : (event) => {
                 event.dataTransfer.setData("application/x-pimfx-path", str(item.path));
                 event.dataTransfer.setData("application/x-pimfx-name", str(item.name));
                 event.dataTransfer.setData("application/x-pimfx-type", str(item.type, folder ? "dir" : "file"));
@@ -1223,13 +1349,13 @@ function ExplorerRow({
                 }
                 onSelect();
             }}
-            onContextMenu={(event) => {
+            onContextMenu={readOnly ? undefined : (event) => {
                 event.preventDefault();
                 event.stopPropagation();
                 onSelect();
                 onMenu(event, item);
             }}
-            onPointerDown={(event) => {
+            onPointerDown={readOnly ? undefined : (event) => {
                 longPress.current = false;
                 start.current = { x: event.clientX, y: event.clientY };
                 try {
@@ -1244,13 +1370,13 @@ function ExplorerRow({
                     onMenu({ clientX: start.current.x, clientY: start.current.y }, item);
                 }, LONG_PRESS_MS);
             }}
-            onPointerMove={(event) => {
+            onPointerMove={readOnly ? undefined : (event) => {
                 if (Math.abs(event.clientX - start.current.x) > 12 || Math.abs(event.clientY - start.current.y) > 12) {
                     window.clearTimeout(timer.current);
                 }
             }}
-            onPointerUp={() => window.clearTimeout(timer.current)}
-            onPointerCancel={() => window.clearTimeout(timer.current)}
+            onPointerUp={readOnly ? undefined : () => window.clearTimeout(timer.current)}
+            onPointerCancel={readOnly ? undefined : () => window.clearTimeout(timer.current)}
         >
             {multiSelect && (
                 <span

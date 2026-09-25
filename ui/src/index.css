@@ -4084,6 +4084,57 @@ button.list-item {
     justify-content: space-between;
 }
 
+.file-property-picker-trigger {
+    display: grid;
+    gap: 6px;
+}
+
+.file-property-picker-trigger .row {
+    flex-wrap: nowrap;
+}
+
+.file-property-picker-current {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-file-browser {
+    width: min(900px, calc(100vw - 32px));
+    height: min(720px, calc(100dvh - 24px));
+    max-height: calc(100dvh - 24px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.asset-file-browser .explorer {
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: 12px 0;
+    overflow: hidden;
+}
+
+.asset-file-browser .explorer-panes,
+.asset-file-browser .explorer-pane,
+.asset-file-browser .explorer-body {
+    min-height: 0;
+}
+
+.asset-file-browser .explorer-panes {
+    flex: 1 1 auto;
+    overflow: hidden;
+}
+
+.asset-file-browser-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    padding-top: 10px;
+    border-top: 1px solid var(--mfx-border);
+    background: var(--mfx-surface-popup-bg, var(--mfx-panel));
+}
+
 .file-property-picker-list {
     display: grid;
     gap: 6px;
