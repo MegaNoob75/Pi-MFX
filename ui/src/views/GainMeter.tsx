@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
 const CLIP_HOLD_MS = 1500;
+const PEAK_HOLD_MS = 1500;
+const PEAK_FALL_DB_PER_SECOND = 18;
+const PEAK_FALL_TICK_MS = 50;
 
 function peakToDb(peak: number): number {
     if (!Number.isFinite(peak) || peak <= 0.00001) {
@@ -46,8 +49,47 @@ export function GainMeter({
     const db = peakToDb(displayedPeak);
     const fill = dbToFill(db);
     const unfilledPercent = 100 - Math.round(fill * 100);
+    const liveDb = useRef(db);
+    const lastPeakAt = useRef(0);
+    const [heldPeakDb, setHeldPeakDb] = useState(db);
     const [clipLatched, setClipLatched] = useState(false);
     const clipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        liveDb.current = db;
+        if (preview) {
+            setHeldPeakDb(db);
+            return;
+        }
+        setHeldPeakDb((current) => {
+            if (db >= current) {
+                lastPeakAt.current = performance.now();
+                return db;
+            }
+            return current;
+        });
+    }, [db, preview]);
+
+    useEffect(() => {
+        if (preview) {
+            return;
+        }
+        const timer = window.setInterval(() => {
+            const now = performance.now();
+            setHeldPeakDb((current) => {
+                const live = liveDb.current;
+                if (live >= current) {
+                    lastPeakAt.current = now;
+                    return live;
+                }
+                if (now - lastPeakAt.current < PEAK_HOLD_MS) {
+                    return current;
+                }
+                return Math.max(live, current - PEAK_FALL_DB_PER_SECOND * PEAK_FALL_TICK_MS / 1000);
+            });
+        }, PEAK_FALL_TICK_MS);
+        return () => window.clearInterval(timer);
+    }, [preview]);
 
     useEffect(() => {
         if (preview || displayedPeak < 1) {
@@ -75,6 +117,15 @@ export function GainMeter({
         </div>
     );
     const value = <strong className="gain-meter-value">{formatDb(db)}</strong>;
+    const heldFill = dbToFill(heldPeakDb);
+    const heldPosition = `${heldFill * 100}%`;
+    const labelPosition = `${Math.min(95, Math.max(5, heldFill * 100))}%`;
+    const peakLineStyle = orientation === "horizontal"
+        ? { left: heldPosition }
+        : { bottom: heldPosition };
+    const peakValueStyle = orientation === "horizontal"
+        ? { left: labelPosition }
+        : { bottom: labelPosition };
 
     return (
         <div className={`gain-meter is-${orientation}${preview ? " is-preview" : ""}`} data-tone={meterTone(db)}>
@@ -88,6 +139,14 @@ export function GainMeter({
                             : { height: `${unfilledPercent}%` }}
                     />
                 </div>
+                <span className="gain-meter-peak-line" style={peakLineStyle} aria-hidden="true" />
+                <strong
+                    className="gain-meter-peak-value"
+                    style={peakValueStyle}
+                    aria-label={`${label} held peak ${formatDb(heldPeakDb)}`}
+                >
+                    {formatDb(heldPeakDb)}
+                </strong>
                 {orientation === "horizontal" ? value : clipIndicator}
             </div>
             {orientation === "horizontal" ? clipIndicator : value}

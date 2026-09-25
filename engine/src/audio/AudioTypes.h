@@ -7,6 +7,15 @@
 
 namespace pimfx {
 
+struct InstrumentInputProfile {
+    std::string name = "Guitar 1";
+    std::string inputMode = "instrument";
+    std::string calibrationMode = "unmeasured";
+    float instrumentLevelDbU = -6.0f;
+    float interfaceReferenceDbU = 12.0f;
+    float interfaceGainDb = 0.0f;
+};
+
 /// Everything the user can change about the audio path.
 ///
 /// Hardware stream parameters plus the small set of master-output safety
@@ -44,6 +53,18 @@ struct AudioSettings {
 
     float inputGainDb = 0.0f;
     float outputGainDb = 0.0f;
+
+    /// Physical-input and instrument calibration metadata. The dBu value is
+    /// the measured/estimated guitar signal level expected by calibrated NAM
+    /// models; it is not the interface's maximum input specification.
+    std::string inputMode = "instrument";
+    std::string calibrationMode = "unmeasured";
+    std::string instrumentProfileName = "Guitar 1";
+    float instrumentLevelDbU = -6.0f;
+    float interfaceReferenceDbU = 12.0f;
+    float interfaceGainDb = 0.0f;
+    bool namCalibrationManaged = true;
+    std::vector<InstrumentInputProfile> instrumentProfiles{InstrumentInputProfile{}};
 
     /// Mutes output whenever the chain is being rebuilt, so a plugin swap
     /// cannot produce a click through an amp.

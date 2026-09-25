@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { controlValue, findBank, findPreset, type EngineSnapshot } from "../api";
+import { controlValue, findBank, findPreset, useMeters, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
@@ -8,6 +8,7 @@ import { LibraryBrowser } from "./LibraryManager";
 import { PluginBrowser } from "./PluginBrowser";
 import { MarqueeText } from "./MarqueeText";
 import { NewPresetDialog } from "./NewPresetDialog";
+import { GainMeter } from "./GainMeter";
 
 type EditPage = "chain" | "controls" | "io";
 type PathBrowserKind = "model" | "ir";
@@ -1288,6 +1289,12 @@ export function EffectControls({
     onBindParameter?: (port: JsonObject) => void;
 }) {
     const slotId = str(selected.id);
+    const meters = useMeters(client);
+    const slotMeters = objects(meters.effects).find((meter) => str(meter.slotId) === slotId);
+    const hasAudioPorts = objects(plugin.ports).some((port) => str(port.kind) === "audio");
+    const audioSettings = obj(engine.state.audio);
+    const managedNamCalibration = bool(audioSettings.namCalibrationManaged, true)
+        && str(plugin.uri) === "http://two-play.com/plugins/toob-nam";
     const tempoLinks = obj(selected.tempoLinks);
     const [previewValues, setPreviewValues] = useState<Record<string, number>>({});
     const pendingValues = useRef(new Map<string, number>());
@@ -1372,6 +1379,18 @@ export function EffectControls({
     };
     return (
         <div className="stack">
+            {hasAudioPorts && (
+                <section className="panel lv2-signal-panel" aria-label={`${str(plugin.name, "Effect")} signal levels`}>
+                    <div className="lv2-signal-heading">
+                        <strong>LIVE SIGNAL</strong>
+                        <span>PRE / POST EFFECT</span>
+                    </div>
+                    <div className="lv2-signal-meters">
+                        <GainMeter label="In" peak={num(obj(slotMeters).inputPeak)} orientation="horizontal" />
+                        <GainMeter label="Out" peak={num(obj(slotMeters).outputPeak)} orientation="horizontal" />
+                    </div>
+                </section>
+            )}
             {ports.length === 0 && (
                 <div className="muted">This plugin has no control ports, or LV2 is not available on this build.</div>
             )}
@@ -1388,6 +1407,7 @@ export function EffectControls({
                     const value = previewValues[symbol] ?? actualValue;
                     const linkedBeats = num(tempoLinks[symbol], 0);
                     const tempoLinkCandidate = bool(port.tempoLinkCandidate);
+                    const calibrationManaged = managedNamCalibration && str(port.symbol) === "calibration";
                     const stepped = bool(port.integer) || bool(port.toggled);
                     const points = arr(port.scalePoints).filter(isObj);
                     const enumeration = bool(port.enumerated) && points.length > 0;
@@ -1478,6 +1498,11 @@ export function EffectControls({
                                     {bool(obj(boundFor(symbol)).inverted) ? " · REV" : ""}
                                 </div>
                             )}
+                            {calibrationManaged && (
+                                <div className="control-bind-hint">
+                                    MANAGED BY AUDIO PROFILE · {str(audioSettings.instrumentProfileName, "Guitar 1")} · {num(audioSettings.instrumentLevelDbU, -6).toFixed(1)} dBu
+                                </div>
+                            )}
                             {tempoLinkCandidate && (
                                 <label className="tempo-link-row">
                                     <span>TEMPO LINK</span>
@@ -1543,7 +1568,7 @@ export function EffectControls({
                                     value={value}
                                     name={name}
                                     markerValue={isToobInputCalibration(plugin, port) ? -6 : undefined}
-                                    disabled={tempoEnabled && linkedBeats > 0}
+                                    disabled={(tempoEnabled && linkedBeats > 0) || calibrationManaged}
                                     onPreview={(next) => previewLive(symbol, next)}
                                     onCancel={() => clearPreview(symbol)}
                                     onCommit={apply}

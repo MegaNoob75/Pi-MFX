@@ -25,6 +25,19 @@ float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
 }
 
+float audioBufferPeak(const std::vector<float*>& buffers, unsigned channels,
+                      unsigned frames) noexcept {
+    float peak = 0.0f;
+    const unsigned count = std::min(channels, static_cast<unsigned>(buffers.size()));
+    for (unsigned channel = 0; channel < count; ++channel) {
+        const float* samples = buffers[channel];
+        for (unsigned frame = 0; frame < frames; ++frame) {
+            peak = std::max(peak, std::fabs(samples[frame]));
+        }
+    }
+    return peak;
+}
+
 const char* audioFailureDescription(AudioFailureCategory category) {
     switch (category) {
         case AudioFailureCategory::StartCapture:
@@ -79,6 +92,27 @@ void applyTempoLinksToPlugin(const EffectSlot& slot, PluginInstance& plugin, dou
             }
         }
     }
+}
+
+bool isToobNam(const PluginInstance& plugin) {
+    return plugin.uri() == "http://two-play.com/plugins/toob-nam";
+}
+
+void applyManagedNamCalibration(const AudioSettings& audio, PluginInstance& plugin) {
+    if (!audio.namCalibrationManaged || !isToobNam(plugin)) {
+        return;
+    }
+    for (const PortInfo& port : plugin.info().ports) {
+        if (port.control && port.input && port.symbol == "calibration") {
+            plugin.setControl(port.index, audio.instrumentLevelDbU);
+            return;
+        }
+    }
+}
+
+bool namCalibrationChanged(const AudioSettings& before, const AudioSettings& after) {
+    return before.namCalibrationManaged != after.namCalibrationManaged
+        || before.instrumentLevelDbU != after.instrumentLevelDbU;
 }
 
 std::string sanitizeRelDir(const std::string& text) {
@@ -672,6 +706,7 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
     const bool needsRestart = previous != settings_.audio;
+    const bool rebuildForCalibration = namCalibrationChanged(previous, settings_.audio);
     if (needsRestart) {
         std::string restartError;
         if (!restartAudio(restartError)) {
@@ -690,6 +725,14 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
             error = restartError;
             persistSettings();
             notify();
+            return false;
+        }
+    } else if (rebuildForCalibration && currentPreset) {
+        std::string chainError;
+        if (std::unique_ptr<Chain> chain = buildChain(*currentPreset, chainError)) {
+            publishChain(std::move(chain));
+        } else if (!chainError.empty()) {
+            error = chainError;
             return false;
         }
     }
@@ -894,6 +937,20 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 
     const bool recorderCapturing = recorder_ && recorderEnabled_.load(std::memory_order_relaxed)
         && recorder_->beginCapture(frames, transportEnabled ? transportBlock.timelineFrame : 0);
+    float selectedPeak = 0.0f;
+    double selectedSquares = 0.0;
+    if (inputChannels > 0) {
+        const float* selectedInput = inputs[guitar];
+        for (unsigned frame = 0; frame < frames; ++frame) {
+            const float sample = selectedInput[frame];
+            selectedPeak = std::max(selectedPeak, std::fabs(sample));
+            selectedSquares += static_cast<double>(sample) * sample;
+        }
+    }
+    guitarInputPeak_.store(selectedPeak, std::memory_order_relaxed);
+    guitarInputRms_.store(frames > 0
+        ? static_cast<float>(std::sqrt(selectedSquares / frames)) : 0.0f,
+        std::memory_order_relaxed);
     if (recorderCapturing && inputChannels > 0) {
         const float* rawInput = inputs[guitar];
         recorder_->captureSource(MultitrackRecorder::Source::Raw, &rawInput, 1, frames);
@@ -991,15 +1048,20 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
     if (!bypassAll_.load(std::memory_order_relaxed)) {
         std::vector<float*>* source = &chain->pointersA;
         std::vector<float*>* destination = &chain->pointersB;
+        float sourcePeak = audioBufferPeak(*source, channels, frames);
 
         for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            slot->inputPeak.store(sourcePeak, std::memory_order_relaxed);
+
             if (!slot->enabled.load(std::memory_order_relaxed) || !slot->plugin) {
+                slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
                 continue;
             }
 
             const unsigned pluginInputs = slot->plugin->audioInputs();
             const unsigned pluginOutputs = slot->plugin->audioOutputs();
             if (pluginInputs == 0 && pluginOutputs == 0) {
+                slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
                 continue; // a plugin with no audio ports has nothing to do here
             }
 
@@ -1017,10 +1079,19 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                 }
             }
 
+            sourcePeak = audioBufferPeak(*destination, channels, frames);
+            slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
+
             std::swap(source, destination);
         }
 
         rendered = source;
+    } else {
+        const float bypassPeak = audioBufferPeak(chain->pointersA, channels, frames);
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            slot->inputPeak.store(bypassPeak, std::memory_order_relaxed);
+            slot->outputPeak.store(bypassPeak, std::memory_order_relaxed);
+        }
     }
 
     // Ramp ordinary output-level changes rather than stepping the fader. The
@@ -1115,6 +1186,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             continue;
         }
         plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
+        applyManagedNamCalibration(settings_.audio, *plugin);
         if (transportEnabled_.load(std::memory_order_acquire)) {
             applyTempoLinksToPlugin(slot, *plugin, preset.tempo);
         }
@@ -4782,6 +4854,19 @@ Json Engine::meterState() const {
     json.set("dspLoadPeak", metrics_.dspLoadPeak.load(std::memory_order_relaxed));
     json.set("inputPeak", metrics_.inputPeak.load(std::memory_order_relaxed));
     json.set("outputPeak", metrics_.outputPeak.load(std::memory_order_relaxed));
+    json.set("guitarInputPeak", guitarInputPeak_.load(std::memory_order_relaxed));
+    json.set("guitarInputRms", guitarInputRms_.load(std::memory_order_relaxed));
+    Json effectMeters = Json::array();
+    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            Json meter = Json::object();
+            meter.set("slotId", slot->id);
+            meter.set("inputPeak", slot->inputPeak.load(std::memory_order_relaxed));
+            meter.set("outputPeak", slot->outputPeak.load(std::memory_order_relaxed));
+            effectMeters.push(std::move(meter));
+        }
+    }
+    json.set("effects", std::move(effectMeters));
     json.set("running", metrics_.running.load(std::memory_order_relaxed));
 
     const unsigned rate = sampleRate_.load(std::memory_order_acquire);

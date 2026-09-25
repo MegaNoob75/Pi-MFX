@@ -33,10 +33,11 @@ assert.match(settings, /Input gain[\s\S]*type="range" min=\{-60\} max=\{24\}[\s\
     'input gain must use a capped slider plus compact numeric input');
 assert.match(settings, /Output gain[\s\S]*type="range" min=\{-60\} max=\{12\}[\s\S]*audio-live-number/,
     'output gain must use a capped slider plus compact numeric input');
+assert.match(settings, /\.map\(\(\[key, label, min, max, step, fallback, unit\]\)[\s\S]*previewLive\(key[\s\S]*commitLive\(key/,
+    'mapped safety controls must preview while moving and persist on release');
 for (const key of ['patchFadeOutMs', 'patchFadeInMs', 'limiterCeilingDb',
     'limiterLookaheadMs', 'limiterReleaseMs', 'dcBlockerHz']) {
-    assert.match(settings, new RegExp(`previewLive\\("${key}"[\\s\\S]*commitLive\\("${key}"`),
-        `${key} must preview while moving and persist on release`);
+    assert.match(settings, new RegExp(`"${key}"`), `${key} must remain in the mapped safety controls`);
 }
 assert.match(css, /\.audio-live-control[\s\S]*grid-template-columns:[^;]*84px/,
     'gain number fields must remain compact beside their sliders');

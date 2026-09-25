@@ -11,6 +11,7 @@ import { BackupView } from "./BackupView";
 import { HotspotView } from "./HotspotView";
 import { MarqueeText } from "./MarqueeText";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { GainMeter } from "./GainMeter";
 
 export type SettingsPage =
     | "audio"
@@ -414,6 +415,47 @@ export function SettingsPage({
     return <SystemSettings engine={engine} run={run} />;
 }
 
+type AudioSettingsTab = "device" | "input" | "output" | "status";
+type InputSetupPhase = "idle" | "silence" | "playing" | "complete";
+
+interface InputSetupResult {
+    maximumDb: number;
+    averageDb: number;
+    noiseDb: number;
+}
+
+function linearDb(value: number): number {
+    return value > 0.000001 ? Math.max(-120, 20 * Math.log10(value)) : -120;
+}
+
+function inputLevelAdvice(maximumDb: number): string {
+    if (maximumDb >= -1) return "Clipping risk. Lower the interface's physical input gain, then run the test again.";
+    if (maximumDb >= -3) return "Very hot. Lower the physical input gain slightly to leave reliable live headroom.";
+    if (maximumDb >= -9) return "Good live level. The strongest playing has useful level with headroom remaining.";
+    if (maximumDb >= -18) return "Usable but conservative. Raise the physical input gain if the noise floor is noticeable.";
+    return "Low input. Check the selected channel and Instrument/Hi-Z mode, then raise the physical input gain.";
+}
+
+function instrumentProfileFrom(source: JsonObject, name = str(source.instrumentProfileName, "Guitar 1")): JsonObject {
+    return {
+        name,
+        inputMode: str(source.inputMode, "instrument"),
+        calibrationMode: str(source.calibrationMode, "unmeasured"),
+        instrumentLevelDbU: num(source.instrumentLevelDbU, -6),
+        interfaceReferenceDbU: num(source.interfaceReferenceDbU, 12),
+        interfaceGainDb: num(source.interfaceGainDb)
+    };
+}
+
+function profileName(requested: string, profiles: JsonObject[], except = ""): string {
+    const base = requested.trim() || "New instrument";
+    const used = new Set(profiles.filter((profile) => str(profile.name) !== except).map((profile) => str(profile.name).toLowerCase()));
+    if (!used.has(base.toLowerCase())) return base;
+    let suffix = 2;
+    while (used.has(`${base} (${suffix})`.toLowerCase())) suffix += 1;
+    return `${base} (${suffix})`;
+}
+
 function AudioSettings({
     engine,
     run
@@ -430,11 +472,39 @@ function AudioSettings({
     const livePreviewFrame = useRef<number | null>(null);
     const pendingLivePreview = useRef<JsonObject | null>(null);
     const livePreviewQueue = useRef<Promise<unknown>>(Promise.resolve());
+    const [tab, setTab] = useState<AudioSettingsTab>("device");
+    const [setupPhase, setSetupPhase] = useState<InputSetupPhase>("idle");
+    const [setupSeconds, setSetupSeconds] = useState(0);
+    const [setupResult, setSetupResult] = useState<InputSetupResult | null>(null);
+    const [selectedProfile, setSelectedProfile] = useState(str(audio.instrumentProfileName, "Guitar 1"));
+    const [confirmProfileDelete, setConfirmProfileDelete] = useState(false);
+    const setupDeadline = useRef(0);
+    const silenceRmsTotal = useRef(0);
+    const silenceSamples = useRef(0);
+    const playingRmsTotal = useRef(0);
+    const playingSamples = useRef(0);
+    const maximumPeak = useRef(0);
 
     useEffect(() => {
         const sharedDraft = obj(obj(engine.uiSession.settings).audioDraft);
         setDraft(Object.keys(sharedDraft).length > 0 ? sharedDraft : obj(state.audio));
+        const sharedTab = str(obj(engine.uiSession.settings).audioPage);
+        if (["device", "input", "output", "status"].includes(sharedTab)) {
+            setTab(sharedTab as AudioSettingsTab);
+        }
+        const sharedProfile = str(obj(engine.uiSession.settings).audioProfileSelection);
+        if (sharedProfile) setSelectedProfile(sharedProfile);
     }, [state.audio, engine.uiSession.settings]);
+
+    const openTab = (next: AudioSettingsTab) => {
+        setTab(next);
+        updateUiSessionSection(client, "settings", { audioPage: next });
+    };
+
+    const selectProfile = (name: string) => {
+        setSelectedProfile(name);
+        updateUiSessionSection(client, "settings", { audioProfileSelection: name });
+    };
 
     const refreshDevices = () => {
         void client.request("audio/devices").then((result) => {
@@ -456,6 +526,60 @@ function AudioSettings({
     const periods = arr(obj(selected).periodSizes).filter((value): value is number => typeof value === "number");
     const maxInputs = Math.max(1, num(obj(selected).maxInputChannels, num(draft.inputChannels, 2)));
     const guitarInput = Math.min(maxInputs, Math.max(1, num(draft.guitarInput, 2)));
+    const guitarPeak = num(meters.guitarInputPeak, num(meters.inputPeak));
+    const guitarRms = num(meters.guitarInputRms);
+    const savedProfiles = objects(draft.instrumentProfiles);
+    const instrumentProfiles = savedProfiles.length > 0 ? savedProfiles : [instrumentProfileFrom(draft)];
+
+    useEffect(() => {
+        if (setupPhase === "silence") {
+            silenceRmsTotal.current += guitarRms;
+            silenceSamples.current += 1;
+        } else if (setupPhase === "playing") {
+            maximumPeak.current = Math.max(maximumPeak.current, guitarPeak);
+            playingRmsTotal.current += guitarRms;
+            playingSamples.current += 1;
+        }
+    }, [guitarPeak, guitarRms, setupPhase]);
+
+    useEffect(() => {
+        if (setupPhase !== "silence" && setupPhase !== "playing") return;
+        const timer = window.setInterval(() => {
+            const remaining = Math.max(0, setupDeadline.current - performance.now());
+            setSetupSeconds(Math.ceil(remaining / 1000));
+            if (remaining > 0) return;
+            if (setupPhase === "silence") {
+                window.clearInterval(timer);
+                setSetupPhase("playing");
+                setupDeadline.current = performance.now() + 8000;
+                setSetupSeconds(8);
+                return;
+            }
+            setSetupResult({
+                maximumDb: linearDb(maximumPeak.current),
+                averageDb: linearDb(playingSamples.current > 0
+                    ? playingRmsTotal.current / playingSamples.current : 0),
+                noiseDb: linearDb(silenceSamples.current > 0
+                    ? silenceRmsTotal.current / silenceSamples.current : 0)
+            });
+            window.clearInterval(timer);
+            setSetupPhase("complete");
+            setSetupSeconds(0);
+        }, 100);
+        return () => window.clearInterval(timer);
+    }, [setupPhase]);
+
+    const startInputSetup = () => {
+        silenceRmsTotal.current = 0;
+        silenceSamples.current = 0;
+        playingRmsTotal.current = 0;
+        playingSamples.current = 0;
+        maximumPeak.current = 0;
+        setSetupResult(null);
+        setSetupPhase("silence");
+        setupDeadline.current = performance.now() + 3000;
+        setSetupSeconds(3);
+    };
 
     const set = (key: string, value: string | number | boolean) => {
         setDraft((current) => {
@@ -524,181 +648,289 @@ function AudioSettings({
         void run(() => queueLiveRequest("audio/settings", { ...draft, guitarInput }));
     };
 
+    const calibrationPatch = (source: JsonObject = draft): JsonObject => ({
+        inputMode: str(source.inputMode, "instrument"),
+        calibrationMode: str(source.calibrationMode, "unmeasured"),
+        instrumentProfileName: str(source.instrumentProfileName, "Guitar 1"),
+        instrumentLevelDbU: num(source.instrumentLevelDbU, -6),
+        interfaceReferenceDbU: num(source.interfaceReferenceDbU, 12),
+        interfaceGainDb: num(source.interfaceGainDb),
+        namCalibrationManaged: bool(source.namCalibrationManaged, true),
+        instrumentProfiles: arr(source.instrumentProfiles).length > 0
+            ? arr(source.instrumentProfiles) : [instrumentProfileFrom(source)]
+    });
+
+    const applyProfileToDraft = (profile: JsonObject, profiles: JsonObject[]): JsonObject => ({
+        ...draft,
+        instrumentProfileName: str(profile.name, "Guitar"),
+        inputMode: str(profile.inputMode, "instrument"),
+        calibrationMode: str(profile.calibrationMode, "unmeasured"),
+        instrumentLevelDbU: num(profile.instrumentLevelDbU, -6),
+        interfaceReferenceDbU: num(profile.interfaceReferenceDbU, 12),
+        interfaceGainDb: num(profile.interfaceGainDb),
+        instrumentProfiles: profiles
+    });
+
+    const loadCalibrationProfile = () => {
+        const profile = instrumentProfiles.find((item) => str(item.name) === selectedProfile);
+        if (!profile) return;
+        const next = applyProfileToDraft(profile, instrumentProfiles);
+        setDraft(next);
+        updateUiSessionSection(client, "settings", { audioDraft: next });
+        void run(() => queueLiveRequest("audio/settings", calibrationPatch(next)));
+    };
+
+    const newCalibrationProfile = () => {
+        const name = profileName("New instrument", instrumentProfiles);
+        const profile = instrumentProfileFrom({ instrumentProfileName: name }, name);
+        const profiles = [...instrumentProfiles, profile];
+        const next = applyProfileToDraft(profile, profiles);
+        selectProfile(name);
+        setDraft(next);
+        updateUiSessionSection(client, "settings", { audioDraft: next });
+    };
+
+    const saveCalibration = () => {
+        const name = profileName(str(draft.instrumentProfileName, "New instrument"), instrumentProfiles, selectedProfile);
+        const profile = instrumentProfileFrom(draft, name);
+        const selectedIndex = instrumentProfiles.findIndex((item) => str(item.name) === selectedProfile);
+        const profiles = selectedIndex >= 0
+            ? instrumentProfiles.map((item, index) => index === selectedIndex ? profile : item)
+            : [...instrumentProfiles, profile];
+        const next = applyProfileToDraft(profile, profiles);
+        selectProfile(name);
+        setDraft(next);
+        updateUiSessionSection(client, "settings", { audioDraft: next });
+        void run(() => queueLiveRequest("audio/settings", calibrationPatch(next)));
+    };
+
+    const deleteCalibrationProfile = () => {
+        const remaining = instrumentProfiles.filter((item) => str(item.name) !== selectedProfile);
+        const profiles = remaining.length > 0 ? remaining : [instrumentProfileFrom({ instrumentProfileName: "Guitar 1" })];
+        const nextProfile = profiles[0];
+        const next = applyProfileToDraft(nextProfile, profiles);
+        selectProfile(str(nextProfile.name, "Guitar 1"));
+        setDraft(next);
+        updateUiSessionSection(client, "settings", { audioDraft: next });
+        void run(() => queueLiveRequest("audio/settings", calibrationPatch(next)));
+    };
+
+    const useEstimatedCalibration = () => {
+        if (!setupResult) return;
+        const estimated = Math.max(-30, Math.min(12,
+            num(draft.interfaceReferenceDbU, 12)
+            - num(draft.interfaceGainDb)
+            + setupResult.maximumDb));
+        setDraft((current) => {
+            const next = { ...current, calibrationMode: "estimated", instrumentLevelDbU: estimated };
+            updateUiSessionSection(client, "settings", { audioDraft: next });
+            return next;
+        });
+    };
+
     return (
-        <div className="page-scroll stack" data-mfx-sync-scroll="settings-audio">
-            <div className="panel stack">
+        <div className="page-scroll stack audio-settings" data-mfx-sync-scroll={`settings-audio-${tab}`}>
+            <nav className="audio-settings-tabs" aria-label="Audio settings pages">
+                {(["device", "input", "output", "status"] as const).map((item) => (
+                    <button type="button" key={item} className={`btn${tab === item ? " btn-active" : ""}`}
+                        onClick={() => openTab(item)}>{item.toUpperCase()}</button>
+                ))}
+            </nav>
+
+            {str(state.audioError) && <div className="danger">{str(state.audioError)}</div>}
+            {deviceError && <div className="danger">{deviceError}</div>}
+
+            {tab === "device" && <section className="panel stack">
                 <h2>AUDIO DEVICE</h2>
-                {str(state.audioError) && <div className="danger">{str(state.audioError)}</div>}
-                {deviceError && <div className="danger">{deviceError}</div>}
+                <div className="audio-help">Choose the ALSA device that handles both capture and playback. USB interfaces and audio HATs use the same setup path here.</div>
                 <label className="field">
                     <span>Playback / duplex card</span>
                     <select value={str(draft.device)} onChange={(event) => set("device", event.target.value)}>
                         {devices.length === 0 && <option value={str(draft.device)}>{str(draft.device) || "No devices yet"}</option>}
-                        {devices.map((device) => (
-                            <option key={str(device.id)} value={str(device.id)}>
-                                {str(device.name)}
-                                {bool(device.isHat) ? " (HAT)" : ""}
-                                {bool(device.isHdmi) ? " (HDMI)" : ""}
-                                {bool(device.duplex) ? " · duplex" : bool(device.maxInputChannels) ? " (in)" : " (out)"}
-                            </option>
-                        ))}
+                        {devices.map((device) => <option key={str(device.id)} value={str(device.id)}>
+                            {str(device.name)}{bool(device.isHat) ? " (HAT)" : ""}{bool(device.isHdmi) ? " (HDMI)" : ""}
+                            {bool(device.duplex) ? " · duplex" : bool(device.maxInputChannels) ? " (in)" : " (out)"}
+                        </option>)}
                     </select>
                 </label>
-                <div className="row">
-                    <label className="field">
-                        <span>Sample rate</span>
+                <div className="audio-device-grid">
+                    <label className="field"><span>Sample rate</span>
                         <select value={num(draft.sampleRate, 48000)} onChange={(event) => set("sampleRate", Number(event.target.value))}>
-                            {(rates.length ? rates : [44100, 48000, 96000]).map((rate) => (
-                                <option key={rate} value={rate}>{rate}</option>
-                            ))}
+                            {(rates.length ? rates : [44100, 48000, 96000]).map((rate) => <option key={rate} value={rate}>{rate}</option>)}
                         </select>
                     </label>
-                    <label className="field">
-                        <span>Period frames</span>
+                    <label className="field"><span>Period frames</span>
                         <select value={num(draft.periodFrames, 64)} onChange={(event) => set("periodFrames", Number(event.target.value))}>
-                            {(periods.length ? periods : [32, 64, 128, 256]).map((size) => (
-                                <option key={size} value={size}>{size}</option>
-                            ))}
+                            {(periods.length ? periods : [32, 64, 128, 256]).map((size) => <option key={size} value={size}>{size}</option>)}
                         </select>
                     </label>
-                    <label className="field">
-                        <span>Period count</span>
+                    <label className="field"><span>Period count</span>
                         <select value={num(draft.periodCount, 3)} onChange={(event) => set("periodCount", Number(event.target.value))}>
-                            {[2, 3, 4, 6, 8].map((count) => (
-                                <option key={count} value={count}>{count}</option>
-                            ))}
+                            {[2, 3, 4, 6, 8].map((count) => <option key={count} value={count}>{count}</option>)}
+                        </select>
+                    </label>
+                    <label className="field"><span>Guitar input</span>
+                        <select value={guitarInput} onChange={(event) => set("guitarInput", Number(event.target.value))}>
+                            {Array.from({ length: maxInputs }, (_, index) => <option key={index + 1} value={index + 1}>
+                                Input {index + 1}{index === 0 ? " · often mic / line" : index === 1 ? " · often instrument" : ""}
+                            </option>)}
                         </select>
                     </label>
                 </div>
-                <label className="field">
-                    <span>Guitar input</span>
-                    <select value={guitarInput} onChange={(event) => set("guitarInput", Number(event.target.value))}>
-                        {Array.from({ length: maxInputs }, (_, index) => (
-                            <option key={index + 1} value={index + 1}>
-                                Input {index + 1}
-                                {index === 0 ? " · often mic / line" : index === 1 ? " · often instrument" : ""}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <div className="muted">
-                    Guitar is mono and copied to both headphone channels. On a Scarlett Solo the instrument jack is Input 2.
-                </div>
-                <label className="field">
-                    <span>Input gain · {num(draft.inputGainDb).toFixed(1)} dB</span>
-                    <div className="audio-live-control">
-                        <input type="range" min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
-                            onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))} />
-                        <input className="audio-live-number" aria-label="Input gain in decibels" type="number"
-                            min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
-                            onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
-                            onBlur={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
-                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
-                    </div>
-                </label>
-                <label className="field">
-                    <span>Output gain · {num(draft.outputGainDb).toFixed(1)} dB</span>
-                    <div className="audio-live-control">
-                        <input type="range" min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
-                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))} />
-                        <input className="audio-live-number" aria-label="Output gain in decibels" type="number"
-                            min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
-                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
-                            onBlur={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
-                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
-                    </div>
-                </label>
-                <div className="panel stack">
-                    <h2>OUTPUT SAFETY</h2>
-                    <div className="row">
-                        <button type="button" className={`btn ${bool(draft.muteOnChange, true) ? "btn-active" : ""}`}
-                            onClick={() => setLiveToggle("muteOnChange", !bool(draft.muteOnChange, true))}>
-                            PATCH MUTE
-                        </button>
-                        <button type="button" className={`btn ${bool(draft.dcBlockerEnabled, true) ? "btn-active" : ""}`}
-                            onClick={() => setLiveToggle("dcBlockerEnabled", !bool(draft.dcBlockerEnabled, true))}>
-                            DC BLOCKER
-                        </button>
-                        <button type="button" className={`btn ${bool(draft.limiterEnabled, true) ? "btn-active" : ""}`}
-                            onClick={() => setLiveToggle("limiterEnabled", !bool(draft.limiterEnabled, true))}>
-                            SAFETY LIMITER
-                        </button>
-                    </div>
-                    <label className="field">
-                        <span>Patch fade out · {num(draft.patchFadeOutMs, 5).toFixed(1)} ms</span>
-                        <input type="range" min={1} max={20} step={0.5} value={num(draft.patchFadeOutMs, 5)}
-                            onChange={(event) => previewLive("patchFadeOutMs", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("patchFadeOutMs", Number(event.currentTarget.value))} />
-                    </label>
-                    <label className="field">
-                        <span>Patch fade in · {num(draft.patchFadeInMs, 8).toFixed(1)} ms</span>
-                        <input type="range" min={1} max={30} step={0.5} value={num(draft.patchFadeInMs, 8)}
-                            onChange={(event) => previewLive("patchFadeInMs", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("patchFadeInMs", Number(event.currentTarget.value))} />
-                    </label>
-                    <label className="field">
-                        <span>Limiter ceiling · {num(draft.limiterCeilingDb, -1).toFixed(1)} dBFS</span>
-                        <input type="range" min={-12} max={-0.1} step={0.1} value={num(draft.limiterCeilingDb, -1)}
-                            onChange={(event) => previewLive("limiterCeilingDb", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("limiterCeilingDb", Number(event.currentTarget.value))} />
-                    </label>
-                    <label className="field">
-                        <span>Look-ahead · {num(draft.limiterLookaheadMs, 0.75).toFixed(2)} ms</span>
-                        <input type="range" min={0} max={2} step={0.05} value={num(draft.limiterLookaheadMs, 0.75)}
-                            onChange={(event) => previewLive("limiterLookaheadMs", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("limiterLookaheadMs", Number(event.currentTarget.value))} />
-                    </label>
-                    <label className="field">
-                        <span>Limiter release · {num(draft.limiterReleaseMs, 80).toFixed(0)} ms</span>
-                        <input type="range" min={20} max={500} step={5} value={num(draft.limiterReleaseMs, 80)}
-                            onChange={(event) => previewLive("limiterReleaseMs", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("limiterReleaseMs", Number(event.currentTarget.value))} />
-                    </label>
-                    <label className="field">
-                        <span>DC blocker · {num(draft.dcBlockerHz, 7).toFixed(1)} Hz</span>
-                        <input type="range" min={2} max={20} step={0.5} value={num(draft.dcBlockerHz, 7)}
-                            onChange={(event) => previewLive("dcBlockerHz", Number(event.target.value))}
-                            onPointerUp={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))}
-                            onPointerCancel={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))}
-                            onKeyUp={(event) => commitLive("dcBlockerHz", Number(event.currentTarget.value))} />
-                    </label>
-                    <div className="muted">
-                        Look-ahead adds the selected amount of output latency. Patch muting keeps model and preset changes silent while their DSP state settles.
-                    </div>
-                </div>
-                <div className="muted">
-                    Requested buffer {formatMs(num(draft.bufferMs))} · measured {formatMs(num(meters.roundTripMs))}
-                    {num(meters.safetyLookaheadMs) > 0 ? ` (includes ${formatMs(num(meters.safetyLookaheadMs))} limiter)` : ""}
-                    {` · ${num(meters.xruns)} xruns`}
-                </div>
+                <div className="audio-help">Guitar is mono and copied to both outputs. On a Scarlett Solo, select Input 2 for the instrument jack.</div>
                 <div className="row">
-                    <button type="button" className="btn btn-accent" onClick={applyDraft}>
-                        APPLY
-                    </button>
-                    <button type="button" className="btn" onClick={() => refreshDevices()}>
-                        RESCAN CARDS
-                    </button>
-                    <button type="button" className="btn" onClick={() => void run(() => client.request("meters/reset"))}>
-                        RESET XRUNS
-                    </button>
+                    <button type="button" className="btn btn-accent" onClick={applyDraft}>APPLY DEVICE SETTINGS</button>
+                    <button type="button" className="btn" onClick={refreshDevices}>RESCAN CARDS</button>
                 </div>
-            </div>
+            </section>}
+
+            {tab === "input" && <>
+                <section className="panel stack">
+                    <h2>INPUT LEVEL</h2>
+                    <div className="audio-help"><strong>Start with Pi-MFX Input Gain at 0 dB.</strong> Plug the guitar into an Instrument/Hi-Z input. Use the physical gain knob on the interface to set the recording level. The meter below reads that raw hardware input before Pi-MFX changes it.</div>
+                    <div className="audio-setup-meter"><GainMeter label="Guitar In" peak={guitarPeak} orientation="horizontal" /></div>
+                    <label className="field"><span>Input gain (Pi-MFX digital) · {num(draft.inputGainDb).toFixed(1)} dB</span>
+                        <div className="audio-live-control">
+                            <input type="range" min={-60} max={24} step={0.5} value={num(draft.inputGainDb)}
+                                onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
+                                onPointerUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                                onPointerCancel={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                                onKeyUp={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))} />
+                            <input className="audio-live-number" aria-label="Input gain in decibels" type="number" min={-60} max={24} step={0.5}
+                                value={num(draft.inputGainDb)} onChange={(event) => previewLive("inputGainDb", Number(event.target.value))}
+                                onBlur={(event) => commitLive("inputGainDb", Number(event.currentTarget.value))}
+                                onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+                        </div>
+                    </label>
+                    <div className="audio-field-note"><strong>What is this?</strong><span>This is digital gain inside Pi-MFX, after the interface has converted the guitar to digital audio. It does not change the interface's physical input sensitivity.</span><span><strong>Recommended:</strong> leave it at 0 dB while setting up the interface. Use it later only as a small correction when the physical gain cannot be adjusted.</span></div>
+                </section>
+
+                <section className="panel stack input-setup-wizard">
+                    <h2>INPUT LEVEL SETUP</h2>
+                    {setupPhase === "idle" && <div className="audio-instructions">
+                        <strong>This test works with USB interfaces and audio HATs.</strong>
+                        <span>1. Connect the guitar to the interface input you selected on the Device tab. Enable Instrument or Hi-Z mode if the guitar is connected directly.</span>
+                        <span>2. Set Pi-MFX Input Gain to 0 dB. Turn the guitar's volume fully up. Bypass pedals that you do not normally use to boost the input.</span>
+                        <span>3. Press Run. For the first three seconds, mute the strings and do not play. This measures background noise.</span>
+                        <span>4. When the screen says Play Guitar, play normal chords and several of your hardest realistic attacks for eight seconds.</span>
+                        <span>5. Pi-MFX will tell you whether to turn the interface's physical gain knob up or down. Adjust it, then run the test again.</span>
+                    </div>}
+                    {setupPhase === "silence" && <div className="wizard-prompt"><strong>STAY QUIET · {setupSeconds}</strong><span>Mute the strings while Pi-MFX measures the input noise.</span></div>}
+                    {setupPhase === "playing" && <div className="wizard-prompt active"><strong>PLAY GUITAR · {setupSeconds}</strong><span>Play normally, then include several hard chords. Do not change Pi-MFX digital gain during the test.</span></div>}
+                    {setupResult && <div className="audio-result-grid">
+                        <div><span>Maximum</span><strong>{setupResult.maximumDb.toFixed(1)} dBFS</strong></div>
+                        <div><span>Average RMS</span><strong>{setupResult.averageDb.toFixed(1)} dBFS</strong></div>
+                        <div><span>Noise estimate</span><strong>{setupResult.noiseDb.toFixed(1)} dBFS</strong></div>
+                        <div><span>Peak headroom</span><strong>{Math.max(0, -setupResult.maximumDb).toFixed(1)} dB</strong></div>
+                    </div>}
+                    {setupResult && <div className="audio-advice">{inputLevelAdvice(setupResult.maximumDb)}</div>}
+                    <button type="button" className="btn btn-accent" disabled={setupPhase === "silence" || setupPhase === "playing"} onClick={startInputSetup}>
+                        {setupResult ? "RUN AGAIN" : "RUN INPUT LEVEL SETUP"}
+                    </button>
+                </section>
+
+                <section className="panel stack">
+                    <h2>NAM INPUT CALIBRATION</h2>
+                    <div className="audio-explainer">
+                        <strong>Do I need to change this?</strong>
+                        <span>Usually, no. This setting helps a NAM amplifier model react more like the equipment used when the model was captured. It is not a volume control and it does not make the input meter safer.</span>
+                        <span>If you have not measured your guitar and do not know your interface specifications, select <strong>Unmeasured / recommended start</strong> and leave the guitar signal level at <strong>−6 dBu</strong>.</span>
+                        <span><strong>dBFS</strong> is the digital meter level, where 0 dBFS means clipping. <strong>dBu</strong> describes an analog voltage. The Guitar signal level is the guitar's physical signal—not the interface's maximum input specification. Pi-MFX can measure dBFS directly, but it needs additional information to estimate dBu.</span>
+                    </div>
+                    <div className="audio-profile-library stack">
+                        <strong>INSTRUMENT PROFILES</strong>
+                        <div className="audio-help">Save a separate profile for each guitar or input setup. Selecting a name does not change the sound until you press <strong>Load selected</strong>.</div>
+                        <label className="field"><span>Saved profiles</span><select value={selectedProfile} onChange={(event) => selectProfile(event.target.value)}>
+                            {instrumentProfiles.map((profile, index) => <option key={`${str(profile.name)}-${index}`} value={str(profile.name)}>{str(profile.name, `Instrument ${index + 1}`)}</option>)}
+                        </select></label>
+                        <div className="row audio-profile-actions">
+                            <button type="button" className="btn" onClick={loadCalibrationProfile}>LOAD SELECTED</button>
+                            <button type="button" className="btn" onClick={newCalibrationProfile}>NEW PROFILE</button>
+                            <button type="button" className="btn btn-danger" onClick={() => setConfirmProfileDelete(true)}>DELETE SELECTED</button>
+                        </div>
+                    </div>
+                    <div className="audio-calibration-grid">
+                        <label className="field"><span>Instrument profile</span><input type="text" value={str(draft.instrumentProfileName, "Guitar 1")} onChange={(event) => set("instrumentProfileName", event.target.value)} /><small>A name to help you remember which guitar and input setup this calibration belongs to, such as “Strat bridge” or “Les Paul”.</small></label>
+                        <label className="field"><span>Input mode</span><select value={str(draft.inputMode, "instrument")} onChange={(event) => set("inputMode", event.target.value)}>
+                            <option value="instrument">Instrument / Hi-Z</option><option value="line">Line</option><option value="mic">Microphone</option><option value="unknown">Unknown</option>
+                        </select><small>Choose Instrument/Hi-Z when a guitar is plugged directly into an interface. Choose Line when using a preamp or pedal with a line-level output.</small></label>
+                        <label className="field"><span>Calibration source</span><select value={str(draft.calibrationMode, "unmeasured")} onChange={(event) => set("calibrationMode", event.target.value)}>
+                            <option value="unmeasured">Unmeasured / recommended start</option><option value="measured">Measured guitar voltage</option><option value="estimated">Estimated from interface</option>
+                        </select><small>Use Unmeasured unless you measured the guitar with suitable equipment or know the interface's 0 dBFS reference and current hardware gain.</small></label>
+                        <label className="field"><span>Guitar signal level (dBu)</span><input type="number" min={-30} max={12} step={0.1} value={num(draft.instrumentLevelDbU, -6)} onChange={(event) => set("instrumentLevelDbU", Number(event.target.value))} /><small>This tells managed TooB NAM effects the expected analog guitar level. It does not turn the sound up or down. Leave it at −6 dBu when the source is Unmeasured.</small></label>
+                    </div>
+                    {str(draft.calibrationMode) === "estimated" && <div className="calibration-estimate stack">
+                        <div className="audio-explainer">
+                            <strong>Estimate from the interface</strong>
+                            <span>This method combines the Input Level Setup result with two facts about the interface. It is only an estimate; gain knobs without numbered dB markings cannot provide an exact value.</span>
+                            <span>Run Input Level Setup with the same guitar, interface input, input mode and physical gain-knob position that you intend to use.</span>
+                        </div>
+                        <div className="audio-calibration-grid">
+                            <label className="field"><span>0 dBFS reference at minimum gain (dBu)</span><input type="number" min={-30} max={40} step={0.1} value={num(draft.interfaceReferenceDbU, 12)} onChange={(event) => set("interfaceReferenceDbU", Number(event.target.value))} /><small><strong>What to enter:</strong> the analog input level that the manufacturer says produces 0 dBFS when the input gain is at minimum. Look for “maximum input level” for the correct input mode in the manual. Example: if the Instrument input maximum is +12 dBu, enter 12. Do not copy a Line-input value when using Instrument/Hi-Z. If you cannot find it, do not guess—use Unmeasured instead.</small></label>
+                            <label className="field"><span>Current hardware gain (dB)</span><input type="number" min={-20} max={80} step={0.1} value={num(draft.interfaceGainDb)} onChange={(event) => set("interfaceGainDb", Number(event.target.value))} /><small><strong>What to enter:</strong> the gain added above the interface's minimum-gain position. Leave this at <strong>0 dB</strong> if the physical gain knob is at minimum. If the knob or control panel reports +10 dB, enter 10. If it only has an unnumbered ring, the exact gain is unknown; use Unmeasured for the safest result.</small></label>
+                        </div>
+                        <div className="audio-field-note"><strong>Next step</strong><span>Run Input Level Setup above. When it finishes, return here and select Use Wizard Estimate. Review the calculated Guitar signal level, then save the profile.</span></div>
+                        <button type="button" className="btn" disabled={!setupResult} onClick={useEstimatedCalibration}>USE WIZARD ESTIMATE</button>
+                    </div>}
+                    <button type="button" className={`btn ${bool(draft.namCalibrationManaged, true) ? "btn-active" : ""}`} onClick={() => set("namCalibrationManaged", !bool(draft.namCalibrationManaged, true))}>
+                        MANAGE TOOB NAM FROM THIS PROFILE · {bool(draft.namCalibrationManaged, true) ? "ON" : "OFF"}
+                    </button>
+                    <div className="audio-field-note"><strong>What does management do?</strong><span><strong>On:</strong> Pi-MFX applies this profile's guitar signal level to every TooB NAM effect, so you do not have to configure each preset separately.</span><span><strong>Off:</strong> every TooB NAM effect uses the calibration value saved in its preset.</span></div>
+                    <button type="button" className="btn btn-accent" onClick={saveCalibration}>SAVE CURRENT PROFILE</button>
+                    {confirmProfileDelete && <ConfirmDialog
+                        title="DELETE INSTRUMENT PROFILE?"
+                        body={`Delete “${selectedProfile}”? This removes its saved calibration values. This cannot be undone.`}
+                        confirmLabel="DELETE PROFILE"
+                        danger
+                        onCancel={() => setConfirmProfileDelete(false)}
+                        onConfirm={() => { setConfirmProfileDelete(false); deleteCalibrationProfile(); }}
+                    />}
+                </section>
+            </>}
+
+            {tab === "output" && <section className="panel stack">
+                <h2>OUTPUT AND SAFETY</h2>
+                <div className="audio-help">Keep Output Gain at 0 dB while matching effect levels. Use it only as the final digital trim; use the interface's monitor/headphone knob for listening volume.</div>
+                <label className="field"><span>Output gain · {num(draft.outputGainDb).toFixed(1)} dB</span>
+                    <div className="audio-live-control">
+                        <input type="range" min={-60} max={12} step={0.5} value={num(draft.outputGainDb)} onChange={(event) => previewLive("outputGainDb", Number(event.target.value))}
+                            onPointerUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))} onPointerCancel={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))} />
+                        <input className="audio-live-number" aria-label="Output gain in decibels" type="number" min={-60} max={12} step={0.5} value={num(draft.outputGainDb)}
+                            onChange={(event) => previewLive("outputGainDb", Number(event.target.value))} onBlur={(event) => commitLive("outputGainDb", Number(event.currentTarget.value))}
+                            onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />
+                    </div>
+                </label>
+                <div className="row">
+                    <button type="button" className={`btn ${bool(draft.muteOnChange, true) ? "btn-active" : ""}`} onClick={() => setLiveToggle("muteOnChange", !bool(draft.muteOnChange, true))}>PATCH MUTE</button>
+                    <button type="button" className={`btn ${bool(draft.dcBlockerEnabled, true) ? "btn-active" : ""}`} onClick={() => setLiveToggle("dcBlockerEnabled", !bool(draft.dcBlockerEnabled, true))}>DC BLOCKER</button>
+                    <button type="button" className={`btn ${bool(draft.limiterEnabled, true) ? "btn-active" : ""}`} onClick={() => setLiveToggle("limiterEnabled", !bool(draft.limiterEnabled, true))}>SAFETY LIMITER</button>
+                </div>
+                {([[
+                    "patchFadeOutMs", "Patch fade out", 1, 20, .5, 5, "ms"
+                ], ["patchFadeInMs", "Patch fade in", 1, 30, .5, 8, "ms"], ["limiterCeilingDb", "Limiter ceiling", -12, -.1, .1, -1, "dBFS"], ["limiterLookaheadMs", "Look-ahead", 0, 2, .05, .75, "ms"], ["limiterReleaseMs", "Limiter release", 20, 500, 5, 80, "ms"], ["dcBlockerHz", "DC blocker", 2, 20, .5, 7, "Hz"]] as const).map(([key, label, min, max, step, fallback, unit]) => (
+                    <label className="field" key={key}><span>{label} · {num(draft[key], fallback).toFixed(step < .1 ? 2 : step < 1 ? 1 : 0)} {unit}</span>
+                        <input type="range" min={min} max={max} step={step} value={num(draft[key], fallback)} onChange={(event) => previewLive(key, Number(event.target.value))}
+                            onPointerUp={(event) => commitLive(key, Number(event.currentTarget.value))} onPointerCancel={(event) => commitLive(key, Number(event.currentTarget.value))}
+                            onKeyUp={(event) => commitLive(key, Number(event.currentTarget.value))} />
+                    </label>
+                ))}
+                <div className="audio-help">Look-ahead adds output latency. Patch muting fades around model and preset changes. The limiter is final protection, not a substitute for correct gain staging.</div>
+            </section>}
+
+            {tab === "status" && <section className="panel stack">
+                <h2>AUDIO STATUS</h2>
+                <div className="audio-help">Use this page after changing buffer settings. Reset XRuns, play the heaviest preset for several minutes, and confirm the counter remains at zero.</div>
+                <div className="audio-status-grid">
+                    <div><span>Interface</span><strong>{str(state.audioInterface, str(draft.device, "None"))}</strong></div>
+                    <div><span>Requested buffer</span><strong>{formatMs(num(draft.bufferMs))}</strong></div>
+                    <div><span>Measured round trip</span><strong>{formatMs(num(meters.roundTripMs))}</strong></div>
+                    <div><span>Limiter look-ahead</span><strong>{formatMs(num(meters.safetyLookaheadMs))}</strong></div>
+                    <div><span>DSP load</span><strong>{(num(meters.dspLoad) * 100).toFixed(0)}%</strong></div>
+                    <div><span>XRuns</span><strong>{num(meters.xruns)}</strong></div>
+                </div>
+                <button type="button" className="btn" onClick={() => void run(() => client.request("meters/reset"))}>RESET XRUNS</button>
+            </section>}
         </div>
     );
 }
