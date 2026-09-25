@@ -30,6 +30,8 @@ assert.doesNotMatch(view, /tone3000\/tones|tone3000\/users|IntersectionObserver/
     'Pi-MFX must not recreate the hosted catalog or creator search');
 assert.doesNotMatch(view, /aidax|AIDA-X/i, 'AIDA-X must stay outside the TONE3000 workflow');
 assert.match(library, /kinds\?: LibraryKind\[\]/, 'the shared file manager must support a focused set of roots');
+assert.match(library, /<LibraryBrowser key=\{kind\} engine=\{engine\} run=\{run\} kind=\{kind\} \/>/,
+    'switching between NAM and IR roots must remount the browser so stale files cannot remain visible');
 assert.match(library, /safeLibraryFolderName[\s\S]*library\/mkdir[\s\S]*onPick\(target, activeKind\)/,
     'the folder picker must safely create a tone-named folder before downloading into it');
 assert.match(library, /library\/delete-impact[\s\S]*DELETE FILES AND PRESETS[\s\S]*bank\/delete/,

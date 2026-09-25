@@ -184,7 +184,7 @@ export function LibraryFileManager({
                     </button>
                 ))}
             </div>
-            <LibraryBrowser engine={engine} run={run} kind={kind} />
+            <LibraryBrowser key={kind} engine={engine} run={run} kind={kind} />
         </div>
     );
 }
