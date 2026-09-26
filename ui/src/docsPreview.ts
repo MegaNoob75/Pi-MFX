@@ -64,6 +64,8 @@ const chain = [
         id: "slot-nam", name: "TooB NAM", enabled: true,
         state: { input: -6, quality: 1, output: -3 },
         plugin: { uri: "http://two-play.com/plugins/toob-nam", name: "TooB Neural Amp Modeler", author: "TooB", category: "Simulator", ports: [
+            { kind: "audio", input: true, symbol: "in", name: "Audio In" },
+            { kind: "audio", input: false, symbol: "out", name: "Audio Out" },
             { kind: "control", input: true, symbol: "input", name: "Input Calibration Level", minimum: -30, maximum: 12, default: 0, unit: "dB" },
             { kind: "control", input: true, symbol: "quality", name: "Quality", minimum: 0, maximum: 2, default: 1, scalePoints: [{ value: 0, label: "Economy" }, { value: 1, label: "Normal" }, { value: 2, label: "High" }] },
             { kind: "control", input: true, symbol: "output", name: "Output", minimum: -30, maximum: 12, default: 0, unit: "dB" }
@@ -128,7 +130,7 @@ const controls = [
 const state: Body = {
     type: "state",
     version: "0.6.0-dev",
-    gitSha: "workstation",
+    gitSha: "a1b2c3d",
     audioBackend: "ALSA hw: USB Audio",
     pluginCount: 18,
     audioRunning: true,
@@ -146,7 +148,14 @@ const state: Body = {
     recorderFeatureEnabled: true,
     drumFeatureEnabled: true,
     communityCatalogFeatureEnabled: true,
-    audio: { device: "hw:USB", sampleRate: 48000, periodFrames: 32, periodCount: 4, bufferMs: 2.67, inputChannels: 2, outputChannels: 2, guitarInput: 1, useMmap: true },
+    audio: { device: "hw:USB", sampleRate: 48000, periodFrames: 32, periodCount: 4, bufferMs: 2.67, inputChannels: 2, outputChannels: 2, guitarInput: 2, useMmap: true,
+        inputGainDb: 0, outputGainDb: 0, inputMode: "instrument", calibrationMode: "unmeasured", instrumentProfileName: "Guitar 1",
+        instrumentLevelDbU: -6, interfaceReferenceDbU: 12, interfaceGainDb: 0, namCalibrationManaged: true,
+        instrumentProfiles: [
+            { name: "Guitar 1", inputMode: "instrument", calibrationMode: "unmeasured", instrumentLevelDbU: -6, interfaceReferenceDbU: 12, interfaceGainDb: 0 },
+            { name: "Hot humbuckers", inputMode: "instrument", calibrationMode: "estimated", instrumentLevelDbU: -3.5, interfaceReferenceDbU: 12, interfaceGainDb: 6 }
+        ],
+        muteOnChange: true, dcBlockerEnabled: true, limiterEnabled: true, limiterCeilingDb: -1, limiterLookaheadMs: .75, limiterReleaseMs: 80, dcBlockerHz: 7 },
     actualAudio: { device: "hw:USB", sampleRate: 48000, periodFrames: 32, periodCount: 4 },
     system: { sharedTransportEnabled: true, backingTracksEnabled: true },
     ui: {
@@ -218,7 +227,17 @@ const drums: Body = {
     patterns: [{ id: "pattern-rock", name: "DRIVING ROCK", length: 16, voices: ["KICK", "SNARE", "CLOSED HAT", "OPEN HAT", "TOM", "CRASH"].map((_, index) => ({ velocities: drumVelocities.map((value, step) => index === 0 ? value : index === 1 ? ([4, 12].includes(step) ? 120 : 0) : index === 2 ? (step % 2 === 0 ? 72 : 0) : 0), accents: "0000000000000000" })) }],
     song: [{ variation: 0, repeats: 4 }, { variation: 1, repeats: 4 }, { variation: 2, repeats: 2 }]
 };
-const meters: Body = { type: "meters", running: true, dspLoad: .09, xruns: 0, bufferMs: 2.67, roundTripMs: 5.25, input: [.31, .08], output: [.27, .25], inputPeak: [.62, .12], outputPeak: [.55, .51] };
+const meters: Body = {
+    type: "meters", running: true, dspLoad: .09, xruns: 0, bufferMs: 2.67, roundTripMs: 5.25,
+    input: [.31, .08], output: [.27, .25], inputPeak: [.62, .12], outputPeak: [.55, .51], guitarInputPeak: .31, guitarInputRms: .12, safetyLookaheadMs: .75,
+    effects: [
+        { slotId: "slot-gate", inputPeak: .31, outputPeak: .29 },
+        { slotId: "slot-drive", inputPeak: .29, outputPeak: .43 },
+        { slotId: "slot-nam", inputPeak: .43, outputPeak: .27 },
+        { slotId: "slot-delay", inputPeak: .27, outputPeak: .31 },
+        { slotId: "slot-reverb", inputPeak: .31, outputPeak: .34 }
+    ]
+};
 
 const uiSession: Body = {
     type: "uiSession",
@@ -231,7 +250,8 @@ const uiSession: Body = {
     layoutEditor: { stage: variant === "snapshots" ? "snapshots" : "performance" },
     settings: {
         controllerPage: variant === "hardware" ? "hardware" : "hub",
-        systemPage: variant === "realtime" ? "realtime" : "hub"
+        systemPage: variant === "realtime" ? "realtime" : "hub",
+        audioPage: ["device", "input", "output", "status"].includes(variant) ? variant : "device"
     }
 };
 
@@ -245,6 +265,7 @@ const communityCatalog = {
 };
 
 function responseFor(command: string): Body {
+    if (command === "audio/devices") return { ok: true, devices: [{ id: "hw:USB", name: "Scarlett Solo 4th Gen", duplex: true, maxInputChannels: 2, maxOutputChannels: 2, sampleRates: [44100, 48000, 96000], periodSizes: [32, 64, 128, 256] }] };
     if (command === "tone3000/status") return { ok: true, configured: true, authenticated: true, accountName: "Pi-MFX Player", publishableKey: "configured", redirectUri: `${window.location.origin}/` };
     if (command === "community/status") return { ok: true, enabled: true, submissionAvailable: true, submissionUrl: "https://github.com/MegaNoob75/Pi-MFX-Community-Presets/issues/new" };
     if (command === "community/catalog") return communityCatalog;
@@ -252,10 +273,26 @@ function responseFor(command: string): Body {
     if (command === "plugins/status") return { ok: true, helperOnline: true, recommended: [{ id: "toob", name: "TooB LV2", description: "NAM, cabinet IR and utility effects", installed: true }, { id: "mod-utilities", name: "MOD Utilities", description: "Meters, filters and routing tools", installed: false }] };
     if (command === "plugins/apt/list") return { ok: true, packages: [{ name: "calf-plugins", description: "Calf Studio Gear", installed: true }, { name: "mda-lv2", description: "Classic MDA effects", installed: false }] };
     if (command === "plugins/patchstorage/search") return { ok: true, items: [{ id: 101, name: "Stereo Tape Delay", author: "PatchStorage", description: "Tempo-aware stereo delay", downloads: 1800 }, { id: 102, name: "Shimmer Reverb", author: "PatchStorage", description: "Ambient pitch reverb", downloads: 1260 }], hasMore: false };
+    if (command === "plugins/updates/status") return { ok: true, checking: false, updateCount: 2, items: [{ source: "apt", id: "calf-plugins", title: "calf-plugins", updateAvailable: true }, { source: "pipedal-bundle", id: "toobamp", title: "ToobAmp", updateAvailable: true }] };
     if (command === "library" || command === "catalog") return { ok: true };
     if (command === "library/tree") return { ok: true, directories: ["TONE3000", "Cabinets", "Favorites"] };
     if (command === "library/list") return { ok: true, directory: "", items: [{ name: "TONE3000", path: "TONE3000", directory: true }, { name: "Deluxe-Clean.nam", path: "Deluxe-Clean.nam", size: 684213 }, { name: "British-Crunch.nam", path: "British-Crunch.nam", size: 721442 }] };
-    if (command === "system/update/status") return { ok: true, phase: "idle", branch: "workstation", currentCommit: "workstation", remoteCommit: "workstation", updateAvailable: false, message: "Pi-MFX is up to date" };
+    if (command === "system/update/status") {
+        const updating = variant === "updating";
+        const available = updating || variant === "update";
+        return {
+            ok: true,
+            phase: updating ? "installing" : "idle",
+            jobState: updating ? "installing" : "idle",
+            branch: "dev",
+            requestedBranch: "dev",
+            installedCommit: "a1b2c3d",
+            latestCommit: available ? "d4e5f6a" : "a1b2c3d",
+            updateAvailable: available,
+            message: updating ? "Building Pi-MFX…" : "Pi-MFX is up to date",
+            log: updating ? Array.from({ length: 40 }, (_, index) => `Build step ${index + 1} completed`).join("\n") : ""
+        };
+    }
     if (command === "hotspot/config") return { ok: true, mode: "wifi", connected: true, ssid: "Studio Network", ip: "192.168.1.42", hotspotSsid: "PI-MFX", hotspotIp: "10.42.0.1" };
     return { ok: true };
 }

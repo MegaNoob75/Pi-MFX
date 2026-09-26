@@ -88,6 +88,20 @@ test('top dialog overrides stale background focus; keyboard overrides dialogs',(
     const top=root.add(new Element('div','dialog-backdrop'));top.zIndex=20;const topBtn=top.add(button());nav.handleHardwareNav({select:true});assert.equal(topBtn.clicks,1);assert.equal(oldBtn.clicks,0);
     const keyboard=root.add(new Element('div','pimfx-keyboard-panel'));const key=keyboard.add(button('pimfx-keyboard-key'));nav.handleHardwareNav({select:true});assert.equal(key.clicks,1);
 });
+test('a modal default list keeps encoder ownership over earlier breadcrumb buttons',()=>{
+    const {nav,root}=setup();const modal=root.add(new Element('div','mfx-overlay'));
+    const crumbs=modal.add(new Element('div','explorer-crumbs'));const crumb=crumbs.add(button());
+    const files=modal.add(new Element('div','explorer-list',{'data-mfx-nav-default':'true'}));
+    const first=files.add(button()),second=files.add(button());
+    touch(crumb);nav.handleHardwareNav({delta:1});assert(marked(first));assert(!marked(crumb));
+    nav.handleHardwareNav({delta:1});assert(marked(second));
+});
+test('a mirrored cursor is marked remote while observers process it',()=>{
+    const {nav,root}=setup();const list=root.add(new Element('div','explorer-list',{'data-mfx-nav-list':'models'}));
+    const model=list.add(button());model.attrs['data-mfx-nav-key']='model:one';
+    nav.applyHardwareNavFocus({scopeName:'models',itemKey:'model:one'});
+    assert(marked(model));assert.equal(model.getAttribute('data-mfx-nav-remote'),'true');
+});
 test('disabled, inert, hidden-to-accessibility, and nested card controls are excluded',()=>{
     const {nav,root}=setup();const list=root.add(new Element('div','panel'));
     const disabled=list.add(button());disabled.attrs.disabled='';const inert=list.add(new Element('div','',{inert:''}));const inertBtn=inert.add(button());

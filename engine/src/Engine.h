@@ -223,6 +223,8 @@ private:
         std::unique_ptr<PluginInstance> plugin;
         std::atomic<bool> enabled{true};
         std::atomic<int> pendingEnabled{-1};
+        std::atomic<float> inputPeak{0.0f};
+        std::atomic<float> outputPeak{0.0f};
     };
 
     /// A whole signal chain. Chains are built on the control thread and handed
@@ -328,6 +330,8 @@ private:
     std::atomic<float> outputGain_{1.0f};
     std::atomic<float> targetOutputGain_{1.0f};
     std::atomic<unsigned> guitarInputChannel_{1};
+    std::atomic<float> guitarInputPeak_{0.0f};
+    std::atomic<float> guitarInputRms_{0.0f};
 
     std::atomic<bool> muteOnChangeEnabled_{true};
     std::atomic<bool> transitionRequested_{false};

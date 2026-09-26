@@ -2,6 +2,7 @@ import { bool, isObj, num, str } from "./json";
 import type { Json, JsonObject } from "./json";
 
 const CURSOR_ATTR = "data-mfx-nav-cursor";
+const REMOTE_CURSOR_ATTR = "data-mfx-nav-remote";
 const ITEM_SELECTOR = 'button, a[href], [role="button"], input:not([type="hidden"]), select, textarea, [data-mfx-nav-item], .theme-pick, [data-theme-name], .hub-card, .split-row, .plugin-tile, .mfx-overlay-option, .menu-item, .pimfx-keyboard-key';
 const LIST_SELECTOR = '[data-mfx-nav-list], .split-list, .mfx-hub-grid, .plugin-browser-grid, .explorer-tree, .explorer-list, .explorer-crumbs, .plugin-catalog-list, .snapshot-grid, .t3k-grid, .t3k-creator-list, .layout-group-list, .editor-picker-list, .chain-page, .control-grid';
 const MODAL_SELECTOR = '.pimfx-keyboard-panel, nav.menu, [data-mfx-shell-menu], .mfx-overlay, .identity-menu, .plugin-browser-overlay, [role="dialog"], .dialog-backdrop, .explorer-menu';
@@ -109,10 +110,11 @@ function navItems(scope: HTMLElement): HTMLElement[] {
         && focusedScope.matches("input, textarea, select")) return [];
     const sections = queryItems(LIST_SELECTOR, scope);
     const focusedSection = sections.find((list) => focusedScope && list.contains(focusedScope));
+    const defaultSection = sections.find((list) => list.getAttribute("data-mfx-nav-default") === "true");
     // A clicked dialog button must stay reachable even when the dialog also contains a list.
     const outsideList = cursorEl && scope.contains(cursorEl)
         && !sections.some((list) => list.contains(cursorEl));
-    const root = focusedSection ?? (outsideList ? scope : sections[0] ?? scope);
+    const root = defaultSection ?? focusedSection ?? (outsideList ? scope : sections[0] ?? scope);
     return queryItems(ITEM_SELECTOR, root).filter((item) => {
         if (root === scope && sections.some((list) => list.contains(item))) return false;
         if (item.matches(":disabled") || item.getAttribute("aria-disabled") === "true"
@@ -192,7 +194,11 @@ export function applyHardwareNavFocus(location: unknown): void {
         setCursor(undefined, false);
         return;
     }
+    // Mirrored browsers should display the shared cursor but must not replay
+    // the action that originally moved it (for example, a NAM live preview).
+    item.setAttribute(REMOTE_CURSOR_ATTR, "true");
     setCursor(item, false);
+    queueMicrotask(() => item.removeAttribute(REMOTE_CURSOR_ATTR));
 }
 
 function currentIndex(items: HTMLElement[]): number {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
-import { bool, obj, str } from "../json";
+import { bool, num, obj, objects, str } from "../json";
 import { updateUiSessionSection } from "../uiSession";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -21,11 +21,15 @@ export function UpdatesView({
     const version = str(engine.state.version, "0.1.0");
     const gitSha = str(engine.state.gitSha);
     const [status, setStatus] = useState(obj({}));
-    const [branch, setBranch] = useState("dev");
+    const [branch, setBranch] = useState("");
     const [checking, setChecking] = useState(false);
     const [installing, setInstalling] = useState(false);
     const [confirmInstall, setConfirmInstall] = useState(false);
+    const [confirmPluginInstall, setConfirmPluginInstall] = useState(false);
     const [message, setMessage] = useState("");
+    const [pluginStatus, setPluginStatus] = useState(obj({}));
+    const [pluginInstalling, setPluginInstalling] = useState(false);
+    const [pluginLog, setPluginLog] = useState<string[]>([]);
 
     useEffect(() => {
         const shared = obj(engine.uiSession.updates);
@@ -48,6 +52,10 @@ export function UpdatesView({
 
     const applyStatus = (next: ReturnType<typeof obj>) => {
         setStatus(next);
+        const detectedBranch = str(next.requestedBranch) || str(next.branch);
+        if (!branch && (detectedBranch === "dev" || detectedBranch === "main")) {
+            setBranch(detectedBranch);
+        }
         const job = str(next.jobState, "idle");
         setInstalling((wasInstalling) => {
             if (job === "installing") {
@@ -62,6 +70,7 @@ export function UpdatesView({
     };
 
     const fetching = bool(status.fetching);
+    const effectiveBranch = branch || (str(status.requestedBranch) === "main" ? "main" : "dev");
 
     const check = useCallback(async (fetchLatest = true) => {
         setChecking(true);
@@ -131,7 +140,7 @@ export function UpdatesView({
         || str(message).includes("not configured");
     const logLines = str(status.log).split(/\r?\n/).filter(Boolean);
     const currentBranch = str(status.branch);
-    const switching = Boolean(currentBranch) && currentBranch !== branch;
+    const switching = Boolean(currentBranch) && currentBranch !== effectiveBranch;
     const upToDate = bool(status.ok, true)
         && Boolean(installedCommit)
         && Boolean(latestCommit)
@@ -147,7 +156,7 @@ export function UpdatesView({
         void run(async () => {
             try {
                 const next = obj(await engine.client.request("system/update/install", {
-                    branch,
+                    branch: effectiveBranch,
                     installedCommit: gitSha
                 }));
                 applyStatus(next);
@@ -158,105 +167,209 @@ export function UpdatesView({
         });
     };
 
+    const refreshPluginUpdates = useCallback(async (force = false) => {
+        const next = obj(await engine.client.request("plugins/updates/status", {
+            refresh: true,
+            force
+        }));
+        setPluginStatus(next);
+        return next;
+    }, [engine.client]);
+
+    useEffect(() => {
+        void refreshPluginUpdates(false).catch((error) => {
+            setPluginStatus({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        });
+        const timer = window.setInterval(() => {
+            void engine.client.request("plugins/updates/status", { refresh: false }).then((next) => {
+                setPluginStatus(obj(next));
+            }).catch(() => undefined);
+        }, 5000);
+        return () => window.clearInterval(timer);
+    }, [engine.client, refreshPluginUpdates]);
+
+    const pluginItems = objects(pluginStatus.items);
+    const pluginUpdates = pluginItems.filter((item) => bool(item.updateAvailable));
+    const pluginUpdateCount = num(pluginStatus.updateCount, pluginUpdates.length);
+    const pluginChecking = bool(pluginStatus.checking);
+    const pluginError = str(pluginStatus.error)
+        || str(pluginItems.find((item) => str(item.error))?.error);
+
+    const installPluginUpdates = () => {
+        setConfirmPluginInstall(false);
+        setPluginInstalling(true);
+        setPluginLog([]);
+        void run(async () => {
+            const append = (line: string) => setPluginLog((lines) => [...lines, line]);
+            try {
+                if (pluginUpdates.some((item) => str(item.source) === "apt")) {
+                    append("Updating apt-managed LV2 plugins…");
+                    await engine.client.request("plugins/updates/apt");
+                    append("Apt LV2 plugins updated.");
+                }
+                for (const item of pluginUpdates) {
+                    const source = str(item.source);
+                    const title = str(item.title, "LV2 plugin");
+                    if (source === "patchstorage") {
+                        append(`Updating ${title} from PatchStorage…`);
+                        await engine.client.request("plugins/patchstorage/install", { patchId: num(item.id) });
+                        append(`${title} updated.`);
+                    } else if (source === "pipedal-bundle") {
+                        append("Updating TooB from the approved PiPedal bundle…");
+                        await engine.client.request("plugins/github/install", { id: "toobamp" });
+                        append("TooB updated.");
+                    }
+                }
+                append("LV2 plugin updates finished.");
+            } catch (error) {
+                append(`FAILED: ${error instanceof Error ? error.message : String(error)}`);
+            } finally {
+                setPluginInstalling(false);
+                await refreshPluginUpdates(true).catch(() => undefined);
+            }
+        });
+    };
+    const progressLines = [...logLines, ...pluginLog];
+
     return (
         <div className="mfx-screen">
-            <div className="page-scroll stack updates-page" data-mfx-sync-scroll="settings-updates">
-                <section className="panel stack">
+            <div className="page-scroll updates-page" data-mfx-sync-scroll="settings-updates">
+                <div className="updates-layout">
+                <section className="panel stack updates-card updates-pimfx-card">
                     <h2>PI-MFX UPDATE</h2>
-                    <div className="updates-version-grid">
-                        <span>Version</span>
-                        <strong>{version}</strong>
-                        <span>Installed</span>
-                        <strong>{installedCommit || "Unknown"}</strong>
-                        {latestCommit && (
-                            <>
-                                <span>Latest on {branch}</span>
-                                <strong>{latestCommit}</strong>
-                            </>
-                        )}
-                        {currentBranch && (
-                            <>
-                                <span>This Pi</span>
-                                <strong>{currentBranch}</strong>
-                            </>
-                        )}
-                    </div>
-                    <div className="row" style={{ flexWrap: "wrap" }}>
-                        {(["dev", "main"] as const).map((item) => (
+                    <div className="updates-pimfx-body">
+                        <div className="updates-version-grid">
+                            <span>Version</span>
+                            <strong>{version}</strong>
+                            <span>Installed</span>
+                            <strong>{installedCommit || "Unknown"}</strong>
+                            {latestCommit && (
+                                <>
+                                    <span>Latest on {effectiveBranch}</span>
+                                    <strong>{latestCommit}</strong>
+                                </>
+                            )}
+                            {currentBranch && (
+                                <>
+                                    <span>This Pi</span>
+                                    <strong>{currentBranch}</strong>
+                                </>
+                            )}
+                        </div>
+                        <div className="updates-channel-actions">
+                            {(["dev", "main"] as const).map((item) => (
+                                <button
+                                    key={item}
+                                    type="button"
+                                    className={`btn ${effectiveBranch === item ? "btn-active" : ""}`}
+                                    disabled={checking || installing || fetching}
+                                    onClick={() => chooseBranch(item)}
+                                >
+                                    {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
+                                </button>
+                            ))}
                             <button
-                                key={item}
                                 type="button"
-                                className={`btn ${branch === item ? "btn-active" : ""}`}
+                                className="btn"
                                 disabled={checking || installing || fetching}
-                                onClick={() => chooseBranch(item)}
+                                onClick={() => void check(true)}
                             >
-                                {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
+                                {checking || fetching ? "CHECKING..." : "CHECK FOR UPDATES"}
                             </button>
-                        ))}
-                    </div>
-                    <div className="muted">
-                        Dev tracks day-to-day work. Main is the release branch.
+                        </div>
                     </div>
                     <div className="updates-status">
                         {(checking || fetching) && "Checking for updates…"}
                         {!checking && !fetching && installing && (str(status.message) || "Installing the update…")}
-                        {!checking && !fetching && !installing && switching && `This Pi is on ${currentBranch}. Update to switch to ${branch}.`}
-                        {!checking && !fetching && !installing && !switching && updateAvailable && `Commit ${latestCommit} is available on ${branch}.`}
+                        {!checking && !fetching && !installing && switching && `This Pi is on ${currentBranch}. Update to switch to ${effectiveBranch}.`}
+                        {!checking && !fetching && !installing && !switching && updateAvailable && `Commit ${latestCommit} is available on ${effectiveBranch}.`}
                         {!checking && !fetching && !installing && upToDate
-                            && `Pi-MFX is all up to date on ${branch} (${latestCommit}).`}
+                            && `Pi-MFX is all up to date on ${effectiveBranch} (${latestCommit}).`}
                         {!checking && !fetching && !installing && str(status.jobState) === "failed" && str(status.message)}
                         {!checking && !fetching && !installing && str(status.error) && str(status.error)}
                         {!checking && !fetching && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
                             && (str(status.message) || "Could not determine update status.")}
                     </div>
-                    {logLines.length > 0 && (installing || str(status.jobState) === "failed") && (
-                        <pre className="updates-progress">{logLines.join("\n")}</pre>
-                    )}
-                    <div className="updates-warning">
-                        An update rebuilds the engine and UI in the background so the controller stays live,
-                        then restarts the Pi-MFX service at the end. Audio drops only for that restart.
-                    </div>
-                    <div className="row" style={{ flexWrap: "wrap" }}>
+                    {(updateAvailable || switching) && (
                         <button
                             type="button"
-                            className="btn"
+                            className="btn btn-accent updates-install-action"
                             disabled={checking || installing || fetching}
-                            onClick={() => void check(true)}
+                            onClick={() => showInstallConfirmation(true)}
                         >
-                            {checking || fetching ? "CHECKING..." : "CHECK FOR UPDATES"}
+                            {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || effectiveBranch.toUpperCase()}`}
                         </button>
-                        {(updateAvailable || switching) && (
-                            <button
-                                type="button"
-                                className="btn btn-accent"
-                                disabled={checking || installing || fetching}
-                                onClick={() => showInstallConfirmation(true)}
-                            >
-                                {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || branch.toUpperCase()}`}
-                            </button>
-                        )}
-                    </div>
+                    )}
                     {message && <div className="muted">{message}</div>}
+                    <details className="updates-recovery">
+                        <summary>COMMAND-LINE RECOVERY</summary>
+                        <div className="muted">
+                            {helperMissing
+                                ? "The updater cannot see the Pi-MFX clone yet. From the clone, run this once:"
+                                : "If an update cannot be started from this screen, update from the Pi-MFX clone:"}
+                        </div>
+                        <pre className="updates-command">{`sudo bash ./scripts/pimfx.sh update --branch ${normalizeBranch(effectiveBranch)}`}</pre>
+                        <div className="muted">{CLI_COMMAND.replace("dev", "main")} for release.</div>
+                    </details>
                 </section>
-                <section className="panel stack">
-                    <h2>COMMAND-LINE RECOVERY</h2>
-                    <div className="muted">
-                        {helperMissing
-                            ? "The updater cannot see the Pi-MFX clone yet. From the clone, run this once, then this page can update itself:"
-                            : "If an update cannot be started from this screen, update from the Pi-MFX clone:"}
+                <section className="panel stack updates-card">
+                    <h2>LV2 PLUGIN UPDATES</h2>
+                    <div className="updates-status">
+                        {pluginChecking
+                            ? "Checking installed LV2 plugins…"
+                            : pluginInstalling
+                                ? "Updating LV2 plugins…"
+                                : pluginError
+                                    ? `Plugin check failed: ${pluginError}`
+                                    : pluginUpdateCount > 0
+                                        ? `${pluginUpdateCount} LV2 plugin update${pluginUpdateCount === 1 ? " is" : "s are"} available.`
+                                        : "Installed LV2 plugins are up to date."}
                     </div>
-                    <pre className="updates-command">{`sudo bash ./scripts/pimfx.sh update --branch ${normalizeBranch(branch)}`}</pre>
-                    <div className="muted">{CLI_COMMAND.replace("dev", "main")} for release.</div>
+                    <div className="updates-plugin-list">
+                        {pluginItems.map((item) => (
+                            <div className="updates-plugin-row" key={`${str(item.source)}-${String(item.id ?? "")}`}>
+                                <span>{str(item.title, "LV2 plugin")}</span>
+                                <strong className={str(item.error) || bool(item.updateAvailable) ? "warning" : "muted"}>
+                                    {str(item.error) ? "ERROR" : bool(item.updateAvailable) ? (bool(item.versionUnknown) ? "REFRESH" : "UPDATE") : "CURRENT"}
+                                </strong>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="row updates-actions">
+                        <button type="button" className="btn" disabled={pluginChecking || pluginInstalling}
+                            onClick={() => void refreshPluginUpdates(true)}>
+                            {pluginChecking ? "CHECKING…" : "CHECK LV2"}
+                        </button>
+                        <button type="button" className="btn btn-accent"
+                            disabled={pluginChecking || pluginInstalling || pluginUpdateCount <= 0}
+                            onClick={() => setConfirmPluginInstall(true)}>
+                            {pluginInstalling ? "UPDATING…" : `UPDATE LV2 PLUGINS${pluginUpdateCount > 0 ? ` (${pluginUpdateCount})` : ""}`}
+                        </button>
+                    </div>
                 </section>
+                </div>
+                {progressLines.length > 0 && (installing || pluginInstalling || str(status.jobState) === "failed" || pluginLog.length > 0) && (
+                    <pre className="updates-progress" aria-live="polite">{progressLines.join("\n")}</pre>
+                )}
             </div>
             {confirmInstall && (
                 <ConfirmDialog
-                    title={`UPDATE ${branch.toUpperCase()}?`}
+                    title={`UPDATE ${effectiveBranch.toUpperCase()}?`}
                     body="The update takes several minutes. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes."
                     confirmLabel="UPDATE"
                     danger
                     onCancel={() => showInstallConfirmation(false)}
                     onConfirm={install}
+                />
+            )}
+            {confirmPluginInstall && (
+                <ConfirmDialog
+                    title="UPDATE LV2 PLUGINS?"
+                    body={`Update ${pluginUpdateCount} installed LV2 plugin${pluginUpdateCount === 1 ? "" : "s"}? Downloads and installation run at low priority; the plugin catalog is rescanned as each source finishes.`}
+                    confirmLabel="UPDATE LV2"
+                    danger
+                    onCancel={() => setConfirmPluginInstall(false)}
+                    onConfirm={installPluginUpdates}
                 />
             )}
         </div>

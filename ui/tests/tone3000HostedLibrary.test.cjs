@@ -11,6 +11,8 @@ const router = fs.readFileSync(path.join(__dirname, '../../engine/src/control/Ap
 const installer = fs.readFileSync(path.join(__dirname, '../../scripts/pimfx.sh'), 'utf8');
 
 assert.match(view, /prompt: "select_tone"/, 'Model Library must launch the hosted Select flow');
+assert.match(view, /architecture: "2"/,
+    'hosted browsing must request NAM A2 models supported by the PiPedal TooB bundle');
 assert.match(view, /menubar: "true"/, 'hosted browsing must provide navigation and close controls');
 assert.match(view, /preview: "true"/, 'hosted browsing must enable TONE3000 previews');
 assert.match(view, /redirectUri: thisPageRedirect\(\)/,
@@ -28,6 +30,8 @@ assert.doesNotMatch(view, /tone3000\/tones|tone3000\/users|IntersectionObserver/
     'Pi-MFX must not recreate the hosted catalog or creator search');
 assert.doesNotMatch(view, /aidax|AIDA-X/i, 'AIDA-X must stay outside the TONE3000 workflow');
 assert.match(library, /kinds\?: LibraryKind\[\]/, 'the shared file manager must support a focused set of roots');
+assert.match(library, /<LibraryBrowser key=\{kind\} engine=\{engine\} run=\{run\} kind=\{kind\} \/>/,
+    'switching between NAM and IR roots must remount the browser so stale files cannot remain visible');
 assert.match(library, /safeLibraryFolderName[\s\S]*library\/mkdir[\s\S]*onPick\(target, activeKind\)/,
     'the folder picker must safely create a tone-named folder before downloading into it');
 assert.match(library, /library\/delete-impact[\s\S]*DELETE FILES AND PRESETS[\s\S]*bank\/delete/,

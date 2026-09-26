@@ -256,6 +256,7 @@ export function Tone3000View({
         void run(async () => {
             const result = await engine.client.request("tone3000/auth/start", {
                 prompt: "select_tone",
+                architecture: "2",
                 menubar: "true",
                 preview: "true",
                 redirectUri: thisPageRedirect()

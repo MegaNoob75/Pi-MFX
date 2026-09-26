@@ -19,6 +19,13 @@ RuntimeDirectoryPreserve=restart
 Restart=on-failure
 RestartSec=2
 
+# Update discovery is deliberately background work. The engine's SCHED_FIFO
+# audio thread must always win CPU and storage contention during a boot check.
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+
 # Git checks and builds run as the owner of the source clone.  Keep privilege
 # transitions available so runuser/sudo can drop from root to that account.
 # NoNewPrivileges and RestrictSUIDSGID break that with "cannot set user id".

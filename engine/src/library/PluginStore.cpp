@@ -754,6 +754,17 @@ bool PluginStore::aptRemove(const std::string& package, std::string& error) {
     return error.empty() && reply["ok"].asBool(false);
 }
 
+Json PluginStore::lv2UpdateStatus(bool refresh, bool force, std::string& error) {
+    Json args = Json::object();
+    args.set("refresh", refresh);
+    args.set("force", force);
+    return helperCall("lv2-update-status", args, error, 15);
+}
+
+Json PluginStore::updateAptLv2(std::string& error) {
+    return helperCall("lv2-update-install-apt", Json::object(), error, 900);
+}
+
 Json PluginStore::repoList(std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     return helperCall("repo-list", Json::object(), error, 15);
@@ -925,8 +936,12 @@ bool PluginStore::installToobAmpFromPipedalDeb(std::string& error) {
     }
     Json record = Json::object();
     record.set("source", "pipedal-release");
+    record.set("provider", "pipedal-bundle");
     record.set("title", "ToobAmp");
     record.set("url", "https://github.com/rerdavies/pipedal");
+    record.set("releaseTag", release["tag_name"].asString());
+    record.set("assetId", chosen["id"].asInt64());
+    record.set("assetName", chosen["name"].asString());
     record.set("directory", "ToobAmp.lv2");
     Json directories = Json::array();
     directories.push(Json("ToobAmp.lv2"));
@@ -1618,6 +1633,13 @@ bool PluginStore::patchstorageInstall(int64_t patchId, std::string& error) {
     Json record = Json::object();
     record.set("source", "patchstorage");
     record.set("patchId", static_cast<int>(patchId));
+    record.set("fileId", chosen["id"].asInt64());
+    record.set("filename", chosen["filename"].asString());
+    std::string fileModified = chosen["updated_at"].asString();
+    if (fileModified.empty()) {
+        fileModified = chosen["modified"].asString();
+    }
+    record.set("fileModified", fileModified);
     record.set("title", patch["title"].asString());
     record.set("license", patch["license"]["name"].asString());
     record.set("url", patch["url"].asString());

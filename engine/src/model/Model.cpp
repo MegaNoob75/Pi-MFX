@@ -449,6 +449,25 @@ Json audioSettingsToJson(const AudioSettings& settings) {
     json.set("startImmediately", settings.startImmediately);
     json.set("inputGainDb", settings.inputGainDb);
     json.set("outputGainDb", settings.outputGainDb);
+    json.set("inputMode", settings.inputMode);
+    json.set("calibrationMode", settings.calibrationMode);
+    json.set("instrumentProfileName", settings.instrumentProfileName);
+    json.set("instrumentLevelDbU", settings.instrumentLevelDbU);
+    json.set("interfaceReferenceDbU", settings.interfaceReferenceDbU);
+    json.set("interfaceGainDb", settings.interfaceGainDb);
+    json.set("namCalibrationManaged", settings.namCalibrationManaged);
+    Json profiles = Json::array();
+    for (const InstrumentInputProfile& profile : settings.instrumentProfiles) {
+        Json item = Json::object();
+        item.set("name", profile.name);
+        item.set("inputMode", profile.inputMode);
+        item.set("calibrationMode", profile.calibrationMode);
+        item.set("instrumentLevelDbU", profile.instrumentLevelDbU);
+        item.set("interfaceReferenceDbU", profile.interfaceReferenceDbU);
+        item.set("interfaceGainDb", profile.interfaceGainDb);
+        profiles.push(std::move(item));
+    }
+    json.set("instrumentProfiles", std::move(profiles));
     json.set("muteOnChange", settings.muteOnChange);
     json.set("patchFadeOutMs", settings.patchFadeOutMs);
     json.set("patchFadeInMs", settings.patchFadeInMs);
@@ -485,6 +504,27 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     if (json.has("startImmediately")) settings.startImmediately = json["startImmediately"].asBool(fallback.startImmediately);
     if (json.has("inputGainDb")) settings.inputGainDb = json["inputGainDb"].asFloat(fallback.inputGainDb);
     if (json.has("outputGainDb")) settings.outputGainDb = json["outputGainDb"].asFloat(fallback.outputGainDb);
+    if (json.has("inputMode")) settings.inputMode = json["inputMode"].asString(fallback.inputMode);
+    if (json.has("calibrationMode")) settings.calibrationMode = json["calibrationMode"].asString(fallback.calibrationMode);
+    if (json.has("instrumentProfileName")) settings.instrumentProfileName = json["instrumentProfileName"].asString(fallback.instrumentProfileName);
+    if (json.has("instrumentLevelDbU")) settings.instrumentLevelDbU = json["instrumentLevelDbU"].asFloat(fallback.instrumentLevelDbU);
+    if (json.has("interfaceReferenceDbU")) settings.interfaceReferenceDbU = json["interfaceReferenceDbU"].asFloat(fallback.interfaceReferenceDbU);
+    if (json.has("interfaceGainDb")) settings.interfaceGainDb = json["interfaceGainDb"].asFloat(fallback.interfaceGainDb);
+    if (json.has("namCalibrationManaged")) settings.namCalibrationManaged = json["namCalibrationManaged"].asBool(fallback.namCalibrationManaged);
+    if (json.has("instrumentProfiles") && json["instrumentProfiles"].isArray()) {
+        settings.instrumentProfiles.clear();
+        for (const Json& raw : json["instrumentProfiles"].items()) {
+            if (!raw.isObject() || settings.instrumentProfiles.size() >= 32) continue;
+            InstrumentInputProfile profile;
+            profile.name = raw["name"].asString("Guitar");
+            profile.inputMode = raw["inputMode"].asString("instrument");
+            profile.calibrationMode = raw["calibrationMode"].asString("unmeasured");
+            profile.instrumentLevelDbU = raw["instrumentLevelDbU"].asFloat(-6.0f);
+            profile.interfaceReferenceDbU = raw["interfaceReferenceDbU"].asFloat(12.0f);
+            profile.interfaceGainDb = raw["interfaceGainDb"].asFloat(0.0f);
+            settings.instrumentProfiles.push_back(std::move(profile));
+        }
+    }
     if (json.has("muteOnChange")) settings.muteOnChange = json["muteOnChange"].asBool(fallback.muteOnChange);
     if (json.has("patchFadeOutMs")) settings.patchFadeOutMs = json["patchFadeOutMs"].asFloat(fallback.patchFadeOutMs);
     if (json.has("patchFadeInMs")) settings.patchFadeInMs = json["patchFadeInMs"].asFloat(fallback.patchFadeInMs);
@@ -504,6 +544,44 @@ AudioSettings audioSettingsFromJson(const Json& json, const AudioSettings& fallb
     settings.outputChannels = std::max(1u, std::min(64u, settings.outputChannels));
     settings.inputGainDb = std::max(-60.0f, std::min(24.0f, settings.inputGainDb));
     settings.outputGainDb = std::max(-60.0f, std::min(12.0f, settings.outputGainDb));
+    if (settings.inputMode != "instrument" && settings.inputMode != "line"
+        && settings.inputMode != "mic" && settings.inputMode != "unknown") {
+        settings.inputMode = "unknown";
+    }
+    if (settings.calibrationMode != "unmeasured" && settings.calibrationMode != "measured"
+        && settings.calibrationMode != "estimated") {
+        settings.calibrationMode = "unmeasured";
+    }
+    if (settings.instrumentProfileName.empty()) settings.instrumentProfileName = "Guitar 1";
+    if (settings.instrumentProfileName.size() > 80) settings.instrumentProfileName.resize(80);
+    settings.instrumentLevelDbU = std::max(-30.0f, std::min(12.0f, settings.instrumentLevelDbU));
+    settings.interfaceReferenceDbU = std::max(-30.0f, std::min(40.0f, settings.interfaceReferenceDbU));
+    settings.interfaceGainDb = std::max(-20.0f, std::min(80.0f, settings.interfaceGainDb));
+    for (InstrumentInputProfile& profile : settings.instrumentProfiles) {
+        if (profile.name.empty()) profile.name = "Guitar";
+        if (profile.name.size() > 80) profile.name.resize(80);
+        if (profile.inputMode != "instrument" && profile.inputMode != "line"
+            && profile.inputMode != "mic" && profile.inputMode != "unknown") {
+            profile.inputMode = "unknown";
+        }
+        if (profile.calibrationMode != "unmeasured" && profile.calibrationMode != "measured"
+            && profile.calibrationMode != "estimated") {
+            profile.calibrationMode = "unmeasured";
+        }
+        profile.instrumentLevelDbU = std::max(-30.0f, std::min(12.0f, profile.instrumentLevelDbU));
+        profile.interfaceReferenceDbU = std::max(-30.0f, std::min(40.0f, profile.interfaceReferenceDbU));
+        profile.interfaceGainDb = std::max(-20.0f, std::min(80.0f, profile.interfaceGainDb));
+    }
+    if (settings.instrumentProfiles.empty()) {
+        settings.instrumentProfiles.push_back({settings.instrumentProfileName, settings.inputMode,
+            settings.calibrationMode, settings.instrumentLevelDbU,
+            settings.interfaceReferenceDbU, settings.interfaceGainDb});
+    } else if (!json.has("instrumentProfiles")
+               && (json.has("instrumentProfileName") || json.has("instrumentLevelDbU"))) {
+        settings.instrumentProfiles.front() = {settings.instrumentProfileName, settings.inputMode,
+            settings.calibrationMode, settings.instrumentLevelDbU,
+            settings.interfaceReferenceDbU, settings.interfaceGainDb};
+    }
     settings.patchFadeOutMs = std::max(1.0f, std::min(20.0f, settings.patchFadeOutMs));
     settings.patchFadeInMs = std::max(1.0f, std::min(30.0f, settings.patchFadeInMs));
     settings.dcBlockerHz = std::max(2.0f, std::min(20.0f, settings.dcBlockerHz));

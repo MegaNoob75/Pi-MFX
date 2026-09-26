@@ -177,6 +177,7 @@ export function App() {
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
     const [layoutDirty, setLayoutDirty] = useState(false);
     const [leaveLayout, setLeaveLayout] = useState<{ view: View; fromMenu: boolean } | "back" | null>(null);
+    const [backgroundUpdateStatus, setBackgroundUpdateStatus] = useState<JsonObject>({});
     const menuRef = useRef<HTMLElement | null>(null);
     const engineWasConnected = useRef(false);
     const engineRestarted = useRef(false);
@@ -267,6 +268,38 @@ export function App() {
         const timer = window.setTimeout(() => window.location.reload(), 500);
         return () => window.clearTimeout(timer);
     }, [engine.connected, engine.state.gitSha]);
+
+    useEffect(() => {
+        if (!engine.connected) return;
+        let stopped = false;
+        let timer: number | undefined;
+        const installedCommit = str(engine.state.gitSha);
+        const poll = async (fetch: boolean) => {
+            try {
+                const next = obj(await engine.client.request("system/update/status", {
+                    fetch,
+                    branch: "",
+                    installedCommit
+                }));
+                if (stopped) return;
+                setBackgroundUpdateStatus(next);
+                if (bool(next.fetching)) {
+                    timer = window.setTimeout(() => void poll(false), 2_000);
+                }
+            } catch {
+                // The Updates page owns detailed errors. A failed background
+                // check must never create a misleading global badge.
+            }
+        };
+        // The helper launches Git work asynchronously at low CPU/I/O priority,
+        // so start discovery as soon as the UI has an engine connection. Read
+        // cached progress only until that one fetch finishes, then stop.
+        void poll(true);
+        return () => {
+            stopped = true;
+            if (timer !== undefined) window.clearTimeout(timer);
+        };
+    }, [engine.connected, engine.client, engine.state.gitSha]);
 
     useEffect(() => {
         const shared = engine.uiSession;
@@ -803,6 +836,9 @@ export function App() {
                 <div className="shell-mid">
                     <div />
                     <div className="shell-title-stack">
+                        {bool(backgroundUpdateStatus.updateAvailable) && bool(backgroundUpdateStatus.ok, true) && !str(backgroundUpdateStatus.error) && (
+                            <button type="button" className="global-update-label" onClick={() => goTo("updates")}>UPDATE AVAILABLE</button>
+                        )}
                         <span className={`status-bar${engine.connected && audioRunning ? " on" : ""}`} title={
                             engine.connected
                                 ? audioRunning ? "engine connected, audio running" : "engine connected"

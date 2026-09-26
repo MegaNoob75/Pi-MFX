@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { controlValue, findBank, findPreset, type EngineSnapshot } from "../api";
+import { controlValue, findBank, findPreset, useMeters, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
+import { updateUiSessionSection } from "../uiSession";
+import { LibraryBrowser } from "./LibraryManager";
 import { PluginBrowser } from "./PluginBrowser";
 import { MarqueeText } from "./MarqueeText";
 import { NewPresetDialog } from "./NewPresetDialog";
+import { GainMeter } from "./GainMeter";
 
 type EditPage = "chain" | "controls" | "io";
+type PathBrowserKind = "model" | "ir";
+const PATH_BROWSER_DIR_KEYS: Record<PathBrowserKind, string> = {
+    model: "pimfx-nam-browser-dir",
+    ir: "pimfx-ir-browser-dir"
+};
 
 const NOTE_DIVISIONS = [
     { beats: 4, label: "1/1" },
@@ -541,6 +549,7 @@ export function EditorView({
                     <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
                         {page === "controls" && (
                             <EffectControls
+                                engine={engine}
                                 selected={selected}
                                 ports={ports}
                                 properties={properties}
@@ -919,6 +928,8 @@ function PathPropertyPicker({
     propertyUri,
     current,
     files,
+    engine,
+    fileBrowserKind,
     client,
     run
 }: {
@@ -926,10 +937,13 @@ function PathPropertyPicker({
     propertyUri: string;
     current: string;
     files: JsonObject[];
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    fileBrowserKind?: PathBrowserKind;
     client: import("../api").EngineClient;
     run: (work: () => Promise<unknown>) => Promise<void>;
 }) {
     const [open, setOpen] = useState(false);
+    const [directory, setDirectory] = useState("");
     const [highlighted, setHighlighted] = useState(current);
     const highlightedRef = useRef(current);
     const lastSent = useRef(current);
@@ -937,6 +951,10 @@ function PathPropertyPicker({
     const listRef = useRef<HTMLDivElement | null>(null);
     const wheelDelta = useRef(0);
     const lastWheelStepAt = useRef(Number.NEGATIVE_INFINITY);
+    const allowedFilePathSignature = files.map((file) => str(file.path)).filter(Boolean).join("\n");
+    const allowedFilePaths = useMemo(() => allowedFilePathSignature
+        ? allowedFilePathSignature.split("\n")
+        : [], [allowedFilePathSignature]);
 
     useEffect(() => {
         lastSent.current = current;
@@ -946,6 +964,37 @@ function PathPropertyPicker({
         }
     }, [current, open]);
 
+    useEffect(() => {
+        if (!fileBrowserKind) return;
+        const shared = obj(engine.uiSession.pathBrowser);
+        const matches = bool(shared.open)
+            && str(shared.slotId) === slotId
+            && str(shared.propertyUri) === propertyUri
+            && str(shared.kind) === fileBrowserKind;
+        if (!matches) {
+            if (open) setOpen(false);
+            return;
+        }
+        const sharedOriginal = str(shared.originalPath, current);
+        const sharedHighlight = str(shared.highlightedPath, sharedOriginal);
+        if (!open) original.current = sharedOriginal;
+        lastSent.current = sharedHighlight;
+        highlightedRef.current = sharedHighlight;
+        setHighlighted(sharedHighlight);
+        setDirectory(str(shared.directory));
+        setOpen(true);
+    }, [engine.uiSession.pathBrowser, fileBrowserKind, slotId, propertyUri]);
+
+    const syncPathBrowser = (patch: JsonObject) => {
+        if (!fileBrowserKind) return;
+        updateUiSessionSection(client, "pathBrowser", {
+            slotId,
+            propertyUri,
+            kind: fileBrowserKind,
+            ...patch
+        });
+    };
+
     const previewPath = (path: string) => {
         highlightedRef.current = path;
         setHighlighted(path);
@@ -953,6 +1002,12 @@ function PathPropertyPicker({
             return;
         }
         lastSent.current = path;
+        syncPathBrowser({
+            open: true,
+            directory,
+            originalPath: original.current,
+            highlightedPath: path
+        });
         void run(() => client.request("chain/property", {
             slotId,
             property: propertyUri,
@@ -1001,7 +1056,10 @@ function PathPropertyPicker({
             property: propertyUri,
             path,
             persist: true
-        })).then(() => setOpen(false));
+        })).then(() => {
+            setOpen(false);
+            syncPathBrowser({ open: false, highlightedPath: path });
+        });
     };
 
     const cancel = () => {
@@ -1012,7 +1070,10 @@ function PathPropertyPicker({
             property: propertyUri,
             path,
             persist: false
-        })).then(() => setOpen(false));
+        })).then(() => {
+            setOpen(false);
+            syncPathBrowser({ open: false, highlightedPath: path });
+        });
     };
 
     useEffect(() => {
@@ -1022,6 +1083,7 @@ function PathPropertyPicker({
         const list = listRef.current;
         const syncEncoderHighlight = () => {
             const item = list.querySelector<HTMLElement>('[data-mfx-nav-cursor="true"]');
+            if (item?.getAttribute("data-mfx-nav-remote") === "true") return;
             const path = item?.getAttribute("data-path");
             if (path !== null && path !== undefined) {
                 previewPath(path);
@@ -1041,18 +1103,102 @@ function PathPropertyPicker({
     }, [open, highlighted]);
 
     const highlightedName = entries.find((entry) => entry.path === highlighted)?.name ?? "None";
+    const isIrBrowser = fileBrowserKind === "ir";
+    const assetLabel = isIrBrowser ? "CAB IR" : "NAM MODEL";
+    const currentEntry = files.find((file) => str(file.path) === current);
+    const currentName = currentEntry
+        ? str(currentEntry.name)
+        : current.split(/[\\/]/).pop() || `No ${assetLabel.toLowerCase()} selected`;
+    const openPicker = () => {
+        original.current = current;
+        lastSent.current = current;
+        highlightedRef.current = current;
+        wheelDelta.current = 0;
+        lastWheelStepAt.current = Number.NEGATIVE_INFINITY;
+        setHighlighted(current);
+        if (fileBrowserKind) {
+            const currentDirectory = str(currentEntry?.category).replace(/\\/g, "/");
+            const remembered = window.localStorage.getItem(PATH_BROWSER_DIR_KEYS[fileBrowserKind]) ?? "";
+            const nextDirectory = currentDirectory || remembered;
+            setDirectory(nextDirectory);
+            syncPathBrowser({
+                open: true,
+                directory: nextDirectory,
+                originalPath: current,
+                highlightedPath: current
+            });
+        }
+        setOpen(true);
+    };
+
+    if (fileBrowserKind) {
+        return (
+            <>
+                <div className="file-property-picker-trigger">
+                    <div className="muted file-property-picker-current" title={current || undefined}>{currentName}</div>
+                    <div className="row">
+                        <button type="button" className="btn file-property-picker-button" onClick={openPicker}>
+                            BROWSE {isIrBrowser ? "CAB IRS" : "NAM MODELS"}
+                        </button>
+                        <button type="button" className="btn" disabled={!current} onClick={() => commit("")}>
+                            CLEAR {assetLabel}
+                        </button>
+                    </div>
+                </div>
+                {open && createPortal(
+                    <div
+                        className="mfx-overlay"
+                        onClick={cancel}
+                        onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                                event.preventDefault();
+                                cancel();
+                            }
+                        }}
+                    >
+                        <div className="mfx-overlay-card file-property-picker asset-file-browser" onClick={(event) => event.stopPropagation()}>
+                            <div className="mfx-overlay-title">{assetLabel} BROWSER</div>
+                            <div className="muted">
+                                Browse folders and highlight a {isIrBrowser ? "cab IR" : "model"} to audition it. Press the encoder on a folder to open it, then press Use {assetLabel} to commit.
+                            </div>
+                            <LibraryBrowser
+                                engine={engine}
+                                run={run}
+                                kind={fileBrowserKind}
+                                filePicker
+                                dualDefault={false}
+                                directory={directory}
+                                onDirectoryChange={(next) => {
+                                    setDirectory(next);
+                                    window.localStorage.setItem(PATH_BROWSER_DIR_KEYS[fileBrowserKind], next);
+                                    syncPathBrowser({
+                                        open: true,
+                                        directory: next,
+                                        originalPath: original.current,
+                                        highlightedPath: highlightedRef.current
+                                    });
+                                }}
+                                selectedPath={highlighted}
+                                allowedFilePaths={allowedFilePaths}
+                                onFileSelect={(item) => previewPath(str(item.path))}
+                            />
+                            <div className="row asset-file-browser-actions">
+                                <button type="button" className="btn" onClick={cancel}>CANCEL</button>
+                                <button type="button" className="btn btn-accent" disabled={!highlighted} onClick={() => commit(highlighted)}>
+                                    USE {assetLabel}
+                                </button>
+                            </div>
+                        </div>
+                    </div>,
+                    document.body
+                )}
+            </>
+        );
+    }
 
     return (
         <>
-            <button type="button" className="btn file-property-picker-button" onClick={() => {
-                original.current = current;
-                lastSent.current = current;
-                highlightedRef.current = current;
-                wheelDelta.current = 0;
-                lastWheelStepAt.current = Number.NEGATIVE_INFINITY;
-                setHighlighted(current);
-                setOpen(true);
-            }}>
+            <button type="button" className="btn file-property-picker-button" onClick={openPicker}>
                 {highlightedName} ▾
             </button>
             {open && createPortal(
@@ -1110,6 +1256,7 @@ function PathPropertyPicker({
 }
 
 export function EffectControls({
+    engine,
     selected,
     ports,
     properties,
@@ -1125,6 +1272,7 @@ export function EffectControls({
     tempoEnabled = false,
     onBindParameter
 }: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
     selected: JsonObject;
     ports: JsonObject[];
     properties: JsonObject[];
@@ -1141,6 +1289,12 @@ export function EffectControls({
     onBindParameter?: (port: JsonObject) => void;
 }) {
     const slotId = str(selected.id);
+    const meters = useMeters(client);
+    const slotMeters = objects(meters.effects).find((meter) => str(meter.slotId) === slotId);
+    const hasAudioPorts = objects(plugin.ports).some((port) => str(port.kind) === "audio");
+    const audioSettings = obj(engine.state.audio);
+    const managedNamCalibration = bool(audioSettings.namCalibrationManaged, true)
+        && str(plugin.uri) === "http://two-play.com/plugins/toob-nam";
     const tempoLinks = obj(selected.tempoLinks);
     const [previewValues, setPreviewValues] = useState<Record<string, number>>({});
     const pendingValues = useRef(new Map<string, number>());
@@ -1225,6 +1379,18 @@ export function EffectControls({
     };
     return (
         <div className="stack">
+            {hasAudioPorts && (
+                <section className="panel lv2-signal-panel" aria-label={`${str(plugin.name, "Effect")} signal levels`}>
+                    <div className="lv2-signal-heading">
+                        <strong>LIVE SIGNAL</strong>
+                        <span>PRE / POST EFFECT</span>
+                    </div>
+                    <div className="lv2-signal-meters">
+                        <GainMeter label="In" peak={num(obj(slotMeters).inputPeak)} orientation="horizontal" />
+                        <GainMeter label="Out" peak={num(obj(slotMeters).outputPeak)} orientation="horizontal" />
+                    </div>
+                </section>
+            )}
             {ports.length === 0 && (
                 <div className="muted">This plugin has no control ports, or LV2 is not available on this build.</div>
             )}
@@ -1241,6 +1407,7 @@ export function EffectControls({
                     const value = previewValues[symbol] ?? actualValue;
                     const linkedBeats = num(tempoLinks[symbol], 0);
                     const tempoLinkCandidate = bool(port.tempoLinkCandidate);
+                    const calibrationManaged = managedNamCalibration && str(port.symbol) === "calibration";
                     const stepped = bool(port.integer) || bool(port.toggled);
                     const points = arr(port.scalePoints).filter(isObj);
                     const enumeration = bool(port.enumerated) && points.length > 0;
@@ -1331,6 +1498,11 @@ export function EffectControls({
                                     {bool(obj(boundFor(symbol)).inverted) ? " · REV" : ""}
                                 </div>
                             )}
+                            {calibrationManaged && (
+                                <div className="control-bind-hint">
+                                    MANAGED BY AUDIO PROFILE · {str(audioSettings.instrumentProfileName, "Guitar 1")} · {num(audioSettings.instrumentLevelDbU, -6).toFixed(1)} dBu
+                                </div>
+                            )}
                             {tempoLinkCandidate && (
                                 <label className="tempo-link-row">
                                     <span>TEMPO LINK</span>
@@ -1396,7 +1568,7 @@ export function EffectControls({
                                     value={value}
                                     name={name}
                                     markerValue={isToobInputCalibration(plugin, port) ? -6 : undefined}
-                                    disabled={tempoEnabled && linkedBeats > 0}
+                                    disabled={(tempoEnabled && linkedBeats > 0) || calibrationManaged}
                                     onPreview={(next) => previewLive(symbol, next)}
                                     onCancel={() => clearPreview(symbol)}
                                     onCommit={apply}
@@ -1418,6 +1590,12 @@ export function EffectControls({
                             propertyUri={str(property.uri)}
                             current={current}
                             files={files}
+                            engine={engine}
+                            fileBrowserKind={str(plugin.uri) === "http://two-play.com/plugins/toob-nam"
+                                ? "model"
+                                : str(plugin.uri) === "http://two-play.com/plugins/toob-cab-ir"
+                                ? "ir"
+                                : undefined}
                             client={client}
                             run={run}
                         />

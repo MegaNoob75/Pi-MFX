@@ -24,6 +24,8 @@ public:
     Json aptList(std::string& error);
     bool aptInstall(const std::string& package, std::string& error);
     bool aptRemove(const std::string& package, std::string& error);
+    Json lv2UpdateStatus(bool refresh, bool force, std::string& error);
+    Json updateAptLv2(std::string& error);
 
     Json repoList(std::string& error);
     bool repoAdd(const Json& payload, std::string& error);
