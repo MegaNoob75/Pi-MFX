@@ -1161,6 +1161,20 @@ Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
         result.set("package", payload["package"].asString());
         return result;
     }
+    if (command == "updates/status") {
+        const Json result = plugins_.lv2UpdateStatus(
+            payload["refresh"].asBool(false), payload["force"].asBool(false), error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
+    if (command == "updates/apt") {
+        const Json result = plugins_.updateAptLv2(error);
+        ok = error.empty();
+        if (ok) {
+            publishCatalog();
+        }
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "repo/list") {
         const Json result = plugins_.repoList(error);
         ok = error.empty();

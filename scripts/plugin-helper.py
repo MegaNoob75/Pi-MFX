@@ -23,6 +23,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 
 SOCK_PATH = sys.argv[1] if len(sys.argv) > 1 else "/run/pimfx/plugin-helper.sock"
@@ -32,8 +33,12 @@ PREFIX = os.environ.get("PIMFX_PREFIX", "/usr/local")
 HOTSPOT_SCRIPT = os.path.join(PREFIX, "libexec/pimfx/hotspot.py")
 REPO_DIR = os.environ.get("PIMFX_REPO", "")
 UPDATE_STATUS_PATH = "/run/pimfx/update-status.json"
+LV2_UPDATE_STATUS_PATH = os.path.join(DATA_ROOT, "lv2-update-status.json")
 SOURCE_REPO_PATH = os.path.join(DATA_ROOT, "source-repo")
 PUBLIC_REPO_URL = "https://github.com/MegaNoob75/Pi-MFX.git"
+PATCHSTORAGE_PATCH_URL = "https://patchstorage.com/api/beta/patches/{patch_id}/"
+PIPEDAL_LATEST_RELEASE_URL = "https://api.github.com/repos/rerdavies/pipedal/releases/latest"
+LV2_CHECK_TTL_SECONDS = 6 * 60 * 60
 SOURCES_DIR = "/etc/apt/sources.list.d"
 KEYRING_DIR = "/usr/share/keyrings"
 
@@ -71,6 +76,7 @@ HEAVY_OPS = {
     "repo-add",
     "repo-remove",
     "update-install",
+    "lv2-update-install-apt",
 }
 HEAVY_LOCK = threading.Lock()
 STATUS_LOCK = threading.Lock()
@@ -79,6 +85,8 @@ INSTALL_LOCK = threading.Lock()
 _fetch_running = False
 _fetch_error = ""
 _install_running = False
+LV2_CHECK_LOCK = threading.Lock()
+_lv2_check_running = False
 
 
 def reply(conn: socket.socket, payload: dict) -> None:
@@ -287,10 +295,308 @@ def power_pi(action: str) -> dict:
     return {"ok": True, "action": action, "message": message}
 
 
+def read_json_file(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_json_atomic(path: str, value: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, separators=(",", ":"))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+
+
+def get_json(url: str, timeout: int = 30) -> dict:
+    request = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json, application/json",
+        "User-Agent": "Pi-MFX-update-checker",
+    })
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = response.read(2 * 1024 * 1024)
+    value = json.loads(data.decode("utf-8"))
+    return value if isinstance(value, dict) else {}
+
+
+def apt_policy(package: str) -> tuple[str, str]:
+    result = run(["apt-cache", "policy", package], timeout=20)
+    if result.returncode != 0:
+        return "", ""
+    installed = ""
+    candidate = ""
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Installed:"):
+            installed = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Candidate:"):
+            candidate = stripped.split(":", 1)[1].strip()
+    return installed, candidate
+
+
+def version_is_newer(installed: str, candidate: str) -> bool:
+    if not installed or not candidate or candidate == "(none)":
+        return False
+    result = run(["dpkg", "--compare-versions", installed, "lt", candidate], timeout=10)
+    return result.returncode == 0
+
+
+def installed_lv2_apt_packages() -> list[str]:
+    result = run([
+        "dpkg-query", "-S",
+        "/usr/lib/lv2/*",
+        "/usr/lib/aarch64-linux-gnu/lv2/*",
+        "/usr/local/lib/lv2/*",
+    ], timeout=45)
+    packages: set[str] = set()
+    for line in result.stdout.splitlines():
+        owner = line.split(": ", 1)[0]
+        for raw in owner.split(","):
+            name = raw.strip().split(":", 1)[0]
+            if PACKAGE_RE.match(name) and package_installed(name):
+                packages.add(name)
+    # Packages installed through the Pi-MFX curated list remain discoverable
+    # even when dpkg-query does not expand a distro-specific LV2 path.
+    for name in SUGGESTED:
+        if package_installed(name):
+            files = run(["dpkg-query", "-L", name], timeout=15)
+            if any(".lv2/" in line or line.endswith(".lv2") for line in files.stdout.splitlines()):
+                packages.add(name)
+    return sorted(packages)
+
+
+def apt_lv2_update_items() -> list[dict]:
+    items = []
+    for name in installed_lv2_apt_packages():
+        installed, candidate = apt_policy(name)
+        update_available = version_is_newer(installed, candidate)
+        items.append({
+            "source": "apt",
+            "id": name,
+            "title": name,
+            "installedVersion": installed,
+            "latestVersion": candidate,
+            "updateAvailable": update_available,
+        })
+    return items
+
+
+def choose_patchstorage_arm64_file(patch: dict) -> dict:
+    files = patch.get("files")
+    if not isinstance(files, list):
+        return {}
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        slug = target.get("slug") if isinstance(target, dict) else ""
+        if str(slug).lower() == "rpi-aarch64":
+            return item
+    return {}
+
+
+def bundle_identity(bundle: dict) -> str:
+    for key in ("fileId", "assetId", "releaseTag", "fileModified", "filename"):
+        value = bundle.get(key)
+        if value not in (None, "", 0):
+            return str(value)
+    return ""
+
+
+def patchstorage_update_items(registry: dict) -> list[dict]:
+    items = []
+    bundles = registry.get("bundles")
+    if not isinstance(bundles, list):
+        return items
+    for bundle in bundles:
+        if not isinstance(bundle, dict) or bundle.get("source") != "patchstorage":
+            continue
+        patch_id = int(bundle.get("patchId") or 0)
+        if patch_id <= 0:
+            continue
+        item = {
+            "source": "patchstorage",
+            "id": patch_id,
+            "title": str(bundle.get("title") or f"PatchStorage {patch_id}"),
+            "installedVersion": bundle_identity(bundle),
+            "latestVersion": "",
+            "updateAvailable": False,
+        }
+        try:
+            patch = get_json(PATCHSTORAGE_PATCH_URL.format(patch_id=patch_id), timeout=30)
+            latest = choose_patchstorage_arm64_file(patch)
+            latest_identity = str(
+                latest.get("id")
+                or latest.get("updated_at")
+                or latest.get("modified")
+                or latest.get("filename")
+                or ""
+            )
+            item["latestVersion"] = latest_identity
+            if not item["installedVersion"]:
+                item["updateAvailable"] = bool(latest_identity)
+                item["versionUnknown"] = True
+            else:
+                item["updateAvailable"] = bool(latest_identity and latest_identity != item["installedVersion"])
+        except Exception as exc:  # noqa: BLE001 - keep checking the remaining plugins
+            item["error"] = str(exc)
+        items.append(item)
+    return items
+
+
+def pick_pipedal_arm64_asset(release: dict) -> dict:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "").lower()
+        if name.endswith("_arm64.deb") or name.endswith("_aarch64.deb"):
+            return asset
+    return {}
+
+
+def toob_update_items(registry: dict) -> list[dict]:
+    bundles = registry.get("bundles")
+    if not isinstance(bundles, list):
+        return []
+    installed = next((item for item in bundles if isinstance(item, dict)
+                      and item.get("source") == "pipedal-release"), None)
+    if not installed:
+        return []
+    item = {
+        "source": "pipedal-bundle",
+        "id": "toobamp",
+        "title": "ToobAmp",
+        "provider": "pipedal-bundle",
+        "installedVersion": bundle_identity(installed),
+        "latestVersion": "",
+        "updateAvailable": False,
+    }
+    try:
+        release = get_json(PIPEDAL_LATEST_RELEASE_URL, timeout=30)
+        asset = pick_pipedal_arm64_asset(release)
+        latest_identity = str(asset.get("id") or release.get("tag_name") or asset.get("name") or "")
+        item["latestVersion"] = latest_identity
+        item["releaseTag"] = str(release.get("tag_name") or "")
+        if not item["installedVersion"]:
+            item["updateAvailable"] = bool(latest_identity)
+            item["versionUnknown"] = True
+        else:
+            item["updateAvailable"] = bool(latest_identity and latest_identity != item["installedVersion"])
+    except Exception as exc:  # noqa: BLE001
+        item["error"] = str(exc)
+    return [item]
+
+
+def read_lv2_update_status() -> dict:
+    status = read_json_file(LV2_UPDATE_STATUS_PATH)
+    with LV2_CHECK_LOCK:
+        status["checking"] = _lv2_check_running
+    status.setdefault("items", [])
+    status.setdefault("updateCount", 0)
+    status["ok"] = True
+    return status
+
+
+def collect_lv2_update_status() -> dict:
+    errors = []
+    apt_refresh = apt_get(["update", "-qq"], timeout=180)
+    if apt_refresh.returncode != 0:
+        errors.append((apt_refresh.stderr or apt_refresh.stdout).strip() or "apt metadata refresh failed")
+    registry = read_json_file(os.path.join(DATA_ROOT, "plugins.json"))
+    items = apt_lv2_update_items()
+    items.extend(patchstorage_update_items(registry))
+    items.extend(toob_update_items(registry))
+    payload = {
+        "ok": True,
+        "checkOk": not errors,
+        "checkedAt": int(time.time()),
+        "checking": False,
+        "items": items,
+        "updateCount": sum(1 for item in items if item.get("updateAvailable")),
+    }
+    if errors:
+        payload["error"] = "\n".join(errors)
+    write_json_atomic(LV2_UPDATE_STATUS_PATH, payload)
+    return payload
+
+
+def start_lv2_update_check(force: bool = False) -> dict:
+    global _lv2_check_running
+    current = read_json_file(LV2_UPDATE_STATUS_PATH)
+    checked_at = int(current.get("checkedAt") or 0)
+    fresh = checked_at > 0 and time.time() - checked_at < LV2_CHECK_TTL_SECONDS
+    with LV2_CHECK_LOCK:
+        already_running = _lv2_check_running
+        if not already_running and not (fresh and not force):
+            _lv2_check_running = True
+    if already_running or (fresh and not force):
+        current["checking"] = already_running
+        current.setdefault("items", [])
+        current.setdefault("updateCount", 0)
+        current["ok"] = True
+        return current
+
+    def work() -> None:
+        global _lv2_check_running
+        try:
+            while fetch_in_progress() or install_in_progress():
+                time.sleep(0.25)
+            with HEAVY_LOCK:
+                collect_lv2_update_status()
+        except Exception as exc:  # noqa: BLE001
+            write_json_atomic(LV2_UPDATE_STATUS_PATH, {
+                "ok": True,
+                "checkOk": False,
+                "checkedAt": int(time.time()),
+                "checking": False,
+                "items": [],
+                "updateCount": 0,
+                "error": str(exc),
+            })
+        finally:
+            with LV2_CHECK_LOCK:
+                _lv2_check_running = False
+
+    threading.Thread(target=work, daemon=True, name="pimfx-lv2-update-check").start()
+    current["checking"] = True
+    current.setdefault("items", [])
+    current.setdefault("updateCount", 0)
+    current["ok"] = True
+    return current
+
+
+def install_apt_lv2_updates(timeout: int) -> dict:
+    status = collect_lv2_update_status()
+    if not status.get("checkOk", True):
+        return {"ok": False, "error": str(status.get("error") or "could not refresh apt metadata")}
+    packages = [
+        str(item.get("id") or "")
+        for item in status.get("items", [])
+        if item.get("source") == "apt" and item.get("updateAvailable")
+    ]
+    if not packages:
+        return {"ok": True, "packages": [], "message": "Apt LV2 plugins are already up to date."}
+    if any(not PACKAGE_RE.match(name) for name in packages):
+        return {"ok": False, "error": "the derived LV2 package list was invalid"}
+    result = apt_get(["install", "-y", "--only-upgrade", "--no-install-recommends", *packages], timeout=timeout)
+    if result.returncode != 0:
+        return {"ok": False, "error": (result.stderr or result.stdout).strip() or "LV2 package update failed"}
+    return {"ok": True, "packages": packages, "message": "Updated apt LV2 plugins."}
+
+
 def handle(request: dict) -> dict:
     op = request.get("op") or ""
     timeout = int(request.get("timeout") or 60)
-    max_timeout = 1800 if op == "update-install" else 300
+    max_timeout = 1800 if op == "update-install" else (900 if op == "lv2-update-install-apt" else 300)
     timeout = max(10, min(timeout, max_timeout))
 
     if op == "ping":
@@ -404,6 +710,18 @@ def handle(request: dict) -> dict:
         if result.returncode != 0:
             return {"ok": False, "error": (result.stderr or result.stdout).strip() or "apt-get update failed"}
         return {"ok": True}
+
+    if op == "lv2-update-status":
+        if bool(request.get("refresh")):
+            return start_lv2_update_check(force=bool(request.get("force")))
+        status = read_lv2_update_status()
+        checked_at = int(status.get("checkedAt") or 0)
+        if checked_at <= 0 or time.time() - checked_at >= LV2_CHECK_TTL_SECONDS:
+            return start_lv2_update_check(force=False)
+        return status
+
+    if op == "lv2-update-install-apt":
+        return install_apt_lv2_updates(timeout)
 
     if op == "repo-list":
         return {"ok": True, "repos": list_repos()}
@@ -578,6 +896,18 @@ def serve() -> None:
         pass
     sock.listen(8)
 
+    # Let the engine open ALSA and settle before any Git, apt, or network work.
+    # The helper itself is ready immediately, while these low-priority checks
+    # begin one minute later in a detached worker.
+    def boot_update_check() -> None:
+        time.sleep(60)
+        repo = find_repo()
+        if repo_is_clone(repo):
+            start_origin_fetch(repo)
+        start_lv2_update_check(force=False)
+
+    threading.Thread(target=boot_update_check, daemon=True, name="pimfx-boot-update-check").start()
+
     while True:
         conn, _unused = sock.accept()
         thread = threading.Thread(target=handle_connection, args=(conn,), daemon=True)
@@ -682,20 +1012,8 @@ def ensure_update_origin(repo: str) -> None:
         added = git_in_repo(["remote", "add", "origin", PUBLIC_REPO_URL], repo=repo)
         if added.returncode != 0:
             raise ValueError(git_error(added, "could not configure the Pi-MFX GitHub remote"))
-        return
-    current = result.stdout.strip()
-    official = current.lower().replace("\\", "/").rstrip("/")
-    if official.endswith(".git"):
-        official = official[:-4]
-    if official in {
-        "git@github.com:meganoob75/pi-mfx",
-        "ssh://git@github.com/meganoob75/pi-mfx",
-        "https://github.com/meganoob75/pi-mfx",
-        "http://github.com/meganoob75/pi-mfx",
-    } and current != PUBLIC_REPO_URL:
-        changed = git_in_repo(["remote", "set-url", "origin", PUBLIC_REPO_URL], repo=repo)
-        if changed.returncode != 0:
-            raise ValueError(git_error(changed, "could not configure anonymous GitHub updates"))
+    # Preserve an existing authenticated SSH or HTTPS remote. Rewriting it can
+    # break private/fork deployments and is unnecessary for update discovery.
 
 
 def install_in_progress() -> bool:

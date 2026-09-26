@@ -130,7 +130,7 @@ const controls = [
 const state: Body = {
     type: "state",
     version: "0.6.0-dev",
-    gitSha: "workstation",
+    gitSha: "a1b2c3d",
     audioBackend: "ALSA hw: USB Audio",
     pluginCount: 18,
     audioRunning: true,
@@ -273,10 +273,26 @@ function responseFor(command: string): Body {
     if (command === "plugins/status") return { ok: true, helperOnline: true, recommended: [{ id: "toob", name: "TooB LV2", description: "NAM, cabinet IR and utility effects", installed: true }, { id: "mod-utilities", name: "MOD Utilities", description: "Meters, filters and routing tools", installed: false }] };
     if (command === "plugins/apt/list") return { ok: true, packages: [{ name: "calf-plugins", description: "Calf Studio Gear", installed: true }, { name: "mda-lv2", description: "Classic MDA effects", installed: false }] };
     if (command === "plugins/patchstorage/search") return { ok: true, items: [{ id: 101, name: "Stereo Tape Delay", author: "PatchStorage", description: "Tempo-aware stereo delay", downloads: 1800 }, { id: 102, name: "Shimmer Reverb", author: "PatchStorage", description: "Ambient pitch reverb", downloads: 1260 }], hasMore: false };
+    if (command === "plugins/updates/status") return { ok: true, checking: false, updateCount: 2, items: [{ source: "apt", id: "calf-plugins", title: "calf-plugins", updateAvailable: true }, { source: "pipedal-bundle", id: "toobamp", title: "ToobAmp", updateAvailable: true }] };
     if (command === "library" || command === "catalog") return { ok: true };
     if (command === "library/tree") return { ok: true, directories: ["TONE3000", "Cabinets", "Favorites"] };
     if (command === "library/list") return { ok: true, directory: "", items: [{ name: "TONE3000", path: "TONE3000", directory: true }, { name: "Deluxe-Clean.nam", path: "Deluxe-Clean.nam", size: 684213 }, { name: "British-Crunch.nam", path: "British-Crunch.nam", size: 721442 }] };
-    if (command === "system/update/status") return { ok: true, phase: "idle", branch: "workstation", currentCommit: "workstation", remoteCommit: "workstation", updateAvailable: false, message: "Pi-MFX is up to date" };
+    if (command === "system/update/status") {
+        const updating = variant === "updating";
+        const available = updating || variant === "update";
+        return {
+            ok: true,
+            phase: updating ? "installing" : "idle",
+            jobState: updating ? "installing" : "idle",
+            branch: "dev",
+            requestedBranch: "dev",
+            installedCommit: "a1b2c3d",
+            latestCommit: available ? "d4e5f6a" : "a1b2c3d",
+            updateAvailable: available,
+            message: updating ? "Building Pi-MFX…" : "Pi-MFX is up to date",
+            log: updating ? Array.from({ length: 40 }, (_, index) => `Build step ${index + 1} completed`).join("\n") : ""
+        };
+    }
     if (command === "hotspot/config") return { ok: true, mode: "wifi", connected: true, ssid: "Studio Network", ip: "192.168.1.42", hotspotSsid: "PI-MFX", hotspotIp: "10.42.0.1" };
     return { ok: true };
 }
