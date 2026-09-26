@@ -14,6 +14,8 @@ assert.match(css, /\.updates-progress\s*\{[^}]*max-height:\s*240px[^}]*overflow:
     'the update terminal must stay fixed-height and scroll');
 assert.match(css, /\.updates-layout\s*\{[^}]*grid-template-columns:/s,
     'the Updates page must use the compact landscape layout');
+assert.match(css, /\.updates-pimfx-body\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 190px/s,
+    'the Pi-MFX action column must be wide enough for Check for Updates');
 assert.match(view, /updates-channel-actions[\s\S]*DEV \(LATEST\)[\s\S]*MAIN \(RELEASE\)[\s\S]*CHECK FOR UPDATES/,
     'the Pi-MFX branch and check controls must share the compact action column');
 assert.doesNotMatch(view, /An update rebuilds the engine and UI/,
@@ -28,6 +30,8 @@ assert.match(app, /global-update-label[\s\S]*UPDATE AVAILABLE/,
     'a global code-update label must be rendered above the page title');
 assert.match(app, /branch:\s*""/,
     'the background check must follow the currently installed Git branch');
+assert.match(app, /void poll\(true\)[\s\S]*5_000/,
+    'the UI must start update discovery immediately and surface its result promptly');
 assert.match(view, /UPDATE LV2 PLUGINS/,
     'the Updates page must expose the combined LV2 update action');
 assert.match(router, /command == "updates\/status"/,
@@ -36,8 +40,8 @@ assert.match(router, /command == "updates\/apt"/,
     'the engine must expose the derived apt LV2 update action');
 assert.match(store, /record\.set\("provider", "pipedal-bundle"\)/,
     'TooB installs must retain provider provenance for a future apt migration');
-assert.match(helper, /time\.sleep\(60\)/,
-    'boot checks must wait for audio startup');
+assert.match(helper, /time\.sleep\(10\)/,
+    'headless boot checks must use only a short startup delay');
 assert.match(service, /Nice=19[\s\S]*IOSchedulingClass=idle/,
     'background checks must run below the realtime audio service');
 

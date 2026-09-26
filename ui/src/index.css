@@ -4598,7 +4598,7 @@ button.list-item {
 
 .updates-pimfx-body {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 170px;
+    grid-template-columns: minmax(0, 1fr) 190px;
     gap: 10px;
     align-items: start;
 }
@@ -4716,7 +4716,7 @@ button.list-item {
     }
 
     .updates-pimfx-body {
-        grid-template-columns: minmax(0, 1fr) 170px;
+        grid-template-columns: minmax(0, 1fr) 190px;
         gap: 8px;
     }
 

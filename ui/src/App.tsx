@@ -286,8 +286,11 @@ export function App() {
                 // check must never create a misleading global badge.
             }
         };
-        void poll(false);
-        const timer = window.setInterval(() => void poll(false), 30_000);
+        // The helper launches Git work asynchronously at low CPU/I/O priority,
+        // so start discovery as soon as the UI has an engine connection. Poll
+        // the cached result frequently enough to surface the badge promptly.
+        void poll(true);
+        const timer = window.setInterval(() => void poll(false), 5_000);
         return () => {
             stopped = true;
             window.clearInterval(timer);

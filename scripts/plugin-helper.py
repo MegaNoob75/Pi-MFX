@@ -896,11 +896,11 @@ def serve() -> None:
         pass
     sock.listen(8)
 
-    # Let the engine open ALSA and settle before any Git, apt, or network work.
-    # The helper itself is ready immediately, while these low-priority checks
-    # begin one minute later in a detached worker.
+    # The UI requests Git discovery as soon as it connects. Keep this short
+    # delayed fallback so headless boots still check for code and LV2 updates.
+    # The service-level CPU/I/O priorities keep this work behind realtime audio.
     def boot_update_check() -> None:
-        time.sleep(60)
+        time.sleep(10)
         repo = find_repo()
         if repo_is_clone(repo):
             start_origin_fetch(repo)
