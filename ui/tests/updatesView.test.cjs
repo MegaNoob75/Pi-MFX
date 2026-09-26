@@ -30,8 +30,10 @@ assert.match(app, /global-update-label[\s\S]*UPDATE AVAILABLE/,
     'a global code-update label must be rendered above the page title');
 assert.match(app, /branch:\s*""/,
     'the background check must follow the currently installed Git branch');
-assert.match(app, /void poll\(true\)[\s\S]*5_000/,
-    'the UI must start update discovery immediately and surface its result promptly');
+assert.match(app, /if \(bool\(next\.fetching\)\)[\s\S]*setTimeout\(\(\) => void poll\(false\), 2_000\)/,
+    'the UI must poll cached status only while update discovery is running');
+assert.doesNotMatch(app, /setInterval\(\(\) => void poll\(false\)/,
+    'the global update check must not poll forever after discovery finishes');
 assert.match(view, /UPDATE LV2 PLUGINS/,
     'the Updates page must expose the combined LV2 update action');
 assert.match(router, /command == "updates\/status"/,

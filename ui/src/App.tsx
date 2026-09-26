@@ -272,6 +272,7 @@ export function App() {
     useEffect(() => {
         if (!engine.connected) return;
         let stopped = false;
+        let timer: number | undefined;
         const installedCommit = str(engine.state.gitSha);
         const poll = async (fetch: boolean) => {
             try {
@@ -280,20 +281,23 @@ export function App() {
                     branch: "",
                     installedCommit
                 }));
-                if (!stopped) setBackgroundUpdateStatus(next);
+                if (stopped) return;
+                setBackgroundUpdateStatus(next);
+                if (bool(next.fetching)) {
+                    timer = window.setTimeout(() => void poll(false), 2_000);
+                }
             } catch {
                 // The Updates page owns detailed errors. A failed background
                 // check must never create a misleading global badge.
             }
         };
         // The helper launches Git work asynchronously at low CPU/I/O priority,
-        // so start discovery as soon as the UI has an engine connection. Poll
-        // the cached result frequently enough to surface the badge promptly.
+        // so start discovery as soon as the UI has an engine connection. Read
+        // cached progress only until that one fetch finishes, then stop.
         void poll(true);
-        const timer = window.setInterval(() => void poll(false), 5_000);
         return () => {
             stopped = true;
-            window.clearInterval(timer);
+            if (timer !== undefined) window.clearTimeout(timer);
         };
     }, [engine.connected, engine.client, engine.state.gitSha]);
 
