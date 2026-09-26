@@ -4587,15 +4587,39 @@ button.list-item {
 
 .updates-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+}
+
+.updates-card {
+    min-width: 0;
+}
+
+.updates-pimfx-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 170px;
     gap: 10px;
     align-items: start;
+}
+
+.updates-channel-actions {
+    display: grid;
+    gap: 6px;
+}
+
+.updates-channel-actions .btn {
+    width: 100%;
+    min-width: 0;
+    padding: 7px 8px;
+    font-size: 0.82rem;
+    white-space: nowrap;
 }
 
 .updates-version-grid {
     display: grid;
     grid-template-columns: minmax(90px, auto) 1fr;
-    gap: 7px 14px;
+    gap: 5px 10px;
     align-items: center;
 }
 
@@ -4605,16 +4629,11 @@ button.list-item {
 }
 
 .updates-status {
-    margin-top: 4px;
     font-weight: 800;
 }
 
-.updates-warning {
-    color: var(--mfx-muted);
-    line-height: 1.5;
-    padding: 12px;
-    border: 1px solid var(--mfx-danger);
-    border-radius: 9px;
+.updates-install-action {
+    align-self: flex-start;
 }
 
 .updates-progress,
@@ -4633,8 +4652,8 @@ button.list-item {
 }
 
 .updates-progress {
-    height: clamp(100px, 20vh, 150px);
-    max-height: 150px;
+    height: clamp(170px, 32vh, 240px);
+    max-height: 240px;
     margin-top: 10px;
     overflow: auto;
     white-space: pre-wrap;
@@ -4666,6 +4685,7 @@ button.list-item {
 }
 
 .updates-recovery {
+    margin-top: auto;
     padding-top: 6px;
     border-top: 1px solid var(--mfx-border);
 }
@@ -4695,9 +4715,13 @@ button.list-item {
         padding: 9px;
     }
 
-    .updates-warning {
-        padding: 8px;
-        line-height: 1.3;
+    .updates-pimfx-body {
+        grid-template-columns: minmax(0, 1fr) 170px;
+        gap: 8px;
+    }
+
+    .updates-progress {
+        height: clamp(170px, 35vh, 220px);
     }
 }
 

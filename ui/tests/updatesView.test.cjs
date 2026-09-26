@@ -10,10 +10,16 @@ const store = fs.readFileSync(path.join(__dirname, '../../engine/src/library/Plu
 const helper = fs.readFileSync(path.join(__dirname, '../../scripts/plugin-helper.py'), 'utf8');
 const service = fs.readFileSync(path.join(__dirname, '../../systemd/pimfx-plugin-helper.service.in'), 'utf8');
 
-assert.match(css, /\.updates-progress\s*\{[^}]*max-height:\s*150px[^}]*overflow:\s*auto/s,
+assert.match(css, /\.updates-progress\s*\{[^}]*max-height:\s*240px[^}]*overflow:\s*auto/s,
     'the update terminal must stay fixed-height and scroll');
 assert.match(css, /\.updates-layout\s*\{[^}]*grid-template-columns:/s,
     'the Updates page must use the compact landscape layout');
+assert.match(view, /updates-channel-actions[\s\S]*DEV \(LATEST\)[\s\S]*MAIN \(RELEASE\)[\s\S]*CHECK FOR UPDATES/,
+    'the Pi-MFX branch and check controls must share the compact action column');
+assert.doesNotMatch(view, /An update rebuilds the engine and UI/,
+    'the implementation warning must not occupy the Updates screen');
+assert.match(view, /updates-pimfx-card[\s\S]*updates-recovery[\s\S]*LV2 PLUGIN UPDATES/,
+    'command-line recovery belongs to the Pi-MFX panel');
 assert.match(view, /\(\["dev", "main"\] as const\)/,
     'only dev and main are product update channels');
 assert.doesNotMatch(view, /"workstation"/,

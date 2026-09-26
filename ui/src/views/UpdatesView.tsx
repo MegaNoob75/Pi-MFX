@@ -235,41 +235,48 @@ export function UpdatesView({
         <div className="mfx-screen">
             <div className="page-scroll updates-page" data-mfx-sync-scroll="settings-updates">
                 <div className="updates-layout">
-                <section className="panel stack">
+                <section className="panel stack updates-card updates-pimfx-card">
                     <h2>PI-MFX UPDATE</h2>
-                    <div className="updates-version-grid">
-                        <span>Version</span>
-                        <strong>{version}</strong>
-                        <span>Installed</span>
-                        <strong>{installedCommit || "Unknown"}</strong>
-                        {latestCommit && (
-                            <>
-                                <span>Latest on {effectiveBranch}</span>
-                                <strong>{latestCommit}</strong>
-                            </>
-                        )}
-                        {currentBranch && (
-                            <>
-                                <span>This Pi</span>
-                                <strong>{currentBranch}</strong>
-                            </>
-                        )}
-                    </div>
-                    <div className="row" style={{ flexWrap: "wrap" }}>
-                        {(["dev", "main"] as const).map((item) => (
+                    <div className="updates-pimfx-body">
+                        <div className="updates-version-grid">
+                            <span>Version</span>
+                            <strong>{version}</strong>
+                            <span>Installed</span>
+                            <strong>{installedCommit || "Unknown"}</strong>
+                            {latestCommit && (
+                                <>
+                                    <span>Latest on {effectiveBranch}</span>
+                                    <strong>{latestCommit}</strong>
+                                </>
+                            )}
+                            {currentBranch && (
+                                <>
+                                    <span>This Pi</span>
+                                    <strong>{currentBranch}</strong>
+                                </>
+                            )}
+                        </div>
+                        <div className="updates-channel-actions">
+                            {(["dev", "main"] as const).map((item) => (
+                                <button
+                                    key={item}
+                                    type="button"
+                                    className={`btn ${effectiveBranch === item ? "btn-active" : ""}`}
+                                    disabled={checking || installing || fetching}
+                                    onClick={() => chooseBranch(item)}
+                                >
+                                    {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
+                                </button>
+                            ))}
                             <button
-                                key={item}
                                 type="button"
-                                className={`btn ${effectiveBranch === item ? "btn-active" : ""}`}
+                                className="btn"
                                 disabled={checking || installing || fetching}
-                                onClick={() => chooseBranch(item)}
+                                onClick={() => void check(true)}
                             >
-                                {item === "dev" ? "DEV (LATEST)" : "MAIN (RELEASE)"}
+                                {checking || fetching ? "CHECKING..." : "CHECK FOR UPDATES"}
                             </button>
-                        ))}
-                    </div>
-                    <div className="muted">
-                        Dev tracks day-to-day work. Main is the release branch.
+                        </div>
                     </div>
                     <div className="updates-status">
                         {(checking || fetching) && "Checking for updates…"}
@@ -283,33 +290,29 @@ export function UpdatesView({
                         {!checking && !fetching && !installing && !updateAvailable && !upToDate && !switching && !str(status.error)
                             && (str(status.message) || "Could not determine update status.")}
                     </div>
-                    <div className="updates-warning">
-                        An update rebuilds the engine and UI in the background so the controller stays live,
-                        then restarts the Pi-MFX service at the end. Audio drops only for that restart.
-                    </div>
-                    <div className="row" style={{ flexWrap: "wrap" }}>
+                    {(updateAvailable || switching) && (
                         <button
                             type="button"
-                            className="btn"
+                            className="btn btn-accent updates-install-action"
                             disabled={checking || installing || fetching}
-                            onClick={() => void check(true)}
+                            onClick={() => showInstallConfirmation(true)}
                         >
-                            {checking || fetching ? "CHECKING..." : "CHECK FOR UPDATES"}
+                            {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || effectiveBranch.toUpperCase()}`}
                         </button>
-                        {(updateAvailable || switching) && (
-                            <button
-                                type="button"
-                                className="btn btn-accent"
-                                disabled={checking || installing || fetching}
-                                onClick={() => showInstallConfirmation(true)}
-                            >
-                                {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || effectiveBranch.toUpperCase()}`}
-                            </button>
-                        )}
-                    </div>
+                    )}
                     {message && <div className="muted">{message}</div>}
+                    <details className="updates-recovery">
+                        <summary>COMMAND-LINE RECOVERY</summary>
+                        <div className="muted">
+                            {helperMissing
+                                ? "The updater cannot see the Pi-MFX clone yet. From the clone, run this once:"
+                                : "If an update cannot be started from this screen, update from the Pi-MFX clone:"}
+                        </div>
+                        <pre className="updates-command">{`sudo bash ./scripts/pimfx.sh update --branch ${normalizeBranch(effectiveBranch)}`}</pre>
+                        <div className="muted">{CLI_COMMAND.replace("dev", "main")} for release.</div>
+                    </details>
                 </section>
-                <section className="panel stack">
+                <section className="panel stack updates-card">
                     <h2>LV2 PLUGIN UPDATES</h2>
                     <div className="updates-status">
                         {pluginChecking
@@ -343,16 +346,6 @@ export function UpdatesView({
                             {pluginInstalling ? "UPDATING…" : `UPDATE LV2 PLUGINS${pluginUpdateCount > 0 ? ` (${pluginUpdateCount})` : ""}`}
                         </button>
                     </div>
-                    <details className="updates-recovery">
-                        <summary>COMMAND-LINE RECOVERY</summary>
-                        <div className="muted">
-                            {helperMissing
-                                ? "The updater cannot see the Pi-MFX clone yet. From the clone, run this once:"
-                                : "If an update cannot be started from this screen, update from the Pi-MFX clone:"}
-                        </div>
-                        <pre className="updates-command">{`sudo bash ./scripts/pimfx.sh update --branch ${normalizeBranch(effectiveBranch)}`}</pre>
-                        <div className="muted">{CLI_COMMAND.replace("dev", "main")} for release.</div>
-                    </details>
                 </section>
                 </div>
                 {progressLines.length > 0 && (installing || pluginInstalling || str(status.jobState) === "failed" || pluginLog.length > 0) && (
