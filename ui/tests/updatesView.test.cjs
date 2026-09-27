@@ -9,6 +9,7 @@ const router = fs.readFileSync(path.join(__dirname, '../../engine/src/control/Ap
 const store = fs.readFileSync(path.join(__dirname, '../../engine/src/library/PluginStore.cpp'), 'utf8');
 const helper = fs.readFileSync(path.join(__dirname, '../../scripts/plugin-helper.py'), 'utf8');
 const service = fs.readFileSync(path.join(__dirname, '../../systemd/pimfx-plugin-helper.service.in'), 'utf8');
+const updateReturn = fs.readFileSync(path.join(__dirname, '../src/updateReturn.ts'), 'utf8');
 
 assert.match(css, /\.updates-progress\s*\{[^}]*max-height:\s*240px[^}]*overflow:\s*auto/s,
     'the update terminal must stay fixed-height and scroll');
@@ -22,6 +23,16 @@ assert.doesNotMatch(view, /An update rebuilds the engine and UI/,
     'the implementation warning must not occupy the Updates screen');
 assert.match(view, /updates-pimfx-card[\s\S]*updates-recovery[\s\S]*LV2 PLUGIN UPDATES/,
     'command-line recovery belongs to the Pi-MFX panel');
+assert.match(view, /markReturnToUpdatesAfterInstall\(\)[\s\S]*system\/update\/install/,
+    'starting an update must mark this browser to return to Updates after refresh');
+assert.match(view, /progressRef[\s\S]*scrollTop = progress\.scrollHeight/,
+    'the update console must follow new output');
+assert.match(view, /\{progressLines\.length > 0 && \(/,
+    'the last update log must remain visible after the job finishes');
+assert.match(app, /hasPendingUpdateReturn\(\)[\s\S]*setView\("updates"\)[\s\S]*view: "updates"/,
+    'a refreshed browser must restore the Updates screen and its shared navigation state');
+assert.match(updateReturn, /sessionStorage\.setItem[\s\S]*sessionStorage\.removeItem/,
+    'the return marker must survive a same-tab update refresh and then be consumed');
 assert.match(view, /\(\["dev", "main"\] as const\)/,
     'only dev and main are product update channels');
 assert.doesNotMatch(view, /"workstation"/,
@@ -44,6 +55,10 @@ assert.match(store, /record\.set\("provider", "pipedal-bundle"\)/,
     'TooB installs must retain provider provenance for a future apt migration');
 assert.match(helper, /time\.sleep\(10\)/,
     'headless boot checks must use only a short startup delay');
+assert.match(helper, /UPDATE_LOG_PATH[\s\S]*Update finished successfully/,
+    'the helper must retain complete output for the last update attempt');
+assert.doesNotMatch(helper, /"log": "" if code == 0/,
+    'a successful update must not discard its console output');
 assert.match(service, /Nice=19[\s\S]*IOSchedulingClass=idle/,
     'background checks must run below the realtime audio service');
 

@@ -30,6 +30,7 @@ import { CommunityPresetsView } from "./views/CommunityPresetsView";
 import { TunerView } from "./views/TunerView";
 import { installResponsiveSizing } from "./responsive";
 import { MenuIcon, type MenuIconName } from "./theme/MenuIcon";
+import { clearPendingUpdateReturn, hasPendingUpdateReturn } from "./updateReturn";
 
 export type View =
     | "performance"
@@ -165,7 +166,8 @@ function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject |
 
 export function App() {
     const engine = useEngine();
-    const [view, setView] = useState<View>("performance");
+    const returnToUpdatesAfterInstall = useRef(hasPendingUpdateReturn());
+    const [view, setView] = useState<View>(() => returnToUpdatesAfterInstall.current ? "updates" : "performance");
     const [menuOpen, setMenuOpen] = useState(false);
     const [history, setHistory] = useState<View[]>([]);
     const [toast, setToast] = useState("");
@@ -326,6 +328,21 @@ export function App() {
             setHistory(sharedHistory);
         }
     }, [engine.uiSession]);
+
+    useEffect(() => {
+        if (!engine.connected || !returnToUpdatesAfterInstall.current) return;
+        returnToUpdatesAfterInstall.current = false;
+        clearPendingUpdateReturn();
+        const returnHistory: View[] = ["performance"];
+        setView("updates");
+        setHistory(returnHistory);
+        setMenuOpen(false);
+        engine.client.updateUiSession({
+            view: "updates",
+            menuOpen: false,
+            viewHistory: returnHistory
+        });
+    }, [engine.connected, engine.client]);
 
     useEffect(() => installResponsiveSizing(), []);
 

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { bool, num, obj, objects, str } from "../json";
 import { updateUiSessionSection } from "../uiSession";
+import { markReturnToUpdatesAfterInstall } from "../updateReturn";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 const POLL_MS = 2000;
@@ -30,6 +31,8 @@ export function UpdatesView({
     const [pluginStatus, setPluginStatus] = useState(obj({}));
     const [pluginInstalling, setPluginInstalling] = useState(false);
     const [pluginLog, setPluginLog] = useState<string[]>([]);
+    const progressRef = useRef<HTMLPreElement | null>(null);
+    const followProgressRef = useRef(true);
 
     useEffect(() => {
         const shared = obj(engine.uiSession.updates);
@@ -153,6 +156,8 @@ export function UpdatesView({
         showInstallConfirmation(false);
         setInstalling(true);
         setMessage("Starting update…");
+        followProgressRef.current = true;
+        markReturnToUpdatesAfterInstall();
         void run(async () => {
             try {
                 const next = obj(await engine.client.request("system/update/install", {
@@ -199,6 +204,7 @@ export function UpdatesView({
         setConfirmPluginInstall(false);
         setPluginInstalling(true);
         setPluginLog([]);
+        followProgressRef.current = true;
         void run(async () => {
             const append = (line: string) => setPluginLog((lines) => [...lines, line]);
             try {
@@ -230,6 +236,16 @@ export function UpdatesView({
         });
     };
     const progressLines = [...logLines, ...pluginLog];
+    const progressText = progressLines.join("\n");
+
+    useEffect(() => {
+        if (!followProgressRef.current) return;
+        const frame = window.requestAnimationFrame(() => {
+            const progress = progressRef.current;
+            if (progress) progress.scrollTop = progress.scrollHeight;
+        });
+        return () => window.cancelAnimationFrame(frame);
+    }, [progressText]);
 
     return (
         <div className="mfx-screen">
@@ -348,8 +364,14 @@ export function UpdatesView({
                     </div>
                 </section>
                 </div>
-                {progressLines.length > 0 && (installing || pluginInstalling || str(status.jobState) === "failed" || pluginLog.length > 0) && (
-                    <pre className="updates-progress" aria-live="polite">{progressLines.join("\n")}</pre>
+                {progressLines.length > 0 && (
+                    <pre ref={progressRef} className="updates-progress" aria-live="polite"
+                        onScroll={(event) => {
+                            const console = event.currentTarget;
+                            followProgressRef.current = console.scrollHeight - console.scrollTop - console.clientHeight <= 12;
+                        }}>
+                        {progressText}
+                    </pre>
                 )}
             </div>
             {confirmInstall && (
