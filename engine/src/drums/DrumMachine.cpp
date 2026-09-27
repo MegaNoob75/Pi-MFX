@@ -30,19 +30,55 @@ float clampUnit(float value) {
 
 DrumMachine::DrumMachine(std::string root)
     : root_(std::move(root)), samplesRoot_(joinPath(root_, "samples")), kitsRoot_(joinPath(root_, "kits")),
-      statePath_(joinPath(root_, "drum-machine.json")) {
+      projectsRoot_(joinPath(root_, "projects")) {
     for (auto& variation : program_.variations) variation.length = 16;
     program_.fill.length = 16;
     makeDirectories(root_);
     makeDirectories(samplesRoot_);
     makeDirectories(kitsRoot_);
+    makeDirectories(projectsRoot_);
     for (const std::string& file : listDirectory(kitsRoot_, ".json")) savedKits_.push_back(fileStem(file));
     std::lock_guard<std::mutex> lock(stateMutex_);
+    refreshProjectListsUnlocked();
+    if (!projects_.empty()) projectId_ = projects_.front();
+    projectName_ = projectId_;
+    projectRoot_ = joinPath(projectsRoot_, projectId_);
+    makeDirectories(joinPath(projectRoot_, "patterns"));
+    makeDirectories(joinPath(projectRoot_, "songs"));
+    statePath_ = joinPath(projectRoot_, "project.json");
+    refreshProjectListsUnlocked();
     loadStateUnlocked();
+    if (!fileExists(statePath_)) saveStateUnlocked();
     std::string ignored;
     sequencer_.setProgram(program_, ignored);
     sequencer_.setSwing(controlSwing_);
     sequencer_.setHumanization(controlHumanization_);
+}
+
+void DrumMachine::refreshProjectListsUnlocked() {
+    projects_.clear();
+    savedPatterns_.clear();
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(projectsRoot_, ec)) {
+        if (entry.is_directory(ec)) projects_.push_back(entry.path().filename().string());
+    }
+    std::sort(projects_.begin(), projects_.end());
+    const std::string patterns = joinPath(projectRoot_, "patterns");
+    for (const std::string& file : listDirectory(patterns, ".json")) savedPatterns_.push_back(fileStem(file));
+    std::sort(savedPatterns_.begin(), savedPatterns_.end());
+}
+
+bool DrumMachine::loadSamplesUnlocked(std::string& error) {
+    Kit loaded;
+    for (size_t voice = 0; voice < controlKit_.voices.size(); ++voice) {
+        const std::string file = controlKit_.voices[voice].file;
+        if (file.empty()) continue;
+        std::string bytes; Sample sample;
+        if (!readLibrarySample(file, bytes, error) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
+        sample.file = file; sample.name = fileStem(file); loaded.voices[voice] = std::move(sample);
+    }
+    controlKit_ = std::move(loaded);
+    return publishKitUnlocked(error);
 }
 
 DrumMachine::~DrumMachine() {
@@ -218,11 +254,13 @@ bool DrumMachine::updateStep(const Json& payload, std::string& error) {
     const unsigned variation = static_cast<unsigned>(payload["variation"].asInt(0));
     const unsigned voice = static_cast<unsigned>(payload["voice"].asInt(-1));
     const unsigned step = static_cast<unsigned>(payload["step"].asInt(-1));
-    if (voice >= DrumSequencer::kVoiceCount || step >= program_.variations[0].length
+    const DrumSequencer::Program& editable = patternPreviewActive_ ? patternPreviewBackup_ : program_;
+    if (voice >= DrumSequencer::kVoiceCount || step >= editable.variations[0].length
         || (!fill && variation >= DrumSequencer::kVariationCount)) {
         error = "invalid drum step";
         return false;
     }
+    if (patternPreviewActive_) { program_ = patternPreviewBackup_; patternPreviewActive_ = false; }
     auto& target = fill ? program_.fill : program_.variations[variation];
     target.steps[voice][step].velocity = static_cast<uint8_t>(
         std::max(0, std::min(127, payload["velocity"].asInt(0))));
@@ -238,6 +276,7 @@ bool DrumMachine::updateSong(const Json& payload, std::string& error) {
         error = "the drum song chain must contain at most 32 sections";
         return false;
     }
+    if (patternPreviewActive_) { program_ = patternPreviewBackup_; patternPreviewActive_ = false; }
     DrumSequencer::Program next = program_;
     next.songLength = static_cast<uint8_t>(sections.size());
     for (size_t index = 0; index < sections.size(); ++index) {
@@ -251,7 +290,8 @@ bool DrumMachine::updateSong(const Json& payload, std::string& error) {
 }
 
 bool DrumMachine::updateSettings(const Json& payload, std::string& error) {
-    const unsigned length = static_cast<unsigned>(payload["length"].asInt(program_.variations[0].length));
+    const DrumSequencer::Program& editable = patternPreviewActive_ ? patternPreviewBackup_ : program_;
+    const unsigned length = static_cast<unsigned>(payload["length"].asInt(editable.variations[0].length));
     if (length != 16 && length != 32 && length != 64) {
         error = "drum pattern length must be 16, 32, or 64 steps";
         return false;
@@ -289,6 +329,13 @@ bool DrumMachine::loadKit(const Json& payload, std::string& error) {
     if (!parseError.empty() || manifest["schemaVersion"].asInt(0) != 1 || !manifest["samples"].isArray()) {
         error = "that drum kit file is invalid"; return false;
     }
+    return applyKitManifest(manifest, safe, error);
+}
+
+bool DrumMachine::applyKitManifest(const Json& manifest, const std::string& fallbackName, std::string& error) {
+    if (manifest["schemaVersion"].asInt(0) != 1 || !manifest["samples"].isArray()) {
+        error = "that drum kit file is invalid"; return false;
+    }
     Kit loaded;
     for (size_t voice = 0; voice < std::min(manifest["samples"].size(), DrumSequencer::kVoiceCount); ++voice) {
         const std::string file = manifest["samples"].at(voice).asString();
@@ -297,7 +344,7 @@ bool DrumMachine::loadKit(const Json& payload, std::string& error) {
         if (!readLibrarySample(file, bytes, error) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
         sample.file = file; sample.name = fileStem(file); loaded.voices[voice] = std::move(sample);
     }
-    controlKit_ = std::move(loaded); kitName_ = manifest["name"].asString(safe);
+    controlKit_ = std::move(loaded); kitName_ = manifest["name"].asString(fallbackName);
     if (!publishKitUnlocked(error)) return false;
     if (!saveStateUnlocked()) { error = "could not remember the selected drum kit"; return false; }
     return true;
@@ -313,6 +360,184 @@ bool DrumMachine::deleteKit(const Json& payload, std::string& error) {
     return true;
 }
 
+bool DrumMachine::newProject(const Json& payload, std::string& error) {
+    const std::string safe = sanitizeFileName(payload["name"].asString("New Drum Project"));
+    if (safe.empty()) { error = "give the drum project a name"; return false; }
+    const std::string nextRoot = joinPath(projectsRoot_, safe);
+    std::error_code ec;
+    if (std::filesystem::exists(nextRoot, ec)) { error = "a drum project already has that name"; return false; }
+    if (!makeDirectories(joinPath(nextRoot, "patterns")) || !makeDirectories(joinPath(nextRoot, "songs"))) {
+        error = "could not create the drum project"; return false;
+    }
+    patternPreviewActive_ = false;
+    projectId_ = safe; projectName_ = safe; projectRoot_ = nextRoot;
+    statePath_ = joinPath(projectRoot_, "project.json");
+    program_ = DrumSequencer::Program{};
+    for (auto& variation : program_.variations) variation.length = 16;
+    program_.fill.length = 16;
+    controlKit_ = Kit{}; kitName_ = "Custom";
+    playing_.store(false, std::memory_order_release);
+    sequencer_.setSongMode(false);
+    controlLevel_ = 0.8f; controlSwing_ = 0.0f; controlHumanization_ = 0.0f;
+    levelPermille_.store(800, std::memory_order_release);
+    if (!publishProgramUnlocked(error) || !publishKitUnlocked(error) || !saveStateUnlocked()) {
+        if (error.empty()) error = "could not save the drum project";
+        return false;
+    }
+    if (patternPreviewActive_) { program_ = patternPreviewBackup_; patternPreviewActive_ = false; }
+    refreshProjectListsUnlocked();
+    return true;
+}
+
+bool DrumMachine::openProject(const Json& payload, std::string& error) {
+    const std::string requested = payload["id"].asString();
+    const std::string safe = sanitizeFileName(requested);
+    const std::string nextRoot = joinPath(projectsRoot_, safe);
+    std::error_code ec;
+    if (safe != requested || !std::filesystem::is_directory(nextRoot, ec)) {
+        error = "that drum project was not found"; return false;
+    }
+    patternPreviewActive_ = false;
+    projectId_ = safe; projectName_ = safe; projectRoot_ = nextRoot;
+    statePath_ = joinPath(projectRoot_, "project.json");
+    program_ = DrumSequencer::Program{};
+    for (auto& variation : program_.variations) variation.length = 16;
+    program_.fill.length = 16;
+    controlKit_ = Kit{}; kitName_ = "Custom";
+    playing_.store(false, std::memory_order_release);
+    sequencer_.setSongMode(false);
+    if (!loadStateUnlocked()) { error = "that drum project is invalid"; return false; }
+    if (!publishProgramUnlocked(error) || !loadSamplesUnlocked(error)) return false;
+    refreshProjectListsUnlocked();
+    return true;
+}
+
+bool DrumMachine::deleteProject(const Json& payload, std::string& error) {
+    if (!payload["confirmed"].asBool(false)) { error = "deleting a drum project requires confirmation"; return false; }
+    const std::string requested = payload["id"].asString();
+    const std::string safe = sanitizeFileName(requested);
+    if (safe != requested) { error = "that drum project name is invalid"; return false; }
+    if (safe == projectId_) { error = "open another drum project before deleting this one"; return false; }
+    const std::string target = joinPath(projectsRoot_, safe);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(target, ec)) { error = "that drum project was not found"; return false; }
+    std::filesystem::remove_all(target, ec);
+    if (ec) { error = "could not delete the drum project"; return false; }
+    refreshProjectListsUnlocked();
+    return true;
+}
+
+bool DrumMachine::savePattern(const Json& payload, std::string& error) {
+    const std::string safe = sanitizeFileName(payload["name"].asString("Pattern"));
+    if (safe.empty()) { error = "give the pattern a name"; return false; }
+    Json root = Json::object(); root.set("schemaVersion", 1);
+    Json variations = Json::array();
+    for (const auto& variation : program_.variations) variations.push(patternToJson(variation));
+    root.set("variations", std::move(variations)); root.set("fill", patternToJson(program_.fill));
+    if (!writeFileAtomic(joinPath(joinPath(projectRoot_, "patterns"), safe + ".json"), root.dump(2))) {
+        error = "could not save the drum pattern"; return false;
+    }
+    refreshProjectListsUnlocked(); return true;
+}
+
+bool DrumMachine::loadPattern(const Json& payload, std::string& error) {
+    const std::string safe = sanitizeFileName(fileStem(payload["name"].asString()));
+    std::string text;
+    if (!readFile(joinPath(joinPath(projectRoot_, "patterns"), safe + ".json"), text)) {
+        error = "that drum pattern was not found"; return false;
+    }
+    std::string parseError; const Json root = Json::parse(text, &parseError);
+    if (!parseError.empty()) { error = "that drum pattern file is invalid"; return false; }
+    return applyPattern(root, true, error);
+}
+
+bool DrumMachine::applyPattern(const Json& root, bool persist, std::string& error) {
+    if (root["schemaVersion"].asInt(0) != 1 || !root["variations"].isArray()) {
+        error = "that drum pattern file is invalid"; return false;
+    }
+    DrumSequencer::Program next = program_;
+    for (size_t index = 0; index < std::min(root["variations"].size(), DrumSequencer::kVariationCount); ++index)
+        if (!patternFromJson(root["variations"].at(index), next.variations[index])) {
+            error = "that drum pattern file is invalid"; return false;
+        }
+    if (!patternFromJson(root["fill"], next.fill)) { error = "that drum fill is invalid"; return false; }
+    program_ = next;
+    if (!publishProgramUnlocked(error) || (persist && !saveStateUnlocked())) {
+        if (error.empty()) error = "could not load the drum pattern";
+        return false;
+    }
+    if (persist) patternPreviewActive_ = false;
+    return true;
+}
+
+bool DrumMachine::applySong(const Json& root, std::string& error) {
+    if (root["schemaVersion"].asInt(0) != 1 || !root["variations"].isArray()
+        || root["variations"].size() != DrumSequencer::kVariationCount
+        || !root["song"].isArray() || !root["kit"].isObject()
+        || !root["kit"]["samples"].isArray()) {
+        error = "that drum song file is invalid";
+        return false;
+    }
+    DrumSequencer::Program next = program_;
+    for (size_t index = 0; index < std::min(root["variations"].size(), DrumSequencer::kVariationCount); ++index) {
+        if (!patternFromJson(root["variations"].at(index), next.variations[index])) {
+            error = "that drum song contains an invalid pattern";
+            return false;
+        }
+    }
+    if (!patternFromJson(root["fill"], next.fill)
+        || root["song"].size() > DrumSequencer::kMaxSongSections) {
+        error = "that drum song arrangement is invalid";
+        return false;
+    }
+    next.songLength = static_cast<uint8_t>(root["song"].size());
+    for (size_t index = 0; index < root["song"].size(); ++index) {
+        const int variation = root["song"].at(index)["variation"].asInt(-1);
+        const int repeats = root["song"].at(index)["repeats"].asInt(0);
+        if (variation < 0 || variation >= static_cast<int>(DrumSequencer::kVariationCount)
+            || repeats < 1 || repeats > 16) {
+            error = "that drum song section is invalid";
+            return false;
+        }
+        next.song[index].variation = static_cast<uint8_t>(variation);
+        next.song[index].repeats = static_cast<uint8_t>(repeats);
+    }
+    Kit loaded;
+    const Json& samples = root["kit"]["samples"];
+    if (samples.size() > DrumSequencer::kVoiceCount) {
+        error = "that drum song contains too many drum voices";
+        return false;
+    }
+    for (size_t voice = 0; voice < samples.size(); ++voice) {
+        const std::string file = samples.at(voice).asString();
+        if (file.empty()) continue;
+        std::string bytes; Sample sample;
+        if (!readLibrarySample(file, bytes, error) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
+        sample.file = file; sample.name = fileStem(file); loaded.voices[voice] = std::move(sample);
+    }
+    program_ = std::move(next);
+    controlKit_ = std::move(loaded);
+    kitName_ = root["kit"]["name"].asString("Custom");
+    controlLevel_ = std::max(0.0f, std::min(1.5f, root["level"].asFloat(controlLevel_)));
+    controlSwing_ = clampUnit(root["swing"].asFloat(controlSwing_));
+    controlHumanization_ = clampUnit(root["humanization"].asFloat(controlHumanization_));
+    levelPermille_.store(static_cast<uint32_t>(std::lround(controlLevel_ * 1000.0f)), std::memory_order_release);
+    patternPreviewActive_ = false;
+    if (!publishProgramUnlocked(error) || !publishKitUnlocked(error)) return false;
+    sequencer_.setSongMode(true);
+    if (!saveStateUnlocked()) { error = "could not save the loaded drum song"; return false; }
+    return true;
+}
+
+bool DrumMachine::deletePattern(const Json& payload, std::string& error) {
+    if (!payload["confirmed"].asBool(false)) { error = "deleting a drum pattern requires confirmation"; return false; }
+    const std::string safe = sanitizeFileName(fileStem(payload["name"].asString()));
+    if (!removeFile(joinPath(joinPath(projectRoot_, "patterns"), safe + ".json"))) {
+        error = "could not delete the drum pattern"; return false;
+    }
+    refreshProjectListsUnlocked(); return true;
+}
+
 bool DrumMachine::command(const std::string& commandName, const Json& payload, std::string& error) {
     std::lock_guard<std::mutex> lock(stateMutex_);
     if (commandName == "settings") return updateSettings(payload, error);
@@ -323,6 +548,7 @@ bool DrumMachine::command(const std::string& commandName, const Json& payload, s
     }
     if (commandName == "step") return updateStep(payload, error);
     if (commandName == "song/set") return updateSong(payload, error);
+    if (commandName == "song/apply") return applySong(payload["song"], error);
     if (commandName == "variation") {
         const unsigned variation = static_cast<unsigned>(payload["variation"].asInt(-1));
         if (variation >= DrumSequencer::kVariationCount) { error = "invalid drum variation"; return false; }
@@ -330,8 +556,25 @@ bool DrumMachine::command(const std::string& commandName, const Json& payload, s
     }
     if (commandName == "fill") { sequencer_.triggerFill(); return true; }
     if (commandName == "song/mode") { sequencer_.setSongMode(payload["enabled"].asBool(false)); return true; }
+    if (commandName == "project/new") return newProject(payload, error);
+    if (commandName == "project/open") return openProject(payload, error);
+    if (commandName == "project/delete") return deleteProject(payload, error);
+    if (commandName == "pattern/save") return savePattern(payload, error);
+    if (commandName == "pattern/load") return loadPattern(payload, error);
+    if (commandName == "pattern/apply") return applyPattern(payload["pattern"], true, error);
+    if (commandName == "pattern/delete") return deletePattern(payload, error);
+    if (commandName == "pattern/preview") {
+        if (!patternPreviewActive_) { patternPreviewBackup_ = program_; patternPreviewActive_ = true; }
+        return applyPattern(payload["pattern"], false, error);
+    }
+    if (commandName == "pattern/cancel-preview") {
+        if (!patternPreviewActive_) return true;
+        program_ = patternPreviewBackup_; patternPreviewActive_ = false;
+        return publishProgramUnlocked(error);
+    }
     if (commandName == "kit/save") return saveKit(payload, error);
     if (commandName == "kit/load") return loadKit(payload, error);
+    if (commandName == "kit/apply") return applyKitManifest(payload["kit"], payload["name"].asString("Custom"), error);
     if (commandName == "kit/delete") return deleteKit(payload, error);
     if (commandName == "kit/new") {
         controlKit_ = Kit{}; kitName_ = "Custom";
@@ -344,7 +587,7 @@ bool DrumMachine::command(const std::string& commandName, const Json& payload, s
             voice = 0;
             while (voice < DrumSequencer::kVoiceCount && !controlKit_.voices[voice].file.empty()) ++voice;
         }
-        if (voice >= DrumSequencer::kVoiceCount) { error = "kit is full (eight drums maximum)"; return false; }
+        if (voice >= DrumSequencer::kVoiceCount) { error = "the realtime drum voice capacity is full"; return false; }
         const std::string file = payload["relative"].asString();
         std::string bytes; Sample sample;
         if (!readLibrarySample(file, bytes, error) || !decodeWave(bytes, sampleRate_, sample, error)) return false;
@@ -355,6 +598,7 @@ bool DrumMachine::command(const std::string& commandName, const Json& payload, s
     if (commandName == "sample/clear") {
         const unsigned voice = static_cast<unsigned>(payload["voice"].asInt(-1));
         if (voice >= DrumSequencer::kVoiceCount) { error = "invalid drum voice"; return false; }
+        if (patternPreviewActive_) { program_ = patternPreviewBackup_; patternPreviewActive_ = false; }
         controlKit_.voices[voice] = Sample{};
         for (auto& variation : program_.variations) variation.steps[voice] = {};
         program_.fill.steps[voice] = {};
@@ -367,6 +611,7 @@ bool DrumMachine::command(const std::string& commandName, const Json& payload, s
         const bool fill = payload["fill"].asBool(false);
         const unsigned variation = static_cast<unsigned>(payload["variation"].asInt(0));
         if (!fill && variation >= DrumSequencer::kVariationCount) { error = "invalid drum variation"; return false; }
+        if (patternPreviewActive_) { program_ = patternPreviewBackup_; patternPreviewActive_ = false; }
         DrumSequencer::Pattern empty; empty.length = program_.variations[0].length;
         if (fill) program_.fill = empty; else program_.variations[variation] = empty;
         if (!publishProgramUnlocked(error)) return false;
@@ -465,6 +710,7 @@ bool DrumMachine::patternFromJson(const Json& json, DrumSequencer::Pattern& patt
 
 bool DrumMachine::saveStateUnlocked() const {
     Json root = Json::object(); root.set("schemaVersion", 1); root.set("level", controlLevel_);
+    root.set("name", projectName_);
     root.set("swing", controlSwing_); root.set("humanization", controlHumanization_); root.set("kitName", kitName_);
     Json variations = Json::array(); for (const auto& variation : program_.variations) variations.push(patternToJson(variation));
     root.set("variations", std::move(variations)); root.set("fill", patternToJson(program_.fill));
@@ -487,6 +733,7 @@ bool DrumMachine::loadStateUnlocked() {
     controlSwing_ = clampUnit(root["swing"].asFloat(0.0f));
     controlHumanization_ = clampUnit(root["humanization"].asFloat(0.0f));
     kitName_ = root["kitName"].asString("Custom");
+    projectName_ = root["name"].asString(projectId_);
     levelPermille_.store(static_cast<uint32_t>(std::lround(controlLevel_ * 1000.0f)));
     const Json& variations = root["variations"];
     for (size_t index = 0; index < std::min(variations.size(), DrumSequencer::kVariationCount); ++index)
@@ -509,10 +756,12 @@ bool DrumMachine::loadStateUnlocked() {
 Json DrumMachine::state() const {
     std::lock_guard<std::mutex> lock(stateMutex_); collectRetired();
     Json out = Json::object(); out.set("type", "drums"); out.set("available", true);
+    out.set("projectId", projectId_); out.set("projectName", projectName_);
     out.set("playing", playing_.load(std::memory_order_acquire));
     out.set("kitName", kitName_);
     out.set("level", controlLevel_); out.set("swing", controlSwing_); out.set("humanization", controlHumanization_);
     out.set("length", program_.variations[0].length); out.set("activeVariation", sequencer_.activeVariation());
+    out.set("activeStep", sequencer_.activeStep());
     out.set("fillActive", sequencer_.fillActive()); out.set("songMode", sequencer_.songMode());
     out.set("activeSongSection", sequencer_.activeSongSection());
     out.set("droppedTriggers", static_cast<int64_t>(sequencer_.droppedTriggers()));
@@ -526,7 +775,12 @@ Json DrumMachine::state() const {
     }
     out.set("voices", std::move(voices));
     Json savedKits = Json::array(); for (const std::string& name : savedKits_) savedKits.push(name);
-    out.set("savedKits", std::move(savedKits)); Json variations = Json::array();
+    out.set("savedKits", std::move(savedKits));
+    Json projects = Json::array(); for (const std::string& name : projects_) projects.push(name);
+    out.set("projects", std::move(projects));
+    Json savedPatterns = Json::array(); for (const std::string& name : savedPatterns_) savedPatterns.push(name);
+    out.set("savedPatterns", std::move(savedPatterns));
+    Json variations = Json::array();
     for (const auto& variation : program_.variations) variations.push(patternToJson(variation));
     out.set("variations", std::move(variations)); out.set("fill", patternToJson(program_.fill));
     Json song = Json::array(); for (size_t index = 0; index < program_.songLength; ++index) {

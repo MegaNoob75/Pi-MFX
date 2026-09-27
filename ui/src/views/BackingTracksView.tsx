@@ -4,6 +4,7 @@ import { askText } from "../keyboard/ask";
 import { bool, num, obj, objects, str, type JsonObject } from "../json";
 import { LibraryBrowser, LibraryConfirm } from "./LibraryManager";
 import { MarqueeText } from "./MarqueeText";
+import { WaveformTimeline } from "./WaveformTimeline";
 
 type Props = {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
@@ -29,7 +30,6 @@ export function BackingTracksView({ engine, run }: Props) {
     const entries = objects(activeSetList.entries);
     const [filesOpen, setFilesOpen] = useState(true);
     const [confirmDelete, setConfirmDelete] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState<number | null>(null);
     const canControlTrack = bool(track.loaded) || str(track.status) === "loading";
 
     const createSetList = async () => {
@@ -112,26 +112,7 @@ export function BackingTracksView({ engine, run }: Props) {
                                 <strong>{str(track.title, str(track.name, "No track loaded"))}</strong>
                                 {(str(track.artist) || str(track.album)) && <small className="muted">{str(track.artist)}{str(track.album) ? ` · ${str(track.album)}` : ""}</small>}
                             </div>
-                            <label className="btn btn-accent backing-import-btn">
-                                IMPORT
-                                <input type="file" accept=".wav,.flac,.mp3,.ogg,audio/*" hidden multiple
-                                    onChange={(event) => {
-                                        const files = Array.from(event.target.files ?? []);
-                                        void run(async () => {
-                                            try {
-                                                for (const file of files) {
-                                                    setUploadProgress(0);
-                                                    await engine.client.uploadBackingTrack(file, setUploadProgress);
-                                                }
-                                            } finally {
-                                                setUploadProgress(null);
-                                            }
-                                        });
-                                        event.target.value = "";
-                                    }} />
-                            </label>
                         </div>
-                        {uploadProgress !== null && <div className="backing-import-progress muted">IMPORTING {Math.round(uploadProgress * 100)}%</div>}
                         <div className="backing-status-strip">
                             <div><span>TIME</span><strong>{formatTime(position)} / {formatTime(duration)}</strong></div>
                             <div><span>STATUS</span><strong>{str(track.status, "empty").toUpperCase()}</strong></div>
@@ -139,11 +120,10 @@ export function BackingTracksView({ engine, run }: Props) {
                         </div>
                         {str(track.notes) && <div className="backing-track-notes muted">{str(track.notes)}</div>}
                         {str(track.error) && <div className="error-banner">{str(track.error)}</div>}
-                        {waveform.length > 0 && (
-                            <div className="backing-waveform" aria-label="Track waveform">
-                                {waveform.map((peak, index) => <span key={index} style={{ height: `${Math.max(4, Math.min(100, num(peak) * 100))}%` }} />)}
-                            </div>
-                        )}
+                        <WaveformTimeline peaks={waveform} position={position} duration={duration}
+                            bpm={num(track.manualBpm) || num(engine.transport.bpm)} beatsPerBar={num(engine.transport.beatsPerBar, 4)}
+                            emptyText="Load a track to see its waveform." onSeek={bool(track.loaded)
+                                ? (seconds) => void command("seek", { seconds }) : undefined} />
                         <div className="backing-seek-row">
                             <span>{formatTime(position)}</span>
                             <input className="range" aria-label="Track position" type="range" min="0" max={duration || 1} step="0.01" value={position}

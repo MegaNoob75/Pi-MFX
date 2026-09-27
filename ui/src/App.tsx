@@ -139,13 +139,14 @@ const titles: Record<string, string> = {
     system: "SYSTEM",
     hotspot: "WIFI / HOTSPOT",
     updates: "UPDATES",
+    profiles: "SETUP PROFILES",
     about: "ABOUT"
 };
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
     "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "community", "tuner", "audio", "controller", "layout", "theme", "keyboard", "ui",
-    "tone3000", "backup", "system", "hotspot", "updates", "about"
+    "tone3000", "backup", "system", "hotspot", "updates", "profiles", "about"
 ]);
 
 function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject | null {
@@ -391,7 +392,7 @@ export function App() {
     }, [engine.uiSession.scrolls, view]);
 
     const settingsPages: SettingsPage[] = [
-        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot", "updates"
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot", "updates", "profiles"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
     const snapshotMode = bool(engine.state.snapshotMode);
@@ -981,7 +982,7 @@ export function App() {
                 {view === "updates" && <UpdatesView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
                     || view === "tone3000" || view === "system" || view === "backup"
-                    || view === "hotspot") && (
+                    || view === "hotspot" || view === "profiles") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}

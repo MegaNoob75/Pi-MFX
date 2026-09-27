@@ -246,6 +246,9 @@ size_t DrumSequencer::renderBlock(const TransportBlock& transport, unsigned fram
     const unsigned publishedVariation = songMode_.load(std::memory_order_relaxed) && audioProgram_.songLength > 0
         ? variationForSongCycle(endCycle, songSection) : audioVariation_;
     activeVariation_.store(publishedVariation, std::memory_order_release);
+    activeStep_.store(static_cast<uint32_t>(endStep >= 0
+        ? endStep % static_cast<int64_t>(patternLength) : 0),
+                      std::memory_order_release);
     activeSongSection_.store(songSection, std::memory_order_release);
     fillActive_.store(endCycle == fillCycle_, std::memory_order_release);
     if (endCycle > fillCycle_) fillCycle_ = -1;
@@ -274,6 +277,10 @@ unsigned DrumSequencer::activePatternLength() const noexcept {
 
 unsigned DrumSequencer::activeVariation() const noexcept {
     return activeVariation_.load(std::memory_order_acquire);
+}
+
+unsigned DrumSequencer::activeStep() const noexcept {
+    return activeStep_.load(std::memory_order_acquire);
 }
 
 bool DrumSequencer::fillActive() const noexcept {

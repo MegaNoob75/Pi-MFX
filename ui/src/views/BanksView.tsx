@@ -242,29 +242,6 @@ export function BanksView({
                     }}>CLONE</button>
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={saveBankToPi}>SAVE</button>
                     <button type="button" className="btn" disabled={busy} onClick={() => setPicker("load")}>LOAD</button>
-                    <label className="btn btn-accent">
-                        UPLOAD
-                        <input
-                            type="file"
-                            accept="application/json,.json,.pimfx-bank.json"
-                            hidden
-                            multiple
-                            disabled={busy}
-                            onChange={(event) => {
-                            const files = Array.from(event.target.files ?? []);
-                            event.target.value = "";
-                            if (files.length === 0 || busy) {
-                                return;
-                            }
-                            setBusy(true);
-                            void run(async () => {
-                                for (const file of files) {
-                                    const bank = JSON.parse(await file.text()) as JsonObject;
-                                    await client.request("bank/import", { bank });
-                                }
-                            }).finally(() => setBusy(false));
-                        }} />
-                    </label>
                 </div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={busy} onClick={() => setEdit({ mode: "newBank", title: "New Bank", value: "" })}>NEW</button>

@@ -152,6 +152,8 @@ export default function ThemeManagerView({
     const themeListRef = useRef<HTMLDivElement>(null);
     const [activeName, setActiveName] = useState(() => originalRef.current.name);
     const [picker, setPicker] = useState<"load" | "save" | "saveAll" | null>(null);
+    const pickerPreviewBaseline = useRef<MultiFXThemeDefinition | null>(null);
+    const pickerPreviewAccepted = useRef(false);
     const [deleteTarget, setDeleteTarget] = useState<{ kind: "ui" | "keyboard"; name: string } | null>(null);
     const applyingSharedTheme = useRef(false);
     const applyingSharedKeyboardTheme = useRef(false);
@@ -300,8 +302,20 @@ export default function ThemeManagerView({
         }
     };
     const showThemePicker = (next: "load" | "save" | "saveAll" | null) => {
+        if (next === "load") {
+            pickerPreviewBaseline.current = cloneTheme(theme);
+            pickerPreviewAccepted.current = false;
+        }
         setPicker(next);
         syncThemeUi({ picker: next ?? "" });
+    };
+    const closeThemePicker = () => {
+        if (picker === "load" && !pickerPreviewAccepted.current && pickerPreviewBaseline.current) {
+            setTheme(cloneTheme(pickerPreviewBaseline.current));
+        }
+        pickerPreviewBaseline.current = null;
+        pickerPreviewAccepted.current = false;
+        showThemePicker(null);
     };
     const showDeleteTheme = (next: { kind: "ui" | "keyboard"; name: string } | null) => {
         setDeleteTarget(next);
@@ -584,14 +598,6 @@ export default function ThemeManagerView({
         }
     };
 
-    const importTheme = async (file: File) => {
-        try {
-            applyImportedTheme(JSON.parse(await file.text()));
-        } catch (error) {
-            setMessage(`Could not import theme: ${String(error)}`);
-        }
-    };
-
     return (
         <div style={screenStyle}>
             <div style={headerStyle}>
@@ -722,30 +728,6 @@ export default function ThemeManagerView({
                                     EXPORT ALL
                                 </button>
                             </div>
-                            <label
-                                style={{
-                                    ...buttonStyle,
-                                    width: "100%",
-                                    minWidth: 0,
-                                    boxSizing: "border-box",
-                                    marginTop: 7
-                                }}
-                            >
-                                UPLOAD
-                                <input
-                                    type="file"
-                                    accept="application/json,.json"
-                                    style={{ display: "none" }}
-                                    onChange={(event) => {
-                                        const file = event.target.files?.[0];
-                                        if (file) {
-                                            void importTheme(file);
-                                        }
-                                        event.currentTarget.value = "";
-                                    }}
-                                />
-                            </label>
-
                             <div
                                 style={{
                                     display: "grid",
@@ -1231,8 +1213,15 @@ export default function ThemeManagerView({
                                 customKeyboardThemes
                             }, null, 2)
                             : undefined}
-                    onClose={() => showThemePicker(null)}
-                    onLoad={(parsed) => applyImportedTheme(parsed)}
+                    onClose={closeThemePicker}
+                    onPreview={(parsed) => {
+                        const preview = validateMultiFXTheme(parsed);
+                        if (preview) setTheme(cloneTheme(preview));
+                    }}
+                    onLoad={(parsed) => {
+                        pickerPreviewAccepted.current = true;
+                        applyImportedTheme(parsed);
+                    }}
                     onSaved={() => setMessage(picker === "saveAll"
                         ? "All UI and keyboard themes saved on the Pi."
                         : "Theme saved on the Pi.")}

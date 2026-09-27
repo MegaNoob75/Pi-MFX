@@ -105,22 +105,6 @@ export function BackupView({
                 <div className="row" style={{ flexWrap: "wrap" }}>
                     <button type="button" className="btn btn-accent" onClick={() => showPicker("save")}>SAVE BACKUP</button>
                     <button type="button" className="btn" onClick={() => showPicker("load")}>LOAD</button>
-                    <label className="btn">
-                        UPLOAD
-                        <input type="file" accept="application/json" hidden onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            event.target.value = "";
-                            if (!file) {
-                                return;
-                            }
-                            void file.text().then((text) => {
-                                const parsed = JSON.parse(text) as JsonObject;
-                                setPendingRestore(parsed);
-                            }).catch((error: unknown) => {
-                                window.alert(error instanceof Error ? error.message : String(error));
-                            });
-                        }} />
-                    </label>
                 </div>
             </div>
             {picker && (

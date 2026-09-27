@@ -48,7 +48,7 @@ private:
     static constexpr size_t kSourceCount = static_cast<size_t>(Source::Count);
     static constexpr size_t kRingBlocks = 128;
     static constexpr size_t kPlaybackRingBlocks = 4;
-    static constexpr size_t kWaveformBuckets = 160;
+    static constexpr size_t kWaveformBuckets = 512;
 
     struct Clip {
         std::string id;
@@ -106,6 +106,7 @@ private:
     bool writeExport(const std::string& kind, const std::string& trackId,
                      std::string& path, std::string& name, std::string& error);
     void saveProjectUnlocked();
+    void rebuildWaveformsUnlocked();
     void saveRecoveryUnlocked();
     void refreshProjectsUnlocked();
     void recoverInterruptedProjects();

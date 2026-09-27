@@ -219,8 +219,9 @@ bool MultitrackRecorder::createProject(const std::string& requested, std::string
     const std::string name = sanitizeFileName(requested.empty() ? "Recording" : requested);
     std::string id = name;
     for (int copy = 2; fs::exists(joinPath(root_, id)); ++copy) id = name + "-" + std::to_string(copy);
-    if (!makeDirectories(joinPath(joinPath(root_, id), "audio"))
-        || !makeDirectories(joinPath(joinPath(root_, id), "exports"))) {
+    if (!makeDirectories(joinPath(joinPath(root_, id), "tracks"))
+        || !makeDirectories(joinPath(joinPath(root_, id), "exports"))
+        || !makeDirectories(joinPath(joinPath(joinPath(root_, id), "exports"), "stems"))) {
         error = "could not create the recording project"; return false;
     }
     playbackPlaying_.store(false, std::memory_order_release);
@@ -234,6 +235,7 @@ bool MultitrackRecorder::createProject(const std::string& requested, std::string
     input.source = Source::Processed;
     input.armed = true;
     tracks_.push_back(std::move(input));
+    makeDirectories(joinPath(joinPath(joinPath(joinPath(root_, id), "tracks"), tracks_.back().id), "takes"));
     saveProjectUnlocked(); refreshProjectsUnlocked();
     return true;
 }
@@ -295,6 +297,7 @@ bool MultitrackRecorder::openProject(const std::string& id, std::string& error) 
     std::lock_guard<std::mutex> lock(stateMutex_);
     projectId_ = safe; projectName_ = json["name"].asString(safe); tracks_ = std::move(loaded);
     lastError_.clear(); warning_.clear();
+    rebuildWaveformsUnlocked();
     if (importedRecovery) {
         saveProjectUnlocked();
         removeFile(recoveredPath);
@@ -328,6 +331,11 @@ bool MultitrackRecorder::addTrack(const Json& payload, std::string& error) {
     if (tracks_.size() >= 16) { error = "a project can contain at most 16 tracks"; return false; }
     Track track; track.id = uniqueId("track"); track.source = source; track.armed = true;
     track.name = sanitizeFileName(payload["name"].asString(sourceName(source)));
+    const std::string trackId = track.id;
+    if (!makeDirectories(joinPath(joinPath(joinPath(joinPath(root_, projectId_), "tracks"), trackId), "takes"))) {
+        error = "could not create the recorder track folder";
+        return false;
+    }
     tracks_.push_back(std::move(track)); saveProjectUnlocked();
     return true;
 }
@@ -358,6 +366,12 @@ bool MultitrackRecorder::deleteTrack(const Json& payload, std::string& error) {
     const std::string id = payload["id"].asString();
     const auto found = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& t) { return t.id == id; });
     if (found == tracks_.end()) { error = "recorder track was not found"; return false; }
+    const fs::path projectTracks = fs::weakly_canonical(fs::path(joinPath(joinPath(root_, projectId_), "tracks")));
+    const fs::path trackFolder = fs::weakly_canonical(projectTracks / id);
+    if (trackFolder.parent_path() != projectTracks) { error = "invalid recorder track folder"; return false; }
+    std::error_code removeError;
+    fs::remove_all(trackFolder, removeError);
+    if (removeError) { error = "could not delete the recorder track files"; return false; }
     tracks_.erase(found); saveProjectUnlocked();
     requestPlaybackReset(playbackPositionFrame_.load(std::memory_order_relaxed));
     return true;
@@ -377,7 +391,7 @@ bool MultitrackRecorder::editClip(const std::string& operation, const Json& payl
     } else if (operation == "set") {
         const std::string safeFile = sanitizeFileName(clip->file);
         std::error_code sizeError;
-        const uintmax_t bytes = fs::file_size(joinPath(joinPath(joinPath(root_, projectId_), "audio"), safeFile), sizeError);
+        const uintmax_t bytes = fs::file_size(joinPath(joinPath(joinPath(joinPath(joinPath(root_, projectId_), "tracks"), owner->id), "takes"), safeFile), sizeError);
         const int64_t fileFrames = sizeError || bytes < 44 ? 0 : static_cast<int64_t>((bytes - 44) / 4);
         const int64_t offset = std::max<int64_t>(0, payload["offset"].asInt64(clip->offset));
         const int64_t length = std::max<int64_t>(1, payload["length"].asInt64(clip->length));
@@ -407,6 +421,7 @@ bool MultitrackRecorder::editClip(const std::string& operation, const Json& payl
         right.offset += left; right.length -= left; right.fadeIn = 0; clip->length = left; clip->fadeOut = 0;
         owner->clips.push_back(std::move(right));
     } else { error = "unknown clip edit"; return false; }
+    rebuildWaveformsUnlocked();
     saveProjectUnlocked();
     requestPlaybackReset(playbackPositionFrame_.load(std::memory_order_relaxed));
     return true;
@@ -455,8 +470,8 @@ bool MultitrackRecorder::startRecording(const Json& payload, std::string& error)
     for (const Track& track : tracks_) if (track.armed) mask |= sourceBit(track.source);
     mask &= availableMask_.load(std::memory_order_acquire);
     if (mask == 0) { error = "arm at least one available track"; return false; }
-    const std::string audioRoot = joinPath(joinPath(root_, projectId_), "audio");
-    makeDirectories(audioRoot); activeFiles_.clear();
+    const std::string tracksRoot = joinPath(joinPath(root_, projectId_), "tracks");
+    makeDirectories(tracksRoot); activeFiles_.clear();
     recordStartFrame_ = playbackPlaying_.load(std::memory_order_acquire)
         ? playbackPositionFrame_.load(std::memory_order_relaxed) : 0;
     if (!playbackPlaying_.load(std::memory_order_relaxed)) {
@@ -466,8 +481,10 @@ bool MultitrackRecorder::startRecording(const Json& payload, std::string& error)
     for (size_t i = 0; i < tracks_.size(); ++i) {
         if (!tracks_[i].armed || !(mask & sourceBit(tracks_[i].source))) continue;
         ActiveFile file; file.track = i;
-        file.relative = tracks_[i].id + "-" + uniqueId("take") + ".wav";
-        file.path = joinPath(audioRoot, file.relative);
+        file.relative = uniqueId("take") + ".wav";
+        const std::string takesRoot = joinPath(joinPath(tracksRoot, tracks_[i].id), "takes");
+        if (!makeDirectories(takesRoot)) { error = "could not create the recorder take folder"; activeFiles_.clear(); return false; }
+        file.path = joinPath(takesRoot, file.relative);
         file.stream.open(file.path, std::ios::binary | std::ios::trunc);
         if (!file.stream) { error = "could not create recorder take"; activeFiles_.clear(); return false; }
         writeWaveHeader(file.stream, sampleRate_.load(), 0); activeFiles_.push_back(std::move(file));
@@ -584,7 +601,7 @@ unsigned MultitrackRecorder::renderTimelineBlock(int64_t start, unsigned frames,
             if (begin >= end) continue;
             const std::string safeFile = sanitizeFileName(clip.file);
             if (safeFile != clip.file) continue;
-            std::ifstream in(joinPath(joinPath(joinPath(root_, projectId_), "audio"), safeFile), std::ios::binary);
+            std::ifstream in(joinPath(joinPath(joinPath(joinPath(joinPath(root_, projectId_), "tracks"), track.id), "takes"), safeFile), std::ios::binary);
             if (!in) continue;
             in.seekg(44 + (clip.offset + begin - clip.start) * 4);
             for (int64_t frame = begin; frame < end; ++frame) {
@@ -638,6 +655,42 @@ void MultitrackRecorder::saveProjectUnlocked() {
     writeFileAtomic(joinPath(joinPath(root_, projectId_), "project.json"), root.dump(2));
 }
 
+void MultitrackRecorder::rebuildWaveformsUnlocked() {
+    int64_t durationFrames = 0;
+    for (const Track& track : tracks_) for (const Clip& clip : track.clips)
+        durationFrames = std::max(durationFrames, clip.start + clip.length);
+    for (Track& track : tracks_) {
+        track.waveform.fill(0.0f);
+        track.waveformCount = durationFrames > 0 ? kWaveformBuckets : 0;
+        if (durationFrames <= 0) continue;
+        for (const Clip& clip : track.clips) {
+            const std::string path = joinPath(joinPath(joinPath(joinPath(joinPath(root_, projectId_), "tracks"), track.id), "takes"),
+                                              sanitizeFileName(clip.file));
+            std::ifstream input(path, std::ios::binary);
+            if (!input) continue;
+            input.seekg(44 + clip.offset * 4, std::ios::beg);
+            constexpr size_t kFramesPerRead = 4096;
+            std::array<int16_t, kFramesPerRead * 2> pcm{};
+            int64_t readFrames = 0;
+            while (readFrames < clip.length && input) {
+                const size_t wanted = static_cast<size_t>(std::min<int64_t>(kFramesPerRead, clip.length - readFrames));
+                input.read(reinterpret_cast<char*>(pcm.data()), static_cast<std::streamsize>(wanted * 4));
+                const size_t got = static_cast<size_t>(input.gcount()) / 4;
+                for (size_t frame = 0; frame < got; ++frame) {
+                    const int64_t timeline = clip.start + readFrames + static_cast<int64_t>(frame);
+                    const size_t bucket = std::min(kWaveformBuckets - 1,
+                        static_cast<size_t>(timeline * static_cast<int64_t>(kWaveformBuckets) / durationFrames));
+                    const float peak = std::max(std::abs(static_cast<int>(pcm[frame * 2])),
+                                                std::abs(static_cast<int>(pcm[frame * 2 + 1]))) / 32768.0f;
+                    track.waveform[bucket] = std::max(track.waveform[bucket], peak);
+                }
+                if (got == 0) break;
+                readFrames += static_cast<int64_t>(got);
+            }
+        }
+    }
+}
+
 void MultitrackRecorder::saveRecoveryUnlocked() {
     if (projectId_.empty() || activeFiles_.empty()) return;
     Json root = Json::object(); root.set("format", "pimfx-recorder-recovery"); root.set("version", 1);
@@ -676,7 +729,8 @@ void MultitrackRecorder::recoverInterruptedProjects() {
         bool repaired = true;
         for (const Json& item : json["files"].items()) {
             const std::string name = sanitizeFileName(item["file"].asString());
-            repaired = patchWaveHeader(joinPath(joinPath(entry.path().string(), "audio"), name), rate,
+            const std::string trackId = sanitizeFileName(item["trackId"].asString());
+            repaired = patchWaveHeader(joinPath(joinPath(joinPath(joinPath(entry.path().string(), "tracks"), trackId), "takes"), name), rate,
                                        static_cast<uint64_t>(std::max<int64_t>(0, item["frames"].asInt64()))) && repaired;
         }
         if (repaired) {
@@ -703,7 +757,7 @@ void MultitrackRecorder::finalizeRecordingUnlocked() {
         clip.start = recordStartFrame_; clip.length = static_cast<int64_t>(file.frames);
         track.clips.push_back(std::move(clip));
     }
-    activeFiles_.clear(); saveProjectUnlocked();
+    activeFiles_.clear(); rebuildWaveformsUnlocked(); saveProjectUnlocked();
     removeFile(joinPath(joinPath(root_, projectId_), "recovery.json"));
     finalizing_.store(false, std::memory_order_release);
     if (playbackPlaying_.load(std::memory_order_acquire)) {
@@ -866,7 +920,11 @@ bool MultitrackRecorder::writeExport(const std::string& kind, const std::string&
     for (const Track& track : tracks_) { anySolo = anySolo || track.solo; for (const Clip& clip : track.clips) totalFrames = std::max(totalFrames, clip.start + clip.length); }
     if (totalFrames <= 0) { error = "there is no recorded audio to export"; return false; }
     name = sanitizeFileName(kind == "stem" ? stem->name : projectName_) + (kind == "stem" ? "-stem.wav" : "-mix.wav");
-    path = joinPath(joinPath(joinPath(root_, projectId_), "exports"), name); std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const std::string exportRoot = stem
+        ? joinPath(joinPath(joinPath(root_, projectId_), "exports"), "stems")
+        : joinPath(joinPath(root_, projectId_), "exports");
+    makeDirectories(exportRoot);
+    path = joinPath(exportRoot, name); std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) { error = "could not create recorder export"; return false; }
     writeWaveHeader(out, sampleRate_.load(), static_cast<uint32_t>(std::min<int64_t>(totalFrames, (std::numeric_limits<uint32_t>::max() - 36u) / 4u)));
     constexpr int64_t kChunk = 2048; std::vector<float> left(kChunk), right(kChunk);
@@ -879,7 +937,7 @@ bool MultitrackRecorder::writeExport(const std::string& kind, const std::string&
             for (const Clip& clip : track.clips) {
                 const int64_t begin = std::max(baseFrame, clip.start), end = std::min(baseFrame + count, clip.start + clip.length);
                 if (begin >= end) continue;
-                std::ifstream in(joinPath(joinPath(joinPath(root_, projectId_), "audio"), clip.file), std::ios::binary);
+                std::ifstream in(joinPath(joinPath(joinPath(joinPath(joinPath(root_, projectId_), "tracks"), track.id), "takes"), clip.file), std::ios::binary);
                 if (!in) continue;
                 const int64_t source = clip.offset + begin - clip.start; in.seekg(44 + source * 4);
                 for (int64_t frame = begin; frame < end; ++frame) {

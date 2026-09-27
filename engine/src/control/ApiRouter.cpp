@@ -645,13 +645,14 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                       payload["name"].asString(),
                                       contents,
                                       payload["directory"].asString(),
+                                      payload["overwrite"].asBool(false),
                                       storedPath, error);
         Json result = Json::object();
         result.set("path", storedPath);
         return result;
     }
     if (command == "library/read") {
-        const Json result = engine_.readLibraryFile(payload["path"].asString(), error);
+        const Json result = engine_.readLibraryFile(payload["kind"].asString(), payload["path"].asString(), error);
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
@@ -684,7 +685,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return result;
     }
     if (command == "library/delete") {
-        ok = engine_.deleteLibraryFile(payload["path"].asString(), error);
+        ok = engine_.deleteLibraryFile(payload["kind"].asString("model"),
+                                       payload["path"].asString(), error);
         return Json::object();
     }
     if (command == "library/list") {
@@ -704,7 +706,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "library/rename") {
-        ok = engine_.libraryRename(payload["path"].asString(), payload["name"].asString(), error);
+        ok = engine_.libraryRename(payload["kind"].asString("model"),
+                                   payload["path"].asString(), payload["name"].asString(), error);
         return Json::object();
     }
     if (command == "library/move") {
