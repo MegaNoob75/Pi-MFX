@@ -2883,6 +2883,13 @@ button.list-item {
     width: max-content;
 }
 
+.status-widget.is-meter {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
 .looper-state {
     display: grid;
     grid-template-columns: 2fr repeat(4, 1fr);

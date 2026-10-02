@@ -39,7 +39,7 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
 };
 
 export const METER_WIDGET_WIDTH = 0.04;
-export const METER_WIDGET_HEIGHT = 0.10;
+export const METER_WIDGET_HEIGHT = 0.04;
 export type MeterOrientation = "vertical" | "horizontal";
 
 export function isMeterWidget(id: string): boolean {
