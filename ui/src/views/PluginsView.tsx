@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { isChainPlugin } from "./PluginBrowser";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type PluginTab = "installed" | "install";
 type PatchSort = "downloads" | "alpha" | "newest" | "updated";
@@ -201,6 +202,7 @@ export function PluginsView({
     const [patchHasMore, setPatchHasMore] = useState(false);
     const [busy, setBusy] = useState("");
     const [installingId, setInstallingId] = useState("");
+    const [pendingRemove, setPendingRemove] = useState<{ kind: "apt" | "github" | "bundle"; id: string; label: string } | null>(null);
     const prefetching = useRef(false);
     const listEndRef = useRef<HTMLDivElement | null>(null);
     const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -494,43 +496,13 @@ export function PluginsView({
                             await refreshStatus();
                         })}
                         onRemoveApt={(name) => {
-                            if (!window.confirm(`Remove package ${name}?`)) {
-                                return;
-                            }
-                            work(`Removing ${name}…`, async () => {
-                            await engine.client.request("plugins/apt/remove", { package: name });
-                            await refreshAptInstalled();
-                            await refreshStatus();
-                        });
+                            setPendingRemove({ kind: "apt", id: name, label: name });
                         }}
                         onRemoveGithub={(id, title) => {
-                            if (!window.confirm(`Remove ${title}?`)) {
-                                return;
-                            }
-                            work(`Removing ${title}…`, async () => {
-                            await engine.client.request("plugins/github/remove", { id });
-                            await refreshAptInstalled();
-                            await refreshStatus();
-                        });
+                            setPendingRemove({ kind: "github", id, label: title });
                         }}
                         onRemoveBundle={(directory) => {
-                            if (!window.confirm(`Remove ${directory}?`)) {
-                                return;
-                            }
-                            work(`Removing ${directory}…`, async () => {
-                            const bundle = objects(status.bundles).find((item) => (
-                                str(item.directory) === directory
-                                || arr(item.directories).map((value) => String(value)).includes(directory)
-                            ));
-                            await engine.client.request("plugins/bundle/remove", { directory });
-                            await refreshStatus();
-                            const title = str(bundle?.title).toLowerCase();
-                            if (title) {
-                                setPatches((list) => list.map((item) => (
-                                    str(item.title).toLowerCase() === title ? { ...item, installed: false } : item
-                                )));
-                            }
-                        });
+                            setPendingRemove({ kind: "bundle", id: directory, label: directory });
                         }}
                     />
                 )}
@@ -589,6 +561,32 @@ export function PluginsView({
                     />
                 )}
             </div>
+            {pendingRemove && <ConfirmDialog title="REMOVE PLUGIN?"
+                body={`Remove “${pendingRemove.label}” from this Pi?`}
+                confirmLabel="REMOVE" danger onCancel={() => setPendingRemove(null)} onConfirm={() => {
+                    const pending = pendingRemove;
+                    setPendingRemove(null);
+                    work(`Removing ${pending.label}…`, async () => {
+                        if (pending.kind === "apt") {
+                            await engine.client.request("plugins/apt/remove", { package: pending.id });
+                            await refreshAptInstalled();
+                        } else if (pending.kind === "github") {
+                            await engine.client.request("plugins/github/remove", { id: pending.id });
+                            await refreshAptInstalled();
+                        } else {
+                            const bundle = objects(status.bundles).find((item) => (
+                                str(item.directory) === pending.id
+                                || arr(item.directories).map((value) => String(value)).includes(pending.id)
+                            ));
+                            await engine.client.request("plugins/bundle/remove", { directory: pending.id });
+                            const title = str(bundle?.title).toLowerCase();
+                            if (title) setPatches((list) => list.map((item) => (
+                                str(item.title).toLowerCase() === title ? { ...item, installed: false } : item
+                            )));
+                        }
+                        await refreshStatus();
+                    });
+                }} />}
         </div>
     );
 }

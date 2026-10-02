@@ -13,6 +13,7 @@ export function SetupProfilesView({ engine, run }: {
 }) {
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [pending, setPending] = useState<JsonObject | null>(null);
+    const [notice, setNotice] = useState("");
     const state = engine.state;
 
     const controllerSnapshot = () => {
@@ -43,7 +44,7 @@ export function SetupProfilesView({ engine, run }: {
 
     const accept = (profile: JsonObject) => {
         if (str(profile.format) !== "pimfx-setup-profile" || num(profile.version) !== 1) {
-            window.alert("That is not a Pi-MFX setup profile.");
+            setNotice("That is not a Pi-MFX setup profile.");
             return;
         }
         setPending(profile);
@@ -121,5 +122,7 @@ export function SetupProfilesView({ engine, run }: {
             onCancel={() => setPending(null)}
             onConfirm={apply}
         />}
+        {notice && <ConfirmDialog title="PROFILE NOT LOADED" body={notice} showCancel={false}
+            onCancel={() => setNotice("")} onConfirm={() => setNotice("")} />}
     </div>;
 }

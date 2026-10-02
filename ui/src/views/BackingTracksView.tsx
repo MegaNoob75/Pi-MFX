@@ -30,6 +30,7 @@ export function BackingTracksView({ engine, run }: Props) {
     const entries = objects(activeSetList.entries);
     const [filesOpen, setFilesOpen] = useState(true);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [removeEntry, setRemoveEntry] = useState<number | null>(null);
     const canControlTrack = bool(track.loaded) || str(track.status) === "loading";
 
     const createSetList = async () => {
@@ -83,7 +84,7 @@ export function BackingTracksView({ engine, run }: Props) {
                                     </button>
                                     <button type="button" className="btn backing-icon-btn" aria-label="Move track up" disabled={index === 0} onClick={() => void command("setlist/move", { from: index, to: index - 1 })}>↑</button>
                                     <button type="button" className="btn backing-icon-btn" aria-label="Move track down" disabled={index === entries.length - 1} onClick={() => void command("setlist/move", { from: index, to: index + 1 })}>↓</button>
-                                    <button type="button" className="btn btn-danger backing-icon-btn" aria-label="Remove track from set list" onClick={() => void command("setlist/remove", { index })}>×</button>
+                                    <button type="button" className="btn btn-danger backing-icon-btn" aria-label="Remove track from set list" onClick={() => setRemoveEntry(index)}>×</button>
                                 </div>
                             ))}
                         </div>
@@ -156,6 +157,13 @@ export function BackingTracksView({ engine, run }: Props) {
                     onCancel={() => setConfirmDelete(false)}
                     onConfirm={() => { setConfirmDelete(false); void command("setlist/delete", { id: activeSetListId }); }} />
             )}
+            {removeEntry !== null && <LibraryConfirm title="REMOVE FROM SET LIST?"
+                body={`Remove “${str(entries[removeEntry]?.name, "this track")}” from this set list? The track file will be kept.`}
+                danger confirmLabel="REMOVE" onCancel={() => setRemoveEntry(null)} onConfirm={() => {
+                    const index = removeEntry;
+                    setRemoveEntry(null);
+                    void command("setlist/remove", { index });
+                }} />}
         </div>
     );
 }

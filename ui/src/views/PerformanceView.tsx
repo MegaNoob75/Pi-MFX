@@ -28,6 +28,7 @@ import {
     unplacedIds
 } from "../layout";
 import { GainMeter } from "./GainMeter";
+import { ConfirmDialog } from "./ConfirmDialog";
 import {
     analogFeedback,
     PerformanceControl,
@@ -132,6 +133,9 @@ export function PerformanceView({
     const [menu, setMenu] = useState<TileMenu | null>(null);
     const [newPreset, setNewPreset] = useState<{ controlId: string; canAssign: boolean } | null>(null);
     const [pendingSnapshotDelete, setPendingSnapshotDelete] = useState<{ id: string; index: number; name: string } | null>(null);
+    const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+    const [notice, setNotice] = useState("");
+    const [removeAssignment, setRemoveAssignment] = useState<{ controlId: string; name: string } | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [toast, setToast] = useState("");
     const [pressedId, setPressedId] = useState("");
@@ -965,9 +969,7 @@ export function PerformanceView({
         if (!snapshotWriteBlocked) {
             return false;
         }
-        window.alert(
-            `${activeSnapshot >= 0 ? `Snapshot ${activeSnapshot + 1}` : "Snapshot Mode"} is active. ${action} is disabled until you return to the base preset.`
-        );
+        setNotice(`${activeSnapshot >= 0 ? `Snapshot ${activeSnapshot + 1}` : "Snapshot Mode"} is active. ${action} is disabled until you return to the base preset.`);
         return true;
     };
 
@@ -1005,13 +1007,8 @@ export function PerformanceView({
                 if (warnSnapshotWrite("Saving the preset")) {
                     return;
                 }
-                if (!window.confirm(`Overwrite saved preset “${str(obj(preset).name, "this preset")}”?`)) {
-                    return;
-                }
                 closeMenu();
-                void run(() => client.request("preset/save")).then(() => {
-                    rememberPresetBaseline(str(state.activePresetId), signatureForChain(chain), true);
-                });
+                setConfirmOverwrite(true);
                 break;
             case "Assign Preset to This Switch":
             case "Assign Different Preset":
@@ -1019,7 +1016,10 @@ export function PerformanceView({
                 break;
             case "Remove From Switch": {
                 closeMenu();
-                clearAssignment(current.controlId);
+                setRemoveAssignment({
+                    controlId: current.controlId,
+                    name: str(item?.name, "this preset")
+                });
                 break;
             }
             case "Create New Preset":
@@ -1512,21 +1512,8 @@ export function PerformanceView({
                 document.body
             )}
 
-            {menu?.kind === "delete" && createPortal(
-                <div className="mfx-overlay">
-                    <div className="mfx-overlay-card">
-                        <div className="mfx-overlay-title danger">DELETE PRESET?</div>
-                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{menu.name}</div>
-                        <div className="row">
-                            <button type="button" className="btn" onClick={closeMenu}>CANCEL</button>
-                            <button type="button" className="btn btn-danger" onClick={() => deleteMenuPreset(menu)}>
-                                DELETE PRESET
-                            </button>
-                        </div>
-                    </div>
-                </div>,
-                document.body
-            )}
+            {menu?.kind === "delete" && <ConfirmDialog title="DELETE PRESET?" body={menu.name}
+                confirmLabel="DELETE PRESET" danger onCancel={closeMenu} onConfirm={() => deleteMenuPreset(menu)} />}
 
             {menu?.kind === "snapshot" && createPortal(
                 <div className="mfx-overlay" onClick={closeMenu}>
@@ -1608,24 +1595,30 @@ export function PerformanceView({
                     }}
                 />
             )}
-            {pendingSnapshotDelete && createPortal(
-                <div className="mfx-overlay">
-                    <div className="mfx-overlay-card">
-                        <div className="mfx-overlay-title danger">DELETE SNAPSHOT?</div>
-                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{pendingSnapshotDelete.name}</div>
-                        <div className="row" style={{ justifyContent: "flex-end" }}>
-                            <button type="button" className="btn" onClick={() => setPendingSnapshotDelete(null)}>CANCEL</button>
-                            <button type="button" className="btn btn-danger" onClick={() => {
-                                const pending = pendingSnapshotDelete;
-                                setPendingSnapshotDelete(null);
-                                void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
-                                    .then(() => showToast(`SNAPSHOT ${pending.index + 1} DELETED`));
-                            }}>DELETE</button>
-                        </div>
-                    </div>
-                </div>,
-                document.body
-            )}
+            {pendingSnapshotDelete && <ConfirmDialog title="DELETE SNAPSHOT?" body={pendingSnapshotDelete.name}
+                confirmLabel="DELETE" danger onCancel={() => setPendingSnapshotDelete(null)} onConfirm={() => {
+                    const pending = pendingSnapshotDelete;
+                    setPendingSnapshotDelete(null);
+                    void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
+                        .then(() => showToast(`SNAPSHOT ${pending.index + 1} DELETED`));
+                }} />}
+            {confirmOverwrite && <ConfirmDialog title="OVERWRITE SAVED PRESET?"
+                body={`Replace “${str(obj(preset).name, "this preset")}” with the current effect settings?`}
+                confirmLabel="OVERWRITE" danger onCancel={() => setConfirmOverwrite(false)} onConfirm={() => {
+                    setConfirmOverwrite(false);
+                    void run(() => client.request("preset/save")).then(() => {
+                        rememberPresetBaseline(str(state.activePresetId), signatureForChain(chain), true);
+                    });
+                }} />}
+            {notice && <ConfirmDialog title="ACTION NOT AVAILABLE" body={notice} showCancel={false}
+                onCancel={() => setNotice("")} onConfirm={() => setNotice("")} />}
+            {removeAssignment && <ConfirmDialog title="REMOVE FROM SWITCH?"
+                body={`Remove “${removeAssignment.name}” from this switch? The preset itself will be kept.`}
+                confirmLabel="REMOVE" danger onCancel={() => setRemoveAssignment(null)} onConfirm={() => {
+                    const assignment = removeAssignment;
+                    setRemoveAssignment(null);
+                    clearAssignment(assignment.controlId);
+                }} />}
         </div>
     );
 }

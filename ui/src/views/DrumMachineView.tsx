@@ -28,6 +28,9 @@ export function DrumMachineView({
     const [patternPicker, setPatternPicker] = useState<"load" | "save" | null>(null);
     const [songPicker, setSongPicker] = useState<"load" | "save" | null>(null);
     const [kitPicker, setKitPicker] = useState<"load" | "save" | null>(null);
+    const [confirmAction, setConfirmAction] = useState<{
+        title: string; body: string; label: string; run: () => void;
+    } | null>(null);
     const patternAccepted = useRef(false);
     const voices = arr(drums.voices).map(obj);
     const variations = arr(drums.variations).map(obj);
@@ -143,7 +146,12 @@ export function DrumMachineView({
                         className={`btn${!editFill && variation === index ? " btn-active" : ""}`}
                         onClick={() => { setVariation(index); setEditFill(false); }}>VAR {String.fromCharCode(65 + index)}</button>)}
                     <button type="button" className={`btn${editFill ? " btn-active" : ""}`} onClick={() => setEditFill(true)}>FILL</button>
-                    <button type="button" className="btn btn-danger" onClick={() => void command("clear", { variation, fill: editFill })}>CLEAR</button>
+                    <button type="button" className="btn btn-danger" onClick={() => setConfirmAction({
+                        title: "CLEAR PATTERN?",
+                        body: `Clear every step in ${editFill ? "the fill" : `variation ${String.fromCharCode(65 + variation)}`}?`,
+                        label: "CLEAR",
+                        run: () => { void command("clear", { variation, fill: editFill }); }
+                    })}>CLEAR</button>
                     <button type="button" className="btn" onClick={() => { patternAccepted.current = false; setPatternPicker("load"); }}>LOAD PATTERN</button>
                     <button type="button" className="btn btn-accent" onClick={() => setPatternPicker("save")}>SAVE PATTERN AS</button>
                 </div>
@@ -198,7 +206,12 @@ export function DrumMachineView({
                     <select value={num(section.repeats, 1)} onChange={(event) => {
                         const next = song.map((item) => ({ ...item })); next[index].repeats = Number(event.target.value); void saveSong(next);
                     }}>{Array.from({ length: 16 }, (_, item) => <option value={item + 1} key={item + 1}>{item + 1}×</option>)}</select>
-                    <button type="button" className="btn btn-danger" onClick={() => void saveSong(song.filter((_, item) => item !== index))}>REMOVE</button>
+                    <button type="button" className="btn btn-danger" onClick={() => setConfirmAction({
+                        title: "REMOVE SONG SECTION?",
+                        body: `Remove section ${index + 1} from this song?`,
+                        label: "REMOVE",
+                        run: () => { void saveSong(song.filter((_, item) => item !== index)); }
+                    })}>REMOVE</button>
                 </div>)}
                 <button type="button" className="btn" disabled={song.length >= 32}
                     onClick={() => void saveSong([...song, { variation: 0, repeats: 1 }])}>ADD SECTION</button>
@@ -218,7 +231,12 @@ export function DrumMachineView({
                         <strong>{str(voice.name)}</strong>
                         <span title={str(voice.sample)}>{str(voice.sample)}</span>
                         <button type="button" className="btn" onClick={() => setBrowseVoice(index)}>REPLACE</button>
-                        <button type="button" className="btn btn-danger" onClick={() => void command("sample/clear", { voice: index })}>REMOVE</button>
+                        <button type="button" className="btn btn-danger" onClick={() => setConfirmAction({
+                            title: "REMOVE DRUM?",
+                            body: `Remove ${str(voice.name, "this drum")} from the current kit? The WAV file will be kept.`,
+                            label: "REMOVE",
+                            run: () => { void command("sample/clear", { voice: index }); }
+                        })}>REMOVE</button>
                     </div>)}
                     {rows.length === 0 && <div className="muted drums-kit-empty">Empty kit. Use ADD DRUM to choose sounds from the sample library.</div>}
                     </div>
@@ -272,6 +290,12 @@ export function DrumMachineView({
                 }} />}
             {newKit && <ConfirmDialog title="START AN EMPTY KIT?" body="Current drum assignments will be cleared. Save your kit first if you want to recall it. Saved kits and WAV files are kept."
                 confirmLabel="NEW KIT" onCancel={() => setNewKit(false)} onConfirm={() => { setNewKit(false); void command("kit/new"); }} />}
+            {confirmAction && <ConfirmDialog title={confirmAction.title} body={confirmAction.body}
+                confirmLabel={confirmAction.label} danger onCancel={() => setConfirmAction(null)} onConfirm={() => {
+                    const action = confirmAction;
+                    setConfirmAction(null);
+                    action.run();
+                }} />}
         </div>
     );
 }

@@ -3,6 +3,7 @@ export function ConfirmDialog({
     body,
     confirmLabel = "OK",
     danger = false,
+    showCancel = true,
     onCancel,
     onConfirm
 }: {
@@ -10,6 +11,7 @@ export function ConfirmDialog({
     body?: string;
     confirmLabel?: string;
     danger?: boolean;
+    showCancel?: boolean;
     onCancel: () => void;
     onConfirm: () => void;
 }) {
@@ -19,7 +21,7 @@ export function ConfirmDialog({
                 <div className={`mfx-overlay-title${danger ? " danger" : ""}`}>{title}</div>
                 {body && <p className="muted" style={{ margin: 0 }}>{body}</p>}
                 <div className="row" style={{ justifyContent: "flex-end" }}>
-                    <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
+                    {showCancel && <button type="button" className="btn" onClick={onCancel}>CANCEL</button>}
                     <button
                         type="button"
                         className={`btn ${danger ? "btn-danger" : "btn-accent"}`}

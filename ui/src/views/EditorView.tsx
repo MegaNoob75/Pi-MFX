@@ -9,6 +9,7 @@ import { PluginBrowser } from "./PluginBrowser";
 import { MarqueeText } from "./MarqueeText";
 import { NewPresetDialog } from "./NewPresetDialog";
 import { GainMeter } from "./GainMeter";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type EditPage = "chain" | "controls" | "io";
 type PathBrowserKind = "model" | "ir";
@@ -536,12 +537,7 @@ export function EditorView({
                                     REPLACE
                                 </button>
                                 <button type="button" className="btn btn-danger" onClick={() => {
-                                    if (window.confirm(`Remove ${effectTitle}?`)) {
-                                        void run(() => client.request("chain/remove", { slotId: str(selected.id) })).then(() => {
-                                            setPage("chain");
-                                            client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
-                                        });
-                                    }
+                                    setPendingTrashId(str(selected.id));
                                 }}>REMOVE</button>
                             </>
                         )}
@@ -700,48 +696,22 @@ export function EditorView({
                     }}
                 />
             )}
-            {pendingTrashId && createPortal(
-                <div className="mfx-overlay">
-                    <div className="mfx-overlay-card">
-                        <div className="mfx-overlay-title danger">REMOVE EFFECT?</div>
-                        <div style={{ margin: "12px 0", fontWeight: 900 }}>
-                            {str(obj(chain.find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
-                        </div>
-                        <div className="row">
-                            <button type="button" className="btn" onClick={() => setPendingTrashId("")}>CANCEL</button>
-                            <button type="button" className="btn btn-danger" onClick={() => {
-                                const slotId = pendingTrashId;
-                                setPendingTrashId("");
-                                void run(() => client.request("chain/remove", { slotId }));
-                            }}>
-                                REMOVE
-                            </button>
-                        </div>
-                    </div>
-                </div>,
-                document.body
-            )}
-            {confirmDelete && createPortal(
-                <div className="mfx-overlay">
-                    <div className="mfx-overlay-card">
-                        <div className="mfx-overlay-title danger">DELETE PRESET?</div>
-                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{str(obj(preset).name, "this preset")}</div>
-                        <div className="row">
-                            <button type="button" className="btn" onClick={() => setConfirmDelete(false)}>CANCEL</button>
-                            <button type="button" className="btn btn-danger" onClick={() => {
-                                const presetId = str(obj(preset).id);
-                                setConfirmDelete(false);
-                                if (presetId) {
-                                    void run(() => client.request("preset/delete", { presetId }));
-                                }
-                            }}>
-                                DELETE PRESET
-                            </button>
-                        </div>
-                    </div>
-                </div>,
-                document.body
-            )}
+            {pendingTrashId && <ConfirmDialog title="REMOVE EFFECT?"
+                body={str(obj(chain.find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
+                confirmLabel="REMOVE" danger onCancel={() => setPendingTrashId("")} onConfirm={() => {
+                    const slotId = pendingTrashId;
+                    setPendingTrashId("");
+                    void run(() => client.request("chain/remove", { slotId })).then(() => {
+                        setPage("chain");
+                        client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+                    });
+                }} />}
+            {confirmDelete && <ConfirmDialog title="DELETE PRESET?" body={str(obj(preset).name, "this preset")}
+                confirmLabel="DELETE PRESET" danger onCancel={() => setConfirmDelete(false)} onConfirm={() => {
+                    const presetId = str(obj(preset).id);
+                    setConfirmDelete(false);
+                    if (presetId) void run(() => client.request("preset/delete", { presetId }));
+                }} />}
             {bindTarget && createPortal(
                 <ParameterBindPopup
                     target={bindTarget}

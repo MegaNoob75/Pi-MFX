@@ -1123,6 +1123,7 @@ function ControllerSettings({
     const [removeControlId, setRemoveControlId] = useState("");
     const [profilePicker, setProfilePicker] = useState<"load" | "save" | null>(null);
     const [pendingProfile, setPendingProfile] = useState<JsonObject | null>(null);
+    const [profileNotice, setProfileNotice] = useState("");
     const selected = grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
 
     useEffect(() => {
@@ -1213,7 +1214,7 @@ function ControllerSettings({
     };
     const loadProfile = (profile: JsonObject) => {
         if (str(profile.format) !== "pimfx-controller-profile" || num(profile.version) !== 1) {
-            window.alert("That is not a Pi-MFX controller profile.");
+            setProfileNotice("That is not a Pi-MFX controller profile.");
             return;
         }
         setPendingProfile(profile);
@@ -1471,6 +1472,8 @@ function ControllerSettings({
                 onCancel={() => setPendingProfile(null)}
                 onConfirm={applyProfile}
             />}
+            {profileNotice && <ConfirmDialog title="PROFILE NOT LOADED" body={profileNotice} showCancel={false}
+                onCancel={() => setProfileNotice("")} onConfirm={() => setProfileNotice("")} />}
         </>
     );
 }

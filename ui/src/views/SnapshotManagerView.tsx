@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { EngineSnapshot } from "../api";
 import { findPreset } from "../api";
 import { num, obj, str, objects } from "../json";
@@ -192,24 +193,13 @@ export function SnapshotManagerView({
                     );
                 })}
             </div>
-            {pendingDelete && createPortal(
-                <div className="mfx-overlay">
-                    <div className="mfx-overlay-card">
-                        <div className="mfx-overlay-title danger">DELETE SNAPSHOT?</div>
-                        <div style={{ margin: "12px 0", fontWeight: 900 }}>{pendingDelete.name}</div>
-                        <div className="row" style={{ justifyContent: "flex-end" }}>
-                            <button type="button" className="btn" onClick={() => setPendingDelete(null)}>CANCEL</button>
-                            <button type="button" className="btn btn-danger" onClick={() => {
-                                const pending = pendingDelete;
-                                setPendingDelete(null);
-                                void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
-                                    .then(() => show(`SNAPSHOT ${pending.slot + 1} DELETED`));
-                            }}>DELETE</button>
-                        </div>
-                    </div>
-                </div>,
-                document.body
-            )}
+            {pendingDelete && <ConfirmDialog title="DELETE SNAPSHOT?" body={pendingDelete.name}
+                confirmLabel="DELETE" danger onCancel={() => setPendingDelete(null)} onConfirm={() => {
+                    const pending = pendingDelete;
+                    setPendingDelete(null);
+                    void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
+                        .then(() => show(`SNAPSHOT ${pending.slot + 1} DELETED`));
+                }} />}
         </div>
     );
 }
