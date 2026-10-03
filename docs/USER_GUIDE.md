@@ -296,10 +296,11 @@ the hotspot, open the URL shown on the page (commonly `http://10.42.0.1:8080`).
 
 ![Updates](images/updates.png)
 
-Choose Main (release), Dev, or Workstation, check the selected branch, and run
-the background update/rebuild. The controller remains connected while the job
-runs; the service restarts when the build finishes. `/var/lib/pimfx` user data
-is not replaced.
+Choose Main for the released build or Dev for the current development build,
+check the selected branch, and run the background update/rebuild. Workstation
+is a historical branch retained for compatibility. The controller remains
+connected while the job runs; the service restarts when the build finishes.
+`/var/lib/pimfx` user data is not replaced.
 
 ### Realtime
 

@@ -78,11 +78,12 @@ Then open `http://pimfx.local:8080` (or `http://<pi-address>:8080`) from any
 browser on the network. Full instructions, including audio HAT overlays and
 kiosk mode, are in [docs/INSTALL.md](docs/INSTALL.md).
 
-To update, choose **Main**, **Dev**, or **Workstation** under
-**Settings → System → Updates**, run `sudo bash ./scripts/pimfx.sh update
---branch <name>` on the Pi, or use **`pimfx.cmd` item 3** from Windows. The
-screens shown in this repository are from the current `workstation` feature
-set. Day-to-day editing from a PC is described in
+For current development builds, choose **Dev** under **Settings → System →
+Updates**, run `sudo bash ./scripts/pimfx.sh update --branch dev` on the Pi, or
+use **`pimfx.cmd` item 3** from Windows. `main` remains the release branch;
+`workstation` is retained only as a historical branch. The screens shown in
+this repository reflect the current `dev` feature set. Day-to-day editing from
+a PC is described in
 [docs/DEV_FLOW.md](docs/DEV_FLOW.md) (double-click `pimfx.cmd`; login is stored
 only in gitignored `.pimfx-remote`).
 

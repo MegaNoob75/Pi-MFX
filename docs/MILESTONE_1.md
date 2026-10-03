@@ -1,8 +1,7 @@
 # Milestone 1: Backing-track playback foundation
 
-The backing-track feature is implemented in the current `workstation` tree.
-This historical checklist now separates completed implementation from the
-remaining Raspberry Pi runtime sign-off.
+The backing-track feature is complete and merged into `dev`. This historical
+checklist records the work completed for Milestone 1.
 
 ## Implemented foundation
 
@@ -64,11 +63,11 @@ remaining Raspberry Pi runtime sign-off.
 - [x] Add playback-state, seek, loop-region, and end-of-track tests
 - [x] Add mono/stereo conversion and sample-rate conversion tests
 - [x] Add basic set-list persistence and playback-order tests
-- [ ] Test WAV, FLAC, MP3, and Ogg on the Raspberry Pi
-- [ ] Test import, waveform generation, seek, and track changes while guitar audio is active
-- [ ] Run sustained playback and confirm stable CPU, bounded memory, and no xruns
-- [ ] Verify imported tracks continue working with network access removed
-- [ ] Verify normal effects and presets remain unchanged while backing playback is idle
+- [x] Test WAV, FLAC, MP3, and Ogg on the Raspberry Pi
+- [x] Test import, waveform generation, seek, and track changes while guitar audio is active
+- [x] Run sustained playback and confirm stable CPU, bounded memory, and no xruns
+- [x] Verify imported tracks continue working with network access removed
+- [x] Verify normal effects and presets remain unchanged while backing playback is idle
 
 ## Still out of scope
 

@@ -187,9 +187,9 @@ sudo bash ./scripts/pimfx.sh hotspot
 
 ## Updating
 
-After the first install, choose `main`, `dev`, or `workstation`, then pull,
-rebuild, and restart without redoing apt or
-OS tuning. From the UI: **Settings → System → Updates**. From SSH:
+After the first install, choose `dev` for the current development build or
+`main` for the released build, then pull, rebuild, and restart without redoing
+apt or OS tuning. From the UI: **Settings → System → Updates**. From SSH:
 
 ```bash
 cd ~/Pi-MFX

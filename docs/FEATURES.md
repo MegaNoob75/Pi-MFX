@@ -65,7 +65,8 @@ but also works from phones, tablets, and computers on the same trusted network.
 ## System
 
 - Wi-Fi join and PI-MFX hotspot control
-- In-app branch-aware updates for `main`, `dev`, and `workstation`
+- In-app branch-aware updates for release (`main`) and current development
+  (`dev`), with legacy `workstation` branch compatibility
 - Reboot/shutdown controls, audio-thread status, memory-lock and latency diagnostics
 - Optional touchscreen session, boot logo, quiet boot, and OS realtime tuning
 

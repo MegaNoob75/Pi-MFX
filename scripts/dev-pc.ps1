@@ -17,8 +17,8 @@ if (-not $branch) {
 }
 
 Write-Host "Branch  $branch"
-if ($branch -ne "workstation" -and $branch -notlike "codex/milestone-*") {
-    Write-Host "Current workstation work normally uses 'workstation' or a codex/milestone-* branch." -ForegroundColor Yellow
+if ($branch -ne "dev") {
+    Write-Host "Current integrated development normally uses 'dev'; confirm this branch is intentional." -ForegroundColor Yellow
 }
 
 Write-Host ""
