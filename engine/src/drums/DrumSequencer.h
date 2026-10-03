@@ -18,7 +18,9 @@ namespace pimfx {
 /// only fixed-size POD data and never allocates, locks, logs, or performs I/O.
 class DrumSequencer {
 public:
-    static constexpr size_t kVoiceCount = 8;
+    // The control surface exposes a variable-length kit. The audio side keeps
+    // a generous fixed ceiling so renderBlock() never allocates or resizes.
+    static constexpr size_t kVoiceCount = 32;
     static constexpr size_t kMaxSteps = 64;
     static constexpr size_t kVariationCount = 4;
     static constexpr size_t kMaxSongSections = 32;
@@ -75,6 +77,7 @@ public:
 
     unsigned activePatternLength() const noexcept;
     unsigned activeVariation() const noexcept;
+    unsigned activeStep() const noexcept;
     bool fillActive() const noexcept;
     unsigned activeSongSection() const noexcept;
     uint32_t droppedTriggers() const noexcept;
@@ -113,6 +116,7 @@ private:
     std::atomic<bool> songMode_{false};
     std::atomic<uint32_t> activePatternLength_{16};
     std::atomic<uint32_t> activeVariation_{0};
+    std::atomic<uint32_t> activeStep_{0};
     std::atomic<bool> fillActive_{false};
     std::atomic<uint32_t> activeSongSection_{0};
     std::atomic<uint32_t> droppedTriggers_{0};

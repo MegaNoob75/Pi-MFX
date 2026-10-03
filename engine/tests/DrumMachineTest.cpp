@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using pimfx::DrumMachine;
@@ -61,6 +62,8 @@ int main() {
     assert(state["length"].asInt(0) == 16);
     assert(state["voices"].at(0)["loaded"].asBool(false));
     assert(state["variations"].at(0)["voices"].at(0)["velocities"].at(0).asInt(0) == 127);
+    assert(state["voices"].size() >= 32);
+    assert(fs::exists(root / "projects/Default/project.json"));
 
     Json kit = Json::object(); kit.set("name", "Studio Kit"); assert(drums.command("kit/save", kit, error));
     Json clearSample = Json::object(); clearSample.set("voice", 0); assert(drums.command("sample/clear", clearSample, error));
@@ -96,7 +99,7 @@ int main() {
     assert(drums.state()["voices"].at(4)["loaded"].asBool(false));
     std::string preview;
     assert(drums.readLibrarySample("Acoustic/Studio/snare.wav", preview, error) && preview == nestedWave);
-    assert(!drums.readLibrarySample("../drum-machine.json", preview, error));
+    assert(!drums.readLibrarySample("../project.json", preview, error));
 
     assert(drums.command("fill", Json::object(), error));
     Json song = Json::object(); Json sections = Json::array();
@@ -104,6 +107,29 @@ int main() {
     song.set("sections", sections); assert(drums.command("song/set", song, error));
     Json songMode = Json::object(); songMode.set("enabled", true); assert(drums.command("song/mode", songMode, error));
     assert(drums.state()["songMode"].asBool(false));
+    const Json songState = drums.state();
+    Json songFile = Json::object(); songFile.set("schemaVersion", 1); songFile.set("name", "Complete Song");
+    songFile.set("level", songState["level"]); songFile.set("swing", songState["swing"]);
+    songFile.set("humanization", songState["humanization"]); songFile.set("variations", songState["variations"]);
+    songFile.set("fill", songState["fill"]); songFile.set("song", songState["song"]);
+    Json songKit = Json::object(); songKit.set("name", songState["kitName"]); Json songSamples = Json::array();
+    for (const Json& voice : songState["voices"].items()) songSamples.push(voice["sample"]);
+    songKit.set("samples", std::move(songSamples)); songFile.set("kit", std::move(songKit));
+    Json applySong = Json::object(); applySong.set("song", std::move(songFile));
+    assert(drums.command("song/apply", applySong, error));
+    assert(drums.state()["song"].items().size() == 1);
+
+    Json pattern = Json::object(); pattern.set("name", "Main Groove");
+    assert(drums.command("pattern/save", pattern, error));
+    assert(fs::exists(root / "projects/Default/patterns/Main Groove.json"));
+    assert(drums.command("pattern/load", pattern, error));
+    Json project = Json::object(); project.set("name", "Second Song");
+    assert(drums.command("project/new", project, error));
+    assert(drums.state()["projectId"].asString() == "Second Song");
+    Json openProject = Json::object(); openProject.set("id", "Default");
+    assert(drums.command("project/open", openProject, error));
+    Json deleteProject = Json::object(); deleteProject.set("id", "Second Song"); deleteProject.set("confirmed", true);
+    assert(drums.command("project/delete", deleteProject, error));
 
     assert(drums.command("stop", Json::object(), error));
     std::fill(left.begin(), left.end(), 0.0f); std::fill(right.begin(), right.end(), 0.0f);

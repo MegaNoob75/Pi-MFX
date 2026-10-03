@@ -30,7 +30,7 @@ assert.match(editor, /syncPathBrowser\(\{[\s\S]*open: true,[\s\S]*directory:[\s\
 
 assert.match(library, /!filePicker && <div className="explorer-toolbar">/,
     'file-picker mode must hide library management and split-view controls');
-assert.match(library, /readOnly=\{filePicker\}/,
+assert.match(library, /readOnly=\{filePicker \|\| readOnly\}/,
     'the NAM explorer must not allow drag, move, upload, or delete operations');
 assert.match(library, /MutationObserver\(syncEncoderHighlight\)[\s\S]*data-library-path/,
     'encoder navigation must select the highlighted explorer row');

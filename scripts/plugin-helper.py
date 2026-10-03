@@ -33,6 +33,7 @@ PREFIX = os.environ.get("PIMFX_PREFIX", "/usr/local")
 HOTSPOT_SCRIPT = os.path.join(PREFIX, "libexec/pimfx/hotspot.py")
 REPO_DIR = os.environ.get("PIMFX_REPO", "")
 UPDATE_STATUS_PATH = "/run/pimfx/update-status.json"
+UPDATE_LOG_PATH = "/run/pimfx/update.log"
 LV2_UPDATE_STATUS_PATH = os.path.join(DATA_ROOT, "lv2-update-status.json")
 SOURCE_REPO_PATH = os.path.join(DATA_ROOT, "source-repo")
 PUBLIC_REPO_URL = "https://github.com/MegaNoob75/Pi-MFX.git"
@@ -942,16 +943,39 @@ def write_update_status(payload: dict) -> None:
         pass
 
 
+def write_update_log(text: str, append: bool = False) -> None:
+    try:
+        os.makedirs(os.path.dirname(UPDATE_LOG_PATH), exist_ok=True)
+        with STATUS_LOCK:
+            with open(UPDATE_LOG_PATH, "a" if append else "w", encoding="utf-8") as handle:
+                handle.write(text)
+    except OSError:
+        pass
+
+
+def read_update_log() -> str:
+    try:
+        with STATUS_LOCK:
+            with open(UPDATE_LOG_PATH, encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+    except OSError:
+        return ""
+
+
 def read_update_status() -> dict:
+    data: dict = {}
     try:
         with STATUS_LOCK:
             with open(UPDATE_STATUS_PATH, encoding="utf-8") as handle:
-                data = json.load(handle)
-        if isinstance(data, dict):
-            return data
+                stored = json.load(handle)
+        if isinstance(stored, dict):
+            data = stored
     except (OSError, json.JSONDecodeError):
         pass
-    return {}
+    log = read_update_log()
+    if log:
+        data["log"] = log
+    return data
 
 
 def repo_is_clone(path: str) -> bool:
@@ -1165,7 +1189,8 @@ def git_update_install(timeout: int, branch: str = "", deployed_commit: str = ""
             stored["message"] = stored.get("message") or "Update already running"
             return stored
         _install_running = True
-    write_update_status({"ok": True, "jobState": "installing", "log": "Starting update...\n", "message": "Updating"})
+    write_update_log("Starting update...\n")
+    write_update_status({"ok": True, "jobState": "installing", "message": "Updating"})
     script = os.path.join(repo, "scripts", "update.sh")
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
@@ -1187,26 +1212,18 @@ def git_update_install(timeout: int, branch: str = "", deployed_commit: str = ""
     except OSError as exc:
         with INSTALL_LOCK:
             _install_running = False
-        payload = {"ok": False, "jobState": "failed", "error": str(exc), "message": str(exc), "log": ""}
+        write_update_log(f"Failed to start update: {exc}\n")
+        payload = {"ok": False, "jobState": "failed", "error": str(exc), "message": str(exc)}
         write_update_status(payload)
         return payload
 
     def wait_for_update() -> None:
         global _install_running
-        log_lines: list[str] = ["Starting update...\n"]
         code = 1
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
-                log_lines.append(line)
-                if len(log_lines) > 400:
-                    del log_lines[:-300]
-                write_update_status({
-                    "ok": True,
-                    "jobState": "installing",
-                    "log": "".join(log_lines),
-                    "message": "Updating",
-                })
+                write_update_log(line, append=True)
             code = proc.wait(timeout=2400)
         except subprocess.TimeoutExpired:
             try:
@@ -1214,15 +1231,17 @@ def git_update_install(timeout: int, branch: str = "", deployed_commit: str = ""
             except OSError:
                 proc.kill()
             code = 1
-            log_lines.append("\nUpdate timed out.\n")
+            write_update_log("\nUpdate timed out.\n", append=True)
         except Exception as exc:  # noqa: BLE001
             code = 1
-            log_lines.append(f"\n{exc}\n")
-        log = "".join(log_lines).strip()
+            write_update_log(f"\n{exc}\n", append=True)
+        write_update_log(
+            "\nUpdate finished successfully.\n" if code == 0 else f"\nUpdate failed (exit code {code}).\n",
+            append=True,
+        )
         payload = {
             "ok": code == 0,
             "jobState": "idle" if code == 0 else "failed",
-            "log": "" if code == 0 else log,
             "message": "Update finished" if code == 0 else "update failed",
         }
         if code != 0:

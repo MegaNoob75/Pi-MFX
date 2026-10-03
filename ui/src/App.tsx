@@ -30,6 +30,7 @@ import { CommunityPresetsView } from "./views/CommunityPresetsView";
 import { TunerView } from "./views/TunerView";
 import { installResponsiveSizing } from "./responsive";
 import { MenuIcon, type MenuIconName } from "./theme/MenuIcon";
+import { clearPendingUpdateReturn, hasPendingUpdateReturn } from "./updateReturn";
 
 export type View =
     | "performance"
@@ -139,13 +140,14 @@ const titles: Record<string, string> = {
     system: "SYSTEM",
     hotspot: "WIFI / HOTSPOT",
     updates: "UPDATES",
+    profiles: "SETUP PROFILES",
     about: "ABOUT"
 };
 
 const viewNames = new Set<View>([
     "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
     "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "community", "tuner", "audio", "controller", "layout", "theme", "keyboard", "ui",
-    "tone3000", "backup", "system", "hotspot", "updates", "about"
+    "tone3000", "backup", "system", "hotspot", "updates", "profiles", "about"
 ]);
 
 function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject | null {
@@ -164,7 +166,8 @@ function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject |
 
 export function App() {
     const engine = useEngine();
-    const [view, setView] = useState<View>("performance");
+    const returnToUpdatesAfterInstall = useRef(hasPendingUpdateReturn());
+    const [view, setView] = useState<View>(() => returnToUpdatesAfterInstall.current ? "updates" : "performance");
     const [menuOpen, setMenuOpen] = useState(false);
     const [history, setHistory] = useState<View[]>([]);
     const [toast, setToast] = useState("");
@@ -326,6 +329,21 @@ export function App() {
         }
     }, [engine.uiSession]);
 
+    useEffect(() => {
+        if (!engine.connected || !returnToUpdatesAfterInstall.current) return;
+        returnToUpdatesAfterInstall.current = false;
+        clearPendingUpdateReturn();
+        const returnHistory: View[] = ["performance"];
+        setView("updates");
+        setHistory(returnHistory);
+        setMenuOpen(false);
+        engine.client.updateUiSession({
+            view: "updates",
+            menuOpen: false,
+            viewHistory: returnHistory
+        });
+    }, [engine.connected, engine.client]);
+
     useEffect(() => installResponsiveSizing(), []);
 
     useEffect(() => watchHardwareNavFocus(
@@ -391,7 +409,7 @@ export function App() {
     }, [engine.uiSession.scrolls, view]);
 
     const settingsPages: SettingsPage[] = [
-        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot", "updates"
+        "audio", "controller", "layout", "theme", "keyboard", "ui", "tone3000", "backup", "system", "hotspot", "updates", "profiles"
     ];
     const settingsActive = view === "settings" || settingsPages.includes(view as SettingsPage);
     const snapshotMode = bool(engine.state.snapshotMode);
@@ -981,7 +999,7 @@ export function App() {
                 {view === "updates" && <UpdatesView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
                     || view === "tone3000" || view === "system" || view === "backup"
-                    || view === "hotspot") && (
+                    || view === "hotspot" || view === "profiles") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />
                 )}
                 {view === "about" && <AboutView state={engine.state} />}

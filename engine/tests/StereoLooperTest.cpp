@@ -54,13 +54,20 @@ int main() {
     looper.process(inputs, 2, outputs, 2, 1, &transport);
     assert(looper.state()["canRedo"].asBool());
 
-    assert(looper.save("take", error));
+    assert(looper.save("take", false, error));
     for (int attempt = 0; attempt < 100 && looper.state()["status"].asString() == "saving"; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     assert(looper.state()["saveError"].asString().empty());
     assert(std::filesystem::is_regular_file(looper.savedPath()));
     assert(looper.state()["savedLoops"].items().size() == 1);
+    assert(!looper.save("take", false, error));
+    error.clear();
+    assert(looper.save("take", true, error));
+    for (int attempt = 0; attempt < 100 && looper.state()["status"].asString() == "saving"; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(looper.state()["saveError"].asString().empty());
 
     assert(looper.renameSaved("take.wav", "renamed", error));
     assert(std::filesystem::is_regular_file(root / "renamed.wav"));

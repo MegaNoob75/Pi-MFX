@@ -31,7 +31,7 @@ public:
     void prepare(unsigned sampleRate, unsigned maximumSeconds = 120);
     void configure(const std::string& quantization, bool countIn, float level, float feedback);
     bool enqueue(Action action, std::string& error);
-    bool save(const std::string& name, std::string& error);
+    bool save(const std::string& name, bool overwrite, std::string& error);
     bool load(const std::string& name, std::string& error);
     bool renameSaved(const std::string& name, const std::string& nextName, std::string& error);
     bool deleteSaved(const std::string& name, std::string& error);
@@ -99,7 +99,9 @@ private:
     std::atomic<bool> countIn_{false};
     std::atomic<uint32_t> levelMilli_{1000};
     std::atomic<uint32_t> feedbackMilli_{1000};
-    std::array<std::atomic<uint16_t>, 240> waveform_{};
+    // Dense peak data lets the themed timeline retain short transients when
+    // it downsamples to the current display width.
+    std::array<std::atomic<uint16_t>, 960> waveform_{};
     std::atomic<int> publishedActiveBuffer_{0};
 
     std::thread worker_;
@@ -110,6 +112,7 @@ private:
     mutable std::mutex saveMutex_;
     std::condition_variable saveWake_;
     std::string pendingSaveName_;
+    bool pendingSaveOverwrite_ = false;
     std::string savedPath_;
     std::string saveError_;
     std::vector<std::string> savedFiles_;

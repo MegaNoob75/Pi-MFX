@@ -107,6 +107,27 @@ export function KeyboardProvider() {
         if (current) {
             finish(current, null);
         }
+        if (shouldUseOnScreenKeyboard()) {
+            setAsk((previous) => {
+                previous?.resolve(null);
+                return null;
+            });
+            setAskValue("");
+            const cursor = request.value.length;
+            const next: KeyboardSession = {
+                id: ++nextId.current,
+                target: null,
+                label: request.label,
+                layout: request.layout,
+                value: request.value,
+                selectionStart: cursor,
+                selectionEnd: cursor,
+                resolve: request.resolve
+            };
+            sessionRef.current = next;
+            setSession(next);
+            return;
+        }
         setAsk((previous) => {
             previous?.resolve(null);
             return request;

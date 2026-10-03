@@ -3,6 +3,8 @@ import type { EngineSnapshot } from "../api";
 import { arr, bool, num, objects, str, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { LibraryItemPicker } from "./LibraryManager";
+import { WaveformTimeline } from "./WaveformTimeline";
 
 type Props = {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
@@ -12,6 +14,11 @@ type Props = {
 const sourceLabels: Record<string, string> = {
     raw: "RAW INPUT", processed: "PROCESSED INPUT", backing: "BACKING TRACK",
     drum: "DRUMS", master: "MASTER"
+};
+
+const newTrackLabels: Record<string, string> = {
+    raw: "RAW TRACK", processed: "PROCESSED TRACK", backing: "BACKING TRACK",
+    drum: "DRUM TRACK", master: "MASTER TRACK"
 };
 
 type CommitRangeProps = {
@@ -57,9 +64,9 @@ export function RecorderView({ engine, run }: Props) {
     const [deleteProject, setDeleteProject] = useState("");
     const [deleteClip, setDeleteClip] = useState("");
     const [selectedClip, setSelectedClip] = useState("");
+    const [projectPicker, setProjectPicker] = useState(false);
     const tracks = objects(recorder.tracks);
     const sources = objects(recorder.sources);
-    const projects = arr(recorder.projects).map(String).filter(Boolean);
     const sampleRate = Math.max(1, num(recorder.sampleRate, 48000));
     const recording = str(recorder.status) === "recording";
     const busy = recording || str(recorder.status) === "finalizing";
@@ -75,6 +82,11 @@ export function RecorderView({ engine, run }: Props) {
     }, [tracks, selectedClip]);
     const totalFrames = Math.max(1, ...tracks.flatMap((track) => objects(track.clips)
         .map((clip) => num(clip.start) + num(clip.length))));
+    const timelineWaveform = useMemo(() => {
+        const rows = tracks.map((track) => arr(track.waveform));
+        const size = Math.max(0, ...rows.map((row) => row.length));
+        return Array.from({ length: size }, (_, index) => Math.max(0, ...rows.map((row) => num(row[index]))));
+    }, [tracks]);
 
     const command = (name: string, payload: JsonObject = {}) =>
         run(() => engine.client.request(`recorder/${name}`, payload));
@@ -82,10 +94,10 @@ export function RecorderView({ engine, run }: Props) {
         const name = await askText("Recording project name", "New Recording");
         if (name?.trim()) await command("project/new", { name: name.trim() });
     };
-    const addTrack = async (source: string) => {
-        const label = sourceLabels[source] ?? source;
-        const name = await askText("Track name", label);
-        if (name?.trim()) await command("track/add", { source, name: name.trim() });
+    const addTrack = (source: string) => {
+        const base = (newTrackLabels[source] ?? source).replace(/\b\w/g, (letter) => letter.toUpperCase());
+        const count = tracks.filter((track) => str(track.source) === source).length + 1;
+        void command("track/add", { source, name: `${base} ${count}` });
     };
     const renameTrack = async (track: JsonObject) => {
         const name = await askText("Rename track", str(track.name));
@@ -149,7 +161,7 @@ export function RecorderView({ engine, run }: Props) {
                     <div className="recorder-empty">
                         <strong>CREATE OR OPEN A PROJECT</strong>
                         <span className="muted">A project holds your tracks, takes and non-destructive edits.</span>
-                        <button type="button" className="btn btn-accent" onClick={() => void createProject()}>NEW PROJECT</button>
+                        <button type="button" className="btn btn-accent" onClick={() => setProjectPicker(true)}>PROJECT FILES</button>
                     </div>
                 ) : <>
                     <div className="recorder-main-actions">
@@ -166,7 +178,7 @@ export function RecorderView({ engine, run }: Props) {
                     </div>
                     <div className="recorder-add-row">
                         {sources.map((source) => <button type="button" className="btn" key={str(source.id)} disabled={busy || !bool(source.available)}
-                            onClick={() => void addTrack(str(source.id))}>+ {sourceLabels[str(source.id)] ?? str(source.id).toUpperCase()}</button>)}
+                            onClick={() => addTrack(str(source.id))}>+ {newTrackLabels[str(source.id)] ?? str(source.id).toUpperCase()}</button>)}
                     </div>
                     <div className="recorder-track-list">
                         {tracks.length === 0 && <span className="muted">Add a source track, then arm it to record.</span>}
@@ -204,6 +216,10 @@ export function RecorderView({ engine, run }: Props) {
             </section>}
 
             {page === "edit" && <section className="recorder-tab panel recorder-editor">
+                <WaveformTimeline peaks={timelineWaveform} position={position} duration={duration}
+                    bpm={num(engine.transport.bpm)} beatsPerBar={num(engine.transport.beatsPerBar, 4)}
+                    emptyText="Recorded takes will create a detailed timeline here."
+                    onSeek={duration > 0 ? (seconds) => void command("playback/seek", { seconds }) : undefined} />
                 <div className="recorder-timeline">
                     {tracks.map((track) => <div className="recorder-lane" key={str(track.id)}>
                         <strong>{str(track.name)}</strong>
@@ -236,19 +252,26 @@ export function RecorderView({ engine, run }: Props) {
 
             {page === "files" && <section className="recorder-tab panel stack">
                 <div className="row recorder-file-actions">
-                    <button type="button" className="btn btn-accent" disabled={busy} onClick={() => void createProject()}>NEW PROJECT</button>
+                    <button type="button" className="btn btn-accent" disabled={busy} onClick={() => setProjectPicker(true)}>PROJECT FILES</button>
                     <button type="button" className="btn" disabled={busy || tracks.every((track) => objects(track.clips).length === 0)}
                         onClick={() => { window.location.href = "/api/recorder/export?kind=mix"; }}>EXPORT STEREO MIX</button>
                 </div>
-                {projects.map((id) => <div className="recorder-project-row" key={id}>
-                    <strong>{id}</strong>
-                    <button type="button" className="btn" disabled={busy || id === str(recorder.projectId)}
-                        onClick={() => void command("project/open", { id })}>{id === str(recorder.projectId) ? "OPEN" : "OPEN PROJECT"}</button>
-                    <button type="button" className="btn btn-danger" disabled={busy} onClick={() => setDeleteProject(id)}>DELETE</button>
-                </div>)}
+                <span className="muted">Projects keep their tracks, takes and project file together in separate folders under recordings/.</span>
             </section>}
 
-            {deleteTrack && <ConfirmDialog title="DELETE TRACK?" body="The track is removed from this project. Recorded take files remain recoverable on disk."
+            {projectPicker && <LibraryItemPicker engine={engine} run={run} kind="recording" itemType="dir"
+                title="RECORDING PROJECTS" useLabel="OPEN PROJECT" onClose={() => setProjectPicker(false)}
+                onNew={() => { void createProject().finally(() => setProjectPicker(false)); }}
+                onUse={(item) => {
+                    setProjectPicker(false);
+                    void command("project/open", { id: str(item.name) });
+                }}
+                onDelete={(item) => {
+                    setProjectPicker(false);
+                    setDeleteProject(str(item.name));
+                }} />}
+
+            {deleteTrack && <ConfirmDialog title="DELETE TRACK?" body="Delete this track and all of its recorded takes from the project? This cannot be undone."
                 confirmLabel="DELETE" danger onCancel={() => setDeleteTrack("")} onConfirm={() => {
                     const id = deleteTrack; setDeleteTrack(""); void command("track/delete", { id, confirmed: true });
                 }} />}

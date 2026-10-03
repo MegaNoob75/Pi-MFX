@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { arr, bool, num, str, type JsonObject } from "../json";
-import { askText } from "../keyboard/ask";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { LibraryBrowser, LibraryFileSavePicker } from "./LibraryManager";
+import { WaveformTimeline } from "./WaveformTimeline";
 
 export function LooperView({
     engine,
@@ -17,8 +18,8 @@ export function LooperView({
     const hasLoop = bool(loop.hasLoop);
     const busy = status === "saving" || status === "loading";
     const [confirmClear, setConfirmClear] = useState(false);
-    const [deleteName, setDeleteName] = useState("");
-    const savedLoops = arr(loop.savedLoops).map((item) => String(item)).filter(Boolean);
+    const [savePicker, setSavePicker] = useState(false);
+    const [selectedLoop, setSelectedLoop] = useState("");
     const recording = status === "recording" || status === "armed";
     const overdubbing = status === "overdubbing";
 
@@ -48,15 +49,6 @@ export function LooperView({
             feedback: num(loop.feedback, 1)
         });
     });
-    const save = async () => {
-        const name = await askText("Loop file name", "loop");
-        if (name?.trim()) await command("save", { name: name.trim() });
-    };
-    const renameSaved = async (name: string) => {
-        const nextName = await askText("Rename saved loop", name.replace(/\.wav$/i, ""));
-        if (nextName?.trim()) await command("rename", { name, nextName: nextName.trim() });
-    };
-
     const duration = num(loop.duration);
     const position = Math.min(duration, num(loop.position));
     const waveform = arr(loop.waveform);
@@ -82,17 +74,13 @@ export function LooperView({
                 <button type="button" className={`btn${page === "options" ? " btn-active" : ""}`}
                     onClick={() => setPage("options")}>OPTIONS</button>
                 <button type="button" className={`btn${page === "library" ? " btn-active" : ""}`}
-                    onClick={() => setPage("library")}>LIBRARY ({savedLoops.length})</button>
+                    onClick={() => setPage("library")}>LIBRARY</button>
             </nav>
 
             {page === "loop" && <section className="panel looper-performance looper-tab-content">
-                <div className="looper-waveform" aria-label="Loop waveform">
-                    {waveform.length === 0
-                        ? <span className="muted">Record a loop to create its waveform.</span>
-                        : waveform.map((peak, index) => (
-                            <i key={index} style={{ height: `${Math.max(4, Math.min(100, num(peak) * 100))}%` }} />
-                        ))}
-                </div>
+                <WaveformTimeline peaks={waveform} position={position} duration={duration}
+                    bpm={num(engine.transport.bpm)} beatsPerBar={num(engine.transport.beatsPerBar, 4)}
+                    emptyText="Record a loop to create its waveform." />
                 {str(loop.saveError) && <div className="error-banner">{str(loop.saveError)}</div>}
                 <div className="looper-actions">
                     <button type="button" className="btn btn-danger" disabled={(hasLoop && !recording) || busy}
@@ -148,48 +136,38 @@ export function LooperView({
                     </label>
                 </section>
                 <section className="panel row looper-save-actions">
-                    <button type="button" className="btn" disabled={!hasLoop || busy} onClick={() => void save()}>
+                    <button type="button" className="btn" disabled={!hasLoop || busy} onClick={() => setSavePicker(true)}>
                         {status === "saving" ? "SAVING…" : "SAVE WAV"}
-                    </button>
-                    <button type="button" className="btn" disabled={!str(loop.savedPath) || busy}
-                        onClick={() => { window.location.href = `/api/looper/export?t=${Date.now()}`; }}>
-                        EXPORT LAST SAVE
                     </button>
                     <span className="muted">Capacity: {Math.trunc(num(loop.maximumSeconds, 120))}s · {Math.trunc(num(loop.remainingSeconds, 120))}s remaining.</span>
                 </section>
             </div>}
 
             {page === "library" && <section className="panel stack looper-library looper-tab-content">
-                <div className="row"><strong>SAVED LOOPS</strong><span className="muted">{savedLoops.length} WAV FILE{savedLoops.length === 1 ? "" : "S"}</span></div>
-                {savedLoops.length === 0 && <span className="muted">Saved loops will appear here.</span>}
-                {savedLoops.map((name) => (
-                    <div className="looper-library-row" key={name}>
-                        <strong>{name}</strong>
-                        <button type="button" className="btn" disabled={recording || overdubbing || busy}
-                            onClick={() => void command("load", { name })}>LOAD</button>
-                        <button type="button" className="btn" disabled={busy}
-                            onClick={() => { window.location.href = `/api/looper/export?name=${encodeURIComponent(name)}`; }}>EXPORT</button>
-                        <button type="button" className="btn" disabled={busy}
-                            onClick={() => void renameSaved(name)}>RENAME</button>
-                        <button type="button" className="btn btn-danger" disabled={busy}
-                            onClick={() => setDeleteName(name)}>DELETE</button>
-                    </div>
-                ))}
+                <div className="row"><strong>SAVED LOOPS</strong><span className="muted">Locked to loops/</span></div>
+                <LibraryBrowser key={str(loop.savedPath)} engine={engine} run={run} kind="loop" dualDefault={false}
+                    directory="" onDirectoryChange={() => undefined} allowCreateFolder={false}
+                    allowMove={false} allowSplitView={false} openFoldersOnSecondClick={false}
+                    onFileSelect={(item) => setSelectedLoop(str(item.relative, str(item.name)))}
+                    onItemSelect={(item) => setSelectedLoop(item && str(item.type) === "file"
+                        ? str(item.relative, str(item.name)) : "")} />
+                <div className="row" style={{ justifyContent: "flex-end" }}>
+                    <button type="button" className="btn" disabled={!selectedLoop || busy}
+                        onClick={() => { window.location.href = `/api/looper/export?name=${encodeURIComponent(selectedLoop)}`; }}>EXPORT</button>
+                    <button type="button" className="btn btn-accent" disabled={!selectedLoop || recording || overdubbing || busy}
+                        onClick={() => void command("load", { name: selectedLoop })}>LOAD LOOP</button>
+                </div>
             </section>}
+
+            {savePicker && <LibraryFileSavePicker engine={engine} run={run} kind="loop" title="SAVE LOOP WAV"
+                defaultName="loop" extension=".wav" onClose={() => setSavePicker(false)}
+                onSave={(name, overwrite) => engine.client.request("looper/save", { name, overwrite })} />}
 
             {confirmClear && (
                 <ConfirmDialog title="CLEAR LOOP?" body="This permanently clears the current in-memory loop. Save it first if you want to keep it."
                     confirmLabel="CLEAR" danger onCancel={() => setConfirmClear(false)} onConfirm={() => {
                         setConfirmClear(false);
                         void command("clear", { confirmed: true });
-                    }} />
-            )}
-            {deleteName && (
-                <ConfirmDialog title="DELETE SAVED LOOP?" body={`Delete “${deleteName}” from this Pi?`}
-                    confirmLabel="DELETE" danger onCancel={() => setDeleteName("")} onConfirm={() => {
-                        const name = deleteName;
-                        setDeleteName("");
-                        void command("delete", { name, confirmed: true });
                     }} />
             )}
         </div>

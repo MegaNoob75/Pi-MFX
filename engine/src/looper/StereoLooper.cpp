@@ -111,7 +111,7 @@ bool StereoLooper::enqueue(Action action, std::string& error) {
     return true;
 }
 
-bool StereoLooper::save(const std::string& name, std::string& error) {
+bool StereoLooper::save(const std::string& name, bool overwrite, std::string& error) {
     if (loading_.load(std::memory_order_acquire)) {
         error = "wait for the saved loop to finish loading";
         return false;
@@ -133,9 +133,15 @@ bool StereoLooper::save(const std::string& name, std::string& error) {
     std::string safe = sanitizeFileName(name.empty() ? "loop" : name);
     if (safe.empty()) safe = "loop";
     if (safe.size() < 4 || safe.substr(safe.size() - 4) != ".wav") safe += ".wav";
+    if (!overwrite && fileExists(joinPath(root_, safe))) {
+        saving_.store(false, std::memory_order_release);
+        error = "a loop with that name already exists; confirm overwrite to replace it";
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lock(saveMutex_);
         pendingSaveName_ = safe;
+        pendingSaveOverwrite_ = overwrite;
         saveError_.clear();
     }
     saveWake_.notify_one();
@@ -414,7 +420,7 @@ void StereoLooper::process(const float* const* input, unsigned inputChannels,
                 const size_t index = audioWritePosition_ * 2;
                 buffers_[workingBuffer_][index] = inLeft;
                 buffers_[workingBuffer_][index + 1] = inRight;
-                const size_t bucketFrames = std::max<size_t>(1, rate / 2);
+                const size_t bucketFrames = std::max<size_t>(1, capacityFrames_ / waveform_.size());
                 const size_t bucket = std::min(waveform_.size() - 1, audioWritePosition_ / bucketFrames);
                 const uint16_t peak = static_cast<uint16_t>(std::min(1000.0f,
                     std::max(std::abs(inLeft), std::abs(inRight)) * 1000.0f));
@@ -486,8 +492,9 @@ Json StereoLooper::state() const {
     out.set("maximumSeconds", capacityFrames_ / static_cast<double>(std::max(1u, rate)));
     Json peaks = Json::array();
     if (frames > 0 && current != Mode::Recording) {
+        const size_t bucketFrames = std::max<size_t>(1, capacityFrames_ / waveform_.size());
         const size_t buckets = std::min(waveform_.size(),
-            std::max<size_t>(1, (frames + std::max<size_t>(1, rate / 2) - 1) / std::max<size_t>(1, rate / 2)));
+            std::max<size_t>(1, (frames + bucketFrames - 1) / bucketFrames));
         for (size_t i = 0; i < buckets; ++i) {
             peaks.push(waveform_[i].load(std::memory_order_relaxed) / 1000.0);
         }
@@ -565,7 +572,7 @@ bool StereoLooper::readWaveFile(const std::string& path, int buffer, size_t& fra
         for (size_t i = 0; i < count; ++i) {
             buffers_[buffer][offset + i] = samples[i] / 32768.0f;
             const size_t frame = (offset + i) / 2;
-            const size_t bucketFrames = std::max<size_t>(1, sampleRate_.load(std::memory_order_relaxed) / 2);
+            const size_t bucketFrames = std::max<size_t>(1, capacityFrames_ / waveform_.size());
             const size_t bucket = std::min(waveform_.size() - 1, frame / bucketFrames);
             const uint16_t peak = static_cast<uint16_t>(std::min(1000.0f, std::abs(samples[i] / 32.768f)));
             if (peak > waveform_[bucket].load(std::memory_order_relaxed)) waveform_[bucket].store(peak);
@@ -584,6 +591,7 @@ void StereoLooper::refreshSavedFilesUnlocked() {
 void StereoLooper::worker() {
     while (!stopping_.load(std::memory_order_acquire)) {
         std::string name;
+        bool overwrite = false;
         {
             std::unique_lock<std::mutex> lock(saveMutex_);
             saveWake_.wait_for(lock, std::chrono::milliseconds(100), [&] {
@@ -591,15 +599,17 @@ void StereoLooper::worker() {
             });
             if (stopping_.load(std::memory_order_acquire)) break;
             name.swap(pendingSaveName_);
+            overwrite = pendingSaveOverwrite_;
+            pendingSaveOverwrite_ = false;
         }
         if (name.empty()) continue;
         makeDirectories(root_);
         std::string finalPath = joinPath(root_, name);
-        if (fileExists(finalPath)) {
-            const std::string stem = fileStem(name);
-            for (int copy = 2; copy < 10000 && fileExists(finalPath); ++copy) {
-                finalPath = joinPath(root_, stem + "-" + std::to_string(copy) + ".wav");
-            }
+        if (fileExists(finalPath) && !overwrite) {
+            std::lock_guard<std::mutex> lock(saveMutex_);
+            saveError_ = "a loop with that name already exists; confirm overwrite to replace it";
+            saving_.store(false, std::memory_order_release);
+            continue;
         }
         const std::string temporary = finalPath + ".partial";
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

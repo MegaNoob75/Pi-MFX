@@ -19,6 +19,8 @@ struct Paths {
     std::string downloadsDir; ///< partial TONE3000 downloads
     std::string lv2Dir;       ///< user-installed LV2 bundles (PatchStorage, copies)
     std::string layoutsDir;   ///< named Performance layout JSON
+    std::string controllerProfilesDir; ///< named physical-controller profiles
+    std::string setupProfilesDir; ///< complete setup profiles
     std::string backupsDir;   ///< UI backup JSON
     std::string bankExportsDir; ///< exported bank JSON copies
     std::string backingTracksDir; ///< imported backing-track audio and set lists

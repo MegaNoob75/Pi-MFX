@@ -4,7 +4,7 @@ import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
 
-export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing" | "drumsample" | "drumkit";
+export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing" | "loop" | "recording" | "drumsample" | "drumkit" | "drumproject" | "controllerprofile" | "setupprofile";
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -54,6 +54,8 @@ export function libraryRootLabel(kind: LibraryKind): string {
     if (kind === "layout") {
         return "layouts";
     }
+    if (kind === "controllerprofile") return "controller-profiles";
+    if (kind === "setupprofile") return "setup-profiles";
     if (kind === "theme") {
         return "themes";
     }
@@ -66,7 +68,20 @@ export function libraryRootLabel(kind: LibraryKind): string {
     if (kind === "backing") {
         return "backing-tracks";
     }
+    if (kind === "loop") return "loops";
+    if (kind === "recording") return "recordings";
+    if (kind === "drumproject") return "drums/projects";
     return "models";
+}
+
+function libraryUploadAccept(kind: LibraryKind): string | undefined {
+    if (["theme", "layout", "backup", "bank", "controllerprofile", "setupprofile", "drumkit"].includes(kind)) return ".json,application/json";
+    if (kind === "drumsample" || kind === "loop") return ".wav,audio/wav";
+    if (kind === "backing") return ".wav,.flac,.mp3,.ogg,audio/*";
+    if (kind === "ir") return ".wav,.flac,.aif,.aiff,audio/*";
+    if (kind === "model") return ".nam,application/json";
+    if (kind === "aidax") return ".aidax,application/json";
+    return undefined;
 }
 
 function readBase64(file: File): Promise<string> {
@@ -108,16 +123,27 @@ function parseTree(raw: JsonObject): TreeNode {
     };
 }
 
+function findTreeNode(node: TreeNode, relative: string): TreeNode | null {
+    if (node.relative === relative) return node;
+    for (const child of node.children) {
+        const found = findTreeNode(child, relative);
+        if (found) return found;
+    }
+    return null;
+}
+
 export function LibraryConfirm({
     title,
     body,
     danger,
+    confirmLabel,
     onCancel,
     onConfirm
 }: {
     title: string;
     body: string;
     danger?: boolean;
+    confirmLabel?: string;
     onCancel: () => void;
     onConfirm: () => void;
 }) {
@@ -129,7 +155,7 @@ export function LibraryConfirm({
                 <div className="row" style={{ justifyContent: "flex-end" }}>
                     <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
                     <button type="button" className={`btn ${danger ? "btn-danger" : "btn-accent"}`} onClick={onConfirm}>
-                        {danger ? "DELETE" : "OK"}
+                        {confirmLabel ?? (danger ? "DELETE" : "OK")}
                     </button>
                 </div>
             </div>
@@ -304,8 +330,10 @@ export function LibraryJsonPicker({
     title,
     defaultName,
     contents,
+    baseDirectory = "",
     onClose,
     onLoad,
+    onPreview,
     onSaved
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
@@ -314,15 +342,21 @@ export function LibraryJsonPicker({
     mode: "load" | "save";
     title: string;
     defaultName?: string;
-    contents?: string;
+    contents?: string | ((name: string) => string);
+    baseDirectory?: string;
     onClose: () => void;
     onLoad?: (parsed: JsonObject, path: string) => void;
+    onPreview?: (parsed: JsonObject, path: string) => void;
     onSaved?: (path: string) => void;
 }) {
     const [name, setName] = useState(defaultName ?? "");
     const [selectedPath, setSelectedPath] = useState("");
-    const [files, setFiles] = useState<JsonObject[]>([]);
+    const [directory, setDirectory] = useState(baseDirectory);
     const [error, setError] = useState("");
+    const [confirmOverwrite, setConfirmOverwrite] = useState("");
+    const previewRequest = useRef(0);
+
+    useEffect(() => () => { previewRequest.current += 1; }, []);
 
     useEffect(() => {
         const shared = obj(engine.uiSession.jsonPicker);
@@ -335,55 +369,95 @@ export function LibraryJsonPicker({
         if (typeof shared.selectedPath === "string") {
             setSelectedPath(shared.selectedPath);
         }
-    }, [engine.uiSession.jsonPicker, kind, mode]);
+        if (typeof shared.directory === "string") {
+            const next = shared.directory;
+            setDirectory(!baseDirectory || next === baseDirectory || next.startsWith(`${baseDirectory}/`)
+                ? next : baseDirectory);
+        }
+    }, [engine.uiSession.jsonPicker, kind, mode, baseDirectory]);
 
     const updatePicker = (patch: JsonObject) => {
         updateUiSessionSection(engine.client, "jsonPicker", { kind, mode, ...patch });
     };
 
-    useEffect(() => {
-        void engine.client.request("library/list", { kind, directory: "" }).then((result) => {
-            setFiles(objects(obj(result).files));
+    const selectFile = (item: JsonObject) => {
+        const path = str(item.path);
+        setSelectedPath(path);
+        updatePicker({ selectedPath: path, directory });
+        if (mode !== "load" || !onPreview || !path) return;
+        const request = ++previewRequest.current;
+        void engine.client.request("library/read", { kind, path }).then((result) => {
+            if (request === previewRequest.current) {
+                onPreview(JSON.parse(str(obj(result).contents)) as JsonObject, path);
+            }
         }).catch((item: unknown) => {
-            setError(item instanceof Error ? item.message : String(item));
+            if (request === previewRequest.current) setError(item instanceof Error ? item.message : String(item));
         });
-    }, [engine.client, kind]);
+    };
+
+    const saveJson = (overwrite: boolean) => {
+        const fileName = name.trim().replace(/\.json$/i, "");
+        if (!fileName) { setError("Give the file a name."); return; }
+        if (!contents) { setError("nothing to save"); return; }
+        const serialized = typeof contents === "function" ? contents(fileName) : contents;
+        void (async () => {
+            try {
+                const stored = obj(await engine.client.request("library/upload", {
+                    kind,
+                    name: `${fileName}.json`,
+                    data: utf8ToBase64(serialized),
+                    directory,
+                    overwrite
+                }));
+                onSaved?.(str(stored.path));
+                onClose();
+            } catch (caught) {
+                const message = caught instanceof Error ? caught.message : String(caught);
+                if (!overwrite && /already exists|confirm overwrite/i.test(message)) {
+                    setConfirmOverwrite(`${fileName}.json`);
+                } else {
+                    setError(message);
+                }
+            }
+        })();
+    };
 
     return (
         <div className="dialog-backdrop" onClick={onClose}>
             <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
                 <h2>{title}</h2>
-                <div className="muted">Files in {libraryRootLabel(kind)}/</div>
+                <div className="muted">Locked to {libraryRootLabel(kind)}/{baseDirectory ? `${baseDirectory}/` : ""}</div>
                 {mode === "save" && (
                     <label className="field">
                         <span>Name</span>
                         <input value={name} onChange={(event) => {
                             setName(event.target.value);
-                            updatePicker({ name: event.target.value });
+                            setSelectedPath("");
+                            updatePicker({ name: event.target.value, selectedPath: "" });
                         }} placeholder="My layout" />
                     </label>
                 )}
-                <div className="library-picker-files" data-mfx-sync-scroll={`settings-picker-${kind}-${mode}`}>
-                    {files.length === 0 && <div className="muted">No files yet.</div>}
-                    {files.map((item) => (
-                        <button
-                            key={str(item.path)}
-                            type="button"
-                            className={`btn ${selectedPath === str(item.path) ? "btn-active" : ""}`}
-                            onClick={() => {
-                                setSelectedPath(str(item.path));
-                                updatePicker({ selectedPath: str(item.path) });
-                                if (mode === "save") {
-                                    const nextName = str(item.name).replace(/\.json$/i, "");
-                                    setName(nextName);
-                                    updatePicker({ name: nextName });
-                                }
-                            }}
-                        >
-                            {str(item.name)}
-                        </button>
-                    ))}
-                </div>
+                <LibraryBrowser
+                    engine={engine}
+                    run={run}
+                    kind={kind}
+                    baseDirectory={baseDirectory}
+                    dualDefault={false}
+                    directory={directory}
+                    onDirectoryChange={(next) => {
+                        setDirectory(next);
+                        updatePicker({ directory: next });
+                    }}
+                    selectedPath={selectedPath}
+                    onFileSelect={(item) => {
+                        selectFile(item);
+                        if (mode === "save") {
+                            const nextName = str(item.name).replace(/\.json$/i, "");
+                            setName(nextName);
+                            updatePicker({ name: nextName });
+                        }
+                    }}
+                />
                 {error && <div className="danger">{error}</div>}
                 <div className="row" style={{ justifyContent: "flex-end" }}>
                     <button type="button" className="btn" onClick={onClose}>CANCEL</button>
@@ -394,7 +468,7 @@ export function LibraryJsonPicker({
                             disabled={!selectedPath}
                             onClick={() => {
                                 void run(async () => {
-                                    const result = obj(await engine.client.request("library/read", { path: selectedPath }));
+                                    const result = obj(await engine.client.request("library/read", { kind, path: selectedPath }));
                                     const parsed = JSON.parse(str(result.contents)) as JsonObject;
                                     onLoad?.(parsed, selectedPath);
                                     onClose();
@@ -404,34 +478,161 @@ export function LibraryJsonPicker({
                             LOAD
                         </button>
                     ) : (
-                        <button type="button" className="btn btn-accent" onClick={() => {
-                            const fileName = name.trim().replace(/\.json$/i, "");
-                            if (!fileName) {
-                                setError("Give the file a name.");
-                                return;
-                            }
-                            if (!contents) {
-                                setError("nothing to save");
-                                return;
-                            }
-                            void run(async () => {
-                                const stored = obj(await engine.client.request("library/upload", {
-                                    kind,
-                                    name: `${fileName}.json`,
-                                    data: utf8ToBase64(contents),
-                                    directory: ""
-                                }));
-                                onSaved?.(str(stored.path));
-                                onClose();
-                            });
-                        }}>
+                        <button type="button" className="btn btn-accent" onClick={() => saveJson(false)}>
                             SAVE
                         </button>
                     )}
                 </div>
+                {confirmOverwrite && <LibraryConfirm title="OVERWRITE EXISTING FILE?"
+                    body={`Replace “${confirmOverwrite}”? The previous saved version will be lost.`}
+                    danger confirmLabel="OVERWRITE" onCancel={() => setConfirmOverwrite("")} onConfirm={() => {
+                        setConfirmOverwrite("");
+                        saveJson(true);
+                    }} />}
             </div>
         </div>
     );
+}
+
+export function LibraryItemPicker({
+    engine,
+    run,
+    kind,
+    title,
+    itemType,
+    baseDirectory = "",
+    useLabel = "USE",
+    onUse,
+    onNew,
+    onDelete,
+    onClose
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    kind: LibraryKind;
+    title: string;
+    itemType: "file" | "dir";
+    baseDirectory?: string;
+    useLabel?: string;
+    onUse: (item: JsonObject) => void;
+    onNew?: () => void;
+    onDelete?: (item: JsonObject) => void;
+    onClose: () => void;
+}) {
+    const [selected, setSelected] = useState<JsonObject | null>(null);
+    return <div className="dialog-backdrop" onClick={onClose}>
+        <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
+            <h2>{title}</h2>
+            <div className="muted">Locked to {libraryRootLabel(kind)}/{baseDirectory ? `${baseDirectory}/` : ""}</div>
+            <LibraryBrowser
+                engine={engine}
+                run={run}
+                kind={kind}
+                baseDirectory={baseDirectory}
+                dualDefault={false}
+                directory={baseDirectory}
+                onDirectoryChange={() => undefined}
+                allowCreateFolder={false}
+                allowUpload={false}
+                allowMutations={false}
+                readOnly
+                openFoldersOnSecondClick={itemType !== "dir"}
+                onItemSelect={(item) => setSelected(item && str(item.type) === itemType ? item : null)}
+            />
+            <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div className="row">
+                    {onNew && <button type="button" className="btn" onClick={onNew}>NEW</button>}
+                    {onDelete && <button type="button" className="btn btn-danger" disabled={!selected}
+                        onClick={() => selected && onDelete(selected)}>DELETE</button>}
+                </div>
+                <div className="row">
+                    <button type="button" className="btn" onClick={onClose}>CANCEL</button>
+                    <button type="button" className="btn btn-accent" disabled={!selected}
+                        onClick={() => selected && onUse(selected)}>{useLabel}</button>
+                </div>
+            </div>
+        </div>
+    </div>;
+}
+
+export function LibraryFileSavePicker({
+    engine,
+    run,
+    kind,
+    title,
+    defaultName,
+    extension,
+    onSave,
+    onClose
+}: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+    kind: LibraryKind;
+    title: string;
+    defaultName?: string;
+    extension: string;
+    onSave: (name: string, overwrite: boolean) => void | Promise<unknown>;
+    onClose: () => void;
+}) {
+    const [name, setName] = useState(defaultName ?? "");
+    const [selectedExisting, setSelectedExisting] = useState("");
+    const [confirmOverwrite, setConfirmOverwrite] = useState("");
+    const [error, setError] = useState("");
+    const normalizedExtension = extension.startsWith(".") ? extension : `.${extension}`;
+    const save = (overwrite = false) => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        const target = trimmed.toLowerCase().endsWith(normalizedExtension.toLowerCase())
+            ? trimmed : `${trimmed}${normalizedExtension}`;
+        if (!overwrite && selectedExisting.toLowerCase() === target.toLowerCase()) {
+            setConfirmOverwrite(target);
+            return;
+        }
+        void Promise.resolve(onSave(target, overwrite)).then(() => onClose()).catch((caught) => {
+            const message = caught instanceof Error ? caught.message : String(caught);
+            if (!overwrite && /already exists|confirm overwrite/i.test(message)) setConfirmOverwrite(target);
+            else setError(message);
+        });
+    };
+    return <div className="dialog-backdrop" onClick={onClose}>
+        <div className="dialog library-picker-dialog" onClick={(event) => event.stopPropagation()}>
+            <h2>{title}</h2>
+            <div className="muted">Locked to {libraryRootLabel(kind)}/</div>
+            <label className="field">
+                <span>FILE NAME</span>
+                <input value={name} autoFocus onChange={(event) => { setName(event.target.value); setSelectedExisting(""); }}
+                    onKeyDown={(event) => { if (event.key === "Enter") save(false); }} />
+            </label>
+            <LibraryBrowser
+                engine={engine}
+                run={run}
+                kind={kind}
+                dualDefault={false}
+                directory=""
+                onDirectoryChange={() => undefined}
+                allowCreateFolder={false}
+                allowUpload={false}
+                allowMutations={false}
+                readOnly
+                openFoldersOnSecondClick={false}
+                onFileSelect={(item) => {
+                    setSelectedExisting(str(item.name));
+                    setName(str(item.name).replace(new RegExp(`${normalizedExtension.replace(".", "\\.")}$`, "i"), ""));
+                }}
+            />
+            {error && <div className="danger">{error}</div>}
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+                <button type="button" className="btn" onClick={onClose}>CANCEL</button>
+                <button type="button" className="btn btn-accent" disabled={!name.trim()} onClick={() => save(false)}>SAVE</button>
+            </div>
+            {confirmOverwrite && <LibraryConfirm title="OVERWRITE EXISTING FILE?"
+                body={`Replace “${confirmOverwrite}”? The previous saved version will be lost.`}
+                danger confirmLabel="OVERWRITE" onCancel={() => setConfirmOverwrite("")} onConfirm={() => {
+                    setConfirmOverwrite("");
+                    save(true);
+                }} />}
+        </div>
+    </div>;
 }
 
 type LibraryItem = JsonObject;
@@ -446,8 +647,17 @@ export function LibraryBrowser({
     directory: controlledDir,
     onDirectoryChange,
     onFileSelect,
+    onItemSelect,
     selectedPath: controlledSelectedPath,
-    allowedFilePaths
+    allowedFilePaths,
+    baseDirectory = "",
+    allowCreateFolder = true,
+    allowUpload = true,
+    allowMutations = true,
+    allowMove = true,
+    allowSplitView = true,
+    readOnly = false,
+    openFoldersOnSecondClick = true
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
@@ -458,20 +668,31 @@ export function LibraryBrowser({
     directory?: string;
     onDirectoryChange?: (directory: string) => void;
     onFileSelect?: (item: JsonObject) => void;
+    onItemSelect?: (item: JsonObject | null) => void;
     selectedPath?: string;
     allowedFilePaths?: string[];
+    baseDirectory?: string;
+    allowCreateFolder?: boolean;
+    allowUpload?: boolean;
+    allowMutations?: boolean;
+    allowMove?: boolean;
+    allowSplitView?: boolean;
+    readOnly?: boolean;
+    openFoldersOnSecondClick?: boolean;
 }) {
     const explorerRef = useRef<HTMLDivElement | null>(null);
-    const [internalDir, setInternalDir] = useState("");
-    const [rightDir, setRightDir] = useState("TONE3000");
+    const [internalDir, setInternalDir] = useState(baseDirectory);
+    const [rightDir, setRightDir] = useState(baseDirectory || "TONE3000");
     const directory = controlledDir ?? internalDir;
     const setDirectory = (next: string) => {
-        onDirectoryChange?.(next);
+        const confined = !baseDirectory || next === baseDirectory || next.startsWith(`${baseDirectory}/`)
+            ? next : baseDirectory;
+        onDirectoryChange?.(confined);
         if (controlledDir === undefined) {
-            setInternalDir(next);
+            setInternalDir(confined);
         }
     };
-    const [dual, setDual] = useState(!picker && !filePicker && dualDefault);
+    const [dual, setDual] = useState(!picker && !filePicker && dualDefault && allowSplitView);
     const [tree, setTree] = useState<TreeNode | null>(null);
     const [leftFolders, setLeftFolders] = useState<LibraryItem[]>([]);
     const [leftFiles, setLeftFiles] = useState<LibraryItem[]>([]);
@@ -518,6 +739,7 @@ export function LibraryBrowser({
     };
     const selectItem = (item: LibraryItem) => {
         setSelected(item);
+        onItemSelect?.(item);
         if (str(item.type) === "file") onFileSelect?.(item);
     };
     const stepFilePicker = (direction: number) => {
@@ -562,7 +784,8 @@ export function LibraryBrowser({
 
     const refreshTree = async () => {
         const result = await engine.client.request("library/tree", { kind });
-        setTree(parseTree(obj(obj(result).root)));
+        const parsed = parseTree(obj(obj(result).root));
+        setTree(baseDirectory ? findTreeNode(parsed, baseDirectory) : parsed);
     };
 
     const refreshPane = async (dir: string, pane: "left" | "right") => {
@@ -602,10 +825,19 @@ export function LibraryBrowser({
     useEffect(() => {
         void refresh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet]);
+    }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet, baseDirectory]);
+
+    useEffect(() => {
+        if (!baseDirectory) return;
+        if (directory !== baseDirectory && !directory.startsWith(`${baseDirectory}/`)) setDirectory(baseDirectory);
+        if (rightDir !== baseDirectory && !rightDir.startsWith(`${baseDirectory}/`)) setRightDir(baseDirectory);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [baseDirectory, kind]);
 
     useEffect(() => {
         setSelected(null);
+        onItemSelect?.(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [directory, kind]);
 
     useEffect(() => {
@@ -668,7 +900,7 @@ export function LibraryBrowser({
             return;
         }
         work(async () => {
-            await engine.client.request("library/rename", { path: str(item.path), name: next });
+            await engine.client.request("library/rename", { kind, path: str(item.path), name: next });
         });
     };
 
@@ -724,9 +956,10 @@ export function LibraryBrowser({
                             }
                         }
                         for (const item of items) {
-                            await engine.client.request("library/delete", { path: str(item.path) });
+                            await engine.client.request("library/delete", { kind, path: str(item.path) });
                         }
                         setSelected(null);
+                        onItemSelect?.(null);
                         setCheckedPaths([]);
                     });
                 }
@@ -853,8 +1086,8 @@ export function LibraryBrowser({
                             MULTI SELECT
                         </button>
                     )}
-                    <button type="button" className="btn" onClick={() => void createFolder()}>NEW FOLDER</button>
-                    {!picker && (
+                    {allowCreateFolder && <button type="button" className="btn" onClick={() => void createFolder()}>NEW FOLDER</button>}
+                    {!picker && allowMutations && (
                         <>
                             {multiSelect && (
                                 <button
@@ -868,15 +1101,15 @@ export function LibraryBrowser({
                                     {checkedPaths.length && checkedPaths.length === visibleItems.length ? "CLEAR" : "SELECT ALL"}
                                 </button>
                             )}
-                            <button
+                            {allowMutations && allowMove && <button
                                 type="button"
                                 className="btn btn-danger"
                                 disabled={!targets.length}
                                 onClick={() => deleteItems(targets)}
                             >
                                 DELETE{targets.length > 1 ? ` (${targets.length})` : ""}
-                            </button>
-                            <button
+                            </button>}
+                            {allowMutations && <button
                                 type="button"
                                 className="btn"
                                 disabled={!targets.length}
@@ -886,30 +1119,30 @@ export function LibraryBrowser({
                                 }}
                             >
                                 MOVE{targets.length > 1 ? ` (${targets.length})` : ""}
-                            </button>
-                            <button type="button" className="btn" onClick={() => uploadRef.current?.click()}>UPLOAD</button>
-                            {kind === "drumsample" && <>
+                            </button>}
+                            {allowUpload && <button type="button" className="btn" onClick={() => uploadRef.current?.click()}>UPLOAD</button>}
+                            {allowUpload && kind === "drumsample" && <>
                                 <button type="button" className="btn" onClick={() => folderUploadRef.current?.click()}>IMPORT FOLDER</button>
                                 <input ref={(node) => { folderUploadRef.current = node; node?.setAttribute("webkitdirectory", ""); }} type="file" hidden multiple
                                     onChange={(event) => { if (event.target.files) uploadFiles(event.target.files, activeDirectory); event.target.value = ""; }} />
                             </>}
-                            <input
+                            {allowUpload && <input
                                 ref={uploadRef}
                                 type="file"
                                 hidden
                                 multiple
-                                accept={kind === "drumsample" ? ".wav" : undefined}
+                                accept={libraryUploadAccept(kind)}
                                 onChange={(event) => {
                                     if (event.target.files) {
                                         uploadFiles(event.target.files, activeDirectory);
                                     }
                                     event.target.value = "";
                                 }}
-                            />
+                            />}
                         </>
                     )}
                 </div>
-                {!picker && (
+                {!picker && allowMutations && allowSplitView && (
                     <button type="button" className={`btn explorer-split-btn ${dual ? "btn-active" : ""}`} onClick={() => setDual((value) => !value)}>
                         SPLIT VIEW
                     </button>
@@ -949,10 +1182,12 @@ export function LibraryBrowser({
                     kind={kind}
                     tree={tree}
                     directory={directory}
+                    baseDirectory={baseDirectory}
                     folders={leftFolders}
                     files={picker ? [] : leftFiles}
                     picker={picker}
-                    readOnly={filePicker}
+                    readOnly={filePicker || readOnly}
+                    movable={allowMove}
                     selectedPath={selectedPath}
                     checkedPaths={checkedPaths}
                     multiSelect={multiSelect}
@@ -962,6 +1197,7 @@ export function LibraryBrowser({
                     onSelect={selectItem}
                     onToggleChecked={toggleChecked}
                     onOpenFolder={setDirectory}
+                    openFoldersOnSecondClick={openFoldersOnSecondClick}
                     onOpenFile={(item) => {
                         if (filePicker) {
                             selectItem(item);
@@ -980,10 +1216,12 @@ export function LibraryBrowser({
                         kind={kind}
                         tree={tree}
                         directory={rightDir}
+                        baseDirectory={baseDirectory}
                         folders={rightFolders}
                         files={rightFiles}
                         picker={false}
-                        readOnly={false}
+                        readOnly={readOnly}
+                        movable={allowMove}
                         selectedPath={str(selected?.path)}
                         checkedPaths={checkedPaths}
                         multiSelect={multiSelect}
@@ -993,6 +1231,7 @@ export function LibraryBrowser({
                         onSelect={selectItem}
                         onToggleChecked={toggleChecked}
                         onOpenFolder={setRightDir}
+                        openFoldersOnSecondClick={openFoldersOnSecondClick}
                         onOpenFile={(item) => {
                             if (kind === "backing") {
                                 work(() => engine.client.request("backing/load", { path: str(item.path) }));
@@ -1015,7 +1254,7 @@ export function LibraryBrowser({
                         style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 220) }}
                         onClick={(event) => event.stopPropagation()}
                     >
-                        {menu.item && str(menu.item.type) === "dir" && (
+                        {menu.item && str(menu.item.type) === "dir" && openFoldersOnSecondClick && (
                             <button type="button" onClick={() => { setActiveDirectory(str(menu.item!.relative)); setMenu(null); }}>OPEN</button>
                         )}
                         {menu.item && kind === "backing" && str(menu.item.type) === "file" && (
@@ -1024,10 +1263,10 @@ export function LibraryBrowser({
                                 setMenu(null);
                             }}>ADD TO SET LIST</button>
                         )}
-                        {menu.item && (
+                        {menu.item && allowMutations && (
                             <button type="button" onClick={() => { void renameItem(menu.item!); setMenu(null); }}>RENAME</button>
                         )}
-                        {menu.item && !picker && (
+                        {menu.item && !picker && allowMutations && allowMove && (
                             <button
                                 type="button"
                                 onClick={() => {
@@ -1044,7 +1283,7 @@ export function LibraryBrowser({
                                     : ""}
                             </button>
                         )}
-                        {menu.item && !picker && (
+                        {menu.item && !picker && allowMutations && (
                             <button
                                 type="button"
                                 className="danger"
@@ -1059,7 +1298,7 @@ export function LibraryBrowser({
                                 DELETE
                             </button>
                         )}
-                        <button type="button" onClick={() => { void createFolder(); setMenu(null); }}>NEW FOLDER</button>
+                        {allowCreateFolder && <button type="button" onClick={() => { void createFolder(); setMenu(null); }}>NEW FOLDER</button>}
                     </div>
                 </div>
             )}
@@ -1083,10 +1322,12 @@ function ExplorerPane({
     kind,
     tree,
     directory,
+    baseDirectory,
     folders,
     files,
     picker,
     readOnly = false,
+    movable = true,
     selectedPath,
     checkedPaths,
     multiSelect,
@@ -1096,6 +1337,7 @@ function ExplorerPane({
     onSelect,
     onToggleChecked,
     onOpenFolder,
+    openFoldersOnSecondClick,
     onOpenFile,
     onMenu,
     onDropDirectory,
@@ -1106,10 +1348,12 @@ function ExplorerPane({
     kind: LibraryKind;
     tree: TreeNode | null;
     directory: string;
+    baseDirectory: string;
     folders: LibraryItem[];
     files: LibraryItem[];
     picker: boolean;
     readOnly?: boolean;
+    movable?: boolean;
     selectedPath: string;
     checkedPaths: string[];
     multiSelect: boolean;
@@ -1119,6 +1363,7 @@ function ExplorerPane({
     onSelect: (item: LibraryItem) => void;
     onToggleChecked: (item: LibraryItem) => void;
     onOpenFolder: (directory: string) => void;
+    openFoldersOnSecondClick: boolean;
     onOpenFile: (item: LibraryItem) => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem | null) => void;
     onDropDirectory: (destDir: string, event: DragEvent) => void;
@@ -1126,14 +1371,16 @@ function ExplorerPane({
     onActivateSelection?: () => void;
     onWheelSelection?: (deltaY: number, deltaMode: number) => void;
 }) {
-    const crumbs = useMemo(() => ["", ...directory.split("/").filter(Boolean)], [directory]);
-    let crumbPath = "";
+    const visibleDirectory = baseDirectory && directory.startsWith(baseDirectory)
+        ? directory.slice(baseDirectory.length).replace(/^\//, "") : directory;
+    const crumbs = useMemo(() => ["", ...visibleDirectory.split("/").filter(Boolean)], [visibleDirectory]);
+    let crumbPath = baseDirectory;
     return (
         <div
             className={`explorer-pane ${active ? "explorer-pane-active" : ""}`}
             onPointerDown={onActivate}
-            onDragOver={readOnly ? undefined : (event) => event.preventDefault()}
-            onDrop={readOnly ? undefined : (event) => onDropDirectory(directory, event)}
+            onDragOver={readOnly || !movable ? undefined : (event) => event.preventDefault()}
+            onDrop={readOnly || !movable ? undefined : (event) => onDropDirectory(directory, event)}
             onContextMenu={readOnly ? undefined : (event) => {
                 event.preventDefault();
                 onMenu(event, null);
@@ -1144,8 +1391,10 @@ function ExplorerPane({
                     if (index > 0) {
                         crumbPath = joinLibraryDir(crumbPath, part);
                     }
-                    const path = index === 0 ? "" : crumbPath;
-                    const label = index === 0 ? libraryRootLabel(kind) : part;
+                    const path = index === 0 ? baseDirectory : crumbPath;
+                    const label = index === 0
+                        ? (baseDirectory.split("/").filter(Boolean).pop() || libraryRootLabel(kind))
+                        : part;
                     return (
                         <button
                             key={`${index}-${path}`}
@@ -1199,11 +1448,12 @@ function ExplorerPane({
                             multiSelect={multiSelect}
                             folder
                             readOnly={readOnly}
+                            movable={movable}
                             onSelect={() => (multiSelect ? onToggleChecked(folder) : onSelect(folder))}
                             onToggleChecked={() => onToggleChecked(folder)}
-                            onOpen={() => onOpenFolder(str(folder.relative))}
+                            onOpen={openFoldersOnSecondClick ? () => onOpenFolder(str(folder.relative)) : undefined}
                             onMenu={onMenu}
-                            onDrop={readOnly ? undefined : (event) => onDropDirectory(str(folder.relative), event)}
+                            onDrop={readOnly || !movable ? undefined : (event) => onDropDirectory(str(folder.relative), event)}
                         />
                     ))}
                     {!picker && files.map((file) => (
@@ -1214,6 +1464,7 @@ function ExplorerPane({
                             checked={checkedPaths.includes(str(file.path))}
                             multiSelect={multiSelect}
                             readOnly={readOnly}
+                            movable={movable}
                             onSelect={() => {
                                 if (multiSelect) {
                                     onToggleChecked(file);
@@ -1299,6 +1550,7 @@ function ExplorerRow({
     multiSelect = false,
     folder = false,
     readOnly = false,
+    movable = true,
     onSelect,
     onToggleChecked,
     onOpen,
@@ -1311,6 +1563,7 @@ function ExplorerRow({
     multiSelect?: boolean;
     folder?: boolean;
     readOnly?: boolean;
+    movable?: boolean;
     onSelect: () => void;
     onToggleChecked?: () => void;
     onOpen?: () => void;
@@ -1328,8 +1581,8 @@ function ExplorerRow({
             data-library-path={str(item.path)}
             data-library-type={folder ? "dir" : "file"}
             data-mfx-nav-key={`${folder ? "folder" : "file"}:${str(item.relative, str(item.path))}`}
-            draggable={!readOnly}
-            onDragStart={readOnly ? undefined : (event) => {
+            draggable={!readOnly && movable}
+            onDragStart={readOnly || !movable ? undefined : (event) => {
                 event.dataTransfer.setData("application/x-pimfx-path", str(item.path));
                 event.dataTransfer.setData("application/x-pimfx-name", str(item.name));
                 event.dataTransfer.setData("application/x-pimfx-type", str(item.type, folder ? "dir" : "file"));

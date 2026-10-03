@@ -8,10 +8,12 @@ import { updateUiSessionSection } from "../uiSession";
 import { Tone3000View } from "./Tone3000View";
 import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
+import { LibraryJsonPicker } from "./LibraryManager";
 import { HotspotView } from "./HotspotView";
 import { MarqueeText } from "./MarqueeText";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { GainMeter } from "./GainMeter";
+import { SetupProfilesView } from "./SetupProfilesView";
 
 export type SettingsPage =
     | "audio"
@@ -24,7 +26,8 @@ export type SettingsPage =
     | "keyboard"
     | "backup"
     | "hotspot"
-    | "updates";
+    | "updates"
+    | "profiles";
 
 export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }) {
     return (
@@ -38,6 +41,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel, backup and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="SETUP PROFILES" subtitle="Save or load the complete rig setup at once" onClick={() => onOpen("profiles")} />
                 <HubCard title="MODEL LIBRARY" subtitle="TONE3000 hosted browser and API key" onClick={() => onOpen("tone3000")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
             </div>
@@ -405,6 +409,9 @@ export function SettingsPage({
     }
     if (page === "hotspot") {
         return <HotspotView engine={engine} run={run} />;
+    }
+    if (page === "profiles") {
+        return <SetupProfilesView engine={engine} run={run} />;
     }
     if (page === "system") {
         return <SystemHub engine={engine} run={run} onOpen={onOpen} />;
@@ -1114,6 +1121,9 @@ function ControllerSettings({
     const [ports, setPorts] = useState<JsonObject[]>([]);
     const [selectedId, setSelectedId] = useState("");
     const [removeControlId, setRemoveControlId] = useState("");
+    const [profilePicker, setProfilePicker] = useState<"load" | "save" | null>(null);
+    const [pendingProfile, setPendingProfile] = useState<JsonObject | null>(null);
+    const [profileNotice, setProfileNotice] = useState("");
     const selected = grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
 
     useEffect(() => {
@@ -1184,6 +1194,50 @@ function ControllerSettings({
     const selectedPort = str(controller.activePort) || str(controller.midiPort);
     const listedIds = new Set(ports.map((port) => str(port.id)));
     const snapshotSlots = snapshotLayoutSlots(obj(controller.performanceLayout));
+    const profileContents = () => {
+        const hardware = { ...controller };
+        for (const key of ["connected", "activePort", "learning", "learningControlId", "firmwareVersion",
+            "requiredFirmwareVersion", "firmwareUpdateRequired", "performanceLayout", "layoutDefaults"]) {
+            delete hardware[key];
+        }
+        const ui = obj(state.ui);
+        return JSON.stringify({
+            format: "pimfx-controller-profile",
+            version: 1,
+            hardware,
+            feel: {
+                encoderStepsPerDetent: num(ui.encoderStepsPerDetent, 1),
+                analogDeadband: num(ui.analogDeadband),
+                switchDebounceMs: num(ui.switchDebounceMs)
+            }
+        }, null, 2);
+    };
+    const loadProfile = (profile: JsonObject) => {
+        if (str(profile.format) !== "pimfx-controller-profile" || num(profile.version) !== 1) {
+            setProfileNotice("That is not a Pi-MFX controller profile.");
+            return;
+        }
+        setPendingProfile(profile);
+    };
+    const applyProfile = () => {
+        const profile = pendingProfile;
+        setPendingProfile(null);
+        if (!profile) return;
+        const hardware = obj(profile.hardware);
+        const feel = obj(profile.feel);
+        void run(async () => {
+            await client.request("controller/config", {
+                ...hardware,
+                performanceLayout: obj(controllerRef.current.performanceLayout),
+                layoutDefaults: obj(controllerRef.current.layoutDefaults)
+            });
+            await client.request("ui/settings", {
+                encoderStepsPerDetent: num(feel.encoderStepsPerDetent, 1),
+                analogDeadband: num(feel.analogDeadband),
+                switchDebounceMs: num(feel.switchDebounceMs)
+            });
+        });
+    };
 
     const addControl = (kind: string, binding: JsonObject) => {
         const current = controlsRef.current;
@@ -1223,6 +1277,8 @@ function ControllerSettings({
     return (
         <>
             <div className="split-toolbar" style={{ flexWrap: "wrap" }}>
+                <button type="button" className="btn btn-accent" onClick={() => setProfilePicker("load")}>LOAD PROFILE</button>
+                <button type="button" className="btn" onClick={() => setProfilePicker("save")}>SAVE PROFILE AS</button>
                 <label className="field" style={{ minWidth: 140 }}>
                     <span>Name</span>
                     <KeyboardCommitInput
@@ -1398,6 +1454,26 @@ function ControllerSettings({
                     onConfirm={removeControl}
                 />
             )}
+            {profilePicker && <LibraryJsonPicker
+                engine={engine}
+                run={run}
+                kind="controllerprofile"
+                mode={profilePicker}
+                title={profilePicker === "load" ? "LOAD CONTROLLER PROFILE" : "SAVE CONTROLLER PROFILE AS"}
+                defaultName={str(controller.name, "My Controller")}
+                contents={profilePicker === "save" ? profileContents() : undefined}
+                onClose={() => setProfilePicker(null)}
+                onLoad={(parsed) => loadProfile(parsed)}
+            />}
+            {pendingProfile && <ConfirmDialog
+                title="LOAD CONTROLLER PROFILE?"
+                body="This replaces the physical controls, MIDI assignments, LEDs and floorboard feel. The current theme and Performance layout stay in place."
+                confirmLabel="LOAD PROFILE"
+                onCancel={() => setPendingProfile(null)}
+                onConfirm={applyProfile}
+            />}
+            {profileNotice && <ConfirmDialog title="PROFILE NOT LOADED" body={profileNotice} showCancel={false}
+                onCancel={() => setProfileNotice("")} onConfirm={() => setProfileNotice("")} />}
         </>
     );
 }

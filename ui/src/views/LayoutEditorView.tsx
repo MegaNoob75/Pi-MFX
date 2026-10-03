@@ -914,7 +914,8 @@ export function LayoutEditorView({
             kind: "layout",
             name: `${name}.json`,
             data: utf8ToBase64(JSON.stringify(visual, null, 2)),
-            directory: ""
+            directory: "",
+            overwrite: true
         });
     };
 
