@@ -136,7 +136,6 @@ public:
     bool removeEffect(const std::string& slotId, std::string& error);
     bool moveEffect(const std::string& slotId, int newIndex, std::string& error);
     bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error);
-    bool setEffectName(const std::string& slotId, const std::string& name, std::string& error);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
     bool setTempoLink(const std::string& slotId, const std::string& portSymbol,

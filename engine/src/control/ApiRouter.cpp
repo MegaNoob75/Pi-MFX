@@ -522,10 +522,6 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                       payload["enabled"].asBool(true), error);
         return Json::object();
     }
-    if (command == "chain/name") {
-        ok = engine_.setEffectName(payload["slotId"].asString(), payload["name"].asString(), error);
-        return Json::object();
-    }
     if (command == "chain/control") {
         ok = engine_.setControlValue(payload["slotId"].asString(),
                                      payload["port"].asString(),

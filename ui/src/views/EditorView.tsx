@@ -73,8 +73,6 @@ export function EditorView({
     const [bindTarget, setBindTarget] = useState<BindTarget | null>(null);
     const [dropBankId, setDropBankId] = useState("");
     const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
-    const pickerHoldRef = useRef<number | null>(null);
-    const pickerHoldFiredRef = useRef(false);
     const chainPageRef = useRef<HTMLDivElement | null>(null);
     const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
     const [chainCardWidth, setChainCardWidth] = useState(142);
@@ -216,6 +214,17 @@ export function EditorView({
         setBrowser({ mode: "add", index: globalIndex });
     };
 
+    const renamePreset = () => {
+        void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
+            if (name?.trim() && str(obj(preset).id)) {
+                void run(() => client.request("preset/rename", {
+                    presetId: str(obj(preset).id),
+                    name: name.trim()
+                }));
+            }
+        });
+    };
+
     const openControls = (slotId: string) => {
         setSelectedId(slotId);
         setPage("controls");
@@ -306,40 +315,9 @@ export function EditorView({
                         <button
                             type="button"
                             className="editor-preset-name"
-                            onPointerDown={() => {
-                                if (lockChain) {
-                                    return;
-                                }
-                                pickerHoldFiredRef.current = false;
-                                if (pickerHoldRef.current) {
-                                    window.clearTimeout(pickerHoldRef.current);
-                                }
-                                pickerHoldRef.current = window.setTimeout(() => {
-                                    pickerHoldRef.current = null;
-                                    pickerHoldFiredRef.current = true;
-                                    void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
-                                        if (name?.trim() && str(obj(preset).id)) {
-                                            void run(() => client.request("preset/rename", {
-                                                presetId: str(obj(preset).id),
-                                                name: name.trim()
-                                            }));
-                                        }
-                                    });
-                                }, 550);
-                            }}
-                            onPointerUp={() => {
-                                if (pickerHoldRef.current) {
-                                    window.clearTimeout(pickerHoldRef.current);
-                                    pickerHoldRef.current = null;
-                                }
-                                if (!lockChain && !pickerHoldFiredRef.current) {
+                            onClick={() => {
+                                if (!lockChain) {
                                     setPickerOpen(true);
-                                }
-                            }}
-                            onPointerCancel={() => {
-                                if (pickerHoldRef.current) {
-                                    window.clearTimeout(pickerHoldRef.current);
-                                    pickerHoldRef.current = null;
                                 }
                             }}
                         >
@@ -351,9 +329,12 @@ export function EditorView({
                             <span className="editor-preset-chevron">▾</span>
                         </button>
                         {!lockChain ? (
-                            <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
-                                DELETE
-                            </button>
+                            <div className="editor-primary-actions">
+                                <button type="button" className="btn" onClick={renamePreset}>RENAME</button>
+                                <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
+                                    DELETE
+                                </button>
+                            </div>
                         ) : <div />}
                         {lockChain && (
                             <div className="editor-toolbar-copy">
@@ -517,22 +498,6 @@ export function EditorView({
                         </button>
                         {!lockChain && (
                             <>
-                                <button type="button" className="btn" onClick={() => {
-                                    void askText("Effect name", effectTitle).then((name) => {
-                                        if (name) {
-                                            void run(() => client.request("chain/name", {
-                                                slotId: str(selected.id),
-                                                name
-                                            }));
-                                        }
-                                    });
-                                }}>RENAME</button>
-                                <button type="button" className="btn" disabled={selectedIndex <= 0} onClick={() => {
-                                    void run(() => client.request("chain/move", { slotId: str(selected.id), index: selectedIndex - 1 }));
-                                }}>←</button>
-                                <button type="button" className="btn" disabled={selectedIndex >= chain.length - 1} onClick={() => {
-                                    void run(() => client.request("chain/move", { slotId: str(selected.id), index: selectedIndex + 1 }));
-                                }}>→</button>
                                 <button type="button" className="btn" onClick={() => setBrowser({ mode: "replace", index: selectedIndex })}>
                                     REPLACE
                                 </button>

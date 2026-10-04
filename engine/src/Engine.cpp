@@ -2470,24 +2470,6 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
     return false;
 }
 
-bool Engine::setEffectName(const std::string& slotId, const std::string& name, std::string& error) {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
-        error = "no active preset";
-        return false;
-    }
-    EffectSlot* slot = preset->findSlot(slotId);
-    if (!slot) {
-        error = "no such effect";
-        return false;
-    }
-    slot->name = name;
-    persistActiveBankUnlocked();
-    notify();
-    return true;
-}
-
 bool Engine::setControlValue(const std::string& slotId, const std::string& portSymbol,
                              float value, std::string& error, bool persist) {
     Chain* chain = activeChain_.load(std::memory_order_acquire);
