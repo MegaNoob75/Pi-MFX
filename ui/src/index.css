@@ -1191,11 +1191,20 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .tuner-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .tuner-tabs button { min-height: 42px; border: 1px solid var(--mfx-border); border-radius: 8px; background: var(--mfx-panel); color: var(--mfx-muted); font-weight: 900; }
 .tuner-tabs button.active { color: var(--mfx-text); border-color: var(--mfx-cyan); background: color-mix(in srgb, var(--mfx-cyan) 18%, var(--mfx-panel)); }
-.tuner-stage { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(90px, 1fr) auto minmax(70px, .65fr) auto auto; align-items: center; text-align: center; padding: clamp(8px, 2vh, 20px); border: 1px solid var(--mfx-border); border-radius: 12px; background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--mfx-panel) 80%, var(--mfx-cyan) 8%), var(--mfx-background)); overflow: hidden; }
+.tuner-stage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(260px, .38fr) minmax(0, 1fr); grid-template-rows: auto auto minmax(70px, 1fr) auto minmax(54px, .55fr) auto auto; column-gap: clamp(12px, 2vw, 28px); align-items: center; text-align: center; padding: clamp(8px, 2vh, 20px); border: 1px solid var(--mfx-border); border-radius: 12px; background: radial-gradient(circle at 66% 42%, color-mix(in srgb, var(--mfx-panel) 80%, var(--mfx-cyan) 8%), var(--mfx-background)); overflow: hidden; }
 .tuner-status-row { width: 100%; display: flex; justify-content: space-between; color: var(--mfx-muted); font-size: .72rem; letter-spacing: .08em; }
+.tuner-status-row { grid-column: 1 / -1; }
+.tuner-target-summary, .tuner-note, .tuner-direction, .tuner-display, .tuner-readouts, .tuner-input { grid-column: 2; }
+.tuner-target-summary { color: var(--mfx-muted); font-size: clamp(.68rem, 1.5vw, .9rem); font-weight: 850; letter-spacing: .08em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tuner-stage:not(:has(.tuner-instrument)) > .tuner-target-summary,
+.tuner-stage:not(:has(.tuner-instrument)) > .tuner-note,
+.tuner-stage:not(:has(.tuner-instrument)) > .tuner-direction,
+.tuner-stage:not(:has(.tuner-instrument)) > .tuner-display,
+.tuner-stage:not(:has(.tuner-instrument)) > .tuner-readouts,
+.tuner-stage:not(:has(.tuner-instrument)) > .tuner-input { grid-column: 1 / -1; }
 .tuner-status-row strong { color: var(--mfx-cyan); }
 .tuner-status-row .muted-output { color: #ffb347; }
-.tuner-note { font-size: clamp(5rem, 21vh, 11rem); line-height: .84; font-weight: 950; letter-spacing: -.06em; font-variant-numeric: tabular-nums; text-shadow: 0 0 32px color-mix(in srgb, var(--mfx-cyan) 32%, transparent); }
+.tuner-note { font-size: clamp(4.5rem, 17vh, 9rem); line-height: .84; font-weight: 950; letter-spacing: -.06em; font-variant-numeric: tabular-nums; text-shadow: 0 0 32px color-mix(in srgb, var(--mfx-cyan) 32%, transparent); }
 .tuner-direction { min-height: 1.5em; color: #ffb347; font-size: clamp(1rem, 3.5vh, 1.8rem); font-weight: 950; letter-spacing: .16em; }
 .tuner-view.is-in-tune .tuner-direction, .tuner-view.is-in-tune .tuner-note { color: #5dff91; text-shadow: 0 0 28px rgba(55,255,122,.42); }
 .tuner-display { width: min(88%, 760px); margin: auto; }
@@ -1207,11 +1216,33 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .tuner-readouts div { display: grid; gap: 2px; min-width: 110px; }
 .tuner-readouts span, .tuner-input > span { color: var(--mfx-muted); font-size: .68rem; letter-spacing: .12em; }
 .tuner-readouts strong { font-size: clamp(1rem, 3vh, 1.6rem); font-variant-numeric: tabular-nums; }
-.tuner-input { width: min(70%, 520px); margin: auto; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; }
+.tuner-input { width: min(82%, 560px); margin: auto; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; }
 .tuner-input > div { height: 10px; overflow: hidden; border-radius: 6px; background: var(--mfx-panel); }
 .tuner-input i { display: block; height: 100%; background: linear-gradient(90deg, var(--mfx-cyan), #5dff91, #ffb347); transition: width 80ms linear; }
+.tuner-input small { color: var(--mfx-muted); font-size: .6rem; }
+.tuner-input.clipping > span, .tuner-input.clipping small { color: var(--mfx-danger); }
+.tuner-instrument { position: relative; grid-column: 1; grid-row: 2 / -1; align-self: stretch; min-height: 0; padding: 10px; overflow: hidden; border: 2px solid color-mix(in srgb, var(--mfx-cyan) 65%, var(--mfx-border)); border-radius: 12px; background: color-mix(in srgb, var(--mfx-background) 88%, transparent); text-align: left; }
+.tuner-instrument::before { content: ""; position: absolute; left: 50%; top: 48px; bottom: 10px; width: 54%; transform: translateX(-50%); border: 2px solid color-mix(in srgb, var(--mfx-muted) 20%, transparent); border-radius: 44% 44% 34% 34%; box-shadow: inset 0 0 30px color-mix(in srgb, var(--mfx-cyan) 7%, transparent); pointer-events: none; }
+.tuner-instrument-head { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--mfx-muted); font-size: .68rem; }
+.tuner-instrument-head button { padding: 4px 9px; border: 1px solid var(--mfx-border); border-radius: 999px; background: var(--mfx-panel); color: var(--mfx-muted); font-size: .62rem; font-weight: 900; }
+.tuner-instrument-head button.active { border-color: var(--mfx-cyan); color: var(--mfx-cyan); }
+.tuner-strings { position: relative; z-index: 1; height: calc(100% - 28px); display: flex; flex-direction: column; justify-content: space-evenly; gap: 2px; padding-top: 4px; }
+.tuner-course { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 6px; padding: 2px 4px; border-radius: 7px; transition: background 90ms linear; }
+.tuner-course.detected { background: color-mix(in srgb, #5dff91 15%, transparent); }
+.tuner-course > span { color: var(--mfx-muted); font-size: .58rem; font-weight: 800; text-transform: uppercase; }
+.tuner-course-lines { display: grid; gap: 2px; }
+.tuner-course-lines button { min-width: 0; display: grid; grid-template-columns: minmax(24px,1fr) auto; align-items: center; gap: 6px; padding: 1px 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--mfx-text); }
+.tuner-course-lines button i { display: block; width: 100%; min-width: 20px; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--mfx-muted) 48%, transparent), var(--mfx-text)); box-shadow: 0 1px 1px rgba(0,0,0,.65); }
+.tuner-course-lines button b { min-width: 30px; text-align: right; font-size: .72rem; }
+.tuner-course-lines button small { grid-column: 1 / -1; color: var(--mfx-muted); font-size: .5rem; text-align: right; }
+.tuner-course-lines button.active { color: #5dff91; }
+.tuner-course-lines button.locked { border-color: var(--mfx-cyan); background: color-mix(in srgb, var(--mfx-cyan) 12%, transparent); }
+.tuner-instrument.compact::before { display: none; }
+.tuner-instrument.compact .tuner-course > span { display: none; }
+.tuner-instrument.compact .tuner-course { grid-template-columns: 1fr; }
+.tuner-instrument.stage .tuner-course-lines button b { font-size: 1.15rem; }
 .tuner-settings { min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; padding-bottom: 12px; overflow-y: auto; }
-.tuner-settings .panel:first-child, .tuner-settings .panel:last-child { grid-column: 1 / -1; }
+.tuner-settings .tuner-appearance, .tuner-settings .panel:last-child { grid-column: 1 / -1; }
 .tuner-style-grid { display: grid; grid-template-columns: repeat(6, minmax(80px,1fr)); gap: 8px; }
 .tuner-style-grid button { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--mfx-border); border-radius: 8px; background: var(--mfx-background); color: var(--mfx-muted); font-weight: 800; }
 .tuner-style-grid button.active { border-color: var(--mfx-cyan); color: var(--mfx-text); box-shadow: inset 0 0 0 1px var(--mfx-cyan); }
@@ -1223,6 +1254,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .tuner-style-grid .preview-stage { box-shadow: inset 0 0 20px var(--mfx-cyan); }
 .tuner-range { display: grid; grid-template-columns: minmax(160px,1fr) minmax(180px,2fr) 60px; align-items: center; gap: 10px; }
 .tuner-option-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.tuner-setting-error { color: var(--mfx-danger); font-weight: 800; }
 .tuner-style-strobe .tuner-scale { opacity: .5; }
 .tuner-strobe { height: 46px; margin-top: -50px; border-radius: 6px; background: repeating-linear-gradient(90deg,var(--mfx-cyan) 0 8px,transparent 8px 16px); background-position-x: var(--strobe-offset); opacity: .72; transition: background-position 80ms linear; }
 .tuner-style-minimal .tuner-status-row, .tuner-style-minimal .tuner-readouts, .tuner-style-minimal .tuner-input { opacity: .45; }
@@ -1232,8 +1264,12 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     .tuner-settings { grid-template-columns: 1fr; }
     .tuner-settings .panel { grid-column: 1 !important; }
     .tuner-style-grid { grid-template-columns: repeat(3, 1fr); }
-    .tuner-note { font-size: clamp(4rem, 18vh, 7rem); }
-    .tuner-stage { grid-template-rows: auto minmax(64px,1fr) auto minmax(48px,.5fr) auto auto; }
+    .tuner-note { font-size: clamp(3.6rem, 14vh, 6rem); }
+    .tuner-stage { grid-template-columns: minmax(220px, .36fr) minmax(0,1fr); grid-template-rows: auto auto minmax(54px,1fr) auto minmax(42px,.5fr) auto auto; }
+    .tuner-instrument { padding: 7px; }
+    .tuner-course { grid-template-columns: 48px minmax(0,1fr); }
+    .tuner-course > span { font-size: .5rem; }
+    .tuner-course-lines button b { font-size: .62rem; }
 }
 
 .danger {

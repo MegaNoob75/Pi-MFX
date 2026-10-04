@@ -15,7 +15,7 @@ namespace pimfx {
 namespace {
 
 constexpr size_t kTunerRingSize = 16384;
-constexpr float kTunerMinFrequency = 35.0f;   // below a standard four-string bass
+constexpr float kTunerMinFrequency = 20.0f;   // covers low-F# extended-range bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
 constexpr int kRequiredControllerFirmwareMajor = 1;
 constexpr int kRequiredControllerFirmwareMinor = 1;
@@ -370,6 +370,7 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
         mean += sample;
     }
     const double rms = std::sqrt(energy / samples.size());
+    reading.inputLevel = static_cast<float>(rms);
     if (rms < threshold) {
         return reading; // silence, or noise floor
     }
@@ -437,6 +438,7 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
     const int nearest = static_cast<int>(std::lround(midi));
 
     reading.valid = true;
+    reading.confidence = static_cast<float>(std::max(0.0, std::min(1.0, 1.0 - bestValue)));
     reading.frequency = static_cast<float>(frequency);
     reading.midiNote = nearest;
     reading.cents = static_cast<float>((midi - nearest) * 100.0);
@@ -511,6 +513,13 @@ bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
     tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
         settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
+    tunerAutoBoost_.store(settings_.ui.tuner["detectionBoostMode"].asString("auto") != "manual", std::memory_order_relaxed);
+    tunerAnalysisBoost_.store(dbToGain(std::max(0.0f, std::min(24.0f,
+        settings_.ui.tuner["detectionBoostDb"].asFloat(0.0f)))), std::memory_order_relaxed);
+    const std::string tunerInstrument = settings_.ui.tuner["instrument"].asString("guitar6");
+    tunerExtendedRange_.store(tunerInstrument == "guitar8" || tunerInstrument == "guitar9"
+        || tunerInstrument == "bass5" || tunerInstrument == "bass6" || tunerInstrument == "bass7",
+        std::memory_order_relaxed);
     configureAudioSafety(settings_.audio);
     backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
@@ -3906,6 +3915,13 @@ bool Engine::applyUiSettings(const Json& json, std::string& error) {
     settings_.ui = UiSettings::fromJson(merged);
     tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
         settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
+    tunerAutoBoost_.store(settings_.ui.tuner["detectionBoostMode"].asString("auto") != "manual", std::memory_order_relaxed);
+    tunerAnalysisBoost_.store(dbToGain(std::max(0.0f, std::min(24.0f,
+        settings_.ui.tuner["detectionBoostDb"].asFloat(0.0f)))), std::memory_order_relaxed);
+    const std::string tunerInstrument = settings_.ui.tuner["instrument"].asString("guitar6");
+    tunerExtendedRange_.store(tunerInstrument == "guitar8" || tunerInstrument == "guitar9"
+        || tunerInstrument == "bass5" || tunerInstrument == "bass6" || tunerInstrument == "bass7",
+        std::memory_order_relaxed);
     applyControllerFeel();
     if (settings_.ui.performanceEncoder != "session") {
         sessionPresets_.clear();
@@ -4284,6 +4300,7 @@ void Engine::setTunerViewState(bool open, bool muted) {
 }
 
 void Engine::tunerThread() {
+    std::vector<float> captured(8192, 0.0f);
     std::vector<float> window(4096, 0.0f);
     TunerReading stable;
     int pendingMidi = -1;
@@ -4297,12 +4314,31 @@ void Engine::tunerThread() {
         }
 
         const size_t write = tunerWrite_.load(std::memory_order_acquire);
-        for (size_t i = 0; i < window.size(); ++i) {
-            const size_t index = (write + kTunerRingSize - window.size() + i) % kTunerRingSize;
-            window[i] = tunerRing_[index];
+        const bool extendedRange = tunerExtendedRange_.load(std::memory_order_relaxed);
+        const size_t captureCount = extendedRange ? captured.size() : window.size();
+        for (size_t i = 0; i < captureCount; ++i) {
+            const size_t index = (write + kTunerRingSize - captureCount + i) % kTunerRingSize;
+            captured[i] = tunerRing_[index];
+        }
+        if (extendedRange) {
+            for (size_t i = 0; i < window.size(); ++i) {
+                window[i] = 0.5f * (captured[i * 2] + captured[i * 2 + 1]);
+            }
+        } else {
+            std::copy(captured.begin(), captured.begin() + static_cast<std::ptrdiff_t>(window.size()), window.begin());
+        }
+        double rmsEnergy = 0.0;
+        for (float sample : window) rmsEnergy += static_cast<double>(sample) * sample;
+        const float rms = static_cast<float>(std::sqrt(rmsEnergy / window.size()));
+        const float analysisBoost = tunerAutoBoost_.load(std::memory_order_relaxed)
+            ? std::max(1.0f, std::min(15.8489f, 0.12f / std::max(rms, 0.000001f)))
+            : tunerAnalysisBoost_.load(std::memory_order_relaxed);
+        for (float& sample : window) {
+            sample *= analysisBoost;
         }
 
-        TunerReading reading = analysePitch(window, sampleRate_.load(std::memory_order_acquire),
+        const unsigned analysisRate = sampleRate_.load(std::memory_order_acquire) / (extendedRange ? 2u : 1u);
+        TunerReading reading = analysePitch(window, analysisRate,
             tunerThreshold_.load(std::memory_order_relaxed));
         if (reading.valid && stable.valid) {
             if (reading.midiNote == stable.midiNote) {
@@ -4936,6 +4972,8 @@ Json Engine::meterState() const {
         && !tunerOutputMuted_.load(std::memory_order_relaxed));
     tunerJson.set("valid", reading.valid);
     tunerJson.set("frequency", reading.frequency);
+    tunerJson.set("inputLevel", reading.inputLevel);
+    tunerJson.set("confidence", reading.confidence);
     tunerJson.set("note", reading.noteName);
     tunerJson.set("cents", reading.cents);
     json.set("tuner", tunerJson);

@@ -34,6 +34,8 @@ namespace pimfx {
 struct TunerReading {
     bool valid = false;
     float frequency = 0.0f;
+    float inputLevel = 0.0f;
+    float confidence = 0.0f;
     int midiNote = 0;
     float cents = 0.0f;
     std::string noteName;
@@ -359,6 +361,9 @@ private:
     float tunerOutputGain_ = 1.0f;
     float tunerDryMix_ = 0.0f;
     std::atomic<float> tunerThreshold_{0.0025f};
+    std::atomic<float> tunerAnalysisBoost_{1.0f};
+    std::atomic<bool> tunerAutoBoost_{true};
+    std::atomic<bool> tunerExtendedRange_{false};
     mutable std::mutex tunerMutex_;
     TunerReading tunerReading_;
 
