@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const editor = fs.readFileSync(path.join(__dirname, '../src/views/EditorView.tsx'), 'utf8');
 const library = fs.readFileSync(path.join(__dirname, '../src/views/LibraryManager.tsx'), 'utf8');
+const engine = fs.readFileSync(path.join(__dirname, '../../engine/src/Engine.cpp'), 'utf8');
 
 assert.match(editor, /BROWSE \{isIrBrowser \? "CAB IRS" : "NAM MODELS"\}[\s\S]*CLEAR \{assetLabel\}/,
     'TooB NAM and Cab IR must use explicit browser buttons and separate clear actions');
@@ -42,6 +43,14 @@ assert.match(library, /onStepSelection[\s\S]*ArrowDown[\s\S]*onWheelSelection/,
     'arrows and the mouse wheel must navigate the visible directory rows');
 assert.match(library, /if \(str\(item\.type\) === "file"\) \{\s*selectItem\(item\);[\s\S]*setDirectory\(str\(item\.relative\)\)/,
     'activation must keep files selected while opening folders');
+assert.match(library, /dualDefault = false/,
+    'the full library manager must start in single-pane view');
+assert.match(library, /beginPointerDrag[\s\S]*pointerDropDirectory[\s\S]*moveItemTo/,
+    'touch and pen dragging between split panes must resolve and move to the visible drop folder');
+assert.match(library, /data-library-drop-directory[\s\S]*explorer-drag-ghost/,
+    'split-pane drag targets and the dragged item must have visible feedback');
+assert.match(engine, /destination already exists; library moves never overwrite files/,
+    'organizing the library must never silently replace an existing file');
 
 assert.match(editor, /toob-cab-ir"[\s\S]*\? "ir"/,
     'each TooB Cab IR path property must receive an IR-library browser');
@@ -49,6 +58,8 @@ assert.match(editor, /BROWSE \{isIrBrowser \? "CAB IRS" : "NAM MODELS"\}/,
     'the picker button must identify whether it browses cab IRs or NAM models');
 
 const css = fs.readFileSync(path.join(__dirname, '../src/index.css'), 'utf8');
+assert.match(css, /\.explorer-pane\.explorer-drop-target[\s\S]*\.explorer-drag-ghost/,
+    'library drag-and-drop feedback must style both the destination and drag label');
 assert.match(css, /\.asset-file-browser \{[\s\S]*height: min\([^;]+100dvh[\s\S]*display: flex;[\s\S]*overflow: hidden;/,
     'the asset browser dialog must remain constrained to the viewport');
 assert.match(css, /\.asset-file-browser \.explorer \{[\s\S]*flex: 1 1 auto;[\s\S]*overflow: hidden;/,

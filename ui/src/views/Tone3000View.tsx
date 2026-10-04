@@ -82,6 +82,11 @@ function modelUrl(model: JsonObject): string {
     return str(model.model_url, str(model.url, str(model.downloadUrl, str(model.download_url))));
 }
 
+function tone3000ModelId(model: JsonObject): string {
+    return jsonId(model.id,
+        jsonId(model.model_id, jsonId(model.modelId, jsonId(model.uuid))));
+}
+
 function modelFileHint(model: JsonObject): string {
     const url = modelUrl(model).split("?")[0] ?? "";
     return str(model.filename, str(model.name, url)).toLowerCase();
@@ -108,7 +113,32 @@ function architectureLabel(model: JsonObject): string {
 
 function fileStem(name: string): string {
     const leaf = name.replace(/\\/g, "/").split("/").pop() ?? name;
-    return leaf.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return leaf.replace(/\.(nam|wav|flac|aif|aiff)$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function modelAliases(model: JsonObject): string[] {
+    const aliases = new Set<string>();
+    for (const value of [model.id, model.model_id, model.modelId, model.uuid]) {
+        const id = jsonId(value).trim().toLowerCase();
+        if (id) aliases.add(`id:${id}`);
+    }
+    const url = modelUrl(model).split("?")[0].trim().toLowerCase();
+    if (url) aliases.add(`url:${url}`);
+    for (const value of [str(model.filename), str(model.name)]) {
+        const stem = fileStem(value);
+        if (stem) aliases.add(`file:${stem}`);
+    }
+    return [...aliases];
+}
+
+function uniqueModels(models: JsonObject[]): JsonObject[] {
+    const seen = new Set<string>();
+    return models.filter((model) => {
+        const aliases = modelAliases(model);
+        if (aliases.some((alias) => seen.has(alias))) return false;
+        aliases.forEach((alias) => seen.add(alias));
+        return true;
+    });
 }
 
 function libraryFileStems(library: JsonObject): Set<string> {
@@ -122,11 +152,23 @@ function libraryFileStems(library: JsonObject): Set<string> {
     return stems;
 }
 
-function modelOnDevice(model: JsonObject, stems: Set<string>): boolean {
+function installedModelIds(assets: JsonObject[]): Set<string> {
+    return new Set(assets.map((asset) => str(asset.modelId).trim().toLowerCase()).filter(Boolean));
+}
+
+function modelOnDevice(model: JsonObject, installedIds: Set<string>, stems: Set<string>): boolean {
+    const modelId = tone3000ModelId(model).trim().toLowerCase();
+    if (modelId) return installedIds.has(modelId);
     return [str(model.name), str(model.filename), modelFileHint(model)].some((name) => {
         const stem = fileStem(name);
         return stem.length > 1 && stems.has(stem);
     });
+}
+
+function installedModelPath(model: JsonObject, assets: JsonObject[]): string {
+    const modelId = tone3000ModelId(model).trim().toLowerCase();
+    if (!modelId) return "";
+    return str(assets.find((asset) => str(asset.modelId).trim().toLowerCase() === modelId)?.path);
 }
 
 export function Tone3000View({
@@ -148,6 +190,7 @@ export function Tone3000View({
     const [message, setMessage] = useState("");
     const [selectedTone, setSelectedTone] = useState<JsonObject | null>(null);
     const [models, setModels] = useState<JsonObject[]>([]);
+    const [installedAssets, setInstalledAssets] = useState<JsonObject[]>([]);
     const [loadingModels, setLoadingModels] = useState(false);
     const [folderPicker, setFolderPicker] = useState<"model" | "ir" | null>(null);
     const [pendingDownload, setPendingDownload] = useState<JsonObject[]>([]);
@@ -156,6 +199,7 @@ export function Tone3000View({
     const [downloadError, setDownloadError] = useState("");
     const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0, name: "" });
     const [downloadFiles, setDownloadFiles] = useState<JsonObject[]>([]);
+    const [libraryRefreshToken, setLibraryRefreshToken] = useState(0);
     const completingOauth = useRef(false);
 
     const refreshStatus = async () => {
@@ -165,20 +209,47 @@ export function Tone3000View({
         setRedirect(str(result.redirectUri, thisPageRedirect()));
     };
 
+    const refreshInstalled = async () => {
+        const result = await engine.client.request("tone3000/installed");
+        setInstalledAssets(objects(result.assets));
+    };
+
     useEffect(() => {
         void refreshStatus().catch((error: unknown) => {
             setMessage(error instanceof Error ? error.message : String(error));
         });
         void engine.client.request("library").catch(() => undefined);
+        void refreshInstalled().catch(() => undefined);
     }, [engine.client]);
 
     const resolveModel = async (model: JsonObject): Promise<JsonObject> => {
         if (modelUrl(model)) return model;
-        const modelId = jsonId(model.id);
+        const modelId = tone3000ModelId(model);
         if (!modelId) return model;
         const result = await engine.client.request("tone3000/model", { modelId });
         const body = obj(result.result);
         return { ...model, ...body, ...(objects(body.data)[0] ?? {}) };
+    };
+
+    const listToneModels = async (toneId: string, architecture = "") => {
+        const collected: JsonObject[] = [];
+        const pageSize = 100;
+        let previousPage = "";
+        for (let page = 1; page <= 20; page += 1) {
+            const result = await engine.client.request("tone3000/models", {
+                toneId,
+                ...(architecture ? { architecture } : {}),
+                page,
+                page_size: pageSize
+            });
+            const listed = extractList(result.result);
+            const pageIdentity = listed.map((model) => modelAliases(model)[0] ?? str(model.name)).join("|");
+            if (page > 1 && pageIdentity && pageIdentity === previousPage) break;
+            collected.push(...listed);
+            if (listed.length < pageSize) break;
+            previousPage = pageIdentity;
+        }
+        return collected;
     };
 
     const loadSelectedTone = async (toneId: string) => {
@@ -186,25 +257,27 @@ export function Tone3000View({
         setDownloadError("");
         setDownloadStatus("");
         try {
+            await refreshInstalled().catch(() => undefined);
             const toneResult = await engine.client.request("tone3000/tone", { toneId });
             const toneBody = obj(toneResult.result);
             const tone = objects(toneBody.data)[0] ?? toneBody;
             setSelectedTone(tone);
             const responses = await Promise.allSettled([
-                engine.client.request("tone3000/models", { toneId, architecture: "2", page_size: 100 }),
-                engine.client.request("tone3000/models", { toneId, page_size: 100 })
+                listToneModels(toneId, "2"),
+                listToneModels(toneId)
             ]);
-            const merged: JsonObject[] = [];
-            const seen = new Set<string>();
-            for (const response of responses) {
+            const listed: JsonObject[] = [];
+            for (const [responseIndex, response] of responses.entries()) {
                 if (response.status !== "fulfilled") continue;
-                for (const model of extractList(response.value.result)) {
-                    const id = jsonId(model.id, modelUrl(model) || str(model.name));
-                    if (!id || seen.has(id)) continue;
-                    seen.add(id);
-                    merged.push(model);
+                for (const model of response.value) {
+                    // The unfiltered request exists only because architecture
+                    // filtering can omit cabinet IRs. Do not pull older NAM
+                    // architectures back into an A2-only selection.
+                    if (responseIndex === 1 && !modelIsIr(tone, model)) continue;
+                    listed.push(model);
                 }
             }
+            const merged = uniqueModels(listed);
             const resolved: JsonObject[] = [];
             for (const model of merged) {
                 try {
@@ -213,8 +286,9 @@ export function Tone3000View({
                     resolved.push(model);
                 }
             }
-            setModels(resolved);
-            if (!resolved.length) setDownloadError("TONE3000 did not list any downloadable models for that tone.");
+            const uniqueResolved = uniqueModels(resolved);
+            setModels(uniqueResolved);
+            if (!uniqueResolved.length) setDownloadError("TONE3000 did not list any downloadable models for that tone.");
         } finally {
             setLoadingModels(false);
         }
@@ -267,16 +341,17 @@ export function Tone3000View({
     };
 
     const downloadModels = async (tone: JsonObject, selected: JsonObject[], directory: string, chosenKind: LibraryKind) => {
+        const uniqueSelected = uniqueModels(selected);
         setDownloading(true);
         setDownloadError("");
         setDownloadFiles([]);
-        setDownloadProgress({ current: 0, total: selected.length, name: "" });
+        setDownloadProgress({ current: 0, total: uniqueSelected.length, name: "" });
         try {
-            setDownloadStatus(`Preparing ${selected.length} file${selected.length === 1 ? "" : "s"}…`);
-            const resolved = await Promise.all(selected.map((model) => resolveModel(model)));
+            setDownloadStatus(`Preparing ${uniqueSelected.length} file${uniqueSelected.length === 1 ? "" : "s"}…`);
+            const resolved = await Promise.all(uniqueSelected.map((model) => resolveModel(model)));
             const items = resolved.map((model, index) => {
                 const name = str(model.name, toneName(tone));
-                const modelId = jsonId(model.id, jsonId(selected[index].id));
+                const modelId = tone3000ModelId(model) || tone3000ModelId(uniqueSelected[index]);
                 const kind = downloadKind(tone, model);
                 return {
                     url: modelUrl(model),
@@ -291,7 +366,7 @@ export function Tone3000View({
                     directory: kind === chosenKind ? directory : loadTone3000Dir(kind)
                 };
             });
-            setDownloadProgress({ current: 0, total: selected.length, name: "Up to 3 files at once" });
+            setDownloadProgress({ current: 0, total: uniqueSelected.length, name: "Up to 3 files at once" });
             setDownloadFiles(items.map((item) => ({ name: item.name, state: "queued" })));
             const started = await engine.client.request("tone3000/download-job/start", { items });
             const jobId = str(started.jobId);
@@ -304,20 +379,25 @@ export function Tone3000View({
                 setDownloadFiles(files);
                 setDownloadProgress({
                     current: completed,
-                    total: selected.length,
+                    total: uniqueSelected.length,
                     name: active.length ? active.map((file) => str(file.name)).join(" · ") : "Finishing…"
                 });
-                setDownloadStatus(`Finished ${completed} of ${selected.length} · ${active.length} downloading`);
+                setDownloadStatus(`Finished ${completed} of ${uniqueSelected.length} · ${active.length} downloading`);
                 if (!bool(response.done)) {
                     await new Promise((resolve) => window.setTimeout(resolve, 250));
                 }
             } while (!bool(response.done));
             const files = objects(response.files);
             const saved = files.filter((file) => str(file.state) === "saved");
+            const installed = files.filter((file) => str(file.state) === "installed");
             const failed = files.filter((file) => str(file.state) === "failed");
             await engine.client.request("library");
-            setDownloadProgress({ current: selected.length, total: selected.length, name: "" });
-            setDownloadStatus(`Finished downloading. Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to the Pi-MFX library.`);
+            await refreshInstalled().catch(() => undefined);
+            setLibraryRefreshToken((value) => value + 1);
+            setDownloadProgress({ current: uniqueSelected.length, total: uniqueSelected.length, name: "" });
+            setDownloadStatus(installed.length
+                ? `Finished downloading. Saved ${saved.length}; ${installed.length} already ${installed.length === 1 ? "was" : "were"} in the library.`
+                : `Finished downloading. Saved ${saved.length} file${saved.length === 1 ? "" : "s"} to the Pi-MFX library.`);
             if (failed.length) {
                 const first = failed[0];
                 setDownloadError(`${failed.length} file${failed.length === 1 ? "" : "s"} failed. ${str(first.name)}: ${str(first.error)}`);
@@ -417,13 +497,14 @@ export function Tone3000View({
                 </div>
                 {message && <div className="muted">{message}</div>}
                 <div className="model-library-files">
-                    <LibraryFileManager engine={engine} run={run} kinds={["model", "ir"]} />
+                    <LibraryFileManager engine={engine} run={run} kinds={["model", "ir"]} refreshToken={libraryRefreshToken} />
                 </div>
             </div>
             {selectedTone && (
                 <ToneDownloadDialog
                     tone={selectedTone}
                     models={models}
+                    installedAssets={installedAssets}
                     stems={stems}
                     loading={loadingModels}
                     downloading={downloading}
@@ -471,6 +552,7 @@ export function Tone3000View({
 function ToneDownloadDialog({
     tone,
     models,
+    installedAssets,
     stems,
     loading,
     downloading,
@@ -483,6 +565,7 @@ function ToneDownloadDialog({
 }: {
     tone: JsonObject;
     models: JsonObject[];
+    installedAssets: JsonObject[];
     stems: Set<string>;
     loading: boolean;
     downloading: boolean;
@@ -496,13 +579,15 @@ function ToneDownloadDialog({
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const name = toneName(tone);
     const image = toneImage(tone);
-    const downloadable = models.filter((model) => modelUrl(model) || jsonId(model.id));
-    const remaining = downloadable.filter((model) => !modelOnDevice(model, stems));
-    const modelKey = (model: JsonObject) => jsonId(model.id, modelUrl(model) || str(model.name));
+    const installedIds = installedModelIds(installedAssets);
+    const downloadable = models.filter((model) => modelUrl(model) || tone3000ModelId(model));
+    const remaining = downloadable.filter((model) => !modelOnDevice(model, installedIds, stems));
+    const modelKey = (model: JsonObject) => modelAliases(model)[0] ?? "";
     const selectedModels = remaining.filter((model) => selectedIds.includes(modelKey(model)));
     const downloadFinished = !downloading && downloadFiles.length > 0
-        && downloadFiles.every((file) => ["saved", "failed"].includes(str(file.state)));
+        && downloadFiles.every((file) => ["saved", "installed", "failed"].includes(str(file.state)));
     const savedCount = downloadFiles.filter((file) => str(file.state) === "saved").length;
+    const installedCount = downloadFiles.filter((file) => str(file.state) === "installed").length;
     const failedCount = downloadFiles.filter((file) => str(file.state) === "failed").length;
     const fileProgress = downloadFiles.length > 0 && (downloading || downloadFinished) && (
         <div className="download-progress">
@@ -538,6 +623,7 @@ function ToneDownloadDialog({
                         <div className="t3k-download-stats">
                             <div><strong>{downloadFiles.length}</strong><span>TOTAL</span></div>
                             <div><strong>{savedCount}</strong><span>SAVED</span></div>
+                            {installedCount > 0 && <div><strong>{installedCount}</strong><span>IN LIBRARY</span></div>}
                             <div className={failedCount ? "has-failures" : ""}><strong>{failedCount}</strong><span>FAILED</span></div>
                         </div>
                     </div>
@@ -562,8 +648,12 @@ function ToneDownloadDialog({
                 {!downloadFinished && <div className="t3k-models">
                     {loading && <div className="muted">Loading models…</div>}
                     {!loading && !downloadable.length && <div className="muted">No downloadable models were returned.</div>}
+                    {!loading && downloadable.length > 0 && remaining.length === 0 && (
+                        <div className="muted">All available A2 models and IRs are already in your library.</div>
+                    )}
                     {downloadable.map((model, index) => {
-                        const saved = modelOnDevice(model, stems);
+                        const saved = modelOnDevice(model, installedIds, stems);
+                        const savedPath = installedModelPath(model, installedAssets);
                         const kind = downloadKind(tone, model);
                         const id = modelKey(model) || String(index);
                         return (
@@ -571,7 +661,7 @@ function ToneDownloadDialog({
                                 <input
                                     type="checkbox"
                                     className="t3k-model-check"
-                                    checked={!saved && selectedIds.includes(id)}
+                                    checked={saved || selectedIds.includes(id)}
                                     disabled={downloading || saved}
                                     onChange={(event) => setSelectedIds((current) => (
                                         event.target.checked
@@ -582,8 +672,9 @@ function ToneDownloadDialog({
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                     <div className="t3k-model-name">{str(model.name, name)}</div>
                                     <div className="muted">
-                                        {architectureLabel(model) ? `${architectureLabel(model)} · ` : ""}{kind === "ir" ? "IR" : "NAM"}{saved ? " · on device" : ""}
+                                        {architectureLabel(model) ? `${architectureLabel(model)} · ` : ""}{kind === "ir" ? "IR" : "NAM"}{saved ? " · IN LIBRARY" : ""}
                                     </div>
+                                    {savedPath && <div className="muted t3k-installed-path">{savedPath}</div>}
                                 </div>
                             </label>
                         );

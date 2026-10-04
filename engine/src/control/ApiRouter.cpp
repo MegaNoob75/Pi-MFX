@@ -879,6 +879,11 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         wrapper.set("result", result);
         return wrapper;
     }
+    if (command == "installed") {
+        const Json result = tone3000_.installed(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "download") {
         std::string url = payload["url"].asString();
         std::string name = payload["name"].asString();
@@ -986,12 +991,34 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         if (!items.isArray() || items.size() == 0) {
             ok = false; error = "no models were selected"; return Json::object();
         }
+
+        // The UI filters installed files before starting a job, but enforce
+        // the same rule here in case the library changed while the dialog was
+        // open or an older client submitted the request.
+        std::unordered_map<std::string, std::string> installedPaths;
+        std::string installedError;
+        const Json installed = tone3000_.installed(installedError);
+        for (const Json& asset : installed["assets"].items()) {
+            std::string modelId = asset["modelId"].asString();
+            std::transform(modelId.begin(), modelId.end(), modelId.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!modelId.empty()) installedPaths[modelId] = asset["path"].asString();
+        }
         const std::string jobId = "tone-download-" + std::to_string(nextToneDownloadJob_.fetch_add(1));
         auto job = std::make_shared<ToneDownloadJob>();
         job->files.reserve(items.size());
         for (const Json& item : items.items()) {
             ToneDownloadFile file;
             file.name = item["name"].asString("TONE3000 model");
+            std::string modelId = item["modelId"].asString();
+            std::transform(modelId.begin(), modelId.end(), modelId.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const auto found = installedPaths.find(modelId);
+            if (!modelId.empty() && found != installedPaths.end()) {
+                file.state = "installed";
+                file.path = found->second;
+                job->completed.fetch_add(1);
+            }
             job->files.push_back(std::move(file));
         }
         {
@@ -1010,6 +1037,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
                         const Json& item = items.at(index);
                         {
                             std::lock_guard<std::mutex> lock(job->mutex);
+                            if (job->files[index].state == "installed") continue;
                             job->files[index].state = "downloading";
                         }
                         Json provenance = Json::object();

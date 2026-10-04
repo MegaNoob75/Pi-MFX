@@ -4582,8 +4582,15 @@ button.list-item {
 }
 
 .t3k-file-progress-row.is-saved strong { color: var(--mfx-success, #6fdc8c); }
+.t3k-file-progress-row.is-installed strong { color: var(--mfx-cyan); }
 .t3k-file-progress-row.is-failed strong { color: var(--mfx-danger, #ff6b6b); }
 .t3k-file-progress-row.is-downloading strong { color: var(--mfx-accent); }
+
+.t3k-installed-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .t3k-download-finished h3 {
     margin: 0 0 6px;
@@ -4592,7 +4599,7 @@ button.list-item {
 
 .t3k-download-stats {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
     gap: 8px;
 }
 
@@ -4949,6 +4956,29 @@ button.list-item {
 
 .explorer-dual .explorer-panes {
     grid-template-columns: 1fr 1fr;
+}
+
+.explorer-pane.explorer-drop-target,
+.explorer-row.explorer-drop-target {
+    outline: 2px solid var(--mfx-cyan);
+    outline-offset: -2px;
+    background: color-mix(in srgb, var(--mfx-cyan) 16%, var(--mfx-panel));
+}
+
+.explorer-drag-ghost {
+    position: fixed;
+    z-index: 120;
+    max-width: min(360px, 70vw);
+    padding: 8px 12px;
+    border: 1px solid var(--mfx-cyan);
+    border-radius: 8px;
+    background: var(--mfx-panel);
+    color: var(--mfx-text);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
 }
 
 .explorer-pane {

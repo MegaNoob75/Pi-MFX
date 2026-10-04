@@ -4232,11 +4232,9 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         return false;
     }
     const std::string dest = joinPath(destDir, fileName(path));
-    if (kind == "drumsample" || kind == "drumkit") {
-        std::error_code sampleEc;
-        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
-            error = "destination already exists; drum files are never overwritten"; return false;
-        }
+    std::error_code destinationEc;
+    if (std::filesystem::exists(dest, destinationEc) || destinationEc) {
+        error = "destination already exists; library moves never overwrite files"; return false;
     }
     if (!storage_.isPathInLibrary(dest)) {
         error = "could not move that there";

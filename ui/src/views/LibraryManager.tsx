@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { EngineSnapshot } from "../api";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
@@ -188,11 +188,13 @@ export function FilesView({
 export function LibraryFileManager({
     engine,
     run,
-    kinds = ["model", "aidax", "ir"]
+    kinds = ["model", "aidax", "ir"],
+    refreshToken = 0
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     kinds?: LibraryKind[];
+    refreshToken?: number;
 }) {
     const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
     const [kind, setKind] = useState<LibraryKind>(availableKinds[0]?.id ?? "model");
@@ -210,7 +212,7 @@ export function LibraryFileManager({
                     </button>
                 ))}
             </div>
-            <LibraryBrowser key={kind} engine={engine} run={run} kind={kind} />
+            <LibraryBrowser key={kind} engine={engine} run={run} kind={kind} refreshToken={refreshToken} />
         </div>
     );
 }
@@ -643,7 +645,7 @@ export function LibraryBrowser({
     kind,
     picker = false,
     filePicker = false,
-    dualDefault = true,
+    dualDefault = false,
     directory: controlledDir,
     onDirectoryChange,
     onFileSelect,
@@ -653,6 +655,7 @@ export function LibraryBrowser({
     baseDirectory = "",
     allowCreateFolder = true,
     allowUpload = true,
+    refreshToken = 0,
     allowMutations = true,
     allowMove = true,
     allowSplitView = true,
@@ -674,6 +677,7 @@ export function LibraryBrowser({
     baseDirectory?: string;
     allowCreateFolder?: boolean;
     allowUpload?: boolean;
+    refreshToken?: number;
     allowMutations?: boolean;
     allowMove?: boolean;
     allowSplitView?: boolean;
@@ -705,6 +709,15 @@ export function LibraryBrowser({
     const [checkedPaths, setCheckedPaths] = useState<string[]>([]);
     const [moving, setMoving] = useState<LibraryItem | null>(null);
     const [movingItems, setMovingItems] = useState<LibraryItem[]>([]);
+    const pointerDragRef = useRef<{
+        item: LibraryItem;
+        pointerId: number;
+        startX: number;
+        startY: number;
+        dragging: boolean;
+    } | null>(null);
+    const [pointerDrag, setPointerDrag] = useState<{ item: LibraryItem; x: number; y: number } | null>(null);
+    const [pointerDropDir, setPointerDropDir] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [menu, setMenu] = useState<{ x: number; y: number; item: LibraryItem | null } | null>(null);
@@ -825,7 +838,7 @@ export function LibraryBrowser({
     useEffect(() => {
         void refresh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet, baseDirectory]);
+    }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet, baseDirectory, refreshToken]);
 
     useEffect(() => {
         if (!baseDirectory) return;
@@ -967,16 +980,21 @@ export function LibraryBrowser({
         });
     };
 
+    const canMoveItemTo = (item: LibraryItem, destDir: string) => {
+        const relative = str(item.relative).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+        const slash = relative.lastIndexOf("/");
+        const sourceDir = slash >= 0 ? relative.slice(0, slash) : "";
+        if (sourceDir === destDir) return false;
+        return str(item.type) !== "dir" || (relative !== destDir && !destDir.startsWith(`${relative}/`));
+    };
+
     const moveItemsTo = (items: LibraryItem[], destDir: string) => {
         if (!items.length) {
             return;
         }
         work(async () => {
             for (const item of items) {
-                const relative = str(item.relative);
-                if (relative === destDir || destDir.startsWith(relative + "/")) {
-                    continue;
-                }
+                if (!canMoveItemTo(item, destDir)) continue;
                 await engine.client.request("library/move", {
                     path: str(item.path),
                     kind,
@@ -990,6 +1008,55 @@ export function LibraryBrowser({
     };
 
     const moveItemTo = (item: LibraryItem, destDir: string) => moveItemsTo([item], destDir);
+
+    const pointerDropDirectory = (x: number, y: number, item: LibraryItem) => {
+        const target = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-library-drop-directory]");
+        const destDir = target?.dataset.libraryDropDirectory ?? "";
+        return target && canMoveItemTo(item, destDir) ? destDir : null;
+    };
+
+    const beginPointerDrag = (item: LibraryItem, event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (!dual || readOnly || !allowMove || event.button !== 0 || event.pointerType === "mouse") return;
+        pointerDragRef.current = {
+            item,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            dragging: false
+        };
+    };
+
+    const updatePointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        const candidate = pointerDragRef.current;
+        if (!candidate || candidate.pointerId !== event.pointerId) return;
+        const distance = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY);
+        if (!candidate.dragging && distance < 12) return;
+        candidate.dragging = true;
+        event.preventDefault();
+        setPointerDrag({ item: candidate.item, x: event.clientX, y: event.clientY });
+        setPointerDropDir(pointerDropDirectory(event.clientX, event.clientY, candidate.item));
+    };
+
+    const finishPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        const candidate = pointerDragRef.current;
+        if (!candidate || candidate.pointerId !== event.pointerId) return false;
+        const wasDragging = candidate.dragging;
+        const destDir = wasDragging
+            ? pointerDropDirectory(event.clientX, event.clientY, candidate.item)
+            : null;
+        pointerDragRef.current = null;
+        setPointerDrag(null);
+        setPointerDropDir(null);
+        if (destDir !== null) moveItemTo(candidate.item, destDir);
+        return wasDragging;
+    };
+
+    const cancelPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (pointerDragRef.current?.pointerId !== event.pointerId) return;
+        pointerDragRef.current = null;
+        setPointerDrag(null);
+        setPointerDropDir(null);
+    };
 
     const uploadFiles = (files: FileList | File[], destDir: string, confirmed = false) => {
         const list = Array.from(files);
@@ -1035,10 +1102,8 @@ export function LibraryBrowser({
         const type = event.dataTransfer.getData("application/x-pimfx-type");
         if (path) {
             const relative = event.dataTransfer.getData("application/x-pimfx-relative");
-            if (relative === destDir || destDir.startsWith(relative + "/")) {
-                return;
-            }
-            moveItemTo({ path, name, type, relative }, destDir);
+            const item = { path, name, type, relative };
+            if (canMoveItemTo(item, destDir)) moveItemTo(item, destDir);
             return;
         }
         if (event.dataTransfer.files.length) {
@@ -1207,6 +1272,11 @@ export function LibraryBrowser({
                     }}
                     onMenu={openMenu}
                     onDropDirectory={dropOnDirectory}
+                    pointerDropDir={pointerDropDir}
+                    onPointerDragStart={beginPointerDrag}
+                    onPointerDragMove={updatePointerDrag}
+                    onPointerDragEnd={finishPointerDrag}
+                    onPointerDragCancel={cancelPointerDrag}
                     onStepSelection={filePicker ? stepFilePicker : undefined}
                     onActivateSelection={filePicker ? activateFilePickerSelection : undefined}
                     onWheelSelection={filePicker ? wheelFilePicker : undefined}
@@ -1239,9 +1309,19 @@ export function LibraryBrowser({
                         }}
                         onMenu={openMenu}
                         onDropDirectory={dropOnDirectory}
+                        pointerDropDir={pointerDropDir}
+                        onPointerDragStart={beginPointerDrag}
+                        onPointerDragMove={updatePointerDrag}
+                        onPointerDragEnd={finishPointerDrag}
+                        onPointerDragCancel={cancelPointerDrag}
                     />
                 )}
             </div>
+            {pointerDrag && (
+                <div className="explorer-drag-ghost" style={{ left: pointerDrag.x + 14, top: pointerDrag.y + 14 }}>
+                    {str(pointerDrag.item.type) === "dir" ? "📁" : "📄"} {str(pointerDrag.item.name)}
+                </div>
+            )}
             <div className="muted explorer-status">
                 {libraryRootLabel(kind)}/{activeDirectory || ""} · {multiSelect
                     ? `${checkedPaths.length} selected`
@@ -1341,6 +1421,11 @@ function ExplorerPane({
     onOpenFile,
     onMenu,
     onDropDirectory,
+    pointerDropDir,
+    onPointerDragStart,
+    onPointerDragMove,
+    onPointerDragEnd,
+    onPointerDragCancel,
     onStepSelection,
     onActivateSelection,
     onWheelSelection
@@ -1367,6 +1452,11 @@ function ExplorerPane({
     onOpenFile: (item: LibraryItem) => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem | null) => void;
     onDropDirectory: (destDir: string, event: DragEvent) => void;
+    pointerDropDir: string | null;
+    onPointerDragStart: (item: LibraryItem, event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerDragMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerDragEnd: (event: ReactPointerEvent<HTMLButtonElement>) => boolean;
+    onPointerDragCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
     onStepSelection?: (direction: number) => void;
     onActivateSelection?: () => void;
     onWheelSelection?: (deltaY: number, deltaMode: number) => void;
@@ -1377,7 +1467,8 @@ function ExplorerPane({
     let crumbPath = baseDirectory;
     return (
         <div
-            className={`explorer-pane ${active ? "explorer-pane-active" : ""}`}
+            className={`explorer-pane ${active ? "explorer-pane-active" : ""}${pointerDropDir !== null && pointerDropDir === directory ? " explorer-drop-target" : ""}`}
+            data-library-drop-directory={directory}
             onPointerDown={onActivate}
             onDragOver={readOnly || !movable ? undefined : (event) => event.preventDefault()}
             onDrop={readOnly || !movable ? undefined : (event) => onDropDirectory(directory, event)}
@@ -1454,6 +1545,11 @@ function ExplorerPane({
                             onOpen={openFoldersOnSecondClick ? () => onOpenFolder(str(folder.relative)) : undefined}
                             onMenu={onMenu}
                             onDrop={readOnly || !movable ? undefined : (event) => onDropDirectory(str(folder.relative), event)}
+                            pointerDropTarget={pointerDropDir !== null && pointerDropDir === str(folder.relative)}
+                            onPointerDragStart={onPointerDragStart}
+                            onPointerDragMove={onPointerDragMove}
+                            onPointerDragEnd={onPointerDragEnd}
+                            onPointerDragCancel={onPointerDragCancel}
                         />
                     ))}
                     {!picker && files.map((file) => (
@@ -1476,6 +1572,10 @@ function ExplorerPane({
                             }}
                             onToggleChecked={() => onToggleChecked(file)}
                             onMenu={onMenu}
+                            onPointerDragStart={onPointerDragStart}
+                            onPointerDragMove={onPointerDragMove}
+                            onPointerDragEnd={onPointerDragEnd}
+                            onPointerDragCancel={onPointerDragCancel}
                         />
                     ))}
                     {folders.length === 0 && (picker || files.length === 0) && (
@@ -1555,7 +1655,12 @@ function ExplorerRow({
     onToggleChecked,
     onOpen,
     onMenu,
-    onDrop
+    onDrop,
+    pointerDropTarget = false,
+    onPointerDragStart,
+    onPointerDragMove,
+    onPointerDragEnd,
+    onPointerDragCancel
 }: {
     item: LibraryItem;
     selected: boolean;
@@ -1569,6 +1674,11 @@ function ExplorerRow({
     onOpen?: () => void;
     onMenu: (event: { clientX: number; clientY: number }, item: LibraryItem) => void;
     onDrop?: (event: DragEvent) => void;
+    pointerDropTarget?: boolean;
+    onPointerDragStart: (item: LibraryItem, event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerDragMove: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+    onPointerDragEnd: (event: ReactPointerEvent<HTMLButtonElement>) => boolean;
+    onPointerDragCancel: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
     const timer = useRef<number>(0);
     const start = useRef({ x: 0, y: 0 });
@@ -1576,10 +1686,11 @@ function ExplorerRow({
     return (
         <button
             type="button"
-            className={`explorer-row ${selected ? "selected" : ""}${checked ? " is-checked" : ""}`}
+            className={`explorer-row ${selected ? "selected" : ""}${checked ? " is-checked" : ""}${pointerDropTarget ? " explorer-drop-target" : ""}`}
             style={{ touchAction: "none", WebkitTouchCallout: "none" }}
             data-library-path={str(item.path)}
             data-library-type={folder ? "dir" : "file"}
+            data-library-drop-directory={folder ? str(item.relative) : undefined}
             data-mfx-nav-key={`${folder ? "folder" : "file"}:${str(item.relative, str(item.path))}`}
             draggable={!readOnly && movable}
             onDragStart={readOnly || !movable ? undefined : (event) => {
@@ -1589,8 +1700,14 @@ function ExplorerRow({
                 event.dataTransfer.setData("application/x-pimfx-relative", str(item.relative));
                 event.dataTransfer.effectAllowed = "move";
             }}
-            onDragOver={onDrop ? (event) => event.preventDefault() : undefined}
-            onDrop={onDrop}
+            onDragOver={onDrop ? (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            } : undefined}
+            onDrop={onDrop ? (event) => {
+                event.stopPropagation();
+                onDrop(event);
+            } : undefined}
             onClick={() => {
                 if (longPress.current) {
                     longPress.current = false;
@@ -1617,6 +1734,7 @@ function ExplorerRow({
                     // optional
                 }
                 window.clearTimeout(timer.current);
+                if (movable) onPointerDragStart(item, event);
                 timer.current = window.setTimeout(() => {
                     longPress.current = true;
                     onSelect();
@@ -1626,10 +1744,17 @@ function ExplorerRow({
             onPointerMove={readOnly ? undefined : (event) => {
                 if (Math.abs(event.clientX - start.current.x) > 12 || Math.abs(event.clientY - start.current.y) > 12) {
                     window.clearTimeout(timer.current);
+                    if (movable) onPointerDragMove(event);
                 }
             }}
-            onPointerUp={readOnly ? undefined : () => window.clearTimeout(timer.current)}
-            onPointerCancel={readOnly ? undefined : () => window.clearTimeout(timer.current)}
+            onPointerUp={readOnly ? undefined : (event) => {
+                window.clearTimeout(timer.current);
+                if (movable && onPointerDragEnd(event)) longPress.current = true;
+            }}
+            onPointerCancel={readOnly ? undefined : (event) => {
+                window.clearTimeout(timer.current);
+                if (movable) onPointerDragCancel(event);
+            }}
         >
             {multiSelect && (
                 <span
