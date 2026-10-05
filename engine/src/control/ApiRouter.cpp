@@ -630,6 +630,37 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                         payload["delta"].asInt(1), error);
         return Json::object();
     }
+    if (command == "virtual-controls/config") {
+        ok = engine_.applyVirtualControlsConfig(payload, error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/select") {
+        ok = engine_.selectVirtualSurfaceControl(payload["controlId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/press") {
+        ok = engine_.pressVirtualSurfaceControl(payload["controlId"].asString(),
+                                                 payload["pressed"].asBool(true), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/value") {
+        ok = engine_.setVirtualSurfaceControlValue(payload["controlId"].asString(),
+                                                    payload["value"].asFloat(0.0f), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/turn") {
+        ok = engine_.turnVirtualSurfaceEncoder(payload["controlId"].asString(),
+                                               payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/proxy-turn") {
+        ok = engine_.turnSelectedVirtualControl(payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/fine") {
+        ok = engine_.toggleVirtualControlFine(error);
+        return Json::object();
+    }
 
     // --- library -----------------------------------------------------------
     if (command == "library/upload") {

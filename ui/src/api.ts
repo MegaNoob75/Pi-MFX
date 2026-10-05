@@ -301,7 +301,10 @@ export class EngineClient {
                 snapshotMode: message.snapshotMode ?? this.snapshot.state.snapshotMode,
                 presetReloadCount: message.presetReloadCount ?? this.snapshot.state.presetReloadCount,
                 tempo: message.tempo ?? this.snapshot.state.tempo,
-                controlPositions: message.controlPositions ?? this.snapshot.state.controlPositions
+                controlPositions: message.controlPositions ?? this.snapshot.state.controlPositions,
+                activeVirtualControlId: message.activeVirtualControlId ?? this.snapshot.state.activeVirtualControlId,
+                virtualControlRevision: message.virtualControlRevision ?? this.snapshot.state.virtualControlRevision,
+                virtualControlFine: message.virtualControlFine ?? this.snapshot.state.virtualControlFine
             };
             if (typeof message.activeSnapshot === "number") {
                 const banks = arr(nextState.banks).map((bank) => {

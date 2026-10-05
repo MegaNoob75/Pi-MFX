@@ -23,6 +23,7 @@ export type SettingsPage =
     | "system"
     | "theme"
     | "layout"
+    | "virtualLayout"
     | "keyboard"
     | "backup"
     | "hotspot"
@@ -38,6 +39,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
             </div>
             <div className="mfx-hub-grid" data-mfx-nav-list="settings">
                 <HubCard title="CONTROLLER" subtitle="Switch layout, hardware inputs and actions" onClick={() => onOpen("controller")} />
+                <HubCard title="VIRTUAL CONTROLS" subtitle="Build the touchscreen control surface and its preset bindings" onClick={() => onOpen("virtualLayout")} />
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
                 <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel, backup and interface options" onClick={() => onOpen("ui")} />
@@ -225,9 +227,11 @@ const HARDWARE_ACTIONS = [
     "drumPatternPrevious",
     "drumView"
 ] as const;
-const ENCODER_ACTIONS = ["none", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext", "drumPatternNext"] as const;
+const CONTINUOUS_ACTIONS = ["none", "virtualControlProxy"] as const;
+const ENCODER_ACTIONS = ["none", "navigateOrVirtualControlProxy", "virtualControlProxy", "navigate", "presetUp", "bankUp", "selectSnapshot", "backingNext", "drumPatternNext"] as const;
 const ENCODER_PUSH_ACTIONS = [
     "none",
+    "selectOrVirtualControlFine",
     "select",
     "selectPreset",
     "selectSnapshot",
@@ -265,7 +269,8 @@ const ENCODER_PUSH_ACTIONS = [
     "drumVariationPrevious",
     "drumPatternNext",
     "drumPatternPrevious",
-    "drumView"
+    "drumView",
+    "virtualControlProxyFine"
 ] as const;
 const HOLD_ACTIONS = [...HARDWARE_ACTIONS, "looperClear"] as const;
 
@@ -310,7 +315,11 @@ const HARDWARE_ACTION_LABELS: Record<string, string> = {
     drumVariationPrevious: "Previous drum variation",
     drumPatternNext: "Next drum pattern",
     drumPatternPrevious: "Previous drum pattern",
-    drumView: "Open drum machine"
+    drumView: "Open drum machine",
+    virtualControlProxy: "Selected virtual control",
+    virtualControlProxyFine: "Virtual control fine mode",
+    navigateOrVirtualControlProxy: "Navigate / selected virtual control",
+    selectOrVirtualControlFine: "Select / virtual fine mode"
 };
 
 function kindListLabel(kind: string): string {
@@ -396,7 +405,8 @@ export function SettingsPage({
         return <AudioSettings engine={engine} run={run} />;
     }
     if (page === "controller") {
-        return <ControllerHub engine={engine} run={run} onOpenLayout={() => onOpen?.("layout")} />;
+        return <ControllerHub engine={engine} run={run} onOpenLayout={() => onOpen?.("layout")}
+            onOpenVirtualLayout={() => onOpen?.("virtualLayout")} />;
     }
     if (page === "keyboard") {
         return <KeyboardSettingsView engine={engine} />;
@@ -945,11 +955,13 @@ function AudioSettings({
 function ControllerHub({
     engine,
     run,
-    onOpenLayout
+    onOpenLayout,
+    onOpenVirtualLayout
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
     onOpenLayout?: () => void;
+    onOpenVirtualLayout?: () => void;
 }) {
     const [page, setPage] = useState<"hub" | "hardware" | "diagnostics">("hub");
     const [confirmResetLayout, setConfirmResetLayout] = useState(false);
@@ -1062,6 +1074,11 @@ function ControllerHub({
                     title="PERFORMANCE LAYOUT"
                     subtitle="Arrange widgets and controls on the touchscreen"
                     onClick={() => onOpenLayout?.()}
+                />
+                <HubCard
+                    title="VIRTUAL CONTROLS LAYOUT"
+                    subtitle="Add and arrange touchscreen pots, sliders, encoders, buttons and toggles"
+                    onClick={() => onOpenVirtualLayout?.()}
                 />
                 <HubCard
                     title="DIAGNOSTICS"
@@ -1514,7 +1531,9 @@ function HardwareControlDetail({
     const pair = objects(controller.controls).find((item) => str(item.id) === str(control.pairId));
     const hasPushButton = Boolean(pair && isEncoderPushKind(normalizeControlKind(str(pair.kind))));
     const patchBinding = (next: JsonObject) => onPatch({ ...control, binding: next });
-    const allFunctionActions = encoder
+    const allFunctionActions = analog
+        ? CONTINUOUS_ACTIONS
+        : encoder
         ? ENCODER_ACTIONS
         : encoderPush
             ? ENCODER_PUSH_ACTIONS
@@ -1596,9 +1615,8 @@ function HardwareControlDetail({
                     </select>
                 </label>
                 </>}
-                {!analog && (
-                    <label className="field">
-                        <span>{encoder ? "Turn function" : "Main function"}</span>
+                <label className="field">
+                        <span>{encoder ? "Turn function" : analog ? "Control function" : "Main function"}</span>
                         <select
                             value={action}
                             onChange={(event) => {
@@ -1615,8 +1633,7 @@ function HardwareControlDetail({
                         >
                             {actionOptions(false)}
                         </select>
-                    </label>
-                )}
+                </label>
                 {showSwitchTiming && (
                     <label className="field">
                         <span>Hold</span>

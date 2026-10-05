@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <iostream>
+#include <utility>
+#include <vector>
 
 using namespace pimfx;
 
@@ -96,6 +98,61 @@ int main() {
     assert(CommunityPresetPackage::validate(created, error));
     assert(!created["preset"].has("id"));
     assert(!created["preset"].has("activeSnapshot"));
+
+    VirtualControlsConfig virtualLayout;
+    virtualLayout.layoutName = "stage";
+    for (const auto& entry : std::vector<std::pair<const char*, ControlKind>>{
+             {"button", ControlKind::Momentary}, {"toggle", ControlKind::Latching},
+             {"pot", ControlKind::Pot}, {"encoder", ControlKind::Encoder},
+             {"slider", ControlKind::Slider}}) {
+        VirtualControl control;
+        control.id = std::string("vctl-") + entry.first;
+        control.label = entry.first;
+        control.kind = entry.second;
+        control.orientation = entry.second == ControlKind::Slider ? "horizontal" : "vertical";
+        virtualLayout.controls.push_back(control);
+    }
+    const VirtualControlsConfig restoredLayout = VirtualControlsConfig::fromJson(virtualLayout.toJson());
+    assert(restoredLayout.layoutName == "stage");
+    assert(restoredLayout.controls.size() == virtualLayout.controls.size());
+    for (size_t index = 0; index < virtualLayout.controls.size(); ++index) {
+        assert(restoredLayout.controls[index].id == virtualLayout.controls[index].id);
+        assert(restoredLayout.controls[index].kind == virtualLayout.controls[index].kind);
+        assert(restoredLayout.controls[index].orientation == virtualLayout.controls[index].orientation);
+    }
+
+    Preset boundPreset;
+    boundPreset.id = "bound";
+    ParameterBinding virtualBinding;
+    virtualBinding.controlId = "vctl-button";
+    virtualBinding.action = "selectPreset";
+    virtualBinding.bankId = "bank-2";
+    virtualBinding.presetId = "preset-2";
+    boundPreset.parameterBindings.push_back(virtualBinding);
+    const Preset restoredPreset = Preset::fromJson(boundPreset.toJson());
+    assert(restoredPreset.parameterBindings.size() == 1);
+    assert(restoredPreset.parameterBindings[0].controlId == "vctl-button");
+    assert(restoredPreset.parameterBindings[0].bankId == "bank-2");
+    assert(restoredPreset.parameterBindings[0].presetId == "preset-2");
+
+    Json invalidPreset = boundPreset.toJson();
+    Json invalidBindings = Json::array();
+    Json invalidBinding = virtualBinding.toJson();
+    invalidBinding.set("action", "notARealAction");
+    invalidBindings.push(invalidBinding);
+    invalidPreset.set("parameterBindings", invalidBindings);
+    assert(Preset::fromJson(invalidPreset).parameterBindings.empty());
+
+    Json unsafeBindingManifest = validManifest();
+    Json unsafeBindingPreset = unsafeBindingManifest["preset"];
+    Json unsafeBindings = Json::array();
+    Json actionBinding = Json::object();
+    actionBinding.set("controlId", "vctl-button");
+    actionBinding.set("action", "selectPreset");
+    unsafeBindings.push(actionBinding);
+    unsafeBindingPreset.set("parameterBindings", unsafeBindings);
+    unsafeBindingManifest.set("preset", unsafeBindingPreset);
+    assert(!CommunityPresetPackage::validate(unsafeBindingManifest, error));
 
     std::cout << "community preset package tests passed\n";
     return 0;

@@ -139,7 +139,11 @@ int main(int argc, char** argv) {
     }
 
     logInfo("shutting down");
+    logInfo("shutdown: stopping web server");
     server.stop();
+    logInfo("shutdown: web server stopped");
+    logInfo("shutdown: stopping engine");
     engine.stop();
+    logInfo("shutdown: complete");
     return 0;
 }

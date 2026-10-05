@@ -38,6 +38,7 @@ export interface PerformanceTile {
     analogValue?: string;
     assigned?: boolean;
     kind?: string;
+    orientation?: "vertical" | "horizontal";
     rect?: { x: number; y: number; width: number; height: number };
     value?: number;
     presetSlotIndex?: number;
@@ -352,7 +353,9 @@ export function PerformanceControl({
         if (!tile.onValue) return;
         let next: number;
         if (kind === "slider" || kind === "expression") {
-            next = 1 - (event.clientY - drag.current.bounds.top) / Math.max(1, drag.current.bounds.height);
+            next = tile.orientation === "horizontal"
+                ? (event.clientX - drag.current.bounds.left) / Math.max(1, drag.current.bounds.width)
+                : 1 - (event.clientY - drag.current.bounds.top) / Math.max(1, drag.current.bounds.height);
         } else {
             const sensitivity = Math.max(90, drag.current.bounds.height * 0.9);
             next = drag.current.startValue + (drag.current.startY - event.clientY) / sensitivity;
@@ -476,6 +479,7 @@ export function PerformanceControl({
                     range={range}
                     active={Boolean(tile.active || tile.pressed)}
                     pressed={Boolean(tile.pressed)}
+                    orientation={tile.orientation}
                 />
             </div>
             {tile.analogFunction ? (
@@ -773,12 +777,22 @@ export function TileMenuButton({
     );
 }
 
-function ControlGraphic({ kind, range, active, pressed }: { kind: string; range: number; active: boolean; pressed?: boolean }) {
+function ControlGraphic({ kind, range, active, pressed, orientation = "vertical" }: {
+    kind: string;
+    range: number;
+    active: boolean;
+    pressed?: boolean;
+    orientation?: "vertical" | "horizontal";
+}) {
     if (kind === "slider" || kind === "expression") {
         return (
-            <div className="mfx-hardware-slider" aria-hidden="true">
-                <div className="mfx-hardware-slider__fill" style={{ height: `${range * 100}%` }} />
-                <div className="mfx-hardware-slider__thumb" style={{ bottom: `calc(${range * 100}% - 5px)` }} />
+            <div className="mfx-hardware-slider" data-orientation={orientation} aria-hidden="true">
+                <div className="mfx-hardware-slider__fill" style={orientation === "horizontal"
+                    ? { width: `${range * 100}%` }
+                    : { height: `${range * 100}%` }} />
+                <div className="mfx-hardware-slider__thumb" style={orientation === "horizontal"
+                    ? { left: `calc(${range * 100}% - 5px)` }
+                    : { bottom: `calc(${range * 100}% - 5px)` }} />
             </div>
         );
     }

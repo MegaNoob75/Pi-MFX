@@ -135,7 +135,8 @@ public:
     bool replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error);
     bool removeEffect(const std::string& slotId, std::string& error);
     bool moveEffect(const std::string& slotId, int newIndex, std::string& error);
-    bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error);
+    bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
+                          bool persist = true);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
     bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
@@ -172,8 +173,16 @@ public:
     /// as the on-screen control is pointing.
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
     bool turnVirtualEncoder(const std::string& controlId, int delta, std::string& error);
-    /// Binds a hardware control to a parameter or bypass of the active preset.
+    /// Binds a physical or virtual control for one preset. ownerBankId and
+    /// ownerPresetId are optional and default to the active preset.
     bool bindPresetControl(const Json& json, std::string& error);
+    bool applyVirtualControlsConfig(const Json& json, std::string& error);
+    bool selectVirtualSurfaceControl(const std::string& controlId, std::string& error);
+    bool pressVirtualSurfaceControl(const std::string& controlId, bool pressed, std::string& error);
+    bool setVirtualSurfaceControlValue(const std::string& controlId, float value, std::string& error);
+    bool turnVirtualSurfaceEncoder(const std::string& controlId, int delta, std::string& error);
+    bool turnSelectedVirtualControl(int delta, std::string& error);
+    bool toggleVirtualControlFine(std::string& error);
     /// Session-only switch→preset map used by Performance encoder "session"
     /// mode. Never written to settings, so a reboot restores saved assignments.
     bool applySessionPresets(const Json& json, std::string& error);
@@ -284,7 +293,7 @@ private:
     bool persistSettings();
     void notify();
     void notifyPerformance();
-    void notifyUiNav(int delta, bool select);
+    void notifyUiNav(int delta, bool select, const std::string& virtualControlAction = "");
     void notifyUiView(const std::string& view);
 
     void handleMidiMessage(const MidiMessage& message);
@@ -292,6 +301,11 @@ private:
     void overlayPresetBind(ActionRequest& request);
     void migrateHardwareParameterBinds();
     void runAction(const ActionRequest& request);
+    void runVirtualControlProxy(const ActionRequest& request);
+    const VirtualControl* findVirtualControl(const std::string& controlId) const;
+    bool toggleBoundParameter(const ParameterBinding& binding, std::string& error);
+    bool proxyCatchAllows(const ActionRequest& request, const ParameterBinding& binding);
+    bool bindingTargetPosition(const ParameterBinding& binding, float& position) const;
     bool nudgeEncoderParameter(const ActionRequest& request, std::string& error);
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
@@ -308,6 +322,8 @@ private:
     std::vector<Bank> banks_;
     std::string activeBankId_;
     std::string activePresetId_;
+    std::string activeVirtualControlId_;
+    uint64_t virtualControlRevision_ = 0;
 
     Lv2Catalog catalog_;
     std::unique_ptr<AudioBackend> backend_;
@@ -396,6 +412,17 @@ private:
         float lastVisual = -1.0f;
     };
     std::unordered_map<std::string, AnalogCatch> analogCatch_;
+
+    struct ProxyCatch {
+        std::string virtualControlId;
+        std::string presetId;
+        float lastVisual = -1.0f;
+        bool acquired = false;
+    };
+    std::unordered_map<std::string, ProxyCatch> proxyCatch_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> proxyEncoderAt_;
+    std::unordered_map<std::string, int> proxyEncoderBurst_;
+    bool proxyFineMode_ = false;
 
     struct SessionPreset {
         std::string bankId;

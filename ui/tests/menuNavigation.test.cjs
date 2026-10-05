@@ -86,7 +86,7 @@ assert.deepEqual(nestedBack('controller', { controllerPage: 'diagnostics' }), { 
 assert.deepEqual(nestedBack('system', { systemPage: 'realtime' }), { systemPage: 'hub' });
 assert.equal(nestedBack('controller', { controllerPage: 'hub' }), null);
 
-const menuIds = ['performance', 'transport', 'backingTracks', 'looper', 'recorder', 'drums', 'community', 'tuner', 'banks', 'edit', 'library', 'plugins', 'files', 'settings', 'about'];
+const menuIds = ['performance', 'virtualControls', 'transport', 'backingTracks', 'looper', 'recorder', 'drums', 'community', 'tuner', 'banks', 'edit', 'library', 'plugins', 'files', 'settings', 'about'];
 const compiledSanitizers = ts.transpileModule(`
 const MENU_IDS = ${JSON.stringify(menuIds)};
 const SHORTCUT_LIMIT = 5;

@@ -332,6 +332,30 @@
     border: 1px solid #111;
 }
 
+.mfx-hardware-slider[data-orientation="horizontal"] {
+    width: 86%;
+    height: min(22cqh, 18px);
+    min-height: 0;
+}
+
+.mfx-hardware-slider[data-orientation="horizontal"] .mfx-hardware-slider__fill {
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    right: auto;
+    max-width: calc(100% - 4px);
+    max-height: none;
+}
+
+.mfx-hardware-slider[data-orientation="horizontal"] .mfx-hardware-slider__thumb {
+    top: 50%;
+    bottom: auto;
+    left: 0;
+    width: max(8px, 8cqw);
+    height: max(18px, 160%);
+    transform: translateY(-50%);
+}
+
 .mfx-hardware-button {
     width: min(48cqw, 48cqh);
     aspect-ratio: 1;

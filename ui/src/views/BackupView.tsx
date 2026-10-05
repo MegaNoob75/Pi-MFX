@@ -36,6 +36,7 @@ export function BackupView({
         version: 1,
         ui: obj(engine.state.ui),
         controller: obj(engine.state.controller),
+        virtualControls: obj(engine.state.virtualControls),
         system: obj(engine.state.system),
         keyboardMode: loadKeyboardMode(),
         keyboardAppearance: loadKeyboardAppearance(),
@@ -54,6 +55,12 @@ export function BackupView({
         }
         if (parsed.controller) {
             await engine.client.request("controller/config", obj(parsed.controller));
+        }
+        if (parsed.virtualControls) {
+            await engine.client.request("virtual-controls/config", {
+                ...obj(parsed.virtualControls),
+                preserveBindings: true
+            });
         }
         if (parsed.system) {
             await engine.client.request("system/settings", obj(parsed.system));
@@ -99,7 +106,7 @@ export function BackupView({
                 <h2>BACKUP / RESTORE</h2>
                 <div className="muted">
                     Save or restore Pi-MFX configuration, including Performance preset
-                    assignments and controller layout. Banks stay on the Banks screen.
+                    assignments, controller layout, and Virtual Controls layout. Banks stay on the Banks screen.
                     Restoring does not change your audio device unless you imported a bank.
                 </div>
                 <div className="row" style={{ flexWrap: "wrap" }}>
@@ -125,7 +132,7 @@ export function BackupView({
                     <div className="mfx-overlay-card">
                         <div className="mfx-overlay-title danger">RESTORE BACKUP?</div>
                         <div className="muted">
-                            This replaces UI, controller, and system settings on this Pi.
+                            This replaces UI, controller, Virtual Controls, and system settings on this Pi.
                             Restore saved themes as well?
                         </div>
                         <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>

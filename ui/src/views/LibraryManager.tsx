@@ -4,7 +4,7 @@ import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
 
-export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "theme" | "backup" | "bank" | "backing" | "loop" | "recording" | "drumsample" | "drumkit" | "drumproject" | "controllerprofile" | "setupprofile";
+export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "virtuallayout" | "theme" | "backup" | "bank" | "backing" | "loop" | "recording" | "drumsample" | "drumkit" | "drumproject" | "controllerprofile" | "setupprofile";
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -54,6 +54,7 @@ export function libraryRootLabel(kind: LibraryKind): string {
     if (kind === "layout") {
         return "layouts";
     }
+    if (kind === "virtuallayout") return "virtual-control-layouts";
     if (kind === "controllerprofile") return "controller-profiles";
     if (kind === "setupprofile") return "setup-profiles";
     if (kind === "theme") {

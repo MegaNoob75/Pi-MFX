@@ -299,9 +299,16 @@ bool CommunityPresetPackage::validate(const Json& manifest, std::string& error) 
         || preset["tempo"].asDouble(0.0) < 30.0 || preset["tempo"].asDouble(0.0) > 300.0
         || !preset["chain"].isArray() || preset["chain"].size() > 32
         || !preset["snapshots"].isArray() || preset["snapshots"].size() > 16
-        || !preset["parameterBindings"].isArray() || preset["parameterBindings"].size() > 64) {
+        || !preset["parameterBindings"].isArray() || preset["parameterBindings"].size() > 512) {
         if (error.empty()) error = "the preset structure is invalid";
         return false;
+    }
+    for (const Json& binding : preset["parameterBindings"].items()) {
+        const std::string action = binding["action"].asString();
+        if (!binding.isObject() || (action != "setParameter" && action != "toggleEffect")) {
+            error = "community presets may only contain parameter or effect bindings";
+            return false;
+        }
     }
     std::set<std::string> slotIds;
     std::set<std::string> effectUris;
