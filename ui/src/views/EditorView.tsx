@@ -10,6 +10,7 @@ import { MarqueeText } from "./MarqueeText";
 import { NewPresetDialog } from "./NewPresetDialog";
 import { GainMeter } from "./GainMeter";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { PerformanceControl, type PerformanceTile } from "./PerformanceControl";
 
 type EditPage = "chain" | "controls" | "io";
 type PathBrowserKind = "model" | "ir";
@@ -1279,10 +1280,17 @@ export function EffectControls({
     const pendingValues = useRef(new Map<string, number>());
     const previewFrame = useRef<number | null>(null);
     const pendingPreview = useRef<{ symbol: string; value: number } | null>(null);
+    const gestureValues = useRef(new Map<string, number>());
+    const [selectedControlSymbol, setSelectedControlSymbol] = useState("");
+    const [hardwarePopoutSymbol, setHardwarePopoutSymbol] = useState("");
+    const hardwarePopoutTimer = useRef<number | null>(null);
 
     useEffect(() => () => {
         if (previewFrame.current !== null) {
             window.cancelAnimationFrame(previewFrame.current);
+        }
+        if (hardwarePopoutTimer.current !== null) {
+            window.clearTimeout(hardwarePopoutTimer.current);
         }
     }, []);
 
@@ -1309,11 +1317,18 @@ export function EffectControls({
         });
     }, [selected, ports]);
 
+    useEffect(() => {
+        if (!ports.some((port) => str(port.symbol) === selectedControlSymbol)) {
+            setSelectedControlSymbol(str(ports[0]?.symbol));
+        }
+    }, [slotId, ports, selectedControlSymbol]);
+
     const preview = (symbol: string, value: number) => {
         setPreviewValues((current) => ({ ...current, [symbol]: value }));
     };
     const previewLive = (symbol: string, value: number) => {
         preview(symbol, value);
+        gestureValues.current.set(symbol, value);
         pendingPreview.current = { symbol, value };
         if (previewFrame.current !== null) {
             return;
@@ -1334,6 +1349,10 @@ export function EffectControls({
         });
     };
     const clearPreview = (symbol: string) => {
+        gestureValues.current.delete(symbol);
+        if (pendingPreview.current?.symbol === symbol) {
+            pendingPreview.current = null;
+        }
         pendingValues.current.delete(symbol);
         setPreviewValues((current) => {
             if (!(symbol in current)) {
@@ -1356,6 +1375,69 @@ export function EffectControls({
         const control = controls.find((item) => str(item.id) === str(binding.controlId));
         return str(obj(control).label, str(binding.controlId));
     };
+    const commitControl = (port: JsonObject, next: number) => {
+        const symbol = str(port.symbol);
+        const min = num(port.min, 0);
+        const max = num(port.max, 1);
+        const clamped = clampPortValue(next, min, max, bool(port.integer) || bool(port.toggled));
+        preview(symbol, clamped);
+        pendingValues.current.set(symbol, clamped);
+        void client.request("chain/control", {
+            slotId,
+            port: symbol,
+            value: clamped,
+            persist: true
+        }).catch(() => clearPreview(symbol));
+    };
+    const commitGesture = (port: JsonObject) => {
+        const symbol = str(port.symbol);
+        const next = gestureValues.current.get(symbol);
+        gestureValues.current.delete(symbol);
+        if (pendingPreview.current?.symbol === symbol) {
+            pendingPreview.current = null;
+        }
+        if (next !== undefined) {
+            commitControl(port, next);
+        }
+    };
+    const stepControl = (port: JsonObject, delta: number) => {
+        const symbol = str(port.symbol);
+        const min = num(port.min, 0);
+        const max = num(port.max, 1);
+        const current = previewValues[symbol] ?? controlValue(selected, symbol, num(port.default, min));
+        const points = arr(port.scalePoints).filter(isObj).sort((left, right) => num(left.value) - num(right.value));
+        if (bool(port.enumerated) && points.length > 0) {
+            const nearest = points.reduce((best, point, index) =>
+                Math.abs(num(point.value) - current) < Math.abs(num(points[best].value) - current) ? index : best, 0);
+            const nextIndex = Math.max(0, Math.min(points.length - 1, nearest + (delta < 0 ? -1 : 1)));
+            commitControl(port, num(points[nextIndex].value));
+            return;
+        }
+        if (bool(port.toggled) || (bool(port.integer) && max > min && Math.abs(max - min) <= 1)) {
+            commitControl(port, delta < 0 ? min : max);
+            return;
+        }
+        const steps = Math.max(0, Math.trunc(num(port.rangeSteps)));
+        const amount = bool(port.integer) ? 1 : steps > 1 ? (max - min) / (steps - 1) : (max - min) / 100;
+        commitControl(port, current + (delta < 0 ? -1 : 1) * amount);
+    };
+
+    useEffect(() => {
+        const turn = (event: Event) => {
+            const detail = (event as CustomEvent<{ delta?: number }>).detail;
+            const port = ports.find((item) => str(item.symbol) === selectedControlSymbol);
+            if (!port || bool(port.trigger)) return;
+            stepControl(port, detail?.delta ?? 1);
+            setHardwarePopoutSymbol(selectedControlSymbol);
+            if (hardwarePopoutTimer.current !== null) window.clearTimeout(hardwarePopoutTimer.current);
+            hardwarePopoutTimer.current = window.setTimeout(() => {
+                hardwarePopoutTimer.current = null;
+                setHardwarePopoutSymbol("");
+            }, 2200);
+        };
+        window.addEventListener("pimfx-editor-control-turn", turn);
+        return () => window.removeEventListener("pimfx-editor-control-turn", turn);
+    }, [ports, selectedControlSymbol, selected, previewValues]);
     return (
         <div className="stack">
             {hasAudioPorts && (
@@ -1390,23 +1472,18 @@ export function EffectControls({
                     const stepped = bool(port.integer) || bool(port.toggled);
                     const points = arr(port.scalePoints).filter(isObj);
                     const enumeration = bool(port.enumerated) && points.length > 0;
-                    const apply = (next: number) => {
-                        const clamped = clampPortValue(next, min, max, stepped);
-                        if (previewFrame.current !== null) {
-                            window.cancelAnimationFrame(previewFrame.current);
-                            previewFrame.current = null;
-                        }
-                        pendingPreview.current = null;
-                        preview(symbol, clamped);
-                        pendingValues.current.set(symbol, clamped);
-                        void client.request("chain/control", {
-                            slotId: str(selected.id),
-                            port: symbol,
-                            value: clamped,
-                            persist: true
-                        }).catch(() => clearPreview(symbol));
-                    };
+                    const trigger = bool(port.trigger);
+                    const toggled = bool(port.toggled);
+                    const orderedPoints = [...points].sort((left, right) => num(left.value) - num(right.value));
+                    const twoOptionEnumeration = enumeration && orderedPoints.length === 2;
+                    const binaryInteger = bool(port.integer) && max > min && Math.abs(max - min) <= 1;
+                    const switchLike = toggled || twoOptionEnumeration || binaryInteger;
+                    const switchOffValue = twoOptionEnumeration ? num(orderedPoints[0]?.value, min) : min;
+                    const switchOnValue = twoOptionEnumeration ? num(orderedPoints[1]?.value, max) : max;
+                    const switchOn = Math.abs(value - switchOnValue) <= Math.abs(value - switchOffValue);
+                    const apply = (next: number) => commitControl(port, next);
                     const editNumber = () => {
+                        setSelectedControlSymbol(symbol);
                         void (async () => {
                             const typed = await askText(name, formatEditableValue(value, port), "numeric");
                             if (typed === null) {
@@ -1462,13 +1539,41 @@ export function EffectControls({
                                         target.addEventListener("pointermove", move);
                                     }}
                                 >{name}</span>
-                                {!bool(port.toggled) && !bool(port.trigger) && !enumeration && (
-                                    <button type="button" className="control-value" onClick={editNumber}>
+                                {!switchLike && !trigger && !enumeration && (
+                                    <button type="button" className="control-value"
+                                        onClick={() => setSelectedControlSymbol(symbol)}
+                                        onDoubleClick={editNumber}
+                                        title="Tap to select · double tap the control to enter a value">
                                         {formatControl(value, port)}
                                     </button>
                                 )}
-                                {(bool(port.toggled) || bool(port.trigger) || enumeration) && (
-                                    <span className="muted">{formatControl(value, port)}</span>
+                                {enumeration && !switchLike && (
+                                    <select
+                                        className="control-value-select"
+                                        aria-label={`${name} value`}
+                                        value={String(value)}
+                                        onChange={(event) => {
+                                            setSelectedControlSymbol(symbol);
+                                            apply(Number(event.target.value));
+                                        }}
+                                    >
+                                        {points.map((item) => (
+                                            <option key={`${num(item.value)}:${str(item.label)}`} value={num(item.value)}>
+                                                {str(item.label, String(num(item.value)))}
+                                            </option>
+                                        ))}
+                                    </select>
+                                )}
+                                {switchLike && !trigger && (
+                                    <button type="button" className="control-value" onClick={() => {
+                                        setSelectedControlSymbol(symbol);
+                                        apply(switchOn ? switchOffValue : switchOnValue);
+                                    }}>
+                                        {formatControl(value, port)}
+                                    </button>
+                                )}
+                                {trigger && (
+                                    <span className="muted">TRIGGER</span>
                                 )}
                             </div>
                             {boundFor(symbol) && (
@@ -1504,55 +1609,67 @@ export function EffectControls({
                                     </select>
                                 </label>
                             )}
-                            {bool(port.trigger) ? (
-                                <button
-                                    type="button"
-                                    className="btn"
-                                    onClick={() => void run(() => client.request("chain/control", {
-                                        slotId: str(selected.id),
-                                        port: symbol,
-                                        value: triggerValue(port)
-                                    }))}
-                                >
-                                    TRIGGER
-                                </button>
-                            ) : bool(port.toggled) ? (
-                                <button
-                                    type="button"
-                                    className={`btn ${value > 0 ? "btn-active" : ""}`}
-                                    onClick={() => apply(value > 0
-                                        ? toggleValue(port, false)
-                                        : toggleValue(port, true))}
-                                >
-                                    {value > 0 ? "ON" : "OFF"}
-                                </button>
-                            ) : enumeration ? (
-                                <select
-                                    value={String(closestScalePointValue(points, value))}
-                                    onChange={(event) => void run(() => client.request("chain/control", {
-                                        slotId: str(selected.id),
-                                        port: symbol,
-                                        value: Number(event.target.value)
-                                    }))}
-                                >
-                                    {points.map((item) => (
-                                        <option key={`${num(item.value)}:${str(item.label)}`} value={num(item.value)}>
-                                            {str(item.label, String(num(item.value)))}
-                                        </option>
-                                    ))}
-                                </select>
-                            ) : (
-                                <Lv2RangeControl
-                                    port={port}
-                                    value={value}
-                                    name={name}
-                                    markerValue={isToobInputCalibration(plugin, port) ? -6 : undefined}
-                                    disabled={(tempoEnabled && linkedBeats > 0) || calibrationManaged}
-                                    onPreview={(next) => previewLive(symbol, next)}
-                                    onCancel={() => clearPreview(symbol)}
-                                    onCommit={apply}
-                                />
-                            )}
+                            {(() => {
+                                const disabled = (tempoEnabled && linkedBeats > 0) || calibrationManaged;
+                                const kind = trigger ? "momentary" : switchLike ? "toggle" : enumeration ? "encoder" : "pot";
+                                const normalized = hasLogarithmicRange(port)
+                                    ? sliderValue(port, value)
+                                    : (value - min) / Math.max(1e-9, max - min);
+                                const tile: PerformanceTile = {
+                                    id: `${slotId}:${symbol}`,
+                                    switchLabel: name,
+                                    valueText: formatControl(value, port),
+                                    role: "utility",
+                                    lightState: switchLike && switchOn ? "active" : "inactive",
+                                    active: switchLike ? switchOn : selectedControlSymbol === symbol,
+                                    analog: !trigger && !switchLike,
+                                    analogSource: name,
+                                    analogFunction: str(plugin.name, "Effect"),
+                                    analogValue: formatControl(value, port),
+                                    assigned: !disabled,
+                                    kind,
+                                    value: Math.max(0, Math.min(1, normalized)),
+                                    freeform: true,
+                                    scrollFriendly: true,
+                                    hardwarePopout: hardwarePopoutSymbol === symbol,
+                                    encoderSelected: selectedControlSymbol === symbol,
+                                    onEngage: () => setSelectedControlSymbol(symbol),
+                                    onPress: () => {
+                                        setSelectedControlSymbol(symbol);
+                                        if (trigger) {
+                                            apply(triggerValue(port));
+                                        } else if (switchLike) {
+                                            apply(switchOn ? switchOffValue : switchOnValue);
+                                        }
+                                    },
+                                    onValue: !trigger && !switchLike && !enumeration && !disabled
+                                        ? (next) => previewLive(symbol, portValue(port,
+                                            hasLogarithmicRange(port) ? next : min + next * (max - min)))
+                                        : undefined,
+                                    onDoublePress: !trigger && !switchLike && !enumeration && !disabled
+                                        ? editNumber
+                                        : undefined,
+                                    onRelease: !trigger && !switchLike && !enumeration && !disabled
+                                        ? () => commitGesture(port)
+                                        : undefined,
+                                    onCancelPress: !trigger && !switchLike && !enumeration
+                                        ? () => clearPreview(symbol)
+                                        : undefined,
+                                    onStep: !trigger && !disabled
+                                        ? (delta) => stepControl(port, delta)
+                                        : undefined
+                                };
+                                return (
+                                    <div className="editor-parameter-control">
+                                        <PerformanceControl
+                                            tile={tile}
+                                            switchStyle="theme"
+                                            bypassed={false}
+                                            renderMenu={false}
+                                        />
+                                    </div>
+                                );
+                            })()}
                         </div>
                     );
                 })}
@@ -1752,19 +1869,6 @@ function approximatelyEqual(left: number, right: number): boolean {
     return Math.abs(left - right) <= Math.max(1e-6, Math.abs(left) * 1e-6, Math.abs(right) * 1e-6);
 }
 
-function closestScalePointValue(points: JsonObject[], value: number): number {
-    return points.reduce((closest, point) => {
-        const candidate = num(point.value);
-        return Math.abs(candidate - value) < Math.abs(closest - value) ? candidate : closest;
-    }, num(points[0]?.value, value));
-}
-
-function toggleValue(port: JsonObject, on: boolean): number {
-    const min = num(port.min, 0);
-    const max = num(port.max, 1);
-    return Math.min(max, Math.max(min, on ? 1 : 0));
-}
-
 function triggerValue(port: JsonObject): number {
     const min = num(port.min, 0);
     const max = num(port.max, 1);
@@ -1776,11 +1880,6 @@ function hasLogarithmicRange(port: JsonObject): boolean {
     const min = num(port.min, 0);
     const max = num(port.max, 1);
     return bool(port.logarithmic) && min !== 0 && max !== 0 && (min > 0) === (max > 0);
-}
-
-function isToobInputCalibration(plugin: JsonObject, port: JsonObject): boolean {
-    return str(plugin.uri) === "http://two-play.com/plugins/toob-nam"
-        && str(port.symbol) === "calibration";
 }
 
 function sliderValue(port: JsonObject, value: number): number {
@@ -1800,103 +1899,4 @@ function portValue(port: JsonObject, value: number): number {
     const min = num(port.min);
     const max = num(port.max, 1);
     return min * Math.pow(max / min, value);
-}
-
-function Lv2RangeControl({
-    port,
-    value,
-    name,
-    markerValue,
-    disabled,
-    onPreview,
-    onCancel,
-    onCommit
-}: {
-    port: JsonObject;
-    value: number;
-    name: string;
-    markerValue?: number;
-    disabled: boolean;
-    onPreview: (value: number) => void;
-    onCancel: () => void;
-    onCommit: (value: number) => void;
-}) {
-    const logarithmic = hasLogarithmicRange(port);
-    const min = num(port.min, 0);
-    const max = num(port.max, 1);
-    const steps = Math.max(0, Math.trunc(num(port.rangeSteps)));
-    const rangeMin = logarithmic ? 0 : min;
-    const rangeMax = logarithmic ? 1 : max;
-    const step = logarithmic
-        ? steps > 1 ? 1 / (steps - 1) : "any"
-        : bool(port.integer)
-            ? 1
-            : steps > 1
-            ? (rangeMax - rangeMin) / (steps - 1)
-            : "any";
-    const external = sliderValue(port, value);
-    const markerPosition = markerValue === undefined
-        ? undefined
-        : 100 * (sliderValue(port, clampPortValue(markerValue, min, max, false)) - rangeMin)
-            / Math.max(Number.EPSILON, rangeMax - rangeMin);
-    const markerLabel = markerValue === undefined ? "" : formatControl(markerValue, port);
-    const [draft, setDraft] = useState(external);
-    const dragging = useRef(false);
-    const lastCommitted = useRef<number | null>(null);
-
-    useEffect(() => {
-        if (!dragging.current) {
-            setDraft(external);
-        }
-    }, [external]);
-
-    const commit = (raw: number) => {
-        dragging.current = false;
-        lastCommitted.current = raw;
-        onCommit(portValue(port, raw));
-    };
-
-    const change = (raw: number) => {
-        lastCommitted.current = null;
-        setDraft(raw);
-        onPreview(portValue(port, raw));
-    };
-
-    return (
-        <div className="lv2-range-control">
-            {markerPosition !== undefined && (
-                <span
-                    className="lv2-range-marker"
-                    style={{ left: `${markerPosition}%` }}
-                    title={`Default: ${markerLabel}`}
-                    aria-hidden="true"
-                />
-            )}
-            <input
-                type="range"
-                min={rangeMin}
-                max={rangeMax}
-                step={step}
-                value={draft}
-                aria-label={name}
-                disabled={disabled}
-                onPointerDown={() => { dragging.current = true; lastCommitted.current = null; }}
-                onChange={(event) => change(Number(event.target.value))}
-                onPointerUp={(event) => commit(Number(event.currentTarget.value))}
-                onPointerCancel={() => {
-                    dragging.current = false;
-                    lastCommitted.current = null;
-                    setDraft(external);
-                    onCancel();
-                }}
-                onKeyUp={(event) => commit(Number(event.currentTarget.value))}
-                onBlur={(event) => {
-                    const raw = Number(event.currentTarget.value);
-                    if (lastCommitted.current === null || !approximatelyEqual(lastCommitted.current, raw)) {
-                        commit(raw);
-                    }
-                }}
-            />
-        </div>
-    );
 }

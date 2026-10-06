@@ -457,6 +457,7 @@ ControllerConfig ControllerConfig::fromJson(const Json& json) {
 Json VirtualControl::toJson() const {
     Json json = Json::object();
     json.set("id", id);
+    json.set("pageId", pageId);
     json.set("label", label);
     json.set("automaticLabel", automaticLabel);
     json.set("kind", controlKindToString(kind));
@@ -472,6 +473,7 @@ Json VirtualControl::toJson() const {
 VirtualControl VirtualControl::fromJson(const Json& json) {
     VirtualControl control;
     control.id = json["id"].asString(newId("vctl"));
+    control.pageId = json["pageId"].asString("page-1");
     control.label = json["label"].asString();
     control.automaticLabel = json["automaticLabel"].asBool(control.label.empty());
     control.kind = controlKindFromString(json["kind"].asString("pot"));
@@ -487,10 +489,28 @@ VirtualControl VirtualControl::fromJson(const Json& json) {
     return control;
 }
 
+Json VirtualControlPage::toJson() const {
+    Json json = Json::object();
+    json.set("id", id);
+    json.set("name", name);
+    return json;
+}
+
+VirtualControlPage VirtualControlPage::fromJson(const Json& json, int index) {
+    VirtualControlPage page;
+    page.id = json["id"].asString("page-" + std::to_string(index + 1));
+    page.name = json["name"].asString("Page " + std::to_string(index + 1));
+    if (page.name.empty()) page.name = "Page " + std::to_string(index + 1);
+    return page;
+}
+
 Json VirtualControlsConfig::toJson() const {
     Json json = Json::object();
     json.set("version", version);
     json.set("layoutName", layoutName);
+    Json pageItems = Json::array();
+    for (const VirtualControlPage& page : pages) pageItems.push(page.toJson());
+    json.set("pages", pageItems);
     Json items = Json::array();
     for (const VirtualControl& control : controls) items.push(control.toJson());
     json.set("controls", items);
@@ -500,11 +520,22 @@ Json VirtualControlsConfig::toJson() const {
 
 VirtualControlsConfig VirtualControlsConfig::fromJson(const Json& json) {
     VirtualControlsConfig config;
-    config.version = std::max(1, json["version"].asInt(1));
+    config.version = std::max(2, json["version"].asInt(1));
     config.layoutName = json["layoutName"].asString("default");
+    const Json& pageItems = json["pages"];
+    for (size_t i = 0; i < pageItems.size() && i < 32; ++i) {
+        VirtualControlPage page = VirtualControlPage::fromJson(pageItems.at(i), static_cast<int>(i));
+        const bool duplicate = std::any_of(config.pages.begin(), config.pages.end(),
+            [&](const VirtualControlPage& existing) { return existing.id == page.id; });
+        if (!page.id.empty() && !duplicate) config.pages.push_back(std::move(page));
+    }
+    if (config.pages.empty()) config.pages.push_back({"page-1", "Page 1"});
     const Json& items = json["controls"];
     for (size_t i = 0; i < items.size() && i < 512; ++i) {
         VirtualControl control = VirtualControl::fromJson(items.at(i));
+        const bool pageExists = std::any_of(config.pages.begin(), config.pages.end(),
+            [&](const VirtualControlPage& page) { return page.id == control.pageId; });
+        if (!pageExists) control.pageId = config.pages.front().id;
         if (!control.id.empty()) config.controls.push_back(std::move(control));
     }
     config.groups = json["groups"].isArray() ? json["groups"] : Json::array();

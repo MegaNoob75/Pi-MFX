@@ -8,6 +8,8 @@ import {
     VIRTUAL_DISCRETE_ACTIONS,
     resolveVirtualControlDisplay,
     virtualBindingFor,
+    virtualControlPageId,
+    virtualControlPages,
     virtualControlMinSize,
     virtualTargetCompatible
 } from "../virtualControls";
@@ -55,12 +57,20 @@ export function VirtualControlsLayoutEditorView({
     onDirtyChange?: (dirty: boolean) => void;
 }) {
     const saved = obj(engine.state.virtualControls);
-    const [controls, setControls] = useState<JsonObject[]>(() => objects(saved.controls));
+    const [pages, setPages] = useState<JsonObject[]>(() => virtualControlPages(saved));
+    const [controls, setControls] = useState<JsonObject[]>(() => {
+        const initialPages = virtualControlPages(saved);
+        return objects(saved.controls).map((control) => ({
+            ...control, pageId: virtualControlPageId(control, initialPages)
+        }));
+    });
     const [layoutName, setLayoutName] = useState(() => str(saved.layoutName, "default"));
+    const [activePageId, setActivePageId] = useState(() => str(virtualControlPages(saved)[0]?.id, "page-1"));
     const [selectedId, setSelectedId] = useState(() => str(objects(saved.controls)[0]?.id));
     const [dirty, setDirty] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [deleteId, setDeleteId] = useState("");
+    const [deletePageId, setDeletePageId] = useState("");
     const [message, setMessage] = useState("");
     const stageRef = useRef<HTMLDivElement | null>(null);
     const drag = useRef<DragState | null>(null);
@@ -73,6 +83,7 @@ export function VirtualControlsLayoutEditorView({
         }))
     );
     const chain = objects(engine.state.chain);
+    const pageControls = controls.filter((control) => virtualControlPageId(control, pages) === activePageId);
     const selected = controls.find((control) => str(control.id) === selectedId);
     const kind = str(obj(selected).kind, "pot");
     const binding = virtualBindingFor(preset, selectedId);
@@ -90,7 +101,7 @@ export function VirtualControlsLayoutEditorView({
     const addControl = (nextKind: string) => {
         const rect = fitRectInEmptySpace(
             DEFAULT_RECTS[nextKind] ?? DEFAULT_RECTS.pot,
-            controls.map((control) => ({
+            pageControls.map((control) => ({
                 x: num(control.x), y: num(control.y), width: num(control.width, 0.18), height: num(control.height, 0.28)
             })),
             virtualControlMinSize(nextKind)
@@ -105,6 +116,7 @@ export function VirtualControlsLayoutEditorView({
             label: nextLabel(nextKind, current),
             automaticLabel: true,
             kind: nextKind,
+            pageId: activePageId,
             orientation: "vertical",
             appearance: {},
             ...rect
@@ -121,7 +133,7 @@ export function VirtualControlsLayoutEditorView({
             y: num(selected.y) + 0.03,
             width: num(selected.width, 0.18),
             height: num(selected.height, 0.28)
-        }, controls.map((control) => ({
+        }, pageControls.map((control) => ({
             x: num(control.x), y: num(control.y), width: num(control.width), height: num(control.height)
         })), virtualControlMinSize(kind, str(selected.orientation)));
         if (!rect) { setMessage("No empty space for a duplicate."); return; }
@@ -131,6 +143,7 @@ export function VirtualControlsLayoutEditorView({
             id,
             label: nextLabel(kind, current),
             automaticLabel: false,
+            pageId: activePageId,
             ...rect
         }]);
         setSelectedId(id);
@@ -177,7 +190,7 @@ export function VirtualControlsLayoutEditorView({
     const saveConfig = async (name = layoutName) => {
         const savedName = name.trim() || "default";
         await engine.client.request("virtual-controls/config", {
-            version: 1, layoutName: savedName, controls, groups: []
+            version: 2, layoutName: savedName, pages, controls, groups: []
         });
         setLayoutName(savedName);
         setDirty(false);
@@ -187,8 +200,9 @@ export function VirtualControlsLayoutEditorView({
 
     const layoutFile = (name = layoutName) => JSON.stringify({
         format: "pimfx-virtual-controls-layout",
-        version: 1,
+        version: 2,
         layoutName: name.trim() || "default",
+        pages,
         controls,
         groups: []
     }, null, 2);
@@ -198,10 +212,15 @@ export function VirtualControlsLayoutEditorView({
             setMessage("That is not a Virtual Controls layout.");
             return;
         }
-        const next = objects(parsed.controls);
+        const nextPages = virtualControlPages(parsed);
+        const next = objects(parsed.controls).map((control): JsonObject => ({
+            ...control, pageId: virtualControlPageId(control, nextPages)
+        }));
+        setPages(nextPages);
         setControls(next);
         setLayoutName(str(parsed.layoutName) || layoutNameFromPath(path));
-        setSelectedId(str(next[0]?.id));
+        setActivePageId(str(nextPages[0]?.id, "page-1"));
+        setSelectedId(str(next.find((control) => virtualControlPageId(control, nextPages) === str(nextPages[0]?.id))?.id));
         markDirty();
         setPicker(null);
         setMessage("Layout loaded. Choose SAVE LAYOUT to make it active.");
@@ -262,6 +281,33 @@ export function VirtualControlsLayoutEditorView({
         ? resolveVirtualControlDisplay(selected, binding, chain, engine.state)
         : null;
 
+    const addPage = () => {
+        const id = `page-${Date.now().toString(36)}`;
+        const page = { id, name: `Page ${pages.length + 1}` };
+        setPages((current) => [...current, page]);
+        setActivePageId(id);
+        setSelectedId("");
+        markDirty();
+    };
+
+    const switchPage = (id: string) => {
+        setActivePageId(id);
+        setSelectedId(str(controls.find((control) => virtualControlPageId(control, pages) === id)?.id));
+    };
+
+    const removePage = (id: string) => {
+        if (pages.length <= 1) return;
+        const nextPages = pages.filter((page) => str(page.id) !== id);
+        const nextControls = controls.filter((control) => virtualControlPageId(control, pages) !== id);
+        const nextId = str(nextPages[0]?.id, "page-1");
+        setPages(nextPages);
+        setControls(nextControls);
+        setActivePageId(nextId);
+        setSelectedId(str(nextControls.find((control) => virtualControlPageId(control, nextPages) === nextId)?.id));
+        setDeletePageId("");
+        markDirty();
+    };
+
     useEffect(() => () => onDirtyChange?.(false), []);
 
     return (
@@ -275,6 +321,20 @@ export function VirtualControlsLayoutEditorView({
             {message && <div className="muted virtual-layout-message">{message}</div>}
             <div className="virtual-layout-body">
                 <aside className="virtual-layout-inspector">
+                    <section className="stack">
+                        <h3>PAGES</h3>
+                        <div className="virtual-page-list">
+                            {pages.map((page, index) => <button key={str(page.id)} type="button"
+                                className={`btn ${activePageId === str(page.id) ? "btn-active" : ""}`}
+                                onClick={() => switchPage(str(page.id))}>{str(page.name, `Page ${index + 1}`)}</button>)}
+                        </div>
+                        <div className="row"><button type="button" className="btn" onClick={addPage}>ADD PAGE</button>
+                            <button type="button" className="btn btn-danger" disabled={pages.length <= 1}
+                                onClick={() => setDeletePageId(activePageId)}>DELETE PAGE</button></div>
+                        <label className="field"><span>Page name</span><input
+                            value={str(pages.find((page) => str(page.id) === activePageId)?.name)}
+                            onChange={(event) => { setPages((current) => current.map((page) => str(page.id) === activePageId ? { ...page, name: event.target.value } : page)); markDirty(); }} /></label>
+                    </section>
                     <section className="stack">
                         <h3>ADD CONTROL</h3>
                         <div className="virtual-control-palette">
@@ -335,13 +395,13 @@ export function VirtualControlsLayoutEditorView({
                     </>}
                 </aside>
                 <div ref={stageRef} className="virtual-layout-stage">
-                    {controls.map((control) => {
+                    {pageControls.map((control) => {
                         const id = str(control.id);
                         const controlKind = str(control.kind, "pot");
                         const controlBinding = virtualBindingFor(preset, id);
                         const controlDisplay = resolveVirtualControlDisplay(control, controlBinding, chain, engine.state);
                         return <div key={id} className={`virtual-layout-item${selectedId === id ? " selected" : ""}`} style={{ left: `${num(control.x) * 100}%`, top: `${num(control.y) * 100}%`, width: `${num(control.width, 0.18) * 100}%`, height: `${num(control.height, 0.28) * 100}%` }} onPointerDown={(event) => startDrag(event, control, "move")}>
-                            <PerformanceControl tile={{ id, switchLabel: controlDisplay.label, valueText: controlDisplay.valueText || controlDisplay.context, role: "utility", lightState: controlDisplay.missing ? "modified" : "inactive", active: false, analog: ["pot", "slider", "encoder"].includes(controlKind), analogSource: controlDisplay.label, analogFunction: controlDisplay.context, analogValue: controlDisplay.valueText, assigned: controlDisplay.assigned, kind: controlKind, orientation: str(control.orientation) === "horizontal" ? "horizontal" : "vertical", value: controlDisplay.range, onPress: () => undefined }} switchStyle="tiles" bypassed={false} renderMenu={false} />
+                            <PerformanceControl tile={{ id, switchLabel: controlDisplay.label, valueText: controlDisplay.valueText || controlDisplay.context, role: "utility", lightState: controlDisplay.missing ? "modified" : "inactive", active: false, analog: ["pot", "slider", "encoder"].includes(controlKind), analogSource: controlDisplay.label, analogFunction: controlDisplay.context, analogValue: controlDisplay.valueText, assigned: controlDisplay.assigned, kind: controlKind, orientation: str(control.orientation) === "horizontal" ? "horizontal" : "vertical", value: controlDisplay.range, onEngage: () => setSelectedId(id), onPress: () => setSelectedId(id) }} switchStyle="tiles" bypassed={false} renderMenu={false} />
                             <button type="button" className="virtual-layout-resize" aria-label="Resize" onPointerDown={(event) => startDrag(event, control, "resize")} />
                         </div>;
                     })}
@@ -350,8 +410,9 @@ export function VirtualControlsLayoutEditorView({
             {picker && <LibraryJsonPicker engine={engine} run={run} kind="virtuallayout" mode={picker} title={picker === "load" ? "LOAD VIRTUAL CONTROLS LAYOUT" : "SAVE VIRTUAL CONTROLS LAYOUT AS"} defaultName={layoutName || "default"} contents={picker === "save" ? (name) => layoutFile(name) : undefined} onClose={() => setPicker(null)} onLoad={loadLayout} onSaved={(path) => void run(() => saveConfig(layoutNameFromPath(path, layoutName)))} />}
             {deleteId && <ConfirmDialog title="DELETE VIRTUAL CONTROL?" body="This removes the control and its bindings from every preset." confirmLabel="DELETE" danger onCancel={() => setDeleteId("")} onConfirm={() => {
                 const next = controls.filter((control) => str(control.id) !== deleteId);
-                setControls(next); setSelectedId(str(next[0]?.id)); setDeleteId(""); markDirty();
+                setControls(next); setSelectedId(str(next.find((control) => virtualControlPageId(control, pages) === activePageId)?.id)); setDeleteId(""); markDirty();
             }} />}
+            {deletePageId && <ConfirmDialog title="DELETE PAGE?" body="This removes the page, all controls on it, and their preset bindings." confirmLabel="DELETE PAGE" danger onCancel={() => setDeletePageId("")} onConfirm={() => removePage(deletePageId)} />}
         </div>
     );
 }

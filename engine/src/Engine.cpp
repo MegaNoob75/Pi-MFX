@@ -3582,6 +3582,14 @@ bool Engine::applyVirtualControlsConfig(const Json& json, std::string& error) {
 
 bool Engine::selectVirtualSurfaceControl(const std::string& controlId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controlId.empty()) {
+        activeVirtualControlId_.clear();
+        proxyCatch_.clear();
+        ++virtualControlRevision_;
+        notifyPerformance();
+        error.clear();
+        return true;
+    }
     if (!findVirtualControl(controlId)) {
         error = "no such virtual control";
         return false;

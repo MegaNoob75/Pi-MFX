@@ -263,6 +263,7 @@ struct ControllerConfig {
 /// bound LV2 parameter or Pi-MFX action remains the single source of truth.
 struct VirtualControl {
     std::string id;
+    std::string pageId = "page-1";
     std::string label;
     bool automaticLabel = true;
     ControlKind kind = ControlKind::Pot;
@@ -277,9 +278,18 @@ struct VirtualControl {
     static VirtualControl fromJson(const Json& json);
 };
 
+struct VirtualControlPage {
+    std::string id;
+    std::string name;
+
+    Json toJson() const;
+    static VirtualControlPage fromJson(const Json& json, int index);
+};
+
 struct VirtualControlsConfig {
-    int version = 1;
+    int version = 2;
     std::string layoutName = "default";
+    std::vector<VirtualControlPage> pages;
     std::vector<VirtualControl> controls;
     Json groups = Json::array();
 

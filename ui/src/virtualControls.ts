@@ -2,6 +2,17 @@ import { arr, bool, num, obj, objects, str, type JsonObject } from "./json";
 
 export const VIRTUAL_CONTROL_TYPES = ["momentary", "latching", "pot", "encoder", "slider"] as const;
 
+export function virtualControlPages(config: JsonObject): JsonObject[] {
+    const pages = objects(config.pages);
+    return pages.length > 0 ? pages : [{ id: "page-1", name: "Page 1" }];
+}
+
+export function virtualControlPageId(control: JsonObject, pages: JsonObject[]): string {
+    const requested = str(control.pageId);
+    return pages.some((page) => str(page.id) === requested)
+        ? requested : str(pages[0]?.id, "page-1");
+}
+
 export const VIRTUAL_ACTION_LABELS: Record<string, string> = {
     none: "Unbound",
     setParameter: "LV2 parameter",

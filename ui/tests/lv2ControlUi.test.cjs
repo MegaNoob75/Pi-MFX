@@ -12,32 +12,40 @@ assert.match(editor, /bool\(port\.enumerated\) && points\.length > 0/,
     'scale points alone must not turn a continuous port into a selector');
 assert.match(editor, /hasLogarithmicRange\(port\)/,
     'logarithmic ports must use logarithmic slider conversion');
-assert.match(editor, /bool\(port\.trigger\)[\s\S]*TRIGGER/,
-    'trigger ports must render as one-shot buttons');
-assert.match(editor, /value > 0 \? "ON" : "OFF"/,
-    'LV2 toggles must treat all positive values as on');
-assert.match(editor, /bool\(port\.toggled\)[\s\S]*onClick=\{\(\) => apply\(value > 0/,
-    'toggle buttons must use the optimistic pending-value path on the first click');
-assert.match(editor, /isToobInputCalibration\(plugin, port\) \? -6 : undefined/,
-    'TooB input calibration must show its documented -6 dBu reference marker');
+assert.match(editor, /const kind = trigger \? "momentary"[\s\S]*apply\(triggerValue\(port\)\)/,
+    'trigger ports must render as one-shot momentary controls');
+assert.match(editor, /const switchLike = toggled \|\| twoOptionEnumeration \|\| binaryInteger/,
+    'LV2 toggles and two-state parameters must share the dedicated toggle control');
+assert.match(editor, /const kind = trigger \? "momentary" : switchLike \? "toggle"/,
+    'two-state parameters must render with the toggle-switch graphic');
+assert.match(editor, /apply\(switchOn \? switchOffValue : switchOnValue\)/,
+    'the toggle graphic must switch between the parameter\'s actual option values');
+assert.match(editor, /analogValue: formatControl[\s\S]*<PerformanceControl/,
+    'effect parameters must use the shared Virtual Controls graphics');
 assert.match(host, /portInfo\.name = "Input Calibration Level";[\s\S]*std::min\(portInfo\.maximum, -6\.0f\)/,
     'TooB input calibration must expose a clear label and -6 dBu default');
 assert.match(editor, /!bool\(port\.notOnGui\)/,
     'ports marked notOnGUI must be omitted from the main editor');
 assert.match(snapshot, /!bool\(port\.notOnGui\)/,
     'snapshot editing must use the same port visibility rule');
-assert.match(editor, /onPointerUp=.*commit/,
-    'range controls must commit once when a pointer drag ends');
+assert.match(editor, /onRelease:[\s\S]*commitGesture\(port\)/,
+    'graphic controls must commit once when a pointer drag ends');
 assert.match(editor, /const \[previewValues, setPreviewValues\]/,
     'range controls must keep an optimistic local value while awaiting engine acknowledgement');
 assert.match(editor, /pendingValues\.current\.set\(symbol, clamped\)/,
     'a released value must remain pending until the engine reports it back');
-assert.match(editor, /onPreview\(portValue\(port, raw\)\)/,
+assert.match(editor, /onValue:[\s\S]*previewLive\(symbol, portValue/,
     'the displayed value must follow the local drag immediately');
 assert.match(editor, /window\.requestAnimationFrame[\s\S]*persist: false/,
     'drag previews must be frame-throttled and non-persistent');
 assert.match(editor, /pendingPreview\.current = null;[\s\S]*persist: true/,
     'release must cancel any queued preview and persist the final value');
+assert.match(editor, /pimfx-editor-control-turn[\s\S]*stepControl\(port/,
+    'the selected graphic must respond to the physical encoder');
+assert.match(editor, /scrollFriendly: true[\s\S]*onDoublePress:[\s\S]*editNumber/,
+    'editor controls must scroll vertically and reopen numeric keyboard entry only on double tap');
+assert.match(editor, /setHardwarePopoutSymbol\(selectedControlSymbol\)[\s\S]*hardwarePopout:/,
+    'physical encoder movement must open the selected control popup');
 assert.match(editor, /data-mfx-nav-list="file-property"/,
     'path properties must expose real list items to hardware encoder navigation');
 assert.match(editor, /MutationObserver\(syncEncoderHighlight\)/,

@@ -183,11 +183,13 @@ function SwipeSurface({ direction, onSwipe, children }: {
         startedAt: number;
         locked: boolean;
     } | null>(null);
+    const suppressClick = useRef(false);
     const interactive = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest(
-        "button, input, select, textarea, [data-adjustable='true'], .identity-select, .mfx-overlay, .dialog"
+        "input, select, textarea, [data-adjustable='true'], .identity-select, .mfx-overlay, .dialog"
     ));
     const begin = (event: ReactPointerEvent<HTMLDivElement>) => {
         if (event.pointerType === "mouse" || interactive(event.target)) return;
+        suppressClick.current = false;
         gesture.current = {
             pointerId: event.pointerId,
             startX: event.clientX,
@@ -207,21 +209,38 @@ function SwipeSurface({ direction, onSwipe, children }: {
                 return;
             }
             active.locked = true;
+            suppressClick.current = true;
+            window.dispatchEvent(new Event("pimfx-surface-swipe-start"));
             try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* optional */ }
         }
-        if (active.locked) event.preventDefault();
+        if (active.locked) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
     };
     const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
         const active = gesture.current;
         gesture.current = null;
         if (!active || active.pointerId !== event.pointerId || !active.locked) return;
+        event.preventDefault();
+        event.stopPropagation();
         const dy = event.clientY - active.startY;
         const elapsed = Math.max(1, performance.now() - active.startedAt);
         const correctDirection = direction === "up" ? dy < 0 : dy > 0;
         if (correctDirection && (Math.abs(dy) >= 72 || Math.abs(dy) / elapsed >= 0.55)) onSwipe();
     };
-    return <div className="performance-swipe-surface" onPointerDown={begin} onPointerMove={move}
-        onPointerUp={finish} onPointerCancel={() => { gesture.current = null; }}>{children}</div>;
+    return <div className="performance-swipe-surface"
+        onPointerDownCapture={begin}
+        onPointerMoveCapture={move}
+        onPointerUpCapture={finish}
+        onPointerCancelCapture={() => { gesture.current = null; }}
+        onClickCapture={(event) => {
+            if (!suppressClick.current) return;
+            suppressClick.current = false;
+            event.preventDefault();
+            event.stopPropagation();
+        }}
+    >{children}</div>;
 }
 
 export function App() {
@@ -424,8 +443,14 @@ export function App() {
             }
             return true;
         }
+        if (view === "edit" && editSubpage === "controls" && virtualAction === "turn") {
+            window.dispatchEvent(new CustomEvent("pimfx-editor-control-turn", {
+                detail: { delta: num(message.delta, 1) }
+            }));
+            return true;
+        }
         return handleHardwareNav(message);
-    }), [engine.client, view]);
+    }), [engine.client, view, editSubpage]);
     useEffect(() => {
         const frame = window.requestAnimationFrame(() => applyHardwareNavFocus(engine.uiSession.navFocus));
         return () => window.cancelAnimationFrame(frame);
