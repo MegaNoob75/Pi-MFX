@@ -415,7 +415,9 @@ export function App() {
         const virtualAction = str(message.virtualControlAction);
         if (view === "virtualControls" && virtualAction) {
             if (virtualAction === "turn") {
-                void engine.client.request("virtual-controls/proxy-turn", { delta: num(message.delta, 1) })
+                void engine.client.request("virtual-controls/proxy-turn", {
+                    delta: num(message.delta, 1)
+                })
                     .catch(() => undefined);
             } else if (virtualAction === "fine") {
                 void engine.client.request("virtual-controls/fine").catch(() => undefined);
@@ -530,12 +532,6 @@ export function App() {
             setLeaveLayout({ view: next, fromMenu });
             return;
         }
-        if (view === "edit" && next !== "edit") {
-            void engine.client.request("preset/save").catch(() => undefined).finally(() => {
-                navigateTo(next, fromMenu);
-            });
-            return;
-        }
         navigateTo(next, fromMenu);
     };
 
@@ -598,9 +594,7 @@ export function App() {
             return;
         }
         if (view === "edit") {
-            void engine.client.request("preset/save").catch(() => undefined).finally(() => {
-                finishBack();
-            });
+            finishBack();
             return;
         }
         if ((view === "layout" && layoutDirty) || (view === "virtualLayout" && virtualLayoutDirty)) {

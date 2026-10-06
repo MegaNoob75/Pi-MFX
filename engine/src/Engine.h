@@ -183,6 +183,7 @@ public:
     bool turnVirtualSurfaceEncoder(const std::string& controlId, int delta, std::string& error);
     bool turnSelectedVirtualControl(int delta, std::string& error);
     bool toggleVirtualControlFine(std::string& error);
+    bool validatePresetEvent(const std::string& expectedPresetId, std::string& error) const;
     /// Session-only switch→preset map used by Performance encoder "session"
     /// mode. Never written to settings, so a reboot restores saved assignments.
     bool applySessionPresets(const Json& json, std::string& error);
@@ -271,6 +272,7 @@ private:
     Snapshot* findSnapshotBySlot(Preset& preset, int slot);
     const Snapshot* findSnapshotBySlot(const Preset& preset, int slot) const;
     void restoreStoredPresetToChainUnlocked(Preset& preset);
+    void restoreSessionOrStoredPresetToChainUnlocked(Preset& preset);
     void forgetRememberedSnapshot(Preset& preset);
     void rememberSnapshot(Preset& preset, int slot, bool enabled);
     bool toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error);
@@ -279,6 +281,12 @@ private:
 
     Preset* activePreset();
     const Preset* activePreset() const;
+    Preset* activeSessionDraft(bool create);
+    const Preset* activeSessionDraft() const;
+    const Preset* effectiveActivePreset() const;
+    void captureChainIntoPreset(Preset& preset);
+    void captureActiveSessionDraft();
+    void clearSessionDraft(const std::string& presetId);
     Bank* activeBank();
     const Bank* activeBank() const;
     Bank* findBank(const std::string& bankId);
@@ -310,7 +318,7 @@ private:
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
     void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
-    void applyTempoLinksUnlocked(Preset& preset, bool deferControls = false);
+    void applyTempoLinksUnlocked(const Preset& preset, bool deferControls = false);
     void refreshLeds();
     Json describeControllerRuntime() const;
 
@@ -322,6 +330,9 @@ private:
     std::vector<Bank> banks_;
     std::string activeBankId_;
     std::string activePresetId_;
+    /// Unsaved, engine-owned working copies. These deliberately never enter
+    /// bank serialization; Save promotes one copy and Reload discards it.
+    std::unordered_map<std::string, Preset> sessionPresetDrafts_;
     std::string activeVirtualControlId_;
     uint64_t virtualControlRevision_ = 0;
 

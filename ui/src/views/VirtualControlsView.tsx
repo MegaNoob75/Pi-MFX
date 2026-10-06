@@ -29,19 +29,34 @@ export function VirtualControlsView({
     const popoutTimer = useRef<number | null>(null);
     const [proxyPopoutId, setProxyPopoutId] = useState("");
     const [confirmSave, setConfirmSave] = useState(false);
+    const [confirmReload, setConfirmReload] = useState(false);
     const [saveStatus, setSaveStatus] = useState("");
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
     const presetName = str(obj(preset).name, "No preset loaded");
+    const presetId = str(state.activePresetId);
+    const dirty = bool(state.sessionPresetDirty);
 
     const saveLiveChanges = async () => {
         setConfirmSave(false);
         setSaveStatus("SAVING…");
         try {
-            await client.request("preset/save");
+            await client.request("preset/save", { presetId });
             setSaveStatus("CHANGES SAVED");
             window.setTimeout(() => setSaveStatus(""), 2200);
         } catch (error) {
             setSaveStatus(error instanceof Error ? error.message : "SAVE FAILED");
+        }
+    };
+
+    const reloadSavedPreset = async () => {
+        setConfirmReload(false);
+        setSaveStatus("RELOADING…");
+        try {
+            await client.request("preset/restoreLive", { presetId });
+            setSaveStatus("SAVED PRESET RESTORED");
+            window.setTimeout(() => setSaveStatus(""), 2200);
+        } catch (error) {
+            setSaveStatus(error instanceof Error ? error.message : "RELOAD FAILED");
         }
     };
 
@@ -69,7 +84,7 @@ export function VirtualControlsView({
         const analog = kind === "pot" || kind === "slider" || kind === "encoder";
         const minimum = virtualControlMinSize(kind, str(control.orientation, "vertical"));
         const select = () => {
-            if (activeId !== id) void client.request("virtual-controls/select", { controlId: id }).catch(() => undefined);
+            if (activeId !== id) void client.request("virtual-controls/select", { controlId: id, presetId }).catch(() => undefined);
         };
         return {
             id,
@@ -97,18 +112,18 @@ export function VirtualControlsView({
             onEngage: select,
             onPress: () => {
                 select();
-                void client.request("virtual-controls/press", { controlId: id, pressed: true })
-                    .then(() => client.request("virtual-controls/press", { controlId: id, pressed: false }))
+                void client.request("virtual-controls/press", { controlId: id, pressed: true, presetId })
+                    .then(() => client.request("virtual-controls/press", { controlId: id, pressed: false, presetId }))
                     .catch(() => undefined);
             },
             onValue: analog && kind !== "encoder"
-                ? (value) => void client.request("virtual-controls/value", { controlId: id, value }).catch(() => undefined)
+                ? (value) => void client.request("virtual-controls/value", { controlId: id, value, presetId }).catch(() => undefined)
                 : undefined,
             onStep: kind === "encoder"
-                ? (delta) => void client.request("virtual-controls/turn", { controlId: id, delta }).catch(() => undefined)
+                ? (delta) => void client.request("virtual-controls/turn", { controlId: id, delta, presetId }).catch(() => undefined)
                 : undefined
         };
-    }), [controls, preset, chain, state, activeId, proxyPopoutId, client]);
+    }), [controls, preset, chain, state, activeId, proxyPopoutId, client, presetId]);
 
     return (
         <div className="virtual-controls-view">
@@ -117,17 +132,24 @@ export function VirtualControlsView({
                 <span className="virtual-controls-preset">
                     <small>CURRENT PRESET</small>
                     <strong>{presetName}</strong>
-                    <small>{activeId ? `ACTIVE · ${tiles.find((tile) => tile.id === activeId)?.switchLabel ?? activeId}` : "LIVE CHANGES ARE TEMPORARY"}</small>
+                    <small>{dirty ? "UNSAVED LIVE CHANGES" : activeId ? `ACTIVE · ${tiles.find((tile) => tile.id === activeId)?.switchLabel ?? activeId}` : "SAVED PRESET"}</small>
                 </span>
                 {fine && <strong>FINE</strong>}
                 {saveStatus && <strong className="virtual-controls-save-status">{saveStatus}</strong>}
                 <button
                     type="button"
                     className="btn"
-                    disabled={!preset || activeSnapshot >= 0 || saveStatus === "SAVING…"}
+                    disabled={!preset || !dirty || activeSnapshot >= 0 || saveStatus === "SAVING…"}
                     title={activeSnapshot >= 0 ? "Return to the base preset before saving" : "Save the current live sound to this preset"}
                     onClick={() => setConfirmSave(true)}
                 >SAVE CHANGES TO PRESET</button>
+                <button
+                    type="button"
+                    className="btn"
+                    disabled={!preset || !dirty}
+                    title="Discard temporary changes and restore the saved preset"
+                    onClick={() => setConfirmReload(true)}
+                >RELOAD SAVED</button>
                 <button type="button" className="btn" onClick={onEdit}>EDIT LAYOUT</button>
             </div>
             <div className="virtual-controls-stage">
@@ -159,6 +181,16 @@ export function VirtualControlsView({
                     confirmLabel="SAVE"
                     onCancel={() => setConfirmSave(false)}
                     onConfirm={() => void saveLiveChanges()}
+                />
+            )}
+            {confirmReload && (
+                <ConfirmDialog
+                    title="DISCARD LIVE CHANGES?"
+                    body={`Discard all temporary changes to “${presetName}” and restore its saved version?`}
+                    confirmLabel="DISCARD & RELOAD"
+                    danger
+                    onCancel={() => setConfirmReload(false)}
+                    onConfirm={() => void reloadSavedPreset()}
                 />
             )}
         </div>

@@ -412,6 +412,7 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "preset/save") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.savePreset(error);
         return Json::object();
     }
@@ -432,6 +433,7 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return result;
     }
     if (command == "preset/restoreLive") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.restoreLiveFromStoredPreset(error);
         return Json::object();
     }
@@ -635,20 +637,24 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "virtual-controls/select") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.selectVirtualSurfaceControl(payload["controlId"].asString(), error);
         return Json::object();
     }
     if (command == "virtual-controls/press") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.pressVirtualSurfaceControl(payload["controlId"].asString(),
                                                  payload["pressed"].asBool(true), error);
         return Json::object();
     }
     if (command == "virtual-controls/value") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.setVirtualSurfaceControlValue(payload["controlId"].asString(),
                                                     payload["value"].asFloat(0.0f), error);
         return Json::object();
     }
     if (command == "virtual-controls/turn") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.turnVirtualSurfaceEncoder(payload["controlId"].asString(),
                                                payload["delta"].asInt(1), error);
         return Json::object();

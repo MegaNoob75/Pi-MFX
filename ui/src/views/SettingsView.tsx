@@ -65,6 +65,10 @@ function SystemHub({
     const [busy, setBusy] = useState<"reboot" | "shutdown" | null>(null);
     const [message, setMessage] = useState("");
     const sharedSettings = obj(engine.uiSession.settings);
+    const unsavedPresetCount = num(engine.state.sessionPresetDirtyCount);
+    const unsavedPowerWarning = unsavedPresetCount > 0
+        ? ` ${unsavedPresetCount} preset${unsavedPresetCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.`
+        : "";
 
     useEffect(() => {
         setRealtime(str(sharedSettings.systemPage) === "realtime");
@@ -146,7 +150,7 @@ function SystemHub({
             {confirm === "reboot" && (
                 <ConfirmDialog
                     title="REBOOT THIS PI?"
-                    body="Audio stops. The touchscreen comes back after boot."
+                    body={`Audio stops. The touchscreen comes back after boot.${unsavedPowerWarning}`}
                     confirmLabel="REBOOT"
                     onCancel={() => setPowerConfirm(null)}
                     onConfirm={() => power("reboot")}
@@ -155,7 +159,7 @@ function SystemHub({
             {confirm === "shutdown" && (
                 <ConfirmDialog
                     title="SHUT DOWN THIS PI?"
-                    body="Audio stops. Power the Pi back on to use it again."
+                    body={`Audio stops. Power the Pi back on to use it again.${unsavedPowerWarning}`}
                     confirmLabel="SHUT DOWN"
                     danger
                     onCancel={() => setPowerConfirm(null)}

@@ -76,6 +76,26 @@ export function EditorView({
     const chainPageRef = useRef<HTMLDivElement | null>(null);
     const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
     const [chainCardWidth, setChainCardWidth] = useState(142);
+    const [sessionAction, setSessionAction] = useState<"save" | "reload" | "">("");
+    const [sessionStatus, setSessionStatus] = useState("");
+    const sessionDirty = bool(state.sessionPresetDirty);
+    const presetName = str(obj(preset).name, "current preset");
+    const sessionPresetId = str(obj(preset).id, str(state.activePresetId));
+    const activeSnapshot = num(obj(preset).activeSnapshot, -1);
+
+    const finishSessionAction = async (action: "save" | "reload") => {
+        setSessionAction("");
+        setSessionStatus(action === "save" ? "SAVING…" : "RELOADING…");
+        try {
+            await client.request(action === "save" ? "preset/save" : "preset/restoreLive", {
+                presetId: sessionPresetId
+            });
+            setSessionStatus(action === "save" ? "CHANGES SAVED" : "SAVED PRESET RESTORED");
+            window.setTimeout(() => setSessionStatus(""), 2200);
+        } catch (error) {
+            setSessionStatus(error instanceof Error ? error.message : "ACTION FAILED");
+        }
+    };
 
     useEffect(() => {
         const sharedPage = str(engine.uiSession.editorPage) as EditPage;
@@ -117,7 +137,11 @@ export function EditorView({
             setBindTarget(null);
             return;
         }
-        void run(() => client.request("preset/bind", payload)).then(() => setBindTarget(null));
+        void run(() => client.request("preset/bind", {
+            ...payload,
+            ownerBankId: str(obj(bank).id),
+            ownerPresetId: sessionPresetId
+        })).then(() => setBindTarget(null));
     };
     const selectedIndex = chain.findIndex((slot) => str(slot.id) === str(obj(selected).id));
     const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
@@ -303,6 +327,17 @@ export function EditorView({
     return (
         <div className="mfx-screen editor-screen">
             <div className="editor-main">
+            <div className="editor-session-bar">
+                <span>
+                    <strong>{presetName}</strong>
+                    <small>{sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small>
+                </span>
+                {sessionStatus && <strong className="editor-session-status">{sessionStatus}</strong>}
+                <button type="button" className="btn" disabled={!sessionDirty || activeSnapshot >= 0}
+                    onClick={() => setSessionAction("save")}>SAVE CHANGES</button>
+                <button type="button" className="btn" disabled={!sessionDirty}
+                    onClick={() => setSessionAction("reload")}>RELOAD SAVED</button>
+            </div>
             {page === "chain" && (
                 <>
                     <div className="editor-toolbar editor-chain-bar">
@@ -671,12 +706,21 @@ export function EditorView({
                         client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
                     });
                 }} />}
-            {confirmDelete && <ConfirmDialog title="DELETE PRESET?" body={str(obj(preset).name, "this preset")}
+            {confirmDelete && <ConfirmDialog title="DELETE PRESET?"
+                body={`${presetName}${sessionDirty ? " has unsaved live changes that will be lost." : ""}`}
                 confirmLabel="DELETE PRESET" danger onCancel={() => setConfirmDelete(false)} onConfirm={() => {
                     const presetId = str(obj(preset).id);
                     setConfirmDelete(false);
                     if (presetId) void run(() => client.request("preset/delete", { presetId }));
                 }} />}
+            {sessionAction === "save" && <ConfirmDialog title="SAVE LIVE CHANGES?"
+                body={`Overwrite the saved version of “${presetName}” with the current live sound?`}
+                confirmLabel="SAVE" onCancel={() => setSessionAction("")}
+                onConfirm={() => void finishSessionAction("save")} />}
+            {sessionAction === "reload" && <ConfirmDialog title="DISCARD LIVE CHANGES?"
+                body={`Discard all temporary changes to “${presetName}” and restore its saved version?`}
+                confirmLabel="DISCARD & RELOAD" danger onCancel={() => setSessionAction("")}
+                onConfirm={() => void finishSessionAction("reload")} />}
             {bindTarget && createPortal(
                 <ParameterBindPopup
                     target={bindTarget}

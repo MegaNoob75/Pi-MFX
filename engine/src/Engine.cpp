@@ -867,10 +867,11 @@ bool Engine::applyTransportSettings(const Json& json, std::string& error) {
     transport_.setCountInBars(next.countInBars);
     transport_.setMetronomeEnabled(next.metronomeEnabled);
     transport_.setQuantizationEnabled(next.quantizationEnabled);
-    if (Preset* preset = activePreset()) {
-        preset->tempo = transport_.bpm();
-        applyTempoLinksUnlocked(*preset);
-        requestBankPersist(false);
+    if (Preset* stored = activePreset(); stored && stored->activeSnapshot < 0) {
+        if (Preset* draft = activeSessionDraft(true)) {
+            draft->tempo = transport_.bpm();
+            applyTempoLinksUnlocked(*draft);
+        }
     }
     persistSettings();
     notifyPerformance();
@@ -1434,27 +1435,49 @@ const Preset* Engine::activePreset() const {
     return const_cast<Engine*>(this)->activePreset();
 }
 
-void Engine::syncPresetFromChain() {
-    Preset* preset = activePreset();
+Preset* Engine::activeSessionDraft(bool create) {
+    Preset* stored = activePreset();
+    if (!stored) return nullptr;
+    auto found = sessionPresetDrafts_.find(stored->id);
+    if (found != sessionPresetDrafts_.end()) return &found->second;
+    if (!create) return nullptr;
+    auto inserted = sessionPresetDrafts_.emplace(stored->id, *stored);
+    return &inserted.first->second;
+}
+
+const Preset* Engine::activeSessionDraft() const {
+    auto found = sessionPresetDrafts_.find(activePresetId_);
+    return found == sessionPresetDrafts_.end() ? nullptr : &found->second;
+}
+
+const Preset* Engine::effectiveActivePreset() const {
+    if (const Preset* draft = activeSessionDraft()) return draft;
+    return activePreset();
+}
+
+void Engine::captureChainIntoPreset(Preset& preset) {
     Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!preset || !chain) {
-        return;
-    }
-    // A recalled snapshot is only live parameters. Writing those back into the
-    // stored chain would promote the snapshot into the base preset.
-    if (preset->activeSnapshot >= 0) {
-        return;
-    }
+    if (!chain || preset.activeSnapshot >= 0) return;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-        EffectSlot* stored = preset->findSlot(slot->id);
-        if (!stored || !slot->plugin) {
-            continue;
-        }
-        stored->state = slot->plugin->saveState();
+        EffectSlot* working = preset.findSlot(slot->id);
+        if (!working || !slot->plugin) continue;
+        working->state = slot->plugin->saveState();
         const int pendingEnabled = slot->pendingEnabled.load(std::memory_order_acquire);
-        stored->enabled = pendingEnabled >= 0
+        working->enabled = pendingEnabled >= 0
             ? pendingEnabled != 0 : slot->enabled.load(std::memory_order_relaxed);
     }
+}
+
+void Engine::captureActiveSessionDraft() {
+    if (Preset* draft = activeSessionDraft(true)) captureChainIntoPreset(*draft);
+}
+
+void Engine::clearSessionDraft(const std::string& presetId) {
+    sessionPresetDrafts_.erase(presetId);
+}
+
+void Engine::syncPresetFromChain() {
+    captureActiveSessionDraft();
 }
 
 void Engine::persistBankUnlocked(Bank* bank, bool syncFromChain) {
@@ -1475,10 +1498,9 @@ void Engine::persistActiveBankUnlocked() {
 }
 
 void Engine::writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value) {
-    Preset* preset = activePreset();
-    if (!preset || preset->activeSnapshot >= 0) {
-        return;
-    }
+    if (const Preset* stored = activePreset(); !stored || stored->activeSnapshot >= 0) return;
+    Preset* preset = activeSessionDraft(true);
+    if (!preset) return;
     EffectSlot* stored = preset->findSlot(slotId);
     if (!stored) {
         return;
@@ -1529,8 +1551,10 @@ bool Engine::analogCatchAllows(const ActionRequest& request) {
 }
 
 void Engine::flushPendingBasePresetUnlocked() {
-    // Analog moves are live-only. Recalling a snapshot must not bake pots
-    // into the stored preset.
+    // Preserve the current live base before a snapshot temporarily replaces
+    // it. The working copy remains memory-only until the user presses Save.
+    Preset* preset = activePreset();
+    if (preset && preset->activeSnapshot < 0 && activeSessionDraft()) captureActiveSessionDraft();
 }
 
 void Engine::requestBankPersist(bool immediate) {
@@ -1587,6 +1611,9 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 
     const Preset* outgoing = activePreset();
     Bank* outgoingBank = activeBank();
+    if (outgoing && activeSessionDraft()) {
+        captureActiveSessionDraft();
+    }
     if (outgoingBank && outgoingBank->id != bank->id) {
         outgoingBank->lastPresetId = activePresetId_;
         persistBankUnlocked(outgoingBank, false);
@@ -1598,14 +1625,17 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
     bank->lastPresetId = target->id;
-    if (transportEnabled_.load(std::memory_order_acquire)) {
-        transport_.setBpm(target->tempo);
-    }
-
     // Build the remembered snapshot directly into the unpublished chain. Once
     // publication is deferred until silence, applying it through activeChain_
     // would otherwise modify the outgoing preset during the fade.
-    Preset effectivePreset = *target;
+    const auto draft = sessionPresetDrafts_.find(target->id);
+    Preset effectivePreset = draft == sessionPresetDrafts_.end() ? *target : draft->second;
+    effectivePreset.snapshots = target->snapshots;
+    effectivePreset.rememberedSnapshotSlot = target->rememberedSnapshotSlot;
+    effectivePreset.rememberedSnapshotEnabled = target->rememberedSnapshotEnabled;
+    if (transportEnabled_.load(std::memory_order_acquire)) {
+        transport_.setBpm(effectivePreset.tempo);
+    }
     if (target->rememberedSnapshotEnabled && target->rememberedSnapshotSlot >= 0) {
         if (Snapshot* snapshot = findSnapshotBySlot(*target, target->rememberedSnapshotSlot)) {
             for (EffectSlot& slot : effectivePreset.chain) {
@@ -1769,7 +1799,15 @@ bool Engine::reloadStoredPreset(std::string& error) {
         return false;
     }
     bypassAll_.store(false, std::memory_order_relaxed);
-    restoreStoredPresetToChainUnlocked(*preset);
+    std::string chainError;
+    std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
+    if (!chain) {
+        error = chainError.empty() ? "could not restore the saved preset" : chainError;
+        return false;
+    }
+    clearSessionDraft(preset->id);
+    publishChain(std::move(chain));
+    preset->activeSnapshot = -1;
     forgetRememberedSnapshot(*preset);
     presetReloadCount_ += 1;
     armAnalogCatchUnlocked();
@@ -1782,8 +1820,27 @@ bool Engine::reloadStoredPreset(std::string& error) {
 bool Engine::savePreset(std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
-    if (preset) {
-        syncPresetFromChain();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    if (preset->activeSnapshot >= 0) {
+        error = "return to the base preset before saving";
+        return false;
+    }
+    const Preset previous = *preset;
+    if (Preset* draft = activeSessionDraft(false)) {
+        captureChainIntoPreset(*draft);
+        draft->name = preset->name;
+        draft->author = preset->author;
+        draft->snapshots = preset->snapshots;
+        draft->community = preset->community;
+        draft->rememberedSnapshotSlot = preset->rememberedSnapshotSlot;
+        draft->rememberedSnapshotEnabled = preset->rememberedSnapshotEnabled;
+        draft->activeSnapshot = -1;
+        *preset = *draft;
+    } else {
+        captureChainIntoPreset(*preset);
     }
     Bank* bank = activeBank();
     if (!bank) {
@@ -1791,17 +1848,17 @@ bool Engine::savePreset(std::string& error) {
         return false;
     }
     if (!storage_.saveBank(*bank)) {
+        *preset = previous;
         error = "could not write the bank file";
         return false;
     }
+    clearSessionDraft(preset->id);
     notify();
     return true;
 }
 
 bool Engine::savePresetAs(const std::string& name, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    syncPresetFromChain();
-
     Bank* bank = activeBank();
     const Preset* source = activePreset();
     if (!bank || !source) {
@@ -1809,13 +1866,23 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         return false;
     }
 
-    Preset copy = *source;
+    Preset copy = activeSessionDraft() ? *activeSessionDraft() : *source;
+    captureChainIntoPreset(copy);
+    copy.author = source->author;
+    copy.snapshots = source->snapshots;
+    copy.community = source->community;
+    copy.rememberedSnapshotSlot = -1;
+    copy.rememberedSnapshotEnabled = false;
+    copy.activeSnapshot = -1;
     copy.id = newId("preset");
     copy.name = name.empty() ? source->name + " copy" : name;
+    const std::string previousPresetId = activePresetId_;
     bank->presets.push_back(copy);
     activePresetId_ = copy.id;
 
     if (!storage_.saveBank(*bank)) {
+        bank->presets.pop_back();
+        activePresetId_ = previousPresetId;
         error = "could not write the bank file";
         return false;
     }
@@ -1868,6 +1935,9 @@ bool Engine::renamePreset(const std::string& presetId, const std::string& name, 
     for (Preset& preset : bank->presets) {
         if (preset.id == presetId) {
             preset.name = name;
+            if (auto draft = sessionPresetDrafts_.find(presetId); draft != sessionPresetDrafts_.end()) {
+                draft->second.name = name;
+            }
             storage_.saveBank(*bank);
             notify();
             return true;
@@ -1899,6 +1969,7 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
     const Json removedCommunity = found->community;
     const bool wasActive = presetId == activePresetId_;
     bank->presets.erase(found);
+    clearSessionDraft(presetId);
     storage_.saveBank(*bank);
 
     auto dependencyStillUsed = [&](const std::string& group, const std::string& name) {
@@ -1938,7 +2009,12 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
             activePresetId_ = bank->presets.front().id;
         }
         std::string chainError;
-        if (Preset* next = activePreset()) publishChain(buildChain(*next, chainError));
+        if (Preset* next = activePreset()) {
+            const auto draft = sessionPresetDrafts_.find(next->id);
+            const Preset& effective = draft == sessionPresetDrafts_.end() ? *next : draft->second;
+            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpm(effective.tempo);
+            publishChain(buildChain(effective, chainError));
+        }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
         persistSettings();
@@ -1971,6 +2047,7 @@ bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::strin
 
 bool Engine::movePresetToBank(const std::string& presetId, const std::string& targetBankId, int newIndex, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (presetId == activePresetId_ && activeSessionDraft()) captureActiveSessionDraft();
     Bank* source = nullptr;
     auto found = std::vector<Preset>::iterator();
     for (Bank& bank : banks_) {
@@ -2025,7 +2102,10 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         activeBankId_ = target->id;
         settings_.activeBankId = activeBankId_;
         std::string chainError;
-        publishChain(buildChain(target->presets[static_cast<size_t>(newIndex)], chainError));
+        const auto draft = sessionPresetDrafts_.find(presetId);
+        const Preset& effective = draft == sessionPresetDrafts_.end()
+            ? target->presets[static_cast<size_t>(newIndex)] : draft->second;
+        publishChain(buildChain(effective, chainError));
     }
     storage_.saveBank(*source);
     storage_.saveBank(*target);
@@ -2080,6 +2160,7 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         return false;
     }
 
+    for (const Preset& preset : found->presets) clearSessionDraft(preset.id);
     storage_.deleteBank(bankId);
     const bool wasActive = bankId == activeBankId_;
     banks_.erase(found);
@@ -2103,7 +2184,10 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         activePresetId_ = banks_.front().presets.empty() ? "" : banks_.front().presets.front().id;
         if (const Preset* preset = activePreset()) {
             std::string chainError;
-            publishChain(buildChain(*preset, chainError));
+            const auto draft = sessionPresetDrafts_.find(preset->id);
+            const Preset& effective = draft == sessionPresetDrafts_.end() ? *preset : draft->second;
+            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpm(effective.tempo);
+            publishChain(buildChain(effective, chainError));
         }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
@@ -2212,7 +2296,6 @@ bool Engine::exportPresetForCommunity(const std::string& bankId, const std::stri
         error = "community-installed presets cannot be submitted again";
         return false;
     }
-    if (bankId == activeBankId_ && presetId == activePresetId_) syncPresetFromChain();
     exported = *preset;
     exported.activeSnapshot = -1;
     exported.rememberedSnapshotSlot = -1;
@@ -2292,15 +2375,16 @@ bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed
 
 bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     const PluginInfo* info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
@@ -2326,22 +2410,22 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
         error = chainError;
     }
     publishChain(std::move(chain));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     const PluginInfo* info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
@@ -2394,22 +2478,22 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
         preset->parameterBindings.end());
     chain = buildChain(*preset, chainError);
     publishChain(std::move(chain));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::removeEffect(const std::string& slotId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
     const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
@@ -2426,22 +2510,22 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
     const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
@@ -2457,13 +2541,13 @@ bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& er
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
                               bool persist) {
+    (void)persist; // All sound changes remain in the session draft until Save.
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) {
         error = "no chain is running";
@@ -2477,14 +2561,15 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
             } else {
                 slot->enabled.store(enabled, std::memory_order_relaxed);
             }
-            if (persist) {
-                if (Preset* preset = activePreset()) {
-                    if (EffectSlot* stored = preset->findSlot(slotId)) {
-                        stored->enabled = enabled;
+            {
+                std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                Preset* storedPreset = activePreset();
+                if (storedPreset && storedPreset->activeSnapshot < 0) {
+                    Preset* preset = activeSessionDraft(true);
+                    if (EffectSlot* working = preset->findSlot(slotId)) {
+                        working->enabled = enabled;
                     }
                 }
-                std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-                requestBankPersist(true);
             }
             refreshLeds();
             notifyPerformance();
@@ -2497,6 +2582,7 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
 
 bool Engine::setControlValue(const std::string& slotId, const std::string& portSymbol,
                              float value, std::string& error, bool persist) {
+    (void)persist; // Preview and release both update the same live session draft.
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) {
         error = "no chain is running";
@@ -2518,17 +2604,16 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             // state acknowledgement report the requested toggle/slider value.
             slot.plugin->setControl(port.index, clamped);
             bool clearedTempoLink = false;
-            if (persist && !port.trigger) {
+            if (!port.trigger) {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 writeStoredControlUnlocked(slotId, portSymbol, clamped);
-                if (Preset* preset = activePreset(); preset && preset->activeSnapshot < 0) {
-                    if (EffectSlot* stored = preset->findSlot(slotId);
-                        stored && stored->tempoLinks.has(portSymbol)) {
-                        stored->tempoLinks.remove(portSymbol);
+                if (Preset* preset = activeSessionDraft(false); preset && preset->activeSnapshot < 0) {
+                    if (EffectSlot* working = preset->findSlot(slotId);
+                        working && working->tempoLinks.has(portSymbol)) {
+                        working->tempoLinks.remove(portSymbol);
                         clearedTempoLink = true;
                     }
                 }
-                requestBankPersist(false);
             }
             if (clearedTempoLink) notify();
             else notifyPerformance();
@@ -2548,15 +2633,16 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
         error = "Tap Tempo Clock is disabled";
         return false;
     }
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* storedPreset = activePreset();
+    if (!storedPreset) {
         error = "no active preset";
         return false;
     }
-    if (preset->activeSnapshot >= 0) {
+    if (storedPreset->activeSnapshot >= 0) {
         error = "return to the base preset before changing Tempo Link";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     EffectSlot* stored = preset->findSlot(slotId);
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!stored || !chain) {
@@ -2580,7 +2666,6 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
                 stored->tempoLinks.set(portSymbol, Json(quarterNoteBeats));
                 live.plugin->setControl(port.index, value);
             }
-            requestBankPersist(true);
             notify();
             return true;
         }
@@ -2591,7 +2676,7 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
     return false;
 }
 
-void Engine::applyTempoLinksUnlocked(Preset& preset, bool deferControls) {
+void Engine::applyTempoLinksUnlocked(const Preset& preset, bool deferControls) {
     if (!transportEnabled_.load(std::memory_order_acquire)) return;
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) return;
@@ -2721,20 +2806,18 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
             transitionRequested_.store(true, std::memory_order_release);
         }
         if (persist) {
-            if (Preset* preset = activePreset()) {
-                if (EffectSlot* stored = preset->findSlot(slotId)) {
-                    Json properties = stored->state["properties"].isObject()
-                                    ? stored->state["properties"] : Json::object();
+            Preset* storedPreset = activePreset();
+            if (storedPreset && storedPreset->activeSnapshot < 0) {
+                Preset* preset = activeSessionDraft(true);
+                if (EffectSlot* working = preset->findSlot(slotId)) {
+                    Json properties = working->state["properties"].isObject()
+                                    ? working->state["properties"] : Json::object();
                     properties.set(propertyUri, Json(resolved));
-                    Json state = stored->state.isObject() ? stored->state : Json::object();
+                    Json state = working->state.isObject() ? working->state : Json::object();
                     state.set("properties", properties);
-                    stored->state = state;
+                    working->state = state;
                 }
             }
-        }
-        if (persist) {
-            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-            requestBankPersist(true);
         }
         if (backing_) backing_->refreshPlaylist();
         notify();
@@ -2837,6 +2920,16 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
     armAnalogCatchUnlocked();
 }
 
+void Engine::restoreSessionOrStoredPresetToChainUnlocked(Preset& preset) {
+    auto draft = sessionPresetDrafts_.find(preset.id);
+    if (draft != sessionPresetDrafts_.end()) {
+        restoreStoredPresetToChainUnlocked(draft->second);
+        preset.activeSnapshot = -1;
+        return;
+    }
+    restoreStoredPresetToChainUnlocked(preset);
+}
+
 void Engine::forgetRememberedSnapshot(Preset& preset) {
     preset.rememberedSnapshotSlot = -1;
     preset.rememberedSnapshotEnabled = false;
@@ -2852,7 +2945,7 @@ bool Engine::toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error
         return true;
     }
     if (preset.rememberedSnapshotEnabled) {
-        restoreStoredPresetToChainUnlocked(preset);
+        restoreSessionOrStoredPresetToChainUnlocked(preset);
         preset.rememberedSnapshotEnabled = false;
         return true;
     }
@@ -2892,7 +2985,7 @@ bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& er
         return false;
     }
     if (preset.activeSnapshot == slot && preset.rememberedSnapshotEnabled) {
-        restoreStoredPresetToChainUnlocked(preset);
+        restoreSessionOrStoredPresetToChainUnlocked(preset);
         forgetRememberedSnapshot(preset);
         return true;
     }
@@ -2924,7 +3017,7 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
         stateLoaded = true;
     }
     if (mutedTransition && stateLoaded) transitionRequested_.store(true, std::memory_order_release);
-    if (Preset* preset = activePreset()) applyTempoLinksUnlocked(*preset, mutedTransition);
+    if (const Preset* preset = effectiveActivePreset()) applyTempoLinksUnlocked(*preset, mutedTransition);
     armAnalogCatchUnlocked();
 }
 
@@ -3066,7 +3159,15 @@ bool Engine::restoreLiveFromStoredPreset(std::string& error) {
         error = "no active preset";
         return false;
     }
-    restoreStoredPresetToChainUnlocked(*preset);
+    std::string chainError;
+    std::unique_ptr<Chain> restored = buildChain(*preset, chainError);
+    if (!restored) {
+        error = chainError.empty() ? "could not restore the saved preset" : chainError;
+        return false;
+    }
+    clearSessionDraft(preset->id);
+    publishChain(std::move(restored));
+    preset->activeSnapshot = -1;
     preset->rememberedSnapshotEnabled = false;
     refreshLeds();
     notify();
@@ -3090,7 +3191,7 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
         forgetRememberedSnapshot(*preset);
     }
     if (preset->activeSnapshot == found->slot) {
-        restoreStoredPresetToChainUnlocked(*preset);
+        restoreSessionOrStoredPresetToChainUnlocked(*preset);
         forgetRememberedSnapshot(*preset);
         preset->activeSnapshot = -1;
     }
@@ -3183,7 +3284,7 @@ void Engine::cancelControlLearn() {
 
 void Engine::overlayPresetBind(ActionRequest& request) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    const Preset* preset = activePreset();
+    const Preset* preset = effectiveActivePreset();
     if (!preset) {
         return;
     }
@@ -3385,6 +3486,9 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
         error = "could not save preset bindings";
         return false;
     }
+    if (auto draft = sessionPresetDrafts_.find(preset->id); draft != sessionPresetDrafts_.end()) {
+        draft->second.parameterBindings = preset->parameterBindings;
+    }
     proxyCatch_.clear();
     refreshLeds();
     notify();
@@ -3519,7 +3623,7 @@ bool Engine::pressVirtualSurfaceControl(const std::string& controlId, bool press
         return false;
     }
     selectVirtualSurfaceControl(controlId, error);
-    const Preset* preset = activePreset();
+    const Preset* preset = effectiveActivePreset();
     const ParameterBinding* binding = preset ? preset->findParameterBinding(controlId) : nullptr;
     if (!binding) return true;
     if (control->kind == ControlKind::Latching && pressed && binding->action == "setParameter") {
@@ -3603,6 +3707,15 @@ bool Engine::toggleVirtualControlFine(std::string& error) {
     request.pressed = true;
     runAction(request);
     error.clear();
+    return true;
+}
+
+bool Engine::validatePresetEvent(const std::string& expectedPresetId, std::string& error) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!expectedPresetId.empty() && expectedPresetId != activePresetId_) {
+        error = "that control event belongs to a preset that is no longer active";
+        return false;
+    }
     return true;
 }
 
@@ -3807,7 +3920,7 @@ bool Engine::proxyCatchAllows(const ActionRequest& request, const ParameterBindi
 void Engine::runVirtualControlProxy(const ActionRequest& request) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const VirtualControl* target = findVirtualControl(activeVirtualControlId_);
-    const Preset* preset = activePreset();
+    const Preset* preset = effectiveActivePreset();
     const ParameterBinding* binding = preset && target
         ? preset->findParameterBinding(activeVirtualControlId_) : nullptr;
     if (!target || !binding) return;
@@ -4191,7 +4304,7 @@ void Engine::refreshLeds() {
 
         // An LED tied to a control follows what that control currently does,
         // so a switch bound to an effect lights only while that effect is on.
-        const Preset* preset = activePreset();
+        const Preset* preset = effectiveActivePreset();
         for (const ControllerControl& control : config.controls) {
             if (control.ledId != led.id) {
                 continue;
@@ -4688,13 +4801,14 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
 void Engine::tapTempo() {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (!transportEnabled_.load(std::memory_order_acquire)) {
-        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
+        if (const Preset* preset = effectiveActivePreset()) transport_.setBpm(preset->tempo);
     }
     const double bpm = transport_.tap();
-    if (Preset* preset = activePreset()) {
-        preset->tempo = bpm;
-        applyTempoLinksUnlocked(*preset);
-        requestBankPersist(false);
+    if (Preset* stored = activePreset(); stored && stored->activeSnapshot < 0) {
+        if (Preset* draft = activeSessionDraft(true)) {
+            draft->tempo = bpm;
+            applyTempoLinksUnlocked(*draft);
+        }
     }
     notifyPerformance();
 }
@@ -4995,6 +5109,11 @@ Json Engine::fullState() const {
     json.set("activeVirtualControlId", activeVirtualControlId_);
     json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
     json.set("virtualControlFine", proxyFineMode_);
+    json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
+    json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
+    Json dirtyPresetIds = Json::array();
+    for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
+    json.set("sessionPresetDirtyIds", std::move(dirtyPresetIds));
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
@@ -5022,7 +5141,7 @@ Json Engine::fullState() const {
             slotJson.set("id", slot->id);
             slotJson.set("uri", slot->plugin->uri());
             slotJson.set("enabled", slot->enabled.load(std::memory_order_relaxed));
-            if (const Preset* preset = activePreset()) {
+            if (const Preset* preset = effectiveActivePreset()) {
                 if (const EffectSlot* stored = preset->findSlot(slot->id)) {
                     slotJson.set("name", stored->name);
                     slotJson.set("tempoLinks", stored->tempoLinks);
@@ -5065,9 +5184,16 @@ Json Engine::performanceState() const {
     json.set("activeVirtualControlId", activeVirtualControlId_);
     json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
     json.set("virtualControlFine", proxyFineMode_);
+    json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
+    json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
+    Json dirtyPresetIds = Json::array();
+    for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
+    json.set("sessionPresetDirtyIds", std::move(dirtyPresetIds));
 
     if (const Preset* preset = activePreset()) {
-        json.set("tempo", transportEnabled_.load(std::memory_order_acquire) ? transport_.bpm() : preset->tempo);
+        const Preset* effective = effectiveActivePreset();
+        json.set("tempo", transportEnabled_.load(std::memory_order_acquire)
+            ? transport_.bpm() : (effective ? effective->tempo : preset->tempo));
         json.set("activeSnapshot", preset->activeSnapshot);
     }
 

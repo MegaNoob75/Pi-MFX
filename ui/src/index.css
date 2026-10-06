@@ -4592,6 +4592,34 @@ button.list-item {
     white-space: nowrap;
 }
 
+.editor-session-bar {
+    flex: 0 0 auto;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--mfx-border);
+    background: var(--mfx-panel-alt);
+}
+.editor-session-bar > span {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: grid;
+}
+.editor-session-bar > span strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.editor-session-bar small {
+    color: var(--mfx-muted);
+    font-size: .6rem;
+    letter-spacing: .08em;
+}
+.editor-session-bar small:first-letter { color: var(--mfx-cyan); }
+.editor-session-status { color: var(--mfx-cyan); white-space: nowrap; font-size: .72rem; }
+
 .performance-swipe-surface {
     width: 100%;
     height: 100%;
