@@ -175,6 +175,9 @@ Json Preset::toJson() const {
         bindingJson.push(binding.toJson());
     }
     json.set("parameterBindings", bindingJson);
+    if (virtualControlSurface.isObject() && !virtualControlSurface.members().empty()) {
+        json.set("virtualControlSurface", virtualControlSurface);
+    }
     if (community.isObject() && !community.members().empty()) {
         json.set("community", community);
     }
@@ -215,6 +218,8 @@ Preset Preset::fromJson(const Json& json) {
         }
     }
     preset.community = json["community"].isObject() ? json["community"] : Json::object();
+    preset.virtualControlSurface = json["virtualControlSurface"].isObject()
+        ? json["virtualControlSurface"] : Json::object();
     preset.activeSnapshot = json["activeSnapshot"].asInt(-1);
     preset.rememberedSnapshotSlot = json["rememberedSnapshotSlot"].asInt(-1);
     preset.rememberedSnapshotEnabled = json["rememberedSnapshotEnabled"].asBool(false);

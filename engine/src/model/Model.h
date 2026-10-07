@@ -79,6 +79,9 @@ struct Preset {
     std::vector<EffectSlot> chain;
     std::vector<Snapshot> snapshots;
     std::vector<ParameterBinding> parameterBindings;
+    /// Optional preset-owned touchscreen surface. Missing or mode=shared uses
+    /// the global Virtual Controls layout for backward compatibility.
+    Json virtualControlSurface = Json::object();
     /// Provenance and completion state for an imported community preset.
     /// Empty for presets created locally.
     Json community = Json::object();

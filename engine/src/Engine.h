@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -310,7 +311,8 @@ private:
     void migrateHardwareParameterBinds();
     void runAction(const ActionRequest& request);
     void runVirtualControlProxy(const ActionRequest& request);
-    const VirtualControl* findVirtualControl(const std::string& controlId) const;
+    VirtualControlsConfig effectiveVirtualControlsConfig() const;
+    std::optional<VirtualControl> findVirtualControl(const std::string& controlId) const;
     bool toggleBoundParameter(const ParameterBinding& binding, std::string& error);
     bool proxyCatchAllows(const ActionRequest& request, const ParameterBinding& binding);
     bool bindingTargetPosition(const ParameterBinding& binding, float& position) const;

@@ -2517,10 +2517,6 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     gap: 8px;
 }
 
-.control-card.bound {
-    box-shadow: inset 0 0 0 2px var(--mfx-cyan);
-}
-
 .control-card.tempo-linked {
     box-shadow: inset 0 0 0 2px var(--mfx-purple);
 }
@@ -3397,6 +3393,17 @@ button.list-item {
     border-color: var(--mfx-cyan);
     background: var(--mfx-cyan-surface);
     color: var(--mfx-cyan-text);
+}
+
+.mfx-bind-choice-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.mfx-bind-choice-row .mfx-overlay-option {
+    min-width: 0;
 }
 
 .mfx-overlay-option.danger,
@@ -4653,7 +4660,34 @@ button.list-item {
     width: 100%;
     height: 100%;
     min-height: 0;
+    overflow: hidden;
     touch-action: pan-x;
+}
+
+.performance-swipe-track {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    will-change: transform;
+}
+
+.performance-swipe-track.has-peek {
+    height: 200%;
+}
+
+.performance-swipe-track.settling {
+    transition: transform 180ms cubic-bezier(.2, .75, .25, 1);
+}
+
+.performance-swipe-panel {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.performance-swipe-track.has-peek > .performance-swipe-panel {
+    height: 50%;
 }
 
 /* Virtual Controls shares Performance's visual language while keeping its

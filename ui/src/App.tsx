@@ -171,9 +171,10 @@ function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject |
     return null;
 }
 
-function SwipeSurface({ direction, onSwipe, children }: {
+function SwipeSurface({ direction, onSwipe, peek, children }: {
     direction: "up" | "down";
     onSwipe: () => void;
+    peek: ReactNode;
     children: ReactNode;
 }) {
     const gesture = useRef<{
@@ -184,8 +185,12 @@ function SwipeSurface({ direction, onSwipe, children }: {
         locked: boolean;
     } | null>(null);
     const suppressClick = useRef(false);
+    const transitionTimer = useRef<number | null>(null);
+    const [dragOffset, setDragOffset] = useState(0);
+    const [peekVisible, setPeekVisible] = useState(false);
+    const [settling, setSettling] = useState(false);
     const interactive = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest(
-        "input, select, textarea, [data-adjustable='true'], .identity-select, .mfx-overlay, .dialog"
+        "input, select, textarea, .identity-select, .mfx-overlay, .dialog"
     ));
     const begin = (event: ReactPointerEvent<HTMLDivElement>) => {
         if (event.pointerType === "mouse" || interactive(event.target)) return;
@@ -210,12 +215,15 @@ function SwipeSurface({ direction, onSwipe, children }: {
             }
             active.locked = true;
             suppressClick.current = true;
+            setPeekVisible(true);
+            setSettling(false);
             window.dispatchEvent(new Event("pimfx-surface-swipe-start"));
             try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* optional */ }
         }
         if (active.locked) {
             event.preventDefault();
             event.stopPropagation();
+            setDragOffset(direction === "up" ? Math.min(0, dy) : Math.max(0, dy));
         }
     };
     const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -227,20 +235,57 @@ function SwipeSurface({ direction, onSwipe, children }: {
         const dy = event.clientY - active.startY;
         const elapsed = Math.max(1, performance.now() - active.startedAt);
         const correctDirection = direction === "up" ? dy < 0 : dy > 0;
-        if (correctDirection && (Math.abs(dy) >= 72 || Math.abs(dy) / elapsed >= 0.55)) onSwipe();
+        const complete = correctDirection && (Math.abs(dy) >= 72 || Math.abs(dy) / elapsed >= 0.55);
+        setSettling(true);
+        setDragOffset(complete
+            ? (direction === "up" ? -event.currentTarget.clientHeight : event.currentTarget.clientHeight)
+            : 0);
+        if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current);
+        transitionTimer.current = window.setTimeout(() => {
+            transitionTimer.current = null;
+            setPeekVisible(false);
+            setSettling(false);
+            setDragOffset(0);
+            if (complete) onSwipe();
+        }, 190);
     };
+    const cancel = () => {
+        const active = gesture.current;
+        gesture.current = null;
+        if (!active?.locked) return;
+        setSettling(true);
+        setDragOffset(0);
+        if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current);
+        transitionTimer.current = window.setTimeout(() => {
+            transitionTimer.current = null;
+            setPeekVisible(false);
+            setSettling(false);
+        }, 190);
+    };
+    useEffect(() => () => {
+        if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current);
+    }, []);
+    const trackStyle = peekVisible ? {
+        transform: direction === "down"
+            ? `translate3d(0, calc(-50% + ${dragOffset}px), 0)`
+            : `translate3d(0, ${dragOffset}px, 0)`
+    } : undefined;
     return <div className="performance-swipe-surface"
         onPointerDownCapture={begin}
         onPointerMoveCapture={move}
         onPointerUpCapture={finish}
-        onPointerCancelCapture={() => { gesture.current = null; }}
+        onPointerCancelCapture={cancel}
         onClickCapture={(event) => {
             if (!suppressClick.current) return;
             suppressClick.current = false;
             event.preventDefault();
             event.stopPropagation();
         }}
-    >{children}</div>;
+    ><div className={`performance-swipe-track${peekVisible ? " has-peek" : ""}${settling ? " settling" : ""}`} style={trackStyle}>
+            {peekVisible && direction === "down" && <div key="peek" className="performance-swipe-panel">{peek}</div>}
+            <div key="current" className="performance-swipe-panel">{children}</div>
+            {peekVisible && direction === "up" && <div key="peek" className="performance-swipe-panel">{peek}</div>}
+        </div></div>;
 }
 
 export function App() {
@@ -991,7 +1036,9 @@ export function App() {
 
             <main className="page">
                 {view === "performance" && (
-                    <SwipeSurface direction="up" onSwipe={() => goTo("virtualControls")}>
+                    <SwipeSurface direction="up" onSwipe={() => goTo("virtualControls")} peek={
+                        <VirtualControlsView engine={engine} onEdit={() => goTo("virtualLayout")} />
+                    }>
                         <PerformanceView
                             engine={engine}
                             run={run}
@@ -1009,7 +1056,20 @@ export function App() {
                     </SwipeSurface>
                 )}
                 {view === "virtualControls" && (
-                    <SwipeSurface direction="down" onSwipe={() => goTo("performance", true)}>
+                    <SwipeSurface direction="down" onSwipe={() => goTo("performance", true)} peek={
+                        <PerformanceView
+                            engine={engine}
+                            run={run}
+                            onSnapshots={() => goTo("snapshots")}
+                            onEdit={() => goTo("edit")}
+                            onOpenView={(next) => goTo(next)}
+                            onEditSnapshot={(snapshotId) => {
+                                setSnapshotEditId(snapshotId);
+                                engine.client.updateUiSession({ snapshotEditId });
+                                goTo("snapshotEdit");
+                            }}
+                        />
+                    }>
                         <VirtualControlsView engine={engine} onEdit={() => goTo("virtualLayout")} />
                     </SwipeSurface>
                 )}

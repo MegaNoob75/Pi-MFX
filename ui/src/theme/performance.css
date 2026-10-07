@@ -342,6 +342,40 @@
     opacity: .9;
 }
 
+.mfx-hardware-knob__option-detents {
+    position: absolute;
+    inset: -12%;
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+.mfx-hardware-knob__option-detents i {
+    position: absolute;
+    inset: 0;
+    display: block;
+}
+
+.mfx-hardware-knob__option-detents i::before {
+    content: "";
+    position: absolute;
+    left: calc(50% - 1px);
+    top: 0;
+    width: 2px;
+    height: 9%;
+    border-radius: 999px;
+    background: #d7dde4;
+    opacity: .72;
+}
+
+.mfx-hardware-knob__option-detents i.active::before {
+    left: calc(50% - 2px);
+    width: 4px;
+    height: 13%;
+    background: var(--mfx-surface-panel-accent);
+    box-shadow: 0 0 7px var(--mfx-surface-panel-accent);
+    opacity: 1;
+}
+
 .mfx-toggle-hardware {
     position: absolute;
     left: 50%;

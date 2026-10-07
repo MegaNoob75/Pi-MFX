@@ -39,6 +39,8 @@ export interface PerformanceTile {
     assigned?: boolean;
     kind?: string;
     orientation?: "vertical" | "horizontal";
+    detentCount?: number;
+    detentIndex?: number;
     rect?: { x: number; y: number; width: number; height: number };
     value?: number;
     presetSlotIndex?: number;
@@ -657,12 +659,16 @@ export function PerformanceControl({
             onPointerCancel={onPointerCancelHold}
             onContextMenu={suppressBrowserMenu}
             onWheel={(event) => {
+                // Controls embedded in a scrollable editor/page must never
+                // steal the wheel from page navigation.
+                if (tile.scrollFriendly) return;
                 if ((tile.kind ?? "pot") !== "encoder" || !tile.onStep || event.deltaY === 0) return;
                 event.preventDefault();
                 event.stopPropagation();
                 const behavior = loadUiBehavior();
                 if (behavior.controlPopout) revealPopout();
                 tile.onStep(event.deltaY < 0 ? 1 : -1);
+                schedulePopoutClose();
             }}
         >
             {(tile.analogSource || tile.switchLabel).trim() ? (
@@ -675,6 +681,8 @@ export function PerformanceControl({
                     active={Boolean(tile.active || tile.pressed)}
                     pressed={Boolean(tile.pressed)}
                     orientation={tile.orientation}
+                    detentCount={tile.detentCount}
+                    detentIndex={tile.detentIndex}
                 />
             </div>
             {tile.analogFunction ? (
@@ -981,12 +989,14 @@ export function TileMenuButton({
     );
 }
 
-function ControlGraphic({ kind, range, active, pressed, orientation = "vertical" }: {
+function ControlGraphic({ kind, range, active, pressed, orientation = "vertical", detentCount = 0, detentIndex = -1 }: {
     kind: string;
     range: number;
     active: boolean;
     pressed?: boolean;
     orientation?: "vertical" | "horizontal";
+    detentCount?: number;
+    detentIndex?: number;
 }) {
     if (kind === "slider" || kind === "expression") {
         return (
@@ -1013,7 +1023,14 @@ function ControlGraphic({ kind, range, active, pressed, orientation = "vertical"
             aria-hidden="true"
         >
             <div className="mfx-hardware-knob__pointer" style={{ transform: `rotate(${degrees}deg)` }} />
-            {encoder && <div className="mfx-hardware-knob__detents" />}
+            {encoder && detentCount >= 2 && detentCount <= 12 ? (
+                <div className="mfx-hardware-knob__option-detents">
+                    {Array.from({ length: detentCount }, (_, index) => (
+                        <i key={index} className={index === detentIndex ? "active" : ""}
+                            style={{ transform: `rotate(${-135 + index * 270 / Math.max(1, detentCount - 1)}deg)` }} />
+                    ))}
+                </div>
+            ) : encoder ? <div className="mfx-hardware-knob__detents" /> : null}
             <div
                 className="mfx-hardware-knob__arc"
                 style={{
@@ -1030,7 +1047,7 @@ function ToggleSwitchGraphic({ active, valueText }: { active: boolean; valueText
             <span className="mfx-toggle-hardware__track">
                 <span className="mfx-toggle-hardware__thumb" />
             </span>
-            <span className="mfx-toggle-hardware__value">{valueText}</span>
+            {valueText && <span className="mfx-toggle-hardware__value">{valueText}</span>}
         </span>
     );
 }

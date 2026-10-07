@@ -3303,7 +3303,10 @@ void Engine::overlayPresetBind(ActionRequest& request) {
     request.binding.snapshotSlot = bind->snapshotSlot;
     request.binding.minimum = bind->minimum;
     request.binding.maximum = bind->maximum;
-    request.binding.inverted = bind->inverted;
+    // Physical direction is owned by Hardware Setup. Per-preset reversal is
+    // reserved for preset-owned virtual controls and is edited with the
+    // Virtual Controls layout.
+    request.binding.inverted = findVirtualControl(request.controlId).has_value() && bind->inverted;
 }
 
 void Engine::migrateHardwareParameterBinds() {
@@ -3380,7 +3383,7 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
         error = "controlId required";
         return false;
     }
-    const VirtualControl* virtualControl = findVirtualControl(controlId);
+    const std::optional<VirtualControl> virtualControl = findVirtualControl(controlId);
 
     ParameterBinding bind;
     bind.controlId = controlId;
@@ -3393,7 +3396,7 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
     bind.snapshotSlot = json["snapshotSlot"].asInt(-1);
     bind.minimum = json["min"].asFloat(0.0f);
     bind.maximum = json["max"].asFloat(1.0f);
-    bind.inverted = json["inverted"].asBool(false);
+    bind.inverted = virtualControl && json["inverted"].asBool(false);
 
     if (action == "setParameter" || action == "toggleEffect") {
         if (bind.slotId.empty()) {
@@ -3495,17 +3498,35 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
     return true;
 }
 
-const VirtualControl* Engine::findVirtualControl(const std::string& controlId) const {
-    for (const VirtualControl& control : settings_.virtualControls.controls) {
-        if (control.id == controlId) return &control;
+VirtualControlsConfig Engine::effectiveVirtualControlsConfig() const {
+    const Preset* preset = effectiveActivePreset();
+    if (preset && preset->virtualControlSurface.isObject()
+        && preset->virtualControlSurface["mode"].asString("shared") != "shared"
+        && preset->virtualControlSurface["layout"].isObject()) {
+        return VirtualControlsConfig::fromJson(preset->virtualControlSurface["layout"]);
     }
-    return nullptr;
+    return settings_.virtualControls;
+}
+
+std::optional<VirtualControl> Engine::findVirtualControl(const std::string& controlId) const {
+    const VirtualControlsConfig config = effectiveVirtualControlsConfig();
+    for (const VirtualControl& control : config.controls) {
+        if (control.id == controlId) return control;
+    }
+    return std::nullopt;
 }
 
 bool Engine::applyVirtualControlsConfig(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     const bool preserveBindings = json["preserveBindings"].asBool(false);
-    VirtualControlsConfig next = VirtualControlsConfig::fromJson(json);
+    const bool presetScope = json["scope"].asString() == "preset";
+    const std::string requestedMode = json["mode"].asString(presetScope ? "custom" : "shared");
+    if (presetScope && requestedMode != "shared" && requestedMode != "custom" && requestedMode != "auto") {
+        error = "invalid virtual controls surface mode";
+        return false;
+    }
+    VirtualControlsConfig next = requestedMode == "shared"
+        ? settings_.virtualControls : VirtualControlsConfig::fromJson(json);
     std::vector<std::string> ids;
     ids.reserve(next.controls.size());
     for (const VirtualControl& control : next.controls) {
@@ -3532,6 +3553,51 @@ bool Engine::applyVirtualControlsConfig(const Json& json, std::string& error) {
         ids.push_back(control.id);
     }
 
+    if (presetScope) {
+        Preset* preset = activePreset();
+        Bank* owner = activeBank();
+        if (!preset || !owner) {
+            error = "no active preset";
+            return false;
+        }
+        const VirtualControlsConfig previous = effectiveVirtualControlsConfig();
+        const Json previousSurface = preset->virtualControlSurface;
+        std::vector<ParameterBinding> previousBindings = preset->parameterBindings;
+        Json surface = Json::object();
+        surface.set("mode", requestedMode);
+        if (requestedMode != "shared") surface.set("layout", next.toJson());
+        preset->virtualControlSurface = std::move(surface);
+
+        if (!preserveBindings) {
+            std::vector<std::string> removed;
+            for (const VirtualControl& old : previous.controls) {
+                if (std::find(ids.begin(), ids.end(), old.id) == ids.end()) removed.push_back(old.id);
+            }
+            preset->parameterBindings.erase(std::remove_if(
+                preset->parameterBindings.begin(), preset->parameterBindings.end(),
+                [&](const ParameterBinding& binding) {
+                    return std::find(removed.begin(), removed.end(), binding.controlId) != removed.end();
+                }), preset->parameterBindings.end());
+            if (std::find(removed.begin(), removed.end(), activeVirtualControlId_) != removed.end()) {
+                activeVirtualControlId_.clear();
+            }
+        }
+        if (!storage_.saveBank(*owner)) {
+            preset->virtualControlSurface = previousSurface;
+            preset->parameterBindings = std::move(previousBindings);
+            error = "could not save preset virtual controls";
+            return false;
+        }
+        if (auto draft = sessionPresetDrafts_.find(preset->id); draft != sessionPresetDrafts_.end()) {
+            draft->second.virtualControlSurface = preset->virtualControlSurface;
+            draft->second.parameterBindings = preset->parameterBindings;
+        }
+        proxyCatch_.clear();
+        notify();
+        error.clear();
+        return true;
+    }
+
     std::vector<std::string> removed;
     for (const VirtualControl& old : settings_.virtualControls.controls) {
         if (std::find(ids.begin(), ids.end(), old.id) == ids.end()) removed.push_back(old.id);
@@ -3544,6 +3610,7 @@ bool Engine::applyVirtualControlsConfig(const Json& json, std::string& error) {
         for (Bank& bank : banks_) {
             bool changed = false;
             for (Preset& preset : bank.presets) {
+                if (preset.virtualControlSurface["mode"].asString("shared") != "shared") continue;
                 const size_t before = preset.parameterBindings.size();
                 preset.parameterBindings.erase(std::remove_if(
                     preset.parameterBindings.begin(), preset.parameterBindings.end(),
@@ -3625,7 +3692,7 @@ bool Engine::toggleBoundParameter(const ParameterBinding& binding, std::string& 
 }
 
 bool Engine::pressVirtualSurfaceControl(const std::string& controlId, bool pressed, std::string& error) {
-    const VirtualControl* control = findVirtualControl(controlId);
+    const std::optional<VirtualControl> control = findVirtualControl(controlId);
     if (!control) {
         error = "no such virtual control";
         return false;
@@ -3653,7 +3720,7 @@ bool Engine::pressVirtualSurfaceControl(const std::string& controlId, bool press
 }
 
 bool Engine::setVirtualSurfaceControlValue(const std::string& controlId, float value, std::string& error) {
-    const VirtualControl* control = findVirtualControl(controlId);
+    const std::optional<VirtualControl> control = findVirtualControl(controlId);
     if (!control || !isContinuousKind(control->kind)) {
         error = control ? "virtual control is not continuous" : "no such virtual control";
         return false;
@@ -3673,7 +3740,7 @@ bool Engine::setVirtualSurfaceControlValue(const std::string& controlId, float v
 }
 
 bool Engine::turnVirtualSurfaceEncoder(const std::string& controlId, int delta, std::string& error) {
-    const VirtualControl* control = findVirtualControl(controlId);
+    const std::optional<VirtualControl> control = findVirtualControl(controlId);
     if (!control || control->kind != ControlKind::Encoder) {
         error = control ? "virtual control is not an encoder" : "no such virtual control";
         return false;
@@ -3927,7 +3994,7 @@ bool Engine::proxyCatchAllows(const ActionRequest& request, const ParameterBindi
 
 void Engine::runVirtualControlProxy(const ActionRequest& request) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    const VirtualControl* target = findVirtualControl(activeVirtualControlId_);
+    const std::optional<VirtualControl> target = findVirtualControl(activeVirtualControlId_);
     const Preset* preset = effectiveActivePreset();
     const ParameterBinding* binding = preset && target
         ? preset->findParameterBinding(activeVirtualControlId_) : nullptr;
@@ -5113,7 +5180,13 @@ Json Engine::fullState() const {
     json.set("communityCatalogFeatureEnabled", false);
 #endif
     json.set("controller", describeControllerRuntime());
-    json.set("virtualControls", settings_.virtualControls.toJson());
+    json.set("virtualControls", effectiveVirtualControlsConfig().toJson());
+    json.set("sharedVirtualControls", settings_.virtualControls.toJson());
+    if (const Preset* preset = effectiveActivePreset()) {
+        json.set("virtualControlsMode", preset->virtualControlSurface["mode"].asString("shared"));
+    } else {
+        json.set("virtualControlsMode", "shared");
+    }
     json.set("activeVirtualControlId", activeVirtualControlId_);
     json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
     json.set("virtualControlFine", proxyFineMode_);

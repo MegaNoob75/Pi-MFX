@@ -3,10 +3,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const editor = fs.readFileSync(path.join(__dirname, '../src/views/EditorView.tsx'), 'utf8');
+const css = fs.readFileSync(path.join(__dirname, '../src/index.css'), 'utf8');
 const snapshot = fs.readFileSync(path.join(__dirname, '../src/views/SnapshotEditView.tsx'), 'utf8');
 const host = fs.readFileSync(path.join(__dirname, '../../engine/src/host/Lv2Host.cpp'), 'utf8');
 const engine = fs.readFileSync(path.join(__dirname, '../../engine/src/Engine.cpp'), 'utf8');
 const router = fs.readFileSync(path.join(__dirname, '../../engine/src/control/ApiRouter.cpp'), 'utf8');
+
+assert.doesNotMatch(css, /\.control-card\.bound\s*\{[^}]*box-shadow/,
+    'bound parameters must not look like the currently focused parameter');
 
 assert.match(editor, /bool\(port\.enumerated\) && points\.length > 0/,
     'scale points alone must not turn a continuous port into a selector');
@@ -18,9 +22,15 @@ assert.match(editor, /const switchLike = toggled \|\| twoOptionEnumeration \|\| 
     'LV2 toggles and two-state parameters must share the dedicated toggle control');
 assert.match(editor, /const kind = trigger \? "momentary" : switchLike \? "toggle"/,
     'two-state parameters must render with the toggle-switch graphic');
+assert.match(editor, /const switchStateText = switchLike \? formatSwitchState\(value, port\) : ""/,
+    'switches must use only meaningful plugin-provided state labels');
+assert.match(editor, /switchLike && !trigger && switchStateText/,
+    'unnamed binary states must not render numeric header values');
+assert.match(editor, /Number\.isFinite\(numericLabel\)[\s\S]*return ""/,
+    'numeric scale-point labels must stay hidden when the switch position is sufficient');
 assert.match(editor, /apply\(switchOn \? switchOffValue : switchOnValue\)/,
     'the toggle graphic must switch between the parameter\'s actual option values');
-assert.match(editor, /analogValue: formatControl[\s\S]*<PerformanceControl/,
+assert.match(editor, /analogValue: switchLike \? switchStateText : formatControl[\s\S]*<PerformanceControl/,
     'effect parameters must use the shared Virtual Controls graphics');
 assert.match(host, /portInfo\.name = "Input Calibration Level";[\s\S]*std::min\(portInfo\.maximum, -6\.0f\)/,
     'TooB input calibration must expose a clear label and -6 dBu default');

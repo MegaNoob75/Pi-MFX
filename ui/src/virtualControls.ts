@@ -80,7 +80,7 @@ export function virtualTargetCompatible(kind: string, action: string, port?: Jso
         if (!port || !bool(port.input, true) || str(port.kind) !== "control" || bool(port.notOnGui)) return false;
         if (kind === "momentary") return bool(port.trigger);
         if (kind === "latching") return bool(port.toggled);
-        if (kind === "pot" || kind === "slider") return !bool(port.trigger) && !bool(port.toggled);
+        if (kind === "pot" || kind === "slider" || kind === "expression") return !bool(port.trigger) && !bool(port.toggled);
         return kind === "encoder" && !bool(port.trigger);
     }
     if (kind === "pot" || kind === "slider") return false;
@@ -93,8 +93,11 @@ export function virtualTargetCompatible(kind: string, action: string, port?: Jso
 
 function formatValue(value: number, port: JsonObject): string {
     const point = arr(port.scalePoints).map(obj).find((item) => Math.abs(num(item.value) - value) < 0.0001);
-    if (point && str(point.label)) return str(point.label);
-    if (bool(port.toggled)) return value > (num(port.min) + num(port.max, 1)) / 2 ? "ON" : "OFF";
+    if (point && str(point.label)) {
+        const label = str(point.label).trim();
+        if (!bool(port.toggled) || !Number.isFinite(Number(label))) return label;
+    }
+    if (bool(port.toggled)) return "";
     const digits = bool(port.integer) ? 0 : 2;
     const render = str(port.unitRender);
     const placeholder = /%([+.\-0-9]*)(?:\.([0-9]+))?f/;
@@ -115,6 +118,8 @@ export type VirtualControlDisplay = {
     valueText: string;
     range: number;
     active: boolean;
+    optionCount: number;
+    optionIndex: number;
 };
 
 export function resolveVirtualControlDisplay(
@@ -127,14 +132,14 @@ export function resolveVirtualControlDisplay(
     const automatic = bool(control.automaticLabel, !custom);
     const fallback = custom || "UNASSIGNED";
     if (!binding || !str(binding.action) || str(binding.action) === "none") {
-        return { assigned: false, missing: false, label: fallback, context: "UNASSIGNED", valueText: "", range: 0, active: false };
+        return { assigned: false, missing: false, label: fallback, context: "UNASSIGNED", valueText: "", range: 0, active: false, optionCount: 0, optionIndex: -1 };
     }
     const action = str(binding.action);
     if (action === "setParameter") {
         const slot = chain.find((item) => str(item.id) === str(binding.slotId));
         const port = objects(obj(obj(slot).plugin).ports).find((item) => str(item.symbol) === str(binding.portSymbol));
         if (!slot || !port) {
-            return { assigned: false, missing: true, label: fallback, context: "MISSING TARGET", valueText: "", range: 0, active: false };
+            return { assigned: false, missing: true, label: fallback, context: "MISSING TARGET", valueText: "", range: 0, active: false, optionCount: 0, optionIndex: -1 };
         }
         const value = num(obj(obj(slot.state).controls)[str(binding.portSymbol)], num(port.default));
         const min = num(binding.min, num(port.min));
@@ -146,6 +151,10 @@ export function resolveVirtualControlDisplay(
         range = Math.min(1, Math.max(0, bool(binding.inverted) ? 1 - range : range));
         const parameter = str(port.name, str(binding.portSymbol));
         const effect = str(slot.name) || str(obj(slot.plugin).name, "Effect");
+        const options = arr(port.scalePoints).map(obj).sort((left, right) => num(left.value) - num(right.value));
+        const optionIndex = options.length > 0
+            ? options.reduce((best, item, index) => Math.abs(num(item.value) - value) < Math.abs(num(options[best].value) - value) ? index : best, 0)
+            : -1;
         return {
             assigned: true,
             missing: false,
@@ -153,18 +162,20 @@ export function resolveVirtualControlDisplay(
             context: effect,
             valueText: formatValue(value, port),
             range,
-            active: bool(port.toggled) && value > (num(port.min) + num(port.max, 1)) / 2
+            active: bool(port.toggled) && value > (num(port.min) + num(port.max, 1)) / 2,
+            optionCount: options.length,
+            optionIndex
         };
     }
     if (action === "toggleEffect") {
         const slot = chain.find((item) => str(item.id) === str(binding.slotId));
-        if (!slot) return { assigned: false, missing: true, label: fallback, context: "MISSING EFFECT", valueText: "", range: 0, active: false };
+        if (!slot) return { assigned: false, missing: true, label: fallback, context: "MISSING EFFECT", valueText: "", range: 0, active: false, optionCount: 0, optionIndex: -1 };
         const name = str(slot.name) || str(obj(slot.plugin).name, "Effect");
         const enabled = bool(slot.enabled, true);
-        return { assigned: true, missing: false, label: automatic ? name : fallback, context: "EFFECT", valueText: enabled ? "ON" : "BYPASSED", range: enabled ? 1 : 0, active: enabled };
+        return { assigned: true, missing: false, label: automatic ? name : fallback, context: "EFFECT", valueText: enabled ? "ON" : "BYPASSED", range: enabled ? 1 : 0, active: enabled, optionCount: 0, optionIndex: -1 };
     }
     const label = VIRTUAL_ACTION_LABELS[action] ?? action;
     const actionActive = (action === "bypassAll" && bool(state.bypassAll))
         || (action === "snapshotMode" && bool(state.snapshotMode));
-    return { assigned: true, missing: false, label: automatic ? label : fallback, context: "PI-MFX ACTION", valueText: actionActive ? "ON" : "", range: actionActive ? 1 : 0, active: actionActive };
+    return { assigned: true, missing: false, label: automatic ? label : fallback, context: "PI-MFX ACTION", valueText: actionActive ? "ON" : "", range: actionActive ? 1 : 0, active: actionActive, optionCount: 0, optionIndex: -1 };
 }

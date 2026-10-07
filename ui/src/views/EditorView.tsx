@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { controlValue, findBank, findPreset, useMeters, type EngineSnapshot } from "../api";
+import { controlValue, findBank, findPreset, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
@@ -11,6 +11,7 @@ import { NewPresetDialog } from "./NewPresetDialog";
 import { GainMeter } from "./GainMeter";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PerformanceControl, type PerformanceTile } from "./PerformanceControl";
+import { virtualControlPageId, virtualControlPages, virtualTargetCompatible } from "../virtualControls";
 
 type EditPage = "chain" | "controls" | "io";
 type PathBrowserKind = "model" | "ir";
@@ -35,7 +36,7 @@ const NOTE_DIVISIONS = [
 ];
 
 type BindTarget =
-    | { mode: "parameter"; slotId: string; portSymbol: string; name: string; min: number; max: number }
+    | { mode: "parameter"; slotId: string; portSymbol: string; name: string; min: number; max: number; port: JsonObject }
     | { mode: "bypass"; slotId: string; name: string };
 
 export function EditorView({
@@ -123,17 +124,23 @@ export function EditorView({
     const irs = objects(library.impulseResponses);
     const controller = obj(state.controller);
     const controls = objects(controller.controls);
+    const virtualConfig = obj(state.virtualControls);
+    const virtualPages = virtualControlPages(virtualConfig);
+    const virtualControls = objects(virtualConfig.controls);
     const parameterBindings = objects(obj(preset).parameterBindings);
-    const bindForParameter = (slotId: string, symbol: string) =>
-        parameterBindings.find((binding) =>
+    const bindingsForParameter = (slotId: string, symbol: string) =>
+        parameterBindings.filter((binding) =>
             str(binding.action) === "setParameter"
             && str(binding.slotId) === slotId
             && str(binding.portSymbol) === symbol);
+    const bindingsForBypass = (slotId: string) =>
+        parameterBindings.filter((binding) =>
+            str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
     const bindForBypass = (slotId: string) =>
         parameterBindings.find((binding) =>
             str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
 
-    const applyBind = (payload: JsonObject) => {
+    const applyBind = (payload: JsonObject, close = true) => {
         if (!str(payload.controlId)) {
             setBindTarget(null);
             return;
@@ -142,7 +149,9 @@ export function EditorView({
             ...payload,
             ownerBankId: str(obj(bank).id),
             ownerPresetId: sessionPresetId
-        })).then(() => setBindTarget(null));
+        })).then(() => {
+            if (close) setBindTarget(null);
+        });
     };
     const selectedIndex = chain.findIndex((slot) => str(slot.id) === str(obj(selected).id));
     const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
@@ -566,7 +575,8 @@ export function EditorView({
                                     portSymbol: str(port.symbol),
                                     name: str(port.name, str(port.symbol)),
                                     min: num(port.min, 0),
-                                    max: num(port.max, 1)
+                                    max: num(port.max, 1),
+                                    port
                                 })}
                             />
                         )}
@@ -725,19 +735,17 @@ export function EditorView({
             {bindTarget && createPortal(
                 <ParameterBindPopup
                     target={bindTarget}
-                    controls={controls}
+                    physicalControls={controls}
+                    virtualControls={virtualControls}
+                    virtualPages={virtualPages}
                     current={bindTarget.mode === "bypass"
-                        ? bindForBypass(bindTarget.slotId)
-                        : bindForParameter(bindTarget.slotId, bindTarget.portSymbol)}
+                        ? bindingsForBypass(bindTarget.slotId)
+                        : bindingsForParameter(bindTarget.slotId, bindTarget.portSymbol)}
                     onClose={() => setBindTarget(null)}
-                    onNone={() => applyBind({
-                        controlId: str(obj(
-                            bindTarget.mode === "bypass"
-                                ? bindForBypass(bindTarget.slotId)
-                                : bindForParameter(bindTarget.slotId, bindTarget.portSymbol)
-                        ).controlId),
+                    onNone={(controlId) => applyBind({
+                        controlId,
                         action: "none"
-                    })}
+                    }, false)}
                     onChoose={(controlId) => applyBind(bindTarget.mode === "bypass"
                         ? { controlId, action: "toggleEffect", slotId: bindTarget.slotId }
                         : {
@@ -747,19 +755,7 @@ export function EditorView({
                             portSymbol: bindTarget.portSymbol,
                             min: bindTarget.min,
                             max: bindTarget.max
-                        })}
-                    onReverse={() => {
-                        const current = bindTarget.mode === "bypass"
-                            ? bindForBypass(bindTarget.slotId)
-                            : bindForParameter(bindTarget.slotId, bindTarget.portSymbol);
-                        if (!current) {
-                            return;
-                        }
-                        applyBind({
-                            ...current,
-                            inverted: !bool(current.inverted)
-                        });
-                    }}
+                        }, false)}
                 />,
                 document.body
             )}
@@ -1481,6 +1477,7 @@ export function EffectControls({
                     const switchOffValue = twoOptionEnumeration ? num(orderedPoints[0]?.value, min) : min;
                     const switchOnValue = twoOptionEnumeration ? num(orderedPoints[1]?.value, max) : max;
                     const switchOn = Math.abs(value - switchOnValue) <= Math.abs(value - switchOffValue);
+                    const switchStateText = switchLike ? formatSwitchState(value, port) : "";
                     const apply = (next: number) => commitControl(port, next);
                     const editNumber = () => {
                         setSelectedControlSymbol(symbol);
@@ -1564,12 +1561,12 @@ export function EffectControls({
                                         ))}
                                     </select>
                                 )}
-                                {switchLike && !trigger && (
+                                {switchLike && !trigger && switchStateText && (
                                     <button type="button" className="control-value" onClick={() => {
                                         setSelectedControlSymbol(symbol);
                                         apply(switchOn ? switchOffValue : switchOnValue);
                                     }}>
-                                        {formatControl(value, port)}
+                                        {switchStateText}
                                     </button>
                                 )}
                                 {trigger && (
@@ -1579,7 +1576,6 @@ export function EffectControls({
                             {boundFor(symbol) && (
                                 <div className="control-bind-hint">
                                     {boundLabel(symbol)}
-                                    {bool(obj(boundFor(symbol)).inverted) ? " · REV" : ""}
                                 </div>
                             )}
                             {calibrationManaged && (
@@ -1618,16 +1614,20 @@ export function EffectControls({
                                 const tile: PerformanceTile = {
                                     id: `${slotId}:${symbol}`,
                                     switchLabel: name,
-                                    valueText: formatControl(value, port),
+                                    valueText: switchLike ? switchStateText : formatControl(value, port),
                                     role: "utility",
                                     lightState: switchLike && switchOn ? "active" : "inactive",
                                     active: switchLike ? switchOn : selectedControlSymbol === symbol,
                                     analog: !trigger && !switchLike,
                                     analogSource: name,
                                     analogFunction: str(plugin.name, "Effect"),
-                                    analogValue: formatControl(value, port),
+                                    analogValue: switchLike ? switchStateText : formatControl(value, port),
                                     assigned: !disabled,
                                     kind,
+                                    detentCount: kind === "encoder" ? orderedPoints.length : 0,
+                                    detentIndex: kind === "encoder" && orderedPoints.length > 0
+                                        ? orderedPoints.reduce((best, item, index) => Math.abs(num(item.value) - value) < Math.abs(num(orderedPoints[best].value) - value) ? index : best, 0)
+                                        : -1,
                                     value: Math.max(0, Math.min(1, normalized)),
                                     freeform: true,
                                     scrollFriendly: true,
@@ -1704,22 +1704,55 @@ export function EffectControls({
 
 function ParameterBindPopup({
     target,
-    controls,
+    physicalControls,
+    virtualControls,
+    virtualPages,
     current,
     onClose,
     onNone,
-    onChoose,
-    onReverse
+    onChoose
 }: {
     target: BindTarget;
-    controls: JsonObject[];
-    current?: JsonObject;
+    physicalControls: JsonObject[];
+    virtualControls: JsonObject[];
+    virtualPages: JsonObject[];
+    current: JsonObject[];
     onClose: () => void;
-    onNone: () => void;
+    onNone: (controlId: string) => void;
     onChoose: (controlId: string) => void;
-    onReverse: () => void;
 }) {
-    const boundId = str(obj(current).controlId);
+    const boundIds = new Set(current.map((binding) => str(binding.controlId)));
+    const compatible = (control: JsonObject, physical = false) => {
+        const rawKind = normalizeControlKind(str(control.kind, "momentary"));
+        const kind = physical && rawKind === "encoderPush" ? "momentary" : rawKind;
+        return target.mode === "bypass"
+            ? virtualTargetCompatible(kind, "toggleEffect")
+            : virtualTargetCompatible(kind, "setParameter", target.port);
+    };
+    const physicalChoices = physicalControls.filter((control) => compatible(control, true));
+    const virtualChoices = virtualControls.filter((control) => compatible(control));
+    const renderChoices = (title: string, choices: JsonObject[], virtual: boolean) => (
+        <section className="stack" style={{ gap: 5 }}>
+            <strong>{title}</strong>
+            {choices.map((control) => {
+                const id = str(control.id);
+                const assigned = boundIds.has(id);
+                const pageId = virtual ? virtualControlPageId(control, virtualPages) : "";
+                const page = virtualPages.find((item) => str(item.id) === pageId);
+                return (
+                    <div key={id} className="mfx-bind-choice-row">
+                        <button type="button"
+                            className={`mfx-overlay-option${assigned ? " selected" : ""}`}
+                            onClick={() => assigned ? onNone(id) : onChoose(id)}>
+                            {assigned ? "✓ " : ""}{str(control.label, id)} · {str(control.kind, "momentary")}
+                            {virtual ? ` · ${str(obj(page).name, "Page")}` : ""}
+                        </button>
+                    </div>
+                );
+            })}
+            {choices.length === 0 && <div className="muted">No compatible controls available.</div>}
+        </section>
+    );
     return (
         <div className="mfx-overlay" onClick={onClose}>
             <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
@@ -1727,46 +1760,10 @@ function ParameterBindPopup({
                     {target.mode === "bypass" ? `BIND BYPASS — ${target.name}` : `BIND — ${target.name}`}
                 </div>
                 <div className="muted" style={{ marginBottom: 10 }}>
-                    This assignment stays with the preset. Hardware Setup still handles bank, preset, bypass-all, tap and tuner.
+                    Bindings save immediately and stay with this preset. Select more than one control to assign both hardware and touchscreen controls.
                 </div>
-                <button
-                    type="button"
-                    className={`mfx-overlay-option${!boundId ? " selected" : ""}`}
-                    onClick={() => {
-                        if (boundId) {
-                            onNone();
-                        } else {
-                            onClose();
-                        }
-                    }}
-                >
-                    None
-                </button>
-                {controls.map((control) => {
-                    const id = str(control.id);
-                    return (
-                        <button
-                            key={id}
-                            type="button"
-                            className={`mfx-overlay-option${boundId === id ? " selected" : ""}`}
-                            onClick={() => onChoose(id)}
-                        >
-                            {str(control.label, id)} · {str(control.kind, "momentary")}
-                        </button>
-                    );
-                })}
-                {controls.length === 0 && (
-                    <div className="muted">Add controls in Settings → Hardware Setup first.</div>
-                )}
-                {current && (
-                    <button
-                        type="button"
-                        className={`mfx-overlay-option${bool(current.inverted) ? " selected" : ""}`}
-                        onClick={onReverse}
-                    >
-                        {bool(current.inverted) ? "Reverse on" : "Reverse"}
-                    </button>
-                )}
+                {renderChoices("VIRTUAL CONTROLS", virtualChoices, true)}
+                {renderChoices("PHYSICAL CONTROLS", physicalChoices, false)}
                 <div className="row" style={{ marginTop: 12 }}>
                     <button type="button" className="btn" onClick={onClose}>CLOSE</button>
                 </div>
@@ -1899,4 +1896,15 @@ function portValue(port: JsonObject, value: number): number {
     const min = num(port.min);
     const max = num(port.max, 1);
     return min * Math.pow(max / min, value);
+}
+
+function formatSwitchState(value: number, port: JsonObject): string {
+    const point = arr(port.scalePoints).filter(isObj).find((item) =>
+        approximatelyEqual(num(item.value), value));
+    if (!point) return "";
+    const label = str(point.label).trim();
+    if (!label) return "";
+    const numericLabel = Number(label);
+    if (Number.isFinite(numericLabel) && approximatelyEqual(numericLabel, num(point.value))) return "";
+    return label;
 }

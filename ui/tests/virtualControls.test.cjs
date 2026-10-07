@@ -25,6 +25,8 @@ assert.match(app, /SwipeSurface direction="up"[^]*goTo\("virtualControls"\)/,
     'Performance must swipe up to Virtual Controls');
 assert.match(app, /SwipeSurface direction="down"[^]*goTo\("performance"/,
     'Virtual Controls must swipe down to Performance');
+assert.match(app, /dragOffset[\s\S]*performance-swipe-track[\s\S]*has-peek/,
+    'performance and Virtual Controls must follow the finger during vertical navigation');
 assert.match(app, /onPointerDownCapture=\{begin\}[\s\S]*onPointerMoveCapture=\{move\}[\s\S]*onPointerUpCapture=\{finish\}/,
     'view navigation must see vertical swipes before preset and virtual-control gestures');
 assert.doesNotMatch(app, /"button, input, select, textarea, \[data-adjustable='true'\]/,
@@ -85,9 +87,23 @@ assert.match(editor, /pageId: activePageId/,
     'new controls must belong to the active page');
 assert.match(editor, /onEngage: \(\) => setSelectedId/,
     'momentary and latching controls must be selectable in the layout editor');
-assert.match(editor, /This removes the control and its bindings from every preset/);
+assert.match(editor, /bindings from every preset using the shared layout/);
 assert.match(editor, /ownerPresetId/,
     'bindings must be saved in their owning preset');
+assert.match(editor, /SHARED[\s\S]*CUSTOM PRESET[\s\S]*AUTO FROM EFFECTS/,
+    'each preset must be able to choose a shared, custom, or effect-generated surface');
+assert.match(editor, /REBUILD CONTROLS FROM EFFECTS\?[\s\S]*replaces this preset's Virtual Controls pages and bindings/,
+    'automatic generation must warn before replacing a preset surface');
+assert.match(editor, /for \(const slot of chain\)[\s\S]*generatedPages\.push[\s\S]*generatedBindings\.push/,
+    'automatic mode must build named effect pages and matching bindings');
+assert.match(presetEditor, /VIRTUAL CONTROLS[\s\S]*PHYSICAL CONTROLS/,
+    'effect settings must offer both virtual and physical binding targets');
+assert.match(presetEditor, /Bindings save immediately/,
+    'the binding chooser must explain its immediate-save behavior');
+assert.doesNotMatch(presetEditor, /onReverse|mfx-bind-reverse|REVERSE \{bool\(assignedBinding\.inverted\)/,
+    'the preset binding popup must leave physical direction to Hardware Setup');
+assert.match(editor, /\["pot", "slider", "encoder"\]\.includes\(kind\)[\s\S]*<span>Reverse<\/span>[\s\S]*REVERSED/,
+    'virtual analog controls must expose reversal in the Virtual Controls layout editor');
 assert.match(settings, /virtualControlProxy/,
     'continuous hardware controls must offer the selected-control proxy');
 assert.match(settings, /virtualControlProxyFine/,
@@ -112,18 +128,28 @@ assert.match(model, /json\.set\("pageId", pageId\)/,
     'each control must persist its page');
 assert.match(model, /json\.set\("pages", pageItems\)/,
     'named pages must persist with the layout');
+assert.match(model, /json\.set\("virtualControlSurface", virtualControlSurface\)/,
+    'preset-owned Virtual Controls surfaces must persist with the preset');
 assert.match(model, /Page 1/,
     'older layouts must receive a backward-compatible default page');
 assert.match(performanceControl, /tile\.kind === "momentary"[\s\S]*MultiFXFootswitchGraphic[\s\S]*tile\.kind === "latching"[\s\S]*MultiFXArcadeButtonGraphic/,
     'momentary and latching controls must use different hardware graphics');
 assert.match(performanceCss, /mfx-hardware-knob__detents/,
     'encoders must retain detents that distinguish them from pots');
+assert.match(performanceControl, /detentCount >= 2 && detentCount <= 12[\s\S]*mfx-hardware-knob__option-detents/,
+    'enumerated encoders must show one readable detent per option');
+assert.match(view, /scrollFriendly: analog[\s\S]*onPageSwipe: pages\.length > 1 && !analog/,
+    'virtual analog controls must adjust horizontally while reserving vertical movement for view navigation');
 assert.doesNotMatch(performanceControl, /mfx-hardware-knob__encoder-cap|>ENC<[/]?div/,
     'the encoder graphic must not contain an ENC badge');
 assert.match(performanceControl, /tile\.kind === "toggle"[\s\S]*ToggleSwitchGraphic/,
     'two-state LV2 parameters must have a dedicated toggle-switch graphic');
+assert.match(read(uiRoot, 'virtualControls.ts'), /if \(bool\(port\.toggled\)\) return ""/,
+    'virtual toggles without plugin-provided state names must rely on switch position instead of 0/1 text');
 assert.match(performanceControl, /touchAction: tile\.scrollFriendly \? "pan-y" : "none"/,
     'editor controls must allow vertical touch scrolling');
+assert.match(performanceControl, /onWheel=\{\(event\) => \{[\s\S]*if \(tile\.scrollFriendly\) return;[\s\S]*schedulePopoutClose\(\)/,
+    'the mouse wheel must scroll editor pages without opening a control popup');
 assert.match(performanceControl, /mfx-performance-switch-wrap[\s\S]*style=\{\{ touchAction: tile\.scrollFriendly \? "pan-y" : "none" \}\}/,
     'the switch wrapper must not block vertical scrolling from an LV2 toggle');
 assert.match(performanceControl, /if \(!activeDrag\.adjusted\)[\s\S]*revealPopout\(\)/,
@@ -148,6 +174,10 @@ assert.match(engine, /setEffectEnabled\(binding\.slotId, latchOn\(request\), err
     'virtual effect toggles must respect live-only requests');
 assert.match(engine, /sessionPresetDrafts_/,
     'temporary sound must be retained by the engine per preset');
+assert.match(engine, /effectiveVirtualControlsConfig\(\)[\s\S]*virtualControlSurface\["layout"\]/,
+    'runtime control lookup must follow the active preset surface');
+assert.match(engine, /sharedVirtualControls/,
+    'the layout editor must still receive the shared surface while a preset surface is active');
 assert.match(engine, /overlayPresetBind[\s\S]{0,180}effectiveActivePreset\(\)/,
     'hardware binding lookup must follow the active preset draft');
 assert.match(engine, /runVirtualControlProxy[\s\S]{0,220}effectiveActivePreset\(\)/,

@@ -33,6 +33,7 @@ export function VirtualControlsView({
     const fine = bool(state.virtualControlFine);
     const previousRevision = useRef(revision);
     const previousActiveId = useRef(activeId);
+    const pageByPreset = useRef(new Map<string, string>());
     const popoutTimer = useRef<number | null>(null);
     const [proxyPopoutId, setProxyPopoutId] = useState("");
     const [confirmSave, setConfirmSave] = useState(false);
@@ -60,10 +61,16 @@ export function VirtualControlsView({
     const pageControls = controls.filter((control) => virtualControlPageId(control, pages) === str(activePage?.id));
 
     useEffect(() => {
-        if (!pages.some((page) => str(page.id) === activePageId)) {
-            setActivePageId(str(pages[0]?.id, "page-1"));
-        }
-    }, [config.pages, activePageId]);
+        const remembered = pageByPreset.current.get(presetId);
+        const next = remembered && pages.some((page) => str(page.id) === remembered)
+            ? remembered
+            : str(pages[0]?.id, "page-1");
+        if (next !== activePageId) setActivePageId(next);
+    }, [presetId, config.pages]);
+
+    useEffect(() => {
+        if (presetId && activePageId) pageByPreset.current.set(presetId, activePageId);
+    }, [presetId, activePageId]);
 
     const showPage = (index: number) => {
         if (pages.length === 0) return;
@@ -155,8 +162,11 @@ export function VirtualControlsView({
             assigned: display.assigned,
             kind,
             orientation: str(control.orientation) === "horizontal" ? "horizontal" : "vertical",
+            detentCount: kind === "encoder" ? display.optionCount : 0,
+            detentIndex: kind === "encoder" ? display.optionIndex : -1,
             value: display.range,
             freeform: true,
+            scrollFriendly: analog,
             hardwarePopout: proxyPopoutId === id,
             rect: clampRect({
                 x: num(control.x, 0.08),
@@ -214,7 +224,7 @@ export function VirtualControlsView({
                     });
                 }
                 : undefined,
-            onPageSwipe: pages.length > 1
+            onPageSwipe: pages.length > 1 && !analog
                 ? (delta) => showPage(pageIndex + delta)
                 : undefined
         };

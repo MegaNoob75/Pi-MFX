@@ -57,6 +57,8 @@ export function VirtualControlsLayoutEditorView({
     onDirtyChange?: (dirty: boolean) => void;
 }) {
     const saved = obj(engine.state.virtualControls);
+    const sharedSaved = obj(engine.state.sharedVirtualControls);
+    const [surfaceMode, setSurfaceMode] = useState(() => str(engine.state.virtualControlsMode, "shared"));
     const [pages, setPages] = useState<JsonObject[]>(() => virtualControlPages(saved));
     const [controls, setControls] = useState<JsonObject[]>(() => {
         const initialPages = virtualControlPages(saved);
@@ -71,6 +73,7 @@ export function VirtualControlsLayoutEditorView({
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [deleteId, setDeleteId] = useState("");
     const [deletePageId, setDeletePageId] = useState("");
+    const [pendingSurfaceMode, setPendingSurfaceMode] = useState<"shared" | "custom" | "auto" | "">("");
     const [message, setMessage] = useState("");
     const stageRef = useRef<HTMLDivElement | null>(null);
     const drag = useRef<DragState | null>(null);
@@ -87,8 +90,33 @@ export function VirtualControlsLayoutEditorView({
     const selected = controls.find((control) => str(control.id) === selectedId);
     const kind = str(obj(selected).kind, "pot");
     const binding = virtualBindingFor(preset, selectedId);
+    const presetKey = `${str(obj(bank).id)}:${str(obj(preset).id)}`;
+    const previousPresetKey = useRef(presetKey);
+
+    useEffect(() => {
+        if (previousPresetKey.current === presetKey) return;
+        previousPresetKey.current = presetKey;
+        const nextSaved = obj(engine.state.virtualControls);
+        const nextPages = virtualControlPages(nextSaved);
+        const nextControls: JsonObject[] = objects(nextSaved.controls).map((control): JsonObject => ({
+            ...control, pageId: virtualControlPageId(control, nextPages)
+        }));
+        setSurfaceMode(str(engine.state.virtualControlsMode, "shared"));
+        setPages(nextPages);
+        setControls(nextControls);
+        setLayoutName(str(nextSaved.layoutName, "default"));
+        setActivePageId(str(nextPages[0]?.id, "page-1"));
+        setSelectedId(str(nextControls[0]?.id));
+        setDirty(false);
+        onDirtyChange?.(false);
+        setMessage("");
+    }, [presetKey, engine.state.virtualControls, engine.state.virtualControlsMode, onDirtyChange]);
 
     const markDirty = () => {
+        if (surfaceMode === "auto") {
+            setSurfaceMode("custom");
+            setMessage("This generated surface is now a custom preset layout. Save to keep your edits.");
+        }
         setDirty(true);
         onDirtyChange?.(true);
     };
@@ -190,12 +218,119 @@ export function VirtualControlsLayoutEditorView({
     const saveConfig = async (name = layoutName) => {
         const savedName = name.trim() || "default";
         await engine.client.request("virtual-controls/config", {
-            version: 2, layoutName: savedName, pages, controls, groups: []
+            version: 2, layoutName: savedName, pages, controls, groups: [],
+            ...(surfaceMode === "shared" ? {} : { scope: "preset", mode: "custom" })
         });
+        if (surfaceMode === "auto") setSurfaceMode("custom");
         setLayoutName(savedName);
         setDirty(false);
         onDirtyChange?.(false);
         setMessage(`Virtual Controls layout “${savedName}” saved.`);
+    };
+
+    const useSharedLayout = async () => {
+        await engine.client.request("virtual-controls/config", {
+            scope: "preset", mode: "shared", preserveBindings: true
+        });
+        const nextPages = virtualControlPages(sharedSaved);
+        const nextControls = objects(sharedSaved.controls);
+        setSurfaceMode("shared");
+        setPages(nextPages);
+        setControls(nextControls);
+        setActivePageId(str(nextPages[0]?.id, "page-1"));
+        setSelectedId(str(nextControls[0]?.id));
+        setDirty(false);
+        onDirtyChange?.(false);
+        setMessage("This preset now uses the shared Virtual Controls layout.");
+    };
+
+    const usePresetLayout = async () => {
+        await engine.client.request("virtual-controls/config", {
+            version: 2, layoutName, pages, controls, groups: [],
+            scope: "preset", mode: "custom", preserveBindings: true
+        });
+        setSurfaceMode("custom");
+        setDirty(false);
+        onDirtyChange?.(false);
+        setMessage("A custom copy of this layout now belongs to the current preset.");
+    };
+
+    const generateFromPreset = async () => {
+        const generatedPages: JsonObject[] = [];
+        const generatedControls: JsonObject[] = [];
+        const generatedBindings: JsonObject[] = [];
+        const perPage = 8;
+        for (const slot of chain) {
+            const slotId = str(slot.id);
+            const effectName = str(slot.name) || str(obj(slot.plugin).name, "Effect");
+            const ports = objects(obj(slot.plugin).ports).filter((port) =>
+                str(port.kind) === "control" && bool(port.input, true) && !bool(port.notOnGui));
+            const entries: Array<{ control: JsonObject; binding: JsonObject }> = [{
+                control: { id: `auto:${slotId}:bypass`, kind: "latching", label: `${effectName} Bypass`, automaticLabel: false },
+                binding: { action: "toggleEffect", slotId }
+            }, ...ports.map((port) => ({
+                control: {
+                    id: `auto:${slotId}:${str(port.symbol)}`,
+                    kind: bool(port.trigger) ? "momentary" : bool(port.toggled) ? "latching" : bool(port.enumerated) ? "encoder" : "pot",
+                    label: str(port.name, str(port.symbol)),
+                    automaticLabel: true
+                },
+                binding: {
+                    action: "setParameter", slotId, portSymbol: str(port.symbol),
+                    min: num(port.min, 0), max: num(port.max, 1)
+                }
+            }))];
+            for (let start = 0; start < entries.length; start += perPage) {
+                const chunk = entries.slice(start, start + perPage);
+                const part = Math.floor(start / perPage);
+                const pageId = `auto-page:${slotId}:${part}`;
+                generatedPages.push({ id: pageId, name: entries.length > perPage ? `${effectName} ${part + 1}` : effectName });
+                chunk.forEach((entry, index) => {
+                    const column = index % 4;
+                    const row = Math.floor(index / 4);
+                    generatedControls.push({
+                        ...entry.control, pageId,
+                        x: 0.025 + column * 0.245,
+                        y: 0.04 + row * 0.48,
+                        width: 0.215,
+                        height: 0.42,
+                        orientation: "vertical",
+                        appearance: {}
+                    });
+                    generatedBindings.push({ controlId: str(entry.control.id), ...entry.binding });
+                });
+            }
+        }
+        if (generatedPages.length === 0) generatedPages.push({ id: "auto-page:empty", name: "Empty Preset" });
+        await engine.client.request("virtual-controls/config", {
+            version: 2, layoutName: `${str(obj(preset).name, "Preset")} Auto`,
+            pages: generatedPages, controls: generatedControls, groups: [],
+            scope: "preset", mode: "auto"
+        });
+        for (const binding of generatedBindings) {
+            await engine.client.request("preset/bind", {
+                ...binding,
+                ownerBankId: str(obj(bank).id),
+                ownerPresetId: str(obj(preset).id)
+            });
+        }
+        setSurfaceMode("auto");
+        setPages(generatedPages);
+        setControls(generatedControls);
+        setLayoutName(`${str(obj(preset).name, "Preset")} Auto`);
+        setActivePageId(str(generatedPages[0]?.id));
+        setSelectedId(str(generatedControls[0]?.id));
+        setDirty(false);
+        onDirtyChange?.(false);
+        setMessage("Automatic pages generated from the current preset. Choose CUSTOM PRESET to rearrange them.");
+    };
+
+    const applySurfaceMode = async () => {
+        const next = pendingSurfaceMode;
+        setPendingSurfaceMode("");
+        if (next === "shared") await useSharedLayout();
+        else if (next === "custom") await usePresetLayout();
+        else if (next === "auto") await generateFromPreset();
     };
 
     const layoutFile = (name = layoutName) => JSON.stringify({
@@ -313,10 +448,14 @@ export function VirtualControlsLayoutEditorView({
     return (
         <div className="virtual-layout-editor">
             <div className="virtual-layout-toolbar">
+                <span className="virtual-controls-layout">{surfaceMode.toUpperCase()}</span>
+                <button type="button" className={`btn ${surfaceMode === "shared" ? "btn-active" : ""}`} onClick={() => surfaceMode !== "shared" && setPendingSurfaceMode("shared")}>SHARED</button>
+                <button type="button" className={`btn ${surfaceMode === "custom" ? "btn-active" : ""}`} onClick={() => surfaceMode !== "custom" && setPendingSurfaceMode("custom")}>CUSTOM PRESET</button>
+                <button type="button" className={`btn ${surfaceMode === "auto" ? "btn-active" : ""}`} onClick={() => setPendingSurfaceMode("auto")}>AUTO FROM EFFECTS</button>
                 <label className="field"><span>LAYOUT</span><input value={layoutName} onChange={(event) => { setLayoutName(event.target.value); markDirty(); }} /></label>
                 <button type="button" className="btn" onClick={() => setPicker("load")}>LOAD</button>
                 <button type="button" className="btn" onClick={() => setPicker("save")}>SAVE AS</button>
-                <button type="button" className="btn btn-accent" disabled={!dirty} onClick={() => void run(() => saveConfig())}>SAVE LAYOUT</button>
+                <button type="button" className="btn btn-accent" disabled={!dirty || surfaceMode === "auto"} onClick={() => void run(() => saveConfig())}>{surfaceMode === "shared" ? "SAVE SHARED LAYOUT" : "SAVE PRESET LAYOUT"}</button>
             </div>
             {message && <div className="muted virtual-layout-message">{message}</div>}
             <div className="virtual-layout-body">
@@ -372,7 +511,7 @@ export function VirtualControlsLayoutEditorView({
                                     const port = compatiblePorts.find((item) => str(item.symbol) === event.target.value);
                                     if (port) bind({ ...binding, action: "setParameter", portSymbol: str(port.symbol), min: num(port.min), max: num(port.max, 1) });
                                 }}>{compatiblePorts.map((port) => <option key={str(port.symbol)} value={str(port.symbol)}>{str(port.name, str(port.symbol))}</option>)}</select></label>
-                                <button type="button" className={`btn ${bool(obj(binding).inverted) ? "btn-active" : ""}`} onClick={() => bind({ ...binding, action: "setParameter", inverted: !bool(obj(binding).inverted) })}>{bool(obj(binding).inverted) ? "REVERSED" : "NORMAL"}</button>
+                                {["pot", "slider", "encoder"].includes(kind) && <label className="field"><span>Reverse</span><button type="button" className={`btn ${bool(obj(binding).inverted) ? "btn-active" : ""}`} onClick={() => bind({ ...binding, action: "setParameter", inverted: !bool(obj(binding).inverted) })}>{bool(obj(binding).inverted) ? "REVERSED" : "NORMAL"}</button></label>}
                             </>}
                             {str(obj(binding).action) === "selectPreset" && <label className="field"><span>Target preset</span><select value={`${str(obj(binding).bankId)}:${str(obj(binding).presetId)}`} onChange={(event) => {
                                 const choice = presetChoices.find((item) => `${item.bankId}:${item.presetId}` === event.target.value);
@@ -408,11 +547,21 @@ export function VirtualControlsLayoutEditorView({
                 </div>
             </div>
             {picker && <LibraryJsonPicker engine={engine} run={run} kind="virtuallayout" mode={picker} title={picker === "load" ? "LOAD VIRTUAL CONTROLS LAYOUT" : "SAVE VIRTUAL CONTROLS LAYOUT AS"} defaultName={layoutName || "default"} contents={picker === "save" ? (name) => layoutFile(name) : undefined} onClose={() => setPicker(null)} onLoad={loadLayout} onSaved={(path) => void run(() => saveConfig(layoutNameFromPath(path, layoutName)))} />}
-            {deleteId && <ConfirmDialog title="DELETE VIRTUAL CONTROL?" body="This removes the control and its bindings from every preset." confirmLabel="DELETE" danger onCancel={() => setDeleteId("")} onConfirm={() => {
+            {deleteId && <ConfirmDialog title="DELETE VIRTUAL CONTROL?" body={surfaceMode === "shared" ? "This removes the control and its bindings from every preset using the shared layout." : "This removes the control and its binding from this preset."} confirmLabel="DELETE" danger onCancel={() => setDeleteId("")} onConfirm={() => {
                 const next = controls.filter((control) => str(control.id) !== deleteId);
                 setControls(next); setSelectedId(str(next.find((control) => virtualControlPageId(control, pages) === activePageId)?.id)); setDeleteId(""); markDirty();
             }} />}
-            {deletePageId && <ConfirmDialog title="DELETE PAGE?" body="This removes the page, all controls on it, and their preset bindings." confirmLabel="DELETE PAGE" danger onCancel={() => setDeletePageId("")} onConfirm={() => removePage(deletePageId)} />}
+            {deletePageId && <ConfirmDialog title="DELETE PAGE?" body={surfaceMode === "shared" ? "This removes the page, its controls, and their bindings from every preset using the shared layout." : "This removes the page, its controls, and their bindings from this preset."} confirmLabel="DELETE PAGE" danger onCancel={() => setDeletePageId("")} onConfirm={() => removePage(deletePageId)} />}
+            {pendingSurfaceMode && <ConfirmDialog
+                title={pendingSurfaceMode === "auto" ? "REBUILD CONTROLS FROM EFFECTS?" : "CHANGE VIRTUAL CONTROLS LAYOUT?"}
+                body={pendingSurfaceMode === "auto"
+                    ? `This replaces this preset's Virtual Controls pages and bindings with controls generated from its current effects.${dirty ? " Your unsaved layout edits will be discarded." : ""}`
+                    : `This changes which Virtual Controls layout this preset uses.${dirty ? " Your unsaved layout edits will be discarded." : " Existing compatible bindings will be kept."}`}
+                confirmLabel={pendingSurfaceMode === "auto" ? "REBUILD" : "CHANGE LAYOUT"}
+                danger={pendingSurfaceMode === "auto"}
+                onCancel={() => setPendingSurfaceMode("")}
+                onConfirm={() => void run(applySurfaceMode)}
+            />}
         </div>
     );
 }
