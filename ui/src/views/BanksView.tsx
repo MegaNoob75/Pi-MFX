@@ -1,16 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
-import { dismissOnScreenKeyboard } from "../keyboard/ask";
+import { askText } from "../keyboard/ask";
 import { arr, obj, str, objects, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
 import { LibraryJsonPicker } from "./LibraryManager";
 import { NewPresetDialog } from "./NewPresetDialog";
-
-type EditState = {
-    mode: "newBank" | "renameBank" | "renamePreset" | "cloneBank";
-    title: string;
-    value: string;
-} | null;
 
 type PresetDrag = {
     presetId: string;
@@ -33,7 +27,6 @@ export function BanksView({
     const presets = objects(obj(activeBank).presets);
     const [focused, setFocused] = useState<"banks" | "presets">("presets");
     const [cursorPreset, setCursorPreset] = useState("");
-    const [edit, setEdit] = useState<EditState>(null);
     const [confirm, setConfirm] = useState<"bank" | "preset" | null>(null);
     const [busy, setBusy] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
@@ -68,7 +61,7 @@ export function BanksView({
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
-            if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || edit || confirm)) {
+            if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || confirm)) {
                 return;
             }
             if (!["ArrowDown", "ArrowUp", "Enter", "Delete"].includes(event.key)) {
@@ -100,7 +93,7 @@ export function BanksView({
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [banks, bankIndex, presets, presetIndex, focused, selectedPresetId, bankId, edit, confirm, busy]);
+    }, [banks, bankIndex, presets, presetIndex, focused, selectedPresetId, bankId, confirm, busy]);
 
     const mutate = (work: () => Promise<unknown>) => {
         if (busy) {
@@ -143,29 +136,55 @@ export function BanksView({
         return candidate;
     };
 
-    const submitEdit = () => {
-        if (!edit) {
+    const renameBank = () => {
+        if (!activeBank || busy) {
             return;
         }
-        const name = edit.value.trim();
-        if (!name) {
+        void askText("Rename Bank", str(obj(activeBank).name)).then((value) => {
+            const name = value?.trim();
+            if (name) {
+                mutate(() => client.request("bank/rename", { bankId, name }));
+            }
+        });
+    };
+
+    const createBank = () => {
+        void askText("New Bank").then((value) => {
+            const name = value?.trim();
+            if (name) {
+                mutate(() => client.request("bank/create", { name }));
+            }
+        });
+    };
+
+    const renamePreset = () => {
+        const preset = obj(presets.find((item) => str(item.id) === selectedPresetId) ?? activePreset);
+        if (!selectedPresetId || busy) {
             return;
         }
-        if (edit.mode === "newBank") {
-            mutate(() => client.request("bank/create", { name }));
-        } else if (edit.mode === "renameBank" && activeBank) {
-            mutate(() => client.request("bank/rename", { bankId, name }));
-        } else if (edit.mode === "renamePreset" && selectedPresetId) {
-            mutate(() => client.request("preset/rename", { presetId: selectedPresetId, name }));
-        } else if (edit.mode === "cloneBank" && activeBank) {
-            mutate(async () => {
-                const exported = await client.request("bank/export", { bankId });
-                await client.request("bank/import", {
-                    bank: { ...obj(exported.bank), name, format: "pimfx-bank", formatVersion: 1 }
+        void askText("Rename Preset", str(preset.name)).then((value) => {
+            const name = value?.trim();
+            if (name) {
+                mutate(() => client.request("preset/rename", { presetId: selectedPresetId, name }));
+            }
+        });
+    };
+
+    const cloneBank = () => {
+        if (!activeBank || busy) {
+            return;
+        }
+        void askText("Clone Bank", defaultCloneName()).then((value) => {
+            const name = value?.trim();
+            if (name) {
+                mutate(async () => {
+                    const exported = await client.request("bank/export", { bankId });
+                    await client.request("bank/import", {
+                        bank: { ...obj(exported.bank), name, format: "pimfx-bank", formatVersion: 1 }
+                    });
                 });
-            });
-        }
-        setEdit(null);
+            }
+        });
     };
 
     const beginPresetDrag = (event: React.PointerEvent<HTMLElement>, preset: JsonObject, from: number) => {
@@ -241,17 +260,13 @@ export function BanksView({
                 onPointerDown={() => focusPane("banks")}>
                 <div className="split-pane-title">BANKS</div>
                 <div className="split-tools">
-                    <button type="button" className="btn" disabled={!activeBank || busy} onClick={() => {
-                        setEdit({ mode: "cloneBank", title: "Clone Bank", value: defaultCloneName() });
-                    }}>CLONE</button>
+                    <button type="button" className="btn" disabled={!activeBank || busy} onClick={cloneBank}>CLONE</button>
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={saveBankToPi}>SAVE</button>
                     <button type="button" className="btn" disabled={busy} onClick={() => setPicker("load")}>LOAD</button>
                 </div>
                 <div className="split-toolbar">
-                    <button type="button" className="btn" disabled={busy} onClick={() => setEdit({ mode: "newBank", title: "New Bank", value: "" })}>NEW</button>
-                    <button type="button" className="btn" disabled={!activeBank || busy} onClick={() => {
-                        setEdit({ mode: "renameBank", title: "Rename Bank", value: str(obj(activeBank).name) });
-                    }}>RENAME</button>
+                    <button type="button" className="btn" disabled={busy} onClick={createBank}>NEW</button>
+                    <button type="button" className="btn" disabled={!activeBank || busy} onClick={renameBank}>RENAME</button>
                     <button type="button" className="btn" disabled={bankIndex <= 0 || busy} onClick={() => {
                         mutate(() => client.request("bank/reorder", { bankId, index: bankIndex - 1 }));
                     }}>↑</button>
@@ -281,9 +296,7 @@ export function BanksView({
                 onPointerDown={() => focusPane("presets")}>
                 <div className="split-pane-title">PRESETS</div>
                 <div className="split-toolbar">
-                    <button type="button" className="btn" disabled={!activePreset || busy} onClick={() => {
-                        setEdit({ mode: "renamePreset", title: "Rename Preset", value: str(obj(presets.find((item) => str(item.id) === selectedPresetId) ?? activePreset).name) });
-                    }}>RENAME</button>
+                    <button type="button" className="btn" disabled={!activePreset || busy} onClick={renamePreset}>RENAME</button>
                     <button type="button" className="btn" disabled={presetIndex <= 0 || busy} onClick={() => {
                         mutate(() => client.request("preset/reorder", { presetId: selectedPresetId, index: presetIndex - 1 }));
                     }}>↑</button>
@@ -333,46 +346,6 @@ export function BanksView({
                 >
                     <span className="split-row-handle">☰</span>
                     <MarqueeText text={presetDrag.name} align="left" fontWeight={800} />
-                </div>
-            )}
-
-            {edit && (
-                <div className="mfx-overlay" onClick={() => {
-                    if (!busy) {
-                        dismissOnScreenKeyboard();
-                        setEdit(null);
-                    }
-                }}>
-                    <div className="mfx-overlay-card" onClick={(event) => event.stopPropagation()}>
-                        <div className="mfx-overlay-title">{edit.title}</div>
-                        {edit.mode === "cloneBank" && (
-                            <div className="muted">Copy this bank with its presets and Performance switch assignments.</div>
-                        )}
-                        <input
-                            className="input"
-                            value={edit.value}
-                            disabled={busy}
-                            onChange={(event) => setEdit({ ...edit, value: event.target.value })}
-                            onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                    submitEdit();
-                                }
-                                if (event.key === "Escape") {
-                                    dismissOnScreenKeyboard();
-                                    setEdit(null);
-                                }
-                            }}
-                        />
-                        <div className="row" style={{ justifyContent: "flex-end" }}>
-                            <button type="button" className="btn" disabled={busy} onClick={() => {
-                                dismissOnScreenKeyboard();
-                                setEdit(null);
-                            }}>CANCEL</button>
-                            <button type="button" className="btn btn-accent" disabled={busy} onClick={submitEdit}>
-                                {edit.mode === "cloneBank" ? (busy ? "CLONING..." : "CLONE") : "SAVE"}
-                            </button>
-                        </div>
-                    </div>
                 </div>
             )}
 
