@@ -6,6 +6,24 @@
 
 namespace pimfx {
 
+namespace {
+
+bool validPresetBindingAction(const std::string& action) {
+    static const std::vector<std::string> actions = {
+        "setParameter", "toggleEffect", "selectPreset", "selectSnapshot", "reloadPreset",
+        "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll",
+        "tapTempo", "tuner", "backingPlayPause", "backingStop", "backingPrevious",
+        "backingNext", "backingView", "looperRecord", "looperToggle", "looperPlay",
+        "looperPlayStop", "looperOverdub", "looperStop", "looperRestart", "looperMute",
+        "looperUndo", "looperRedo", "looperView", "recorderToggle", "recorderStop",
+        "recorderView", "drumToggle", "drumFill", "drumVariationNext",
+        "drumVariationPrevious", "drumPatternNext", "drumPatternPrevious", "drumView"
+    };
+    return std::find(actions.begin(), actions.end(), action) != actions.end();
+}
+
+} // namespace
+
 std::string newId(const std::string& prefix) {
     const std::vector<uint8_t> bytes = randomBytes(6);
     return prefix + "-" + toHex(bytes);
@@ -87,6 +105,10 @@ Json ParameterBinding::toJson() const {
     if (!portSymbol.empty()) {
         json.set("portSymbol", portSymbol);
     }
+    if (!bankId.empty()) json.set("bankId", bankId);
+    if (!presetId.empty()) json.set("presetId", presetId);
+    if (!snapshotId.empty()) json.set("snapshotId", snapshotId);
+    if (snapshotSlot >= 0) json.set("snapshotSlot", snapshotSlot);
     json.set("min", minimum);
     json.set("max", maximum);
     json.set("inverted", inverted);
@@ -99,6 +121,10 @@ ParameterBinding ParameterBinding::fromJson(const Json& json) {
     binding.action = json["action"].asString("none");
     binding.slotId = json["slotId"].asString();
     binding.portSymbol = json["portSymbol"].asString();
+    binding.bankId = json["bankId"].asString();
+    binding.presetId = json["presetId"].asString();
+    binding.snapshotId = json["snapshotId"].asString();
+    binding.snapshotSlot = json["snapshotSlot"].asInt(-1);
     binding.minimum = json["min"].asFloat(0.0f);
     binding.maximum = json["max"].asFloat(1.0f);
     binding.inverted = json["inverted"].asBool(false);
@@ -149,6 +175,9 @@ Json Preset::toJson() const {
         bindingJson.push(binding.toJson());
     }
     json.set("parameterBindings", bindingJson);
+    if (virtualControlSurface.isObject() && !virtualControlSurface.members().empty()) {
+        json.set("virtualControlSurface", virtualControlSurface);
+    }
     if (community.isObject() && !community.members().empty()) {
         json.set("community", community);
     }
@@ -184,12 +213,13 @@ Preset Preset::fromJson(const Json& json) {
     const Json& bindingJson = json["parameterBindings"];
     for (size_t i = 0; i < bindingJson.size(); ++i) {
         ParameterBinding binding = ParameterBinding::fromJson(bindingJson.at(i));
-        if (!binding.controlId.empty()
-            && (binding.action == "setParameter" || binding.action == "toggleEffect")) {
+        if (!binding.controlId.empty() && validPresetBindingAction(binding.action)) {
             preset.parameterBindings.push_back(std::move(binding));
         }
     }
     preset.community = json["community"].isObject() ? json["community"] : Json::object();
+    preset.virtualControlSurface = json["virtualControlSurface"].isObject()
+        ? json["virtualControlSurface"] : Json::object();
     preset.activeSnapshot = json["activeSnapshot"].asInt(-1);
     preset.rememberedSnapshotSlot = json["rememberedSnapshotSlot"].asInt(-1);
     preset.rememberedSnapshotEnabled = json["rememberedSnapshotEnabled"].asBool(false);
@@ -426,6 +456,94 @@ ControllerConfig ControllerConfig::fromJson(const Json& json) {
     if (json["presetAssignments"].isObject()) {
         config.presetAssignments = json["presetAssignments"];
     }
+    return config;
+}
+
+Json VirtualControl::toJson() const {
+    Json json = Json::object();
+    json.set("id", id);
+    json.set("pageId", pageId);
+    json.set("label", label);
+    json.set("automaticLabel", automaticLabel);
+    json.set("kind", controlKindToString(kind));
+    json.set("x", x);
+    json.set("y", y);
+    json.set("width", width);
+    json.set("height", height);
+    json.set("orientation", orientation);
+    json.set("appearance", appearance.isObject() ? appearance : Json::object());
+    return json;
+}
+
+VirtualControl VirtualControl::fromJson(const Json& json) {
+    VirtualControl control;
+    control.id = json["id"].asString(newId("vctl"));
+    control.pageId = json["pageId"].asString("page-1");
+    control.label = json["label"].asString();
+    control.automaticLabel = json["automaticLabel"].asBool(control.label.empty());
+    control.kind = controlKindFromString(json["kind"].asString("pot"));
+    control.x = std::max(0.0, std::min(1.0, json["x"].asDouble(0.08)));
+    control.y = std::max(0.0, std::min(1.0, json["y"].asDouble(0.12)));
+    control.width = std::max(0.06, std::min(1.0, json["width"].asDouble(0.18)));
+    control.height = std::max(0.08, std::min(1.0, json["height"].asDouble(0.28)));
+    control.x = std::min(control.x, 1.0 - control.width);
+    control.y = std::min(control.y, 1.0 - control.height);
+    control.orientation = json["orientation"].asString("vertical") == "horizontal"
+        ? "horizontal" : "vertical";
+    control.appearance = json["appearance"].isObject() ? json["appearance"] : Json::object();
+    return control;
+}
+
+Json VirtualControlPage::toJson() const {
+    Json json = Json::object();
+    json.set("id", id);
+    json.set("name", name);
+    return json;
+}
+
+VirtualControlPage VirtualControlPage::fromJson(const Json& json, int index) {
+    VirtualControlPage page;
+    page.id = json["id"].asString("page-" + std::to_string(index + 1));
+    page.name = json["name"].asString("Page " + std::to_string(index + 1));
+    if (page.name.empty()) page.name = "Page " + std::to_string(index + 1);
+    return page;
+}
+
+Json VirtualControlsConfig::toJson() const {
+    Json json = Json::object();
+    json.set("version", version);
+    json.set("layoutName", layoutName);
+    Json pageItems = Json::array();
+    for (const VirtualControlPage& page : pages) pageItems.push(page.toJson());
+    json.set("pages", pageItems);
+    Json items = Json::array();
+    for (const VirtualControl& control : controls) items.push(control.toJson());
+    json.set("controls", items);
+    json.set("groups", groups.isArray() ? groups : Json::array());
+    return json;
+}
+
+VirtualControlsConfig VirtualControlsConfig::fromJson(const Json& json) {
+    VirtualControlsConfig config;
+    config.version = std::max(2, json["version"].asInt(1));
+    config.layoutName = json["layoutName"].asString("default");
+    const Json& pageItems = json["pages"];
+    for (size_t i = 0; i < pageItems.size() && i < 32; ++i) {
+        VirtualControlPage page = VirtualControlPage::fromJson(pageItems.at(i), static_cast<int>(i));
+        const bool duplicate = std::any_of(config.pages.begin(), config.pages.end(),
+            [&](const VirtualControlPage& existing) { return existing.id == page.id; });
+        if (!page.id.empty() && !duplicate) config.pages.push_back(std::move(page));
+    }
+    if (config.pages.empty()) config.pages.push_back({"page-1", "Page 1"});
+    const Json& items = json["controls"];
+    for (size_t i = 0; i < items.size() && i < 512; ++i) {
+        VirtualControl control = VirtualControl::fromJson(items.at(i));
+        const bool pageExists = std::any_of(config.pages.begin(), config.pages.end(),
+            [&](const VirtualControlPage& page) { return page.id == control.pageId; });
+        if (!pageExists) control.pageId = config.pages.front().id;
+        if (!control.id.empty()) config.controls.push_back(std::move(control));
+    }
+    config.groups = json["groups"].isArray() ? json["groups"] : Json::array();
     return config;
 }
 
@@ -739,13 +857,14 @@ LooperSettings LooperSettings::fromJson(const Json& json) {
 
 Json Settings::toJson() const {
     Json json = Json::object();
-    json.set("version", 3);
+    json.set("version", 4);
     json.set("audio", audioSettingsToJson(audio));
     json.set("ui", ui.toJson());
     json.set("system", system.toJson());
     json.set("transport", transport.toJson());
     json.set("looper", looper.toJson());
     json.set("controller", controller.toJson());
+    json.set("virtualControls", virtualControls.toJson());
     json.set("activeBankId", activeBankId);
     json.set("activePresetId", activePresetId);
     return json;
@@ -759,6 +878,7 @@ Settings Settings::fromJson(const Json& json) {
     settings.transport = TransportSettings::fromJson(json["transport"]);
     settings.looper = LooperSettings::fromJson(json["looper"]);
     settings.controller = ControllerConfig::fromJson(json["controller"]);
+    settings.virtualControls = VirtualControlsConfig::fromJson(json["virtualControls"]);
     settings.activeBankId = json["activeBankId"].asString();
     settings.activePresetId = json["activePresetId"].asString();
     return settings;

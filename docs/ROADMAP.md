@@ -1,26 +1,25 @@
 # Pi-MFX feature roadmap
 
 Pi-MFX has moved from a pedalboard-only UI to a performance, practice, and
-recording workstation. Milestones 0-5 are implemented in the current
-`workstation` tree. They remain feature-gated where appropriate, and native
-Raspberry Pi validation is tracked separately from implementation.
+recording workstation. Milestones 0-5 are complete and merged into `dev`,
+which is the active development branch.
 
-| Milestone | Current repository state | Remaining release gate |
-| --- | --- | --- |
-| 0 · Shared transport | Implemented | Pi tempo-aware LV2, touch, encoder, CPU, and XRun validation |
-| 1 · Backing tracks | Implemented | Pi format matrix and sustained playback/XRun validation |
-| 2 · Stereo looper | Implemented | Pi audio, quantization, save/load, and controller validation |
-| 3 · Multitrack recorder | Implemented | Pi storage, recovery, export, long-take, and XRun validation |
-| 4 · Drum machine | Implemented | Pi sample/kit workflow, timing, controller, CPU, and XRun validation |
-| 5 · Community Presets | Implemented | Pi install/TONE3000/offline/touch validation and catalog operations |
-| 6 · External backing sources | Not started | Provider-supported integration and licensing design |
+| Milestone | Current repository state |
+| --- | --- |
+| 0 · Shared transport | Complete in `dev` |
+| 1 · Backing tracks | Complete in `dev` |
+| 2 · Stereo looper | Complete in `dev` |
+| 3 · Multitrack recorder | Complete in `dev` |
+| 4 · Drum machine | Complete in `dev` |
+| 5 · Community Presets | Complete in `dev` |
+| 6 · External backing sources | Not started; requires provider-supported integration and licensing design |
 
 ## Development and release strategy
 
-- `main` is the release branch, `dev` is the pedalboard development line, and
-  `workstation` carries the integrated workstation feature set.
-- Milestone branches are integrated into `workstation` one at a time after
-  focused validation; `dev` and `main` move only through deliberate promotion.
+- `main` is the release branch and `dev` is the active development branch.
+- Milestone branches were temporary development branches. Completed milestones
+  0-5 have been merged into `dev`; new work continues from `dev` unless a
+  short-lived feature branch is useful.
 - New file formats stay versioned and backward compatible.
 - File I/O, network access, decoding, persistence, waveform generation, export,
   and resampling stay outside `Engine::processAudio()`.
@@ -38,9 +37,6 @@ Implemented:
 - LV2 time-position delivery for compatible tempo-aware effects
 - One clock for backing, looper, recorder, and drums
 
-Open validation: confirm compatible LV2 plugins track tempo on the Pi without
-audio interruptions and exercise all transport hardware/LED states.
-
 ## Milestone 1: backing-track playback
 
 Implemented:
@@ -50,8 +46,6 @@ Implemented:
 - Named set lists with reorderable entries and Previous/Next hardware actions
 - Independent post-chain stereo routing and bounded decode buffers
 - File management, rename/move/delete repair, and underrun reporting
-
-Open validation is listed in [MILESTONE_1.md](MILESTONE_1.md).
 
 ## Milestone 2: stereo looper
 
@@ -63,9 +57,6 @@ Implemented:
 - Count-in, loop level, overdub feedback, waveform, save/export, and library
 - Hardware actions and performance-widget states
 
-Open validation: Pi audio timing, long loops, quantized boundaries, controller
-LED states, save/load/export, CPU load, and XRuns.
-
 ## Milestone 3: multitrack recorder
 
 Implemented:
@@ -76,9 +67,6 @@ Implemented:
 - Timeline editing, recovery metadata, stem export, and stereo mix export
 - Remaining-storage and write-status reporting
 
-Open validation: sustained multitrack writes, recovery after interrupted takes,
-large exports, storage exhaustion behavior, controller actions, CPU, and XRuns.
-
 ## Milestone 4: drum machine
 
 Implemented:
@@ -87,9 +75,6 @@ Implemented:
 - 16/32/64-step patterns with velocity, accents, swing, and humanization
 - Fills, four variations, song-section chains, count-in, and transport sync
 - Recorder/master routing plus hardware actions
-
-Open validation: Pi sample import/preview, kit changes, timing under load,
-pattern/song persistence, physical controls, CPU, and XRuns.
 
 Generated bass/keyboard accompaniment, intros/endings, and a full chord-chart
 arranger remain future work.

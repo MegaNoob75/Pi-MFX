@@ -11,8 +11,18 @@ const router = fs.readFileSync(path.join(__dirname, '../../engine/src/control/Ap
 const installer = fs.readFileSync(path.join(__dirname, '../../scripts/pimfx.sh'), 'utf8');
 
 assert.match(view, /prompt: "select_tone"/, 'Model Library must launch the hosted Select flow');
-assert.match(view, /architecture: "2"/,
+assert.match(view, /listToneModels\(toneId, "2"\)/,
     'hosted browsing must request NAM A2 models supported by the PiPedal TooB bundle');
+assert.match(view, /for \(let page = 1; page <= 20; page \+= 1\)[\s\S]*page_size: pageSize[\s\S]*listed\.length < pageSize/,
+    'large TONE3000 packs must load every available results page');
+assert.match(view, /function modelAliases[\s\S]*model_id[\s\S]*split\("\?"\)\[0\][\s\S]*function uniqueModels/,
+    'overlapping TONE3000 responses must deduplicate alternate IDs and temporary signed URLs');
+assert.match(view, /responseIndex === 1 && !modelIsIr\(tone, model\)/,
+    'the unfiltered fallback request must add cabinet IRs without reintroducing older NAM architectures');
+assert.match(view, /replace\(\/\\\.\(nam\|wav\|flac\|aif\|aiff\)\$\/i/,
+    'on-device matching must preserve dots that are part of amp and model names');
+assert.match(view, /const uniqueSelected = uniqueModels\(selected\)[\s\S]*items = resolved\.map/,
+    'the final download job must deduplicate its selected models defensively');
 assert.match(view, /menubar: "true"/, 'hosted browsing must provide navigation and close controls');
 assert.match(view, /preview: "true"/, 'hosted browsing must enable TONE3000 previews');
 assert.match(view, /redirectUri: thisPageRedirect\(\)/,
@@ -20,6 +30,8 @@ assert.match(view, /redirectUri: thisPageRedirect\(\)/,
 assert.match(view, /params\.get\("tone_id"\)/, 'the OAuth callback must retain the selected tone id');
 assert.match(view, /tone3000\/tone/, 'Pi-MFX must fetch the selected tone after return');
 assert.match(view, /tone3000\/models/, 'Pi-MFX must fetch selectable model files after return');
+assert.match(view, /tone3000\/installed/,
+    'the selection dialog must load stable TONE3000 identities from the local library');
 assert.match(view, /LibraryFileManager[\s\S]*kinds=\{\["model", "ir"\]\}/,
     'the local Model Library must prioritize NAM and IR files');
 assert.match(view, /LibraryFolderPicker[\s\S]*kinds=\{\["model", "ir"\]\}/,
@@ -30,7 +42,7 @@ assert.doesNotMatch(view, /tone3000\/tones|tone3000\/users|IntersectionObserver/
     'Pi-MFX must not recreate the hosted catalog or creator search');
 assert.doesNotMatch(view, /aidax|AIDA-X/i, 'AIDA-X must stay outside the TONE3000 workflow');
 assert.match(library, /kinds\?: LibraryKind\[\]/, 'the shared file manager must support a focused set of roots');
-assert.match(library, /<LibraryBrowser key=\{kind\} engine=\{engine\} run=\{run\} kind=\{kind\} \/>/,
+assert.match(library, /<LibraryBrowser key=\{kind\} engine=\{engine\} run=\{run\} kind=\{kind\}/,
     'switching between NAM and IR roots must remount the browser so stale files cannot remain visible');
 assert.match(library, /safeLibraryFolderName[\s\S]*library\/mkdir[\s\S]*onPick\(target, activeKind\)/,
     'the folder picker must safely create a tone-named folder before downloading into it');
@@ -40,6 +52,10 @@ assert.match(router, /library\/delete-impact[\s\S]*jsonReferencesLibraryTarget[\
     'the engine must report Community Presets that reference a deleted library target');
 assert.match(client, /"menubar", "preview"/, 'the backend must forward hosted browser options');
 assert.match(client, /pendingRedirectUri_/, 'the token exchange must reuse the initiating browser callback');
+assert.match(client, /for \(const char\* knownExtension[\s\S]*"\.nam"[\s\S]*"\.aiff"/,
+    'download naming must replace only recognized model and audio file extensions');
+assert.doesNotMatch(client, /find_last_of\('\.'\)/,
+    'dots inside amp and model names must not be mistaken for file extensions');
 assert.match(installer, /squeekboard[^\n]*&/, 'the kiosk must provide a keyboard on the hosted page');
 assert.doesNotMatch(installer, /purge_squeekboard|VirtualKeyboard,OnScreenKeyboard/,
     'the installer must not remove or disable the hosted-page keyboard');
@@ -53,15 +69,27 @@ assert.match(styles, /\.t3k-dialog-image[\s\S]*width: 112px[\s\S]*height: 70px/,
 assert.match(styles, /\.t3k-dialog \.t3k-models[\s\S]*flex: 1 1 auto[\s\S]*overflow: auto/,
     'the individual model list must receive the remaining dialog height and scroll');
 assert.match(view, /type="checkbox"[\s\S]*selectedIds/, 'individual models must use multi-select checkboxes');
+assert.match(view, /checked=\{saved \|\| selectedIds\.includes\(id\)\}[\s\S]*disabled=\{downloading \|\| saved\}/,
+    'installed files must appear checked and cannot be selected for another download');
+assert.match(view, /IN LIBRARY[\s\S]*t3k-installed-path/,
+    'installed rows must clearly identify their state and current library path');
 assert.match(view, /DOWNLOAD SELECTED/, 'the dialog must download the checked model subset');
 assert.match(view, /download-job\/start[\s\S]*download-job\/status/,
     'selected models must use a live-polled background download job');
+assert.match(view, /setLibraryRefreshToken\(\(value\) => value \+ 1\)[\s\S]*refreshToken=\{libraryRefreshToken\}/,
+    'the local NAM and IR browser must refresh after a download job completes');
 assert.match(view, /setDownloadFiles\(files\)[\s\S]*current: completed/,
     'the UI must update per-file and total progress while downloads run');
 assert.match(view, /FINISHED DOWNLOADING[\s\S]*savedCount[\s\S]*failedCount[\s\S]*!downloadFinished && <div className="t3k-models">/,
     'completed downloads must show final statistics instead of returning to the selection list');
 assert.match(router, /download-job\/start[\s\S]*std::min<size_t>\(3, items\.size\(\)\)/,
     'the engine must limit TONE3000 downloads to three concurrent files');
+assert.match(router, /command == "installed"[\s\S]*tone3000_\.installed/,
+    'the API must expose the installed TONE3000 asset index');
+assert.match(router, /installedPaths[\s\S]*file\.state = "installed"[\s\S]*state == "installed"\) continue/,
+    'download jobs must defensively skip model IDs already present in the library');
+assert.match(client, /recursive_directory_iterator[\s\S]*installedDigestCache_[\s\S]*toHex\(sha256\(contents\)\)[\s\S]*registry\[digest\]/,
+    'installed detection must scan nested library folders and match content hashes with a metadata cache');
 assert.match(styles, /\.t3k-download-actions[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/,
     'Download Selected and Download All must have equal widths');
 

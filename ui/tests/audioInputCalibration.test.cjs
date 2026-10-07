@@ -48,7 +48,7 @@ assert.match(settings, /loadCalibrationProfile[\s\S]*audio\/settings[\s\S]*delet
     'loading and deleting profiles must persist the newly active profile');
 assert.match(settings, /MANAGE TOOB NAM FROM THIS PROFILE/,
     'the user must explicitly control global TooB profile management');
-assert.match(editor, /calibrationManaged[\s\S]*MANAGED BY AUDIO PROFILE[\s\S]*disabled=.*calibrationManaged/,
+assert.match(editor, /MANAGED BY AUDIO PROFILE[\s\S]*const disabled = .*calibrationManaged[\s\S]*assigned: !disabled/,
     'a globally managed TooB calibration control must identify its source and be read-only');
 assert.match(css, /\.audio-settings-tabs[\s\S]*repeat\(4/,
     'the four audio tabs must share the available width');

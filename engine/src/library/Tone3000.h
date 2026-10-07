@@ -4,8 +4,10 @@
 #include "core/Paths.h"
 
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace pimfx {
 
@@ -60,6 +62,11 @@ public:
     Json model(const std::string& modelId, std::string& error);
     Json models(const std::string& toneId, const Json& query, std::string& error);
 
+    /// Returns TONE3000 assets that still exist anywhere under the local
+    /// NAM/IR roots. Files are identified by their content digest, so moving
+    /// or renaming them does not lose their provider model identity.
+    Json installed(std::string& error);
+
     /// Downloads one model file into the library. `kind` is "model" or "ir".
     /// `relativeDir` is a folder under models/ or irs/; empty means TONE3000.
     bool downloadModel(const std::string& url, const std::string& suggestedName,
@@ -75,6 +82,12 @@ private:
         std::chrono::system_clock::time_point expiresAt;
     };
 
+    struct InstalledDigestCacheEntry {
+        std::uintmax_t bytes = 0;
+        int64_t modified = 0;
+        std::string digest;
+    };
+
     bool ensureAccessToken(std::string& error);
     bool exchange(const std::string& body, std::string& error);
     Json authorizedGet(const std::string& path, std::string& error);
@@ -87,6 +100,8 @@ private:
 
     Paths paths_;
     mutable std::mutex mutex_;
+    std::mutex installedMutex_;
+    std::unordered_map<std::string, InstalledDigestCacheEntry> installedDigestCache_;
 
     std::string publishableKey_;
     std::string redirectUri_;

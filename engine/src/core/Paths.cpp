@@ -71,6 +71,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     paths.downloadsDir = joinPath(root, "downloads");
     paths.lv2Dir = joinPath(root, "lv2");
     paths.layoutsDir = joinPath(root, "layouts");
+    paths.virtualLayoutsDir = joinPath(root, "virtual-control-layouts");
     paths.controllerProfilesDir = joinPath(root, "controller-profiles");
     paths.setupProfilesDir = joinPath(root, "setup-profiles");
     paths.backupsDir = joinPath(root, "backups");
@@ -99,6 +100,7 @@ Paths Paths::resolve(const std::string& overrideRoot) {
     makeDirectories(paths.downloadsDir);
     makeDirectories(paths.lv2Dir);
     makeDirectories(paths.layoutsDir);
+    makeDirectories(paths.virtualLayoutsDir);
     makeDirectories(paths.controllerProfilesDir);
     makeDirectories(paths.setupProfilesDir);
     makeDirectories(paths.backupsDir);

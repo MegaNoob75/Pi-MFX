@@ -556,6 +556,90 @@ Json Tone3000Client::models(const std::string& toneId, const Json& query, std::s
     return authorizedGet(path, error);
 }
 
+Json Tone3000Client::installed(std::string& error) {
+    Json registry = Json::object();
+    {
+        // Downloads update this registry from worker threads. Copy it while
+        // holding the same lock, then release the lock before hashing files.
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::string registryText;
+        if (readFile(paths_.tone3000AssetsFile(), registryText)) {
+            std::string registryError;
+            const Json parsed = Json::parse(registryText, &registryError);
+            if (!registryError.empty()) {
+                error = "could not read the TONE3000 asset index";
+                return Json::object();
+            }
+            if (parsed.isObject()) registry = parsed;
+        }
+    }
+
+    Json assets = Json::array();
+    std::unordered_map<std::string, InstalledDigestCacheEntry> refreshedCache;
+    std::lock_guard<std::mutex> cacheLock(installedMutex_);
+
+    const auto scanRoot = [&](const std::string& root, const std::string& rootKind) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root, ec)) return;
+
+        std::filesystem::recursive_directory_iterator it(
+            root, std::filesystem::directory_options::skip_permission_denied, ec);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!ec && it != end) {
+            const std::filesystem::directory_entry entry = *it;
+            it.increment(ec);
+            std::error_code fileError;
+            if (!entry.is_regular_file(fileError) || fileError) continue;
+
+            std::string extension = entry.path().extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const bool relevant = rootKind == "model"
+                ? extension == ".nam"
+                : extension == ".wav" || extension == ".flac"
+                    || extension == ".aif" || extension == ".aiff";
+            if (!relevant) continue;
+
+            const std::string path = entry.path().string();
+            const std::uintmax_t bytes = entry.file_size(fileError);
+            if (fileError) continue;
+            const auto writeTime = entry.last_write_time(fileError);
+            if (fileError) continue;
+            const int64_t modified = static_cast<int64_t>(writeTime.time_since_epoch().count());
+
+            std::string digest;
+            const auto cached = installedDigestCache_.find(path);
+            if (cached != installedDigestCache_.end()
+                && cached->second.bytes == bytes
+                && cached->second.modified == modified) {
+                digest = cached->second.digest;
+            } else {
+                std::string contents;
+                if (!readFile(path, contents)) continue;
+                digest = toHex(sha256(contents));
+            }
+            refreshedCache[path] = InstalledDigestCacheEntry{bytes, modified, digest};
+
+            const Json& registered = registry[digest];
+            if (!registered.isObject()) continue;
+            Json asset = registered;
+            asset.set("path", path);
+            asset.set("name", entry.path().filename().string());
+            asset.set("bytes", static_cast<int64_t>(bytes));
+            if (asset["kind"].asString().empty()) asset.set("kind", rootKind);
+            assets.push(asset);
+        }
+    };
+
+    scanRoot(paths_.modelsDir, "model");
+    scanRoot(paths_.irsDir, "ir");
+    installedDigestCache_ = std::move(refreshedCache);
+
+    Json result = Json::object();
+    result.set("assets", assets);
+    return result;
+}
+
 bool Tone3000Client::downloadModel(const std::string& url,
                                    const std::string& suggestedName,
                                    const std::string& kind,
@@ -660,9 +744,18 @@ bool Tone3000Client::downloadModel(const std::string& url,
             && lower.compare(lower.size() - ext.size(), ext.size(), ext) == 0) {
             return fileName;
         }
-        const auto dot = fileName.find_last_of('.');
-        if (dot != std::string::npos && fileName.find_first_of("/\\", dot) == std::string::npos) {
-            fileName.resize(dot);
+
+        // Model names commonly contain dots that are part of the amp name
+        // (for example, "ORNG.OR60"). Only replace a suffix that is already a
+        // supported model/audio extension; stripping everything after the last
+        // dot makes distinct models collapse onto one path and overwrite.
+        for (const char* knownExtension : {".nam", ".aidax", ".wav", ".flac", ".aif", ".aiff"}) {
+            const std::string known(knownExtension);
+            if (lower.size() >= known.size()
+                && lower.compare(lower.size() - known.size(), known.size(), known) == 0) {
+                fileName.resize(fileName.size() - known.size());
+                break;
+            }
         }
         return fileName + extension;
     };

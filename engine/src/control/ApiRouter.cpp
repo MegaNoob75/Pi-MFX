@@ -412,6 +412,7 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "preset/save") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.savePreset(error);
         return Json::object();
     }
@@ -432,6 +433,7 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return result;
     }
     if (command == "preset/restoreLive") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.restoreLiveFromStoredPreset(error);
         return Json::object();
     }
@@ -520,10 +522,6 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "chain/enable") {
         ok = engine_.setEffectEnabled(payload["slotId"].asString(),
                                       payload["enabled"].asBool(true), error);
-        return Json::object();
-    }
-    if (command == "chain/name") {
-        ok = engine_.setEffectName(payload["slotId"].asString(), payload["name"].asString(), error);
         return Json::object();
     }
     if (command == "chain/control") {
@@ -632,6 +630,41 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "controller/turn") {
         ok = engine_.turnVirtualEncoder(payload["controlId"].asString(),
                                         payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/config") {
+        ok = engine_.applyVirtualControlsConfig(payload, error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/select") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
+        ok = engine_.selectVirtualSurfaceControl(payload["controlId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/press") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
+        ok = engine_.pressVirtualSurfaceControl(payload["controlId"].asString(),
+                                                 payload["pressed"].asBool(true), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/value") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
+        ok = engine_.setVirtualSurfaceControlValue(payload["controlId"].asString(),
+                                                    payload["value"].asFloat(0.0f), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/turn") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
+        ok = engine_.turnVirtualSurfaceEncoder(payload["controlId"].asString(),
+                                               payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/proxy-turn") {
+        ok = engine_.turnSelectedVirtualControl(payload["delta"].asInt(1), error);
+        return Json::object();
+    }
+    if (command == "virtual-controls/fine") {
+        ok = engine_.toggleVirtualControlFine(error);
         return Json::object();
     }
 
@@ -883,6 +916,11 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         wrapper.set("result", result);
         return wrapper;
     }
+    if (command == "installed") {
+        const Json result = tone3000_.installed(error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "download") {
         std::string url = payload["url"].asString();
         std::string name = payload["name"].asString();
@@ -990,12 +1028,34 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         if (!items.isArray() || items.size() == 0) {
             ok = false; error = "no models were selected"; return Json::object();
         }
+
+        // The UI filters installed files before starting a job, but enforce
+        // the same rule here in case the library changed while the dialog was
+        // open or an older client submitted the request.
+        std::unordered_map<std::string, std::string> installedPaths;
+        std::string installedError;
+        const Json installed = tone3000_.installed(installedError);
+        for (const Json& asset : installed["assets"].items()) {
+            std::string modelId = asset["modelId"].asString();
+            std::transform(modelId.begin(), modelId.end(), modelId.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!modelId.empty()) installedPaths[modelId] = asset["path"].asString();
+        }
         const std::string jobId = "tone-download-" + std::to_string(nextToneDownloadJob_.fetch_add(1));
         auto job = std::make_shared<ToneDownloadJob>();
         job->files.reserve(items.size());
         for (const Json& item : items.items()) {
             ToneDownloadFile file;
             file.name = item["name"].asString("TONE3000 model");
+            std::string modelId = item["modelId"].asString();
+            std::transform(modelId.begin(), modelId.end(), modelId.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const auto found = installedPaths.find(modelId);
+            if (!modelId.empty() && found != installedPaths.end()) {
+                file.state = "installed";
+                file.path = found->second;
+                job->completed.fetch_add(1);
+            }
             job->files.push_back(std::move(file));
         }
         {
@@ -1014,6 +1074,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
                         const Json& item = items.at(index);
                         {
                             std::lock_guard<std::mutex> lock(job->mutex);
+                            if (job->files[index].state == "installed") continue;
                             job->files[index].state = "downloading";
                         }
                         Json provenance = Json::object();

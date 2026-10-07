@@ -25,6 +25,8 @@ struct ActionRequest {
     bool fromDouble = false;
     ControlKind kind = ControlKind::Momentary;
     bool fromPresetBind = false;
+    /// Fine relative adjustment, used by the selected virtual-control proxy.
+    bool fine = false;
     /// On-screen analog: apply immediately, do not wait for pot catch-up.
     bool fromScreen = false;
     /// Live analog (MIDI or screen) must not rewrite the stored preset.

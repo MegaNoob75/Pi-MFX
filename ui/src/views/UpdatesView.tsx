@@ -31,6 +31,7 @@ export function UpdatesView({
     const [pluginStatus, setPluginStatus] = useState(obj({}));
     const [pluginInstalling, setPluginInstalling] = useState(false);
     const [pluginLog, setPluginLog] = useState<string[]>([]);
+    const unsavedPresetCount = num(engine.state.sessionPresetDirtyCount);
     const progressRef = useRef<HTMLPreElement | null>(null);
     const followProgressRef = useRef(true);
 
@@ -377,7 +378,7 @@ export function UpdatesView({
             {confirmInstall && (
                 <ConfirmDialog
                     title={`UPDATE ${effectiveBranch.toUpperCase()}?`}
-                    body="The update takes several minutes. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes."
+                    body={`The update takes several minutes. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes.${unsavedPresetCount > 0 ? ` ${unsavedPresetCount} preset${unsavedPresetCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.` : ""}`}
                     confirmLabel="UPDATE"
                     danger
                     onCancel={() => showInstallConfirmation(false)}

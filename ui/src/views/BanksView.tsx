@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { dismissOnScreenKeyboard } from "../keyboard/ask";
-import { obj, str, objects, type JsonObject } from "../json";
+import { arr, obj, str, objects, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
 import { LibraryJsonPicker } from "./LibraryManager";
 import { NewPresetDialog } from "./NewPresetDialog";
@@ -49,6 +49,10 @@ export function BanksView({
     const selectedPresetId = cursorPreset || presetId;
     const bankIndex = banks.findIndex((bank) => str(bank.id) === bankId);
     const presetIndex = presets.findIndex((preset) => str(preset.id) === selectedPresetId);
+    const dirtyPresetIds = new Set(arr(state.sessionPresetDirtyIds).map((value) => str(value)));
+    const deletingDirtyCount = confirm === "bank"
+        ? presets.filter((preset) => dirtyPresetIds.has(str(preset.id))).length
+        : dirtyPresetIds.has(selectedPresetId) ? 1 : 0;
     const focusPane = (pane: "banks" | "presets") => {
         setFocused(pane);
         client.updateUiSession({ banksFocus: pane });
@@ -380,6 +384,11 @@ export function BanksView({
                                 ? `Delete bank “${str(obj(activeBank).name)}”?`
                                 : `Delete preset “${str(obj(presets.find((item) => str(item.id) === selectedPresetId) ?? activePreset).name)}”?`}
                         </div>
+                        {deletingDirtyCount > 0 && (
+                            <div className="danger" style={{ marginBottom: 12 }}>
+                                {deletingDirtyCount} preset{deletingDirtyCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.
+                            </div>
+                        )}
                         <div className="row" style={{ justifyContent: "flex-end" }}>
                             <button type="button" className="btn" onClick={() => setConfirm(null)}>CANCEL</button>
                             <button type="button" className="btn btn-danger" onClick={() => {

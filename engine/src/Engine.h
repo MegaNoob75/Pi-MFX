@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -34,6 +35,8 @@ namespace pimfx {
 struct TunerReading {
     bool valid = false;
     float frequency = 0.0f;
+    float inputLevel = 0.0f;
+    float confidence = 0.0f;
     int midiNote = 0;
     float cents = 0.0f;
     std::string noteName;
@@ -133,8 +136,8 @@ public:
     bool replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error);
     bool removeEffect(const std::string& slotId, std::string& error);
     bool moveEffect(const std::string& slotId, int newIndex, std::string& error);
-    bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error);
-    bool setEffectName(const std::string& slotId, const std::string& name, std::string& error);
+    bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
+                          bool persist = true);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
     bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
@@ -171,8 +174,17 @@ public:
     /// as the on-screen control is pointing.
     bool setVirtualControlValue(const std::string& controlId, float value, std::string& error);
     bool turnVirtualEncoder(const std::string& controlId, int delta, std::string& error);
-    /// Binds a hardware control to a parameter or bypass of the active preset.
+    /// Binds a physical or virtual control for one preset. ownerBankId and
+    /// ownerPresetId are optional and default to the active preset.
     bool bindPresetControl(const Json& json, std::string& error);
+    bool applyVirtualControlsConfig(const Json& json, std::string& error);
+    bool selectVirtualSurfaceControl(const std::string& controlId, std::string& error);
+    bool pressVirtualSurfaceControl(const std::string& controlId, bool pressed, std::string& error);
+    bool setVirtualSurfaceControlValue(const std::string& controlId, float value, std::string& error);
+    bool turnVirtualSurfaceEncoder(const std::string& controlId, int delta, std::string& error);
+    bool turnSelectedVirtualControl(int delta, std::string& error);
+    bool toggleVirtualControlFine(std::string& error);
+    bool validatePresetEvent(const std::string& expectedPresetId, std::string& error) const;
     /// Session-only switch→preset map used by Performance encoder "session"
     /// mode. Never written to settings, so a reboot restores saved assignments.
     bool applySessionPresets(const Json& json, std::string& error);
@@ -261,6 +273,7 @@ private:
     Snapshot* findSnapshotBySlot(Preset& preset, int slot);
     const Snapshot* findSnapshotBySlot(const Preset& preset, int slot) const;
     void restoreStoredPresetToChainUnlocked(Preset& preset);
+    void restoreSessionOrStoredPresetToChainUnlocked(Preset& preset);
     void forgetRememberedSnapshot(Preset& preset);
     void rememberSnapshot(Preset& preset, int slot, bool enabled);
     bool toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error);
@@ -269,6 +282,12 @@ private:
 
     Preset* activePreset();
     const Preset* activePreset() const;
+    Preset* activeSessionDraft(bool create);
+    const Preset* activeSessionDraft() const;
+    const Preset* effectiveActivePreset() const;
+    void captureChainIntoPreset(Preset& preset);
+    void captureActiveSessionDraft();
+    void clearSessionDraft(const std::string& presetId);
     Bank* activeBank();
     const Bank* activeBank() const;
     Bank* findBank(const std::string& bankId);
@@ -283,7 +302,7 @@ private:
     bool persistSettings();
     void notify();
     void notifyPerformance();
-    void notifyUiNav(int delta, bool select);
+    void notifyUiNav(int delta, bool select, const std::string& virtualControlAction = "");
     void notifyUiView(const std::string& view);
 
     void handleMidiMessage(const MidiMessage& message);
@@ -291,11 +310,17 @@ private:
     void overlayPresetBind(ActionRequest& request);
     void migrateHardwareParameterBinds();
     void runAction(const ActionRequest& request);
+    void runVirtualControlProxy(const ActionRequest& request);
+    VirtualControlsConfig effectiveVirtualControlsConfig() const;
+    std::optional<VirtualControl> findVirtualControl(const std::string& controlId) const;
+    bool toggleBoundParameter(const ParameterBinding& binding, std::string& error);
+    bool proxyCatchAllows(const ActionRequest& request, const ParameterBinding& binding);
+    bool bindingTargetPosition(const ParameterBinding& binding, float& position) const;
     bool nudgeEncoderParameter(const ActionRequest& request, std::string& error);
     void armAnalogCatchUnlocked();
     bool analogCatchAllows(const ActionRequest& request);
     void writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value);
-    void applyTempoLinksUnlocked(Preset& preset, bool deferControls = false);
+    void applyTempoLinksUnlocked(const Preset& preset, bool deferControls = false);
     void refreshLeds();
     Json describeControllerRuntime() const;
 
@@ -307,6 +332,11 @@ private:
     std::vector<Bank> banks_;
     std::string activeBankId_;
     std::string activePresetId_;
+    /// Unsaved, engine-owned working copies. These deliberately never enter
+    /// bank serialization; Save promotes one copy and Reload discards it.
+    std::unordered_map<std::string, Preset> sessionPresetDrafts_;
+    std::string activeVirtualControlId_;
+    uint64_t virtualControlRevision_ = 0;
 
     Lv2Catalog catalog_;
     std::unique_ptr<AudioBackend> backend_;
@@ -359,6 +389,9 @@ private:
     float tunerOutputGain_ = 1.0f;
     float tunerDryMix_ = 0.0f;
     std::atomic<float> tunerThreshold_{0.0025f};
+    std::atomic<float> tunerAnalysisBoost_{1.0f};
+    std::atomic<bool> tunerAutoBoost_{true};
+    std::atomic<bool> tunerExtendedRange_{false};
     mutable std::mutex tunerMutex_;
     TunerReading tunerReading_;
 
@@ -392,6 +425,17 @@ private:
         float lastVisual = -1.0f;
     };
     std::unordered_map<std::string, AnalogCatch> analogCatch_;
+
+    struct ProxyCatch {
+        std::string virtualControlId;
+        std::string presetId;
+        float lastVisual = -1.0f;
+        bool acquired = false;
+    };
+    std::unordered_map<std::string, ProxyCatch> proxyCatch_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> proxyEncoderAt_;
+    std::unordered_map<std::string, int> proxyEncoderBurst_;
+    bool proxyFineMode_ = false;
 
     struct SessionPreset {
         std::string bankId;

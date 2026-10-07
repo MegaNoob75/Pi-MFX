@@ -45,12 +45,21 @@ struct Snapshot {
     static Snapshot fromJson(const Json& json);
 };
 
-/// Maps a physical control onto one parameter or bypass of this preset.
+/// Preset-scoped override for a physical or virtual control.
+///
+/// Older bank files only contain setParameter/toggleEffect entries.  The
+/// additional target fields let virtual buttons and toggles use the same
+/// active-preset resolver for ordinary Pi-MFX actions without changing the
+/// global defaults of existing physical controls.
 struct ParameterBinding {
     std::string controlId;
-    std::string action;     ///< setParameter or toggleEffect
+    std::string action;
     std::string slotId;
     std::string portSymbol; ///< for setParameter
+    std::string bankId;
+    std::string presetId;
+    std::string snapshotId;
+    int snapshotSlot = -1;
     float minimum = 0.0f;
     float maximum = 1.0f;
     bool inverted = false;
@@ -70,6 +79,9 @@ struct Preset {
     std::vector<EffectSlot> chain;
     std::vector<Snapshot> snapshots;
     std::vector<ParameterBinding> parameterBindings;
+    /// Optional preset-owned touchscreen surface. Missing or mode=shared uses
+    /// the global Virtual Controls layout for backward compatibility.
+    Json virtualControlSurface = Json::object();
     /// Provenance and completion state for an imported community preset.
     /// Empty for presets created locally.
     Json community = Json::object();
@@ -247,6 +259,48 @@ struct ControllerConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Virtual control surface
+// ---------------------------------------------------------------------------
+
+/// One user-created touchscreen control. Values are deliberately absent: the
+/// bound LV2 parameter or Pi-MFX action remains the single source of truth.
+struct VirtualControl {
+    std::string id;
+    std::string pageId = "page-1";
+    std::string label;
+    bool automaticLabel = true;
+    ControlKind kind = ControlKind::Pot;
+    double x = 0.08;
+    double y = 0.12;
+    double width = 0.18;
+    double height = 0.28;
+    std::string orientation = "vertical";
+    Json appearance = Json::object();
+
+    Json toJson() const;
+    static VirtualControl fromJson(const Json& json);
+};
+
+struct VirtualControlPage {
+    std::string id;
+    std::string name;
+
+    Json toJson() const;
+    static VirtualControlPage fromJson(const Json& json, int index);
+};
+
+struct VirtualControlsConfig {
+    int version = 2;
+    std::string layoutName = "default";
+    std::vector<VirtualControlPage> pages;
+    std::vector<VirtualControl> controls;
+    Json groups = Json::array();
+
+    Json toJson() const;
+    static VirtualControlsConfig fromJson(const Json& json);
+};
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 
@@ -334,6 +388,7 @@ struct Settings {
     TransportSettings transport;
     LooperSettings looper;
     ControllerConfig controller;
+    VirtualControlsConfig virtualControls;
 
     std::string activeBankId;
     std::string activePresetId;

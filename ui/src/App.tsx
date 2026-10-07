@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useEngine } from "./api";
 import { arr, bool, num, obj, str, type JsonObject } from "./json";
 import { applyHardwareNavFocus, handleHardwareNav, watchHardwareNavFocus } from "./hardwareNav";
@@ -6,6 +6,8 @@ import { AboutView } from "./views/AboutView";
 import { BanksView } from "./views/BanksView";
 import { EditorView } from "./views/EditorView";
 import { PerformanceView } from "./views/PerformanceView";
+import { VirtualControlsView } from "./views/VirtualControlsView";
+import { VirtualControlsLayoutEditorView } from "./views/VirtualControlsLayoutEditorView";
 import { KeyboardProvider } from "./keyboard/KeyboardProvider";
 import { SettingsHub, SettingsPage as SettingsDetail, type SettingsPage } from "./views/SettingsView";
 import { updateUiSessionSection } from "./uiSession";
@@ -34,6 +36,8 @@ import { clearPendingUpdateReturn, hasPendingUpdateReturn } from "./updateReturn
 
 export type View =
     | "performance"
+    | "virtualControls"
+    | "virtualLayout"
     | "banks"
     | "edit"
     | "snapshots"
@@ -54,7 +58,7 @@ export type View =
 
 type EditSubpage = "chain" | "controls" | "io";
 
-type MenuId = "performance" | "transport" | "backingTracks" | "looper" | "recorder"
+type MenuId = "performance" | "virtualControls" | "transport" | "backingTracks" | "looper" | "recorder"
     | "drums" | "community" | "tuner" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
 
 type MenuEntry = {
@@ -68,6 +72,7 @@ type MenuEntry = {
 
 const MENU_ENTRIES: readonly MenuEntry[] = [
     { id: "performance", view: "performance", label: "PERFORMANCE", subtitle: "Preset and foot-controller view", icon: "performance" },
+    { id: "virtualControls", view: "virtualControls", label: "VIRTUAL CONTROLS", subtitle: "Custom touchscreen control surface", icon: "performance" },
     { id: "transport", view: "transport", label: "TAP TEMPO", subtitle: "Set tempo, metronome and count-in", icon: "transport", feature: "transport" },
     { id: "backingTracks", view: "backingTracks", label: "BACKING TRACKS", subtitle: "Import and play independent tracks", icon: "backingTracks", feature: "backing" },
     { id: "looper", view: "looper", label: "LOOPER", subtitle: "Record and overdub one stereo loop", icon: "looper" },
@@ -114,6 +119,8 @@ type MenuDrag = { id: MenuId; source: "menu" | "left" | "right"; x: number; y: n
 
 const titles: Record<string, string> = {
     performance: "PERFORMANCE",
+    virtualControls: "VIRTUAL CONTROLS",
+    virtualLayout: "VIRTUAL CONTROLS LAYOUT",
     transport: "TAP TEMPO",
     backingTracks: "BACKING TRACKS",
     looper: "LOOPER",
@@ -145,7 +152,7 @@ const titles: Record<string, string> = {
 };
 
 const viewNames = new Set<View>([
-    "performance", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
+    "performance", "virtualControls", "virtualLayout", "banks", "edit", "snapshots", "snapshotEdit", "settings", "library",
     "plugins", "files", "transport", "backingTracks", "looper", "recorder", "drums", "community", "tuner", "audio", "controller", "layout", "theme", "keyboard", "ui",
     "tone3000", "backup", "system", "hotspot", "updates", "profiles", "about"
 ]);
@@ -164,6 +171,123 @@ function nestedSettingsBackPatch(view: View, settings: JsonObject): JsonObject |
     return null;
 }
 
+function SwipeSurface({ direction, onSwipe, peek, children }: {
+    direction: "up" | "down";
+    onSwipe: () => void;
+    peek: ReactNode;
+    children: ReactNode;
+}) {
+    const gesture = useRef<{
+        pointerId: number;
+        startX: number;
+        startY: number;
+        startedAt: number;
+        locked: boolean;
+    } | null>(null);
+    const suppressClick = useRef(false);
+    const transitionTimer = useRef<number | null>(null);
+    const [dragOffset, setDragOffset] = useState(0);
+    const [peekVisible, setPeekVisible] = useState(false);
+    const [settling, setSettling] = useState(false);
+    const interactive = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest(
+        "input, select, textarea, .identity-select, .mfx-overlay, .dialog"
+    ));
+    const begin = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (event.pointerType === "mouse" || interactive(event.target)) return;
+        suppressClick.current = false;
+        gesture.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            startedAt: performance.now(),
+            locked: false
+        };
+    };
+    const move = (event: ReactPointerEvent<HTMLDivElement>) => {
+        const active = gesture.current;
+        if (!active || active.pointerId !== event.pointerId) return;
+        const dx = event.clientX - active.startX;
+        const dy = event.clientY - active.startY;
+        if (!active.locked && Math.hypot(dx, dy) >= 12) {
+            if (Math.abs(dx) >= Math.abs(dy) * 0.8) {
+                gesture.current = null;
+                return;
+            }
+            active.locked = true;
+            suppressClick.current = true;
+            setPeekVisible(true);
+            setSettling(false);
+            window.dispatchEvent(new Event("pimfx-surface-swipe-start"));
+            try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* optional */ }
+        }
+        if (active.locked) {
+            event.preventDefault();
+            event.stopPropagation();
+            setDragOffset(direction === "up" ? Math.min(0, dy) : Math.max(0, dy));
+        }
+    };
+    const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
+        const active = gesture.current;
+        gesture.current = null;
+        if (!active || active.pointerId !== event.pointerId || !active.locked) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const dy = event.clientY - active.startY;
+        const elapsed = Math.max(1, performance.now() - active.startedAt);
+        const correctDirection = direction === "up" ? dy < 0 : dy > 0;
+        const complete = correctDirection && (Math.abs(dy) >= 72 || Math.abs(dy) / elapsed >= 0.55);
+        setSettling(true);
+        setDragOffset(complete
+            ? (direction === "up" ? -event.currentTarget.clientHeight : event.currentTarget.clientHeight)
+            : 0);
+        if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current);
+        transitionTimer.current = window.setTimeout(() => {
+            transitionTimer.current = null;
+            setPeekVisible(false);
+            setSettling(false);
+            setDragOffset(0);
+            if (complete) onSwipe();
+        }, 190);
+    };
+    const cancel = () => {
+        const active = gesture.current;
+        gesture.current = null;
+        if (!active?.locked) return;
+        setSettling(true);
+        setDragOffset(0);
+        if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current);
+        transitionTimer.current = window.setTimeout(() => {
+            transitionTimer.current = null;
+            setPeekVisible(false);
+            setSettling(false);
+        }, 190);
+    };
+    useEffect(() => () => {
+        if (transitionTimer.current !== null) window.clearTimeout(transitionTimer.current);
+    }, []);
+    const trackStyle = peekVisible ? {
+        transform: direction === "down"
+            ? `translate3d(0, calc(-50% + ${dragOffset}px), 0)`
+            : `translate3d(0, ${dragOffset}px, 0)`
+    } : undefined;
+    return <div className="performance-swipe-surface"
+        onPointerDownCapture={begin}
+        onPointerMoveCapture={move}
+        onPointerUpCapture={finish}
+        onPointerCancelCapture={cancel}
+        onClickCapture={(event) => {
+            if (!suppressClick.current) return;
+            suppressClick.current = false;
+            event.preventDefault();
+            event.stopPropagation();
+        }}
+    ><div className={`performance-swipe-track${peekVisible ? " has-peek" : ""}${settling ? " settling" : ""}`} style={trackStyle}>
+            {peekVisible && direction === "down" && <div key="peek" className="performance-swipe-panel">{peek}</div>}
+            <div key="current" className="performance-swipe-panel">{children}</div>
+            {peekVisible && direction === "up" && <div key="peek" className="performance-swipe-panel">{peek}</div>}
+        </div></div>;
+}
+
 export function App() {
     const engine = useEngine();
     const returnToUpdatesAfterInstall = useRef(hasPendingUpdateReturn());
@@ -179,6 +303,7 @@ export function App() {
     const [snapshotSaveRequest, setSnapshotSaveRequest] = useState(0);
     const [snapshotCancelRequest, setSnapshotCancelRequest] = useState(0);
     const [layoutDirty, setLayoutDirty] = useState(false);
+    const [virtualLayoutDirty, setVirtualLayoutDirty] = useState(false);
     const [leaveLayout, setLeaveLayout] = useState<{ view: View; fromMenu: boolean } | "back" | null>(null);
     const [backgroundUpdateStatus, setBackgroundUpdateStatus] = useState<JsonObject>({});
     const menuRef = useRef<HTMLElement | null>(null);
@@ -350,7 +475,27 @@ export function App() {
         () => engine.client.claimUiNavigation(),
         (navFocus) => engine.client.updateUiSession({ navFocus })
     ), [engine.client]);
-    useEffect(() => engine.client.subscribeUiNav(handleHardwareNav), [engine.client]);
+    useEffect(() => engine.client.subscribeUiNav((message) => {
+        const virtualAction = str(message.virtualControlAction);
+        if (view === "virtualControls" && virtualAction) {
+            if (virtualAction === "turn") {
+                void engine.client.request("virtual-controls/proxy-turn", {
+                    delta: num(message.delta, 1)
+                })
+                    .catch(() => undefined);
+            } else if (virtualAction === "fine") {
+                void engine.client.request("virtual-controls/fine").catch(() => undefined);
+            }
+            return true;
+        }
+        if (view === "edit" && editSubpage === "controls" && virtualAction === "turn") {
+            window.dispatchEvent(new CustomEvent("pimfx-editor-control-turn", {
+                detail: { delta: num(message.delta, 1) }
+            }));
+            return true;
+        }
+        return handleHardwareNav(message);
+    }), [engine.client, view, editSubpage]);
     useEffect(() => {
         const frame = window.requestAnimationFrame(() => applyHardwareNavFocus(engine.uiSession.navFocus));
         return () => window.cancelAnimationFrame(frame);
@@ -453,14 +598,8 @@ export function App() {
             engine.client.updateUiSession({ menuOpen: false, ...(fromMenu ? { viewHistory: nextHistory } : {}) });
             return;
         }
-        if (view === "layout" && layoutDirty && next !== "layout") {
+        if (((view === "layout" && layoutDirty) || (view === "virtualLayout" && virtualLayoutDirty)) && next !== view) {
             setLeaveLayout({ view: next, fromMenu });
-            return;
-        }
-        if (view === "edit" && next !== "edit") {
-            void engine.client.request("preset/save").catch(() => undefined).finally(() => {
-                navigateTo(next, fromMenu);
-            });
             return;
         }
         navigateTo(next, fromMenu);
@@ -525,12 +664,10 @@ export function App() {
             return;
         }
         if (view === "edit") {
-            void engine.client.request("preset/save").catch(() => undefined).finally(() => {
-                finishBack();
-            });
+            finishBack();
             return;
         }
-        if (view === "layout" && layoutDirty) {
+        if ((view === "layout" && layoutDirty) || (view === "virtualLayout" && virtualLayoutDirty)) {
             setLeaveLayout("back");
             return;
         }
@@ -899,20 +1036,42 @@ export function App() {
 
             <main className="page">
                 {view === "performance" && (
-                    <PerformanceView
-                        engine={engine}
-                        run={run}
-                        onSnapshots={() => goTo("snapshots")}
-                        onEdit={() => {
-                            goTo("edit");
-                        }}
-                        onOpenView={(next) => goTo(next)}
-                        onEditSnapshot={(snapshotId) => {
-                            setSnapshotEditId(snapshotId);
-                            engine.client.updateUiSession({ snapshotEditId: snapshotId });
-                            goTo("snapshotEdit");
-                        }}
-                    />
+                    <SwipeSurface direction="up" onSwipe={() => goTo("virtualControls")} peek={
+                        <VirtualControlsView engine={engine} onEdit={() => goTo("virtualLayout")} />
+                    }>
+                        <PerformanceView
+                            engine={engine}
+                            run={run}
+                            onSnapshots={() => goTo("snapshots")}
+                            onEdit={() => {
+                                goTo("edit");
+                            }}
+                            onOpenView={(next) => goTo(next)}
+                            onEditSnapshot={(snapshotId) => {
+                                setSnapshotEditId(snapshotId);
+                                engine.client.updateUiSession({ snapshotEditId: snapshotId });
+                                goTo("snapshotEdit");
+                            }}
+                        />
+                    </SwipeSurface>
+                )}
+                {view === "virtualControls" && (
+                    <SwipeSurface direction="down" onSwipe={() => goTo("performance", true)} peek={
+                        <PerformanceView
+                            engine={engine}
+                            run={run}
+                            onSnapshots={() => goTo("snapshots")}
+                            onEdit={() => goTo("edit")}
+                            onOpenView={(next) => goTo(next)}
+                            onEditSnapshot={(snapshotId) => {
+                                setSnapshotEditId(snapshotId);
+                                engine.client.updateUiSession({ snapshotEditId });
+                                goTo("snapshotEdit");
+                            }}
+                        />
+                    }>
+                        <VirtualControlsView engine={engine} onEdit={() => goTo("virtualLayout")} />
+                    </SwipeSurface>
                 )}
                 {view === "transport" && transportEnabled && <TransportView engine={engine} run={run} />}
                 {view === "backingTracks" && backingEnabled && <BackingTracksView engine={engine} run={run} />}
@@ -996,6 +1155,9 @@ export function App() {
                 {view === "layout" && (
                     <LayoutEditorView engine={engine} run={run} onDirtyChange={setLayoutDirty} />
                 )}
+                {view === "virtualLayout" && (
+                    <VirtualControlsLayoutEditorView engine={engine} run={run} onDirtyChange={setVirtualLayoutDirty} />
+                )}
                 {view === "updates" && <UpdatesView engine={engine} run={run} />}
                 {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
                     || view === "tone3000" || view === "system" || view === "backup"
@@ -1070,6 +1232,7 @@ export function App() {
                         const pending = leaveLayout;
                         setLeaveLayout(null);
                         setLayoutDirty(false);
+                        setVirtualLayoutDirty(false);
                         if (pending === "back") {
                             finishBack();
                             return;

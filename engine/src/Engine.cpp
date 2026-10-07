@@ -15,7 +15,7 @@ namespace pimfx {
 namespace {
 
 constexpr size_t kTunerRingSize = 16384;
-constexpr float kTunerMinFrequency = 35.0f;   // below a standard four-string bass
+constexpr float kTunerMinFrequency = 20.0f;   // covers low-F# extended-range bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
 constexpr int kRequiredControllerFirmwareMajor = 1;
 constexpr int kRequiredControllerFirmwareMinor = 1;
@@ -142,6 +142,7 @@ std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
     if (kind == "layout") {
         return paths.layoutsDir;
     }
+    if (kind == "virtuallayout") return paths.virtualLayoutsDir;
     if (kind == "controllerprofile") return paths.controllerProfilesDir;
     if (kind == "setupprofile") return paths.setupProfilesDir;
     if (kind == "theme") {
@@ -164,7 +165,7 @@ std::string libraryRootForKind(const Paths& paths, const std::string& kind) {
 
 std::string libraryKindName(const std::string& kind) {
     if (kind == "ir" || kind == "aidax" || kind == "plugin"
-        || kind == "layout" || kind == "theme" || kind == "backup" || kind == "bank"
+        || kind == "layout" || kind == "virtuallayout" || kind == "theme" || kind == "backup" || kind == "bank"
         || kind == "controllerprofile" || kind == "setupprofile"
         || kind == "backing" || kind == "loop" || kind == "recording"
         || kind == "drumsample" || kind == "drumkit" || kind == "drumproject") {
@@ -181,7 +182,7 @@ bool isLibraryRootPath(const Paths& paths, const std::string& path) {
     }
     for (const std::string& root : {
              paths.modelsDir, paths.aidaxDir, paths.irsDir, paths.lv2Dir,
-             paths.layoutsDir, paths.controllerProfilesDir, paths.setupProfilesDir,
+             paths.layoutsDir, paths.virtualLayoutsDir, paths.controllerProfilesDir, paths.setupProfilesDir,
              paths.backupsDir, paths.bankExportsDir, paths.backingTracksDir,
              paths.loopsDir, paths.recordingsDir, paths.drumsDir,
              joinPath(paths.drumsDir, "samples"), joinPath(paths.drumsDir, "kits"),
@@ -207,7 +208,7 @@ std::string lowerCopy(std::string text) {
 
 bool libraryExtensionAllowed(const std::string& kind, const std::filesystem::path& path) {
     const std::string extension = lowerCopy(path.extension().string());
-    if (kind == "theme" || kind == "layout" || kind == "backup" || kind == "bank"
+    if (kind == "theme" || kind == "layout" || kind == "virtuallayout" || kind == "backup" || kind == "bank"
         || kind == "controllerprofile" || kind == "setupprofile" || kind == "drumkit") {
         return extension == ".json";
     }
@@ -370,6 +371,7 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
         mean += sample;
     }
     const double rms = std::sqrt(energy / samples.size());
+    reading.inputLevel = static_cast<float>(rms);
     if (rms < threshold) {
         return reading; // silence, or noise floor
     }
@@ -437,6 +439,7 @@ TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate
     const int nearest = static_cast<int>(std::lround(midi));
 
     reading.valid = true;
+    reading.confidence = static_cast<float>(std::max(0.0, std::min(1.0, 1.0 - bestValue)));
     reading.frequency = static_cast<float>(frequency);
     reading.midiNote = nearest;
     reading.cents = static_cast<float>((midi - nearest) * 100.0);
@@ -449,6 +452,21 @@ bool isContinuousKind(ControlKind kind) {
     return kind == ControlKind::Pot
         || kind == ControlKind::Slider
         || kind == ControlKind::Expression;
+}
+
+bool presetActionAllowed(const std::string& action) {
+    static const std::vector<std::string> actions = {
+        "setParameter", "toggleEffect", "selectPreset", "selectSnapshot", "reloadPreset",
+        "presetUp", "presetDown", "bankUp", "bankDown", "snapshotMode", "bypassAll",
+        "tapTempo", "tuner", "backingPlayPause", "backingStop", "backingPrevious",
+        "backingNext", "backingView", "looperRecord", "looperToggle", "looperPlay",
+        "looperPlayStop", "looperOverdub", "looperStop", "looperRestart", "looperMute",
+        "looperUndo", "looperRedo", "looperView", "recorderToggle",
+        "recorderStop", "recorderView", "drumToggle", "drumFill", "drumVariationNext",
+        "drumVariationPrevious", "drumPatternNext", "drumPatternPrevious", "drumView",
+        "navigate", "select"
+    };
+    return std::find(actions.begin(), actions.end(), action) != actions.end();
 }
 
 bool followLatchPosition(const std::string& action) {
@@ -511,6 +529,13 @@ bool Engine::start(std::string& error) {
     settings_ = storage_.loadSettings();
     tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
         settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
+    tunerAutoBoost_.store(settings_.ui.tuner["detectionBoostMode"].asString("auto") != "manual", std::memory_order_relaxed);
+    tunerAnalysisBoost_.store(dbToGain(std::max(0.0f, std::min(24.0f,
+        settings_.ui.tuner["detectionBoostDb"].asFloat(0.0f)))), std::memory_order_relaxed);
+    const std::string tunerInstrument = settings_.ui.tuner["instrument"].asString("guitar6");
+    tunerExtendedRange_.store(tunerInstrument == "guitar8" || tunerInstrument == "guitar9"
+        || tunerInstrument == "bass5" || tunerInstrument == "bass6" || tunerInstrument == "bass7",
+        std::memory_order_relaxed);
     configureAudioSafety(settings_.audio);
     backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
@@ -607,9 +632,13 @@ bool Engine::start(std::string& error) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
+    logInfo("shutdown: stopping backing tracks");
     if (backing_) backing_->stop();
+    logInfo("shutdown: stopping looper");
     if (looper_) looper_->stop();
+    logInfo("shutdown: stopping recorder");
     if (recorder_) recorder_->stop();
+    logInfo("shutdown: joining control workers");
     if (tunerThread_.joinable()) {
         tunerThread_.join();
     }
@@ -617,12 +646,15 @@ void Engine::stop() {
         housekeepingThread_.join();
     }
 
+    logInfo("shutdown: saving active preset");
     {
         std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         persistActiveBankUnlocked();
     }
 
+    logInfo("shutdown: stopping MIDI");
     midi_.stop();
+    logInfo("shutdown: stopping audio");
     if (backend_) {
         backend_->stop();
     }
@@ -638,6 +670,7 @@ void Engine::stop() {
     }
     retiredChains_.clear();
     latencyGuard_.reset();
+    logInfo("shutdown: engine stopped");
 }
 
 // ---------------------------------------------------------------------------
@@ -834,10 +867,11 @@ bool Engine::applyTransportSettings(const Json& json, std::string& error) {
     transport_.setCountInBars(next.countInBars);
     transport_.setMetronomeEnabled(next.metronomeEnabled);
     transport_.setQuantizationEnabled(next.quantizationEnabled);
-    if (Preset* preset = activePreset()) {
-        preset->tempo = transport_.bpm();
-        applyTempoLinksUnlocked(*preset);
-        requestBankPersist(false);
+    if (Preset* stored = activePreset(); stored && stored->activeSnapshot < 0) {
+        if (Preset* draft = activeSessionDraft(true)) {
+            draft->tempo = transport_.bpm();
+            applyTempoLinksUnlocked(*draft);
+        }
     }
     persistSettings();
     notifyPerformance();
@@ -1401,27 +1435,49 @@ const Preset* Engine::activePreset() const {
     return const_cast<Engine*>(this)->activePreset();
 }
 
-void Engine::syncPresetFromChain() {
-    Preset* preset = activePreset();
+Preset* Engine::activeSessionDraft(bool create) {
+    Preset* stored = activePreset();
+    if (!stored) return nullptr;
+    auto found = sessionPresetDrafts_.find(stored->id);
+    if (found != sessionPresetDrafts_.end()) return &found->second;
+    if (!create) return nullptr;
+    auto inserted = sessionPresetDrafts_.emplace(stored->id, *stored);
+    return &inserted.first->second;
+}
+
+const Preset* Engine::activeSessionDraft() const {
+    auto found = sessionPresetDrafts_.find(activePresetId_);
+    return found == sessionPresetDrafts_.end() ? nullptr : &found->second;
+}
+
+const Preset* Engine::effectiveActivePreset() const {
+    if (const Preset* draft = activeSessionDraft()) return draft;
+    return activePreset();
+}
+
+void Engine::captureChainIntoPreset(Preset& preset) {
     Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!preset || !chain) {
-        return;
-    }
-    // A recalled snapshot is only live parameters. Writing those back into the
-    // stored chain would promote the snapshot into the base preset.
-    if (preset->activeSnapshot >= 0) {
-        return;
-    }
+    if (!chain || preset.activeSnapshot >= 0) return;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-        EffectSlot* stored = preset->findSlot(slot->id);
-        if (!stored || !slot->plugin) {
-            continue;
-        }
-        stored->state = slot->plugin->saveState();
+        EffectSlot* working = preset.findSlot(slot->id);
+        if (!working || !slot->plugin) continue;
+        working->state = slot->plugin->saveState();
         const int pendingEnabled = slot->pendingEnabled.load(std::memory_order_acquire);
-        stored->enabled = pendingEnabled >= 0
+        working->enabled = pendingEnabled >= 0
             ? pendingEnabled != 0 : slot->enabled.load(std::memory_order_relaxed);
     }
+}
+
+void Engine::captureActiveSessionDraft() {
+    if (Preset* draft = activeSessionDraft(true)) captureChainIntoPreset(*draft);
+}
+
+void Engine::clearSessionDraft(const std::string& presetId) {
+    sessionPresetDrafts_.erase(presetId);
+}
+
+void Engine::syncPresetFromChain() {
+    captureActiveSessionDraft();
 }
 
 void Engine::persistBankUnlocked(Bank* bank, bool syncFromChain) {
@@ -1442,10 +1498,9 @@ void Engine::persistActiveBankUnlocked() {
 }
 
 void Engine::writeStoredControlUnlocked(const std::string& slotId, const std::string& portSymbol, float value) {
-    Preset* preset = activePreset();
-    if (!preset || preset->activeSnapshot >= 0) {
-        return;
-    }
+    if (const Preset* stored = activePreset(); !stored || stored->activeSnapshot >= 0) return;
+    Preset* preset = activeSessionDraft(true);
+    if (!preset) return;
     EffectSlot* stored = preset->findSlot(slotId);
     if (!stored) {
         return;
@@ -1496,8 +1551,10 @@ bool Engine::analogCatchAllows(const ActionRequest& request) {
 }
 
 void Engine::flushPendingBasePresetUnlocked() {
-    // Analog moves are live-only. Recalling a snapshot must not bake pots
-    // into the stored preset.
+    // Preserve the current live base before a snapshot temporarily replaces
+    // it. The working copy remains memory-only until the user presses Save.
+    Preset* preset = activePreset();
+    if (preset && preset->activeSnapshot < 0 && activeSessionDraft()) captureActiveSessionDraft();
 }
 
 void Engine::requestBankPersist(bool immediate) {
@@ -1554,6 +1611,9 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 
     const Preset* outgoing = activePreset();
     Bank* outgoingBank = activeBank();
+    if (outgoing && activeSessionDraft()) {
+        captureActiveSessionDraft();
+    }
     if (outgoingBank && outgoingBank->id != bank->id) {
         outgoingBank->lastPresetId = activePresetId_;
         persistBankUnlocked(outgoingBank, false);
@@ -1565,14 +1625,17 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     activeBankId_ = bank->id;
     activePresetId_ = target->id;
     bank->lastPresetId = target->id;
-    if (transportEnabled_.load(std::memory_order_acquire)) {
-        transport_.setBpm(target->tempo);
-    }
-
     // Build the remembered snapshot directly into the unpublished chain. Once
     // publication is deferred until silence, applying it through activeChain_
     // would otherwise modify the outgoing preset during the fade.
-    Preset effectivePreset = *target;
+    const auto draft = sessionPresetDrafts_.find(target->id);
+    Preset effectivePreset = draft == sessionPresetDrafts_.end() ? *target : draft->second;
+    effectivePreset.snapshots = target->snapshots;
+    effectivePreset.rememberedSnapshotSlot = target->rememberedSnapshotSlot;
+    effectivePreset.rememberedSnapshotEnabled = target->rememberedSnapshotEnabled;
+    if (transportEnabled_.load(std::memory_order_acquire)) {
+        transport_.setBpm(effectivePreset.tempo);
+    }
     if (target->rememberedSnapshotEnabled && target->rememberedSnapshotSlot >= 0) {
         if (Snapshot* snapshot = findSnapshotBySlot(*target, target->rememberedSnapshotSlot)) {
             for (EffectSlot& slot : effectivePreset.chain) {
@@ -1736,7 +1799,15 @@ bool Engine::reloadStoredPreset(std::string& error) {
         return false;
     }
     bypassAll_.store(false, std::memory_order_relaxed);
-    restoreStoredPresetToChainUnlocked(*preset);
+    std::string chainError;
+    std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
+    if (!chain) {
+        error = chainError.empty() ? "could not restore the saved preset" : chainError;
+        return false;
+    }
+    clearSessionDraft(preset->id);
+    publishChain(std::move(chain));
+    preset->activeSnapshot = -1;
     forgetRememberedSnapshot(*preset);
     presetReloadCount_ += 1;
     armAnalogCatchUnlocked();
@@ -1749,8 +1820,27 @@ bool Engine::reloadStoredPreset(std::string& error) {
 bool Engine::savePreset(std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
-    if (preset) {
-        syncPresetFromChain();
+    if (!preset) {
+        error = "no active preset";
+        return false;
+    }
+    if (preset->activeSnapshot >= 0) {
+        error = "return to the base preset before saving";
+        return false;
+    }
+    const Preset previous = *preset;
+    if (Preset* draft = activeSessionDraft(false)) {
+        captureChainIntoPreset(*draft);
+        draft->name = preset->name;
+        draft->author = preset->author;
+        draft->snapshots = preset->snapshots;
+        draft->community = preset->community;
+        draft->rememberedSnapshotSlot = preset->rememberedSnapshotSlot;
+        draft->rememberedSnapshotEnabled = preset->rememberedSnapshotEnabled;
+        draft->activeSnapshot = -1;
+        *preset = *draft;
+    } else {
+        captureChainIntoPreset(*preset);
     }
     Bank* bank = activeBank();
     if (!bank) {
@@ -1758,17 +1848,17 @@ bool Engine::savePreset(std::string& error) {
         return false;
     }
     if (!storage_.saveBank(*bank)) {
+        *preset = previous;
         error = "could not write the bank file";
         return false;
     }
+    clearSessionDraft(preset->id);
     notify();
     return true;
 }
 
 bool Engine::savePresetAs(const std::string& name, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    syncPresetFromChain();
-
     Bank* bank = activeBank();
     const Preset* source = activePreset();
     if (!bank || !source) {
@@ -1776,13 +1866,23 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         return false;
     }
 
-    Preset copy = *source;
+    Preset copy = activeSessionDraft() ? *activeSessionDraft() : *source;
+    captureChainIntoPreset(copy);
+    copy.author = source->author;
+    copy.snapshots = source->snapshots;
+    copy.community = source->community;
+    copy.rememberedSnapshotSlot = -1;
+    copy.rememberedSnapshotEnabled = false;
+    copy.activeSnapshot = -1;
     copy.id = newId("preset");
     copy.name = name.empty() ? source->name + " copy" : name;
+    const std::string previousPresetId = activePresetId_;
     bank->presets.push_back(copy);
     activePresetId_ = copy.id;
 
     if (!storage_.saveBank(*bank)) {
+        bank->presets.pop_back();
+        activePresetId_ = previousPresetId;
         error = "could not write the bank file";
         return false;
     }
@@ -1835,6 +1935,9 @@ bool Engine::renamePreset(const std::string& presetId, const std::string& name, 
     for (Preset& preset : bank->presets) {
         if (preset.id == presetId) {
             preset.name = name;
+            if (auto draft = sessionPresetDrafts_.find(presetId); draft != sessionPresetDrafts_.end()) {
+                draft->second.name = name;
+            }
             storage_.saveBank(*bank);
             notify();
             return true;
@@ -1866,6 +1969,7 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
     const Json removedCommunity = found->community;
     const bool wasActive = presetId == activePresetId_;
     bank->presets.erase(found);
+    clearSessionDraft(presetId);
     storage_.saveBank(*bank);
 
     auto dependencyStillUsed = [&](const std::string& group, const std::string& name) {
@@ -1905,7 +2009,12 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
             activePresetId_ = bank->presets.front().id;
         }
         std::string chainError;
-        if (Preset* next = activePreset()) publishChain(buildChain(*next, chainError));
+        if (Preset* next = activePreset()) {
+            const auto draft = sessionPresetDrafts_.find(next->id);
+            const Preset& effective = draft == sessionPresetDrafts_.end() ? *next : draft->second;
+            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpm(effective.tempo);
+            publishChain(buildChain(effective, chainError));
+        }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
         persistSettings();
@@ -1938,6 +2047,7 @@ bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::strin
 
 bool Engine::movePresetToBank(const std::string& presetId, const std::string& targetBankId, int newIndex, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (presetId == activePresetId_ && activeSessionDraft()) captureActiveSessionDraft();
     Bank* source = nullptr;
     auto found = std::vector<Preset>::iterator();
     for (Bank& bank : banks_) {
@@ -1992,7 +2102,10 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         activeBankId_ = target->id;
         settings_.activeBankId = activeBankId_;
         std::string chainError;
-        publishChain(buildChain(target->presets[static_cast<size_t>(newIndex)], chainError));
+        const auto draft = sessionPresetDrafts_.find(presetId);
+        const Preset& effective = draft == sessionPresetDrafts_.end()
+            ? target->presets[static_cast<size_t>(newIndex)] : draft->second;
+        publishChain(buildChain(effective, chainError));
     }
     storage_.saveBank(*source);
     storage_.saveBank(*target);
@@ -2047,6 +2160,7 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         return false;
     }
 
+    for (const Preset& preset : found->presets) clearSessionDraft(preset.id);
     storage_.deleteBank(bankId);
     const bool wasActive = bankId == activeBankId_;
     banks_.erase(found);
@@ -2070,7 +2184,10 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         activePresetId_ = banks_.front().presets.empty() ? "" : banks_.front().presets.front().id;
         if (const Preset* preset = activePreset()) {
             std::string chainError;
-            publishChain(buildChain(*preset, chainError));
+            const auto draft = sessionPresetDrafts_.find(preset->id);
+            const Preset& effective = draft == sessionPresetDrafts_.end() ? *preset : draft->second;
+            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpm(effective.tempo);
+            publishChain(buildChain(effective, chainError));
         }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
@@ -2179,7 +2296,6 @@ bool Engine::exportPresetForCommunity(const std::string& bankId, const std::stri
         error = "community-installed presets cannot be submitted again";
         return false;
     }
-    if (bankId == activeBankId_ && presetId == activePresetId_) syncPresetFromChain();
     exported = *preset;
     exported.activeSnapshot = -1;
     exported.rememberedSnapshotSlot = -1;
@@ -2259,15 +2375,16 @@ bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed
 
 bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     const PluginInfo* info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
@@ -2293,22 +2410,22 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
         error = chainError;
     }
     publishChain(std::move(chain));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     const PluginInfo* info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
@@ -2361,22 +2478,22 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
         preset->parameterBindings.end());
     chain = buildChain(*preset, chainError);
     publishChain(std::move(chain));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::removeEffect(const std::string& slotId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
     const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
@@ -2393,22 +2510,22 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
 bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* stored = activePreset();
+    if (!stored) {
         error = "no active preset";
         return false;
     }
-    if (snapshotMode_.load(std::memory_order_relaxed) || preset->activeSnapshot >= 0) {
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
     const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
@@ -2424,12 +2541,13 @@ bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& er
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
-    persistActiveBankUnlocked();
     notify();
     return true;
 }
 
-bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::string& error) {
+bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
+                              bool persist) {
+    (void)persist; // All sound changes remain in the session draft until Save.
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) {
         error = "no chain is running";
@@ -2443,14 +2561,15 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
             } else {
                 slot->enabled.store(enabled, std::memory_order_relaxed);
             }
-            if (Preset* preset = activePreset()) {
-                if (EffectSlot* stored = preset->findSlot(slotId)) {
-                    stored->enabled = enabled;
-                }
-            }
             {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-                requestBankPersist(true);
+                Preset* storedPreset = activePreset();
+                if (storedPreset && storedPreset->activeSnapshot < 0) {
+                    Preset* preset = activeSessionDraft(true);
+                    if (EffectSlot* working = preset->findSlot(slotId)) {
+                        working->enabled = enabled;
+                    }
+                }
             }
             refreshLeds();
             notifyPerformance();
@@ -2461,26 +2580,9 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
     return false;
 }
 
-bool Engine::setEffectName(const std::string& slotId, const std::string& name, std::string& error) {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
-    if (!preset) {
-        error = "no active preset";
-        return false;
-    }
-    EffectSlot* slot = preset->findSlot(slotId);
-    if (!slot) {
-        error = "no such effect";
-        return false;
-    }
-    slot->name = name;
-    persistActiveBankUnlocked();
-    notify();
-    return true;
-}
-
 bool Engine::setControlValue(const std::string& slotId, const std::string& portSymbol,
                              float value, std::string& error, bool persist) {
+    (void)persist; // Preview and release both update the same live session draft.
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) {
         error = "no chain is running";
@@ -2502,17 +2604,16 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
             // state acknowledgement report the requested toggle/slider value.
             slot.plugin->setControl(port.index, clamped);
             bool clearedTempoLink = false;
-            if (persist && !port.trigger) {
+            if (!port.trigger) {
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
                 writeStoredControlUnlocked(slotId, portSymbol, clamped);
-                if (Preset* preset = activePreset(); preset && preset->activeSnapshot < 0) {
-                    if (EffectSlot* stored = preset->findSlot(slotId);
-                        stored && stored->tempoLinks.has(portSymbol)) {
-                        stored->tempoLinks.remove(portSymbol);
+                if (Preset* preset = activeSessionDraft(false); preset && preset->activeSnapshot < 0) {
+                    if (EffectSlot* working = preset->findSlot(slotId);
+                        working && working->tempoLinks.has(portSymbol)) {
+                        working->tempoLinks.remove(portSymbol);
                         clearedTempoLink = true;
                     }
                 }
-                requestBankPersist(false);
             }
             if (clearedTempoLink) notify();
             else notifyPerformance();
@@ -2532,15 +2633,16 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
         error = "Tap Tempo Clock is disabled";
         return false;
     }
-    Preset* preset = activePreset();
-    if (!preset) {
+    Preset* storedPreset = activePreset();
+    if (!storedPreset) {
         error = "no active preset";
         return false;
     }
-    if (preset->activeSnapshot >= 0) {
+    if (storedPreset->activeSnapshot >= 0) {
         error = "return to the base preset before changing Tempo Link";
         return false;
     }
+    Preset* preset = activeSessionDraft(true);
     EffectSlot* stored = preset->findSlot(slotId);
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!stored || !chain) {
@@ -2564,7 +2666,6 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
                 stored->tempoLinks.set(portSymbol, Json(quarterNoteBeats));
                 live.plugin->setControl(port.index, value);
             }
-            requestBankPersist(true);
             notify();
             return true;
         }
@@ -2575,7 +2676,7 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
     return false;
 }
 
-void Engine::applyTempoLinksUnlocked(Preset& preset, bool deferControls) {
+void Engine::applyTempoLinksUnlocked(const Preset& preset, bool deferControls) {
     if (!transportEnabled_.load(std::memory_order_acquire)) return;
     Chain* chain = activeChain_.load(std::memory_order_acquire);
     if (!chain) return;
@@ -2639,6 +2740,8 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
                 step = 1.0f;
             } else if (port.rangeSteps > 1) {
                 step = span / static_cast<float>(port.rangeSteps - 1);
+            } else if (request.fine) {
+                step *= 0.25f;
             }
             if (port.toggled) {
                 return setControlValue(request.binding.slotId, request.binding.portSymbol,
@@ -2651,8 +2754,9 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
                 const double ratio = static_cast<double>(port.maximum) / port.minimum;
                 const double position = std::log(static_cast<double>(current) / port.minimum)
                                       / std::log(ratio);
+                const double detents = static_cast<double>(delta) * (request.fine ? 0.25 : 1.0);
                 const double nextPosition = std::max(0.0, std::min(1.0,
-                    position + static_cast<double>(delta) / static_cast<double>(steps - 1)));
+                    position + detents / static_cast<double>(steps - 1)));
                 next = static_cast<float>(port.minimum * std::pow(ratio, nextPosition));
             }
             if (!setControlValue(request.binding.slotId, request.binding.portSymbol, next, error, false)) {
@@ -2702,20 +2806,18 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
             transitionRequested_.store(true, std::memory_order_release);
         }
         if (persist) {
-            if (Preset* preset = activePreset()) {
-                if (EffectSlot* stored = preset->findSlot(slotId)) {
-                    Json properties = stored->state["properties"].isObject()
-                                    ? stored->state["properties"] : Json::object();
+            Preset* storedPreset = activePreset();
+            if (storedPreset && storedPreset->activeSnapshot < 0) {
+                Preset* preset = activeSessionDraft(true);
+                if (EffectSlot* working = preset->findSlot(slotId)) {
+                    Json properties = working->state["properties"].isObject()
+                                    ? working->state["properties"] : Json::object();
                     properties.set(propertyUri, Json(resolved));
-                    Json state = stored->state.isObject() ? stored->state : Json::object();
+                    Json state = working->state.isObject() ? working->state : Json::object();
                     state.set("properties", properties);
-                    stored->state = state;
+                    working->state = state;
                 }
             }
-        }
-        if (persist) {
-            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-            requestBankPersist(true);
         }
         if (backing_) backing_->refreshPlaylist();
         notify();
@@ -2818,6 +2920,16 @@ void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
     armAnalogCatchUnlocked();
 }
 
+void Engine::restoreSessionOrStoredPresetToChainUnlocked(Preset& preset) {
+    auto draft = sessionPresetDrafts_.find(preset.id);
+    if (draft != sessionPresetDrafts_.end()) {
+        restoreStoredPresetToChainUnlocked(draft->second);
+        preset.activeSnapshot = -1;
+        return;
+    }
+    restoreStoredPresetToChainUnlocked(preset);
+}
+
 void Engine::forgetRememberedSnapshot(Preset& preset) {
     preset.rememberedSnapshotSlot = -1;
     preset.rememberedSnapshotEnabled = false;
@@ -2833,7 +2945,7 @@ bool Engine::toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error
         return true;
     }
     if (preset.rememberedSnapshotEnabled) {
-        restoreStoredPresetToChainUnlocked(preset);
+        restoreSessionOrStoredPresetToChainUnlocked(preset);
         preset.rememberedSnapshotEnabled = false;
         return true;
     }
@@ -2873,7 +2985,7 @@ bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& er
         return false;
     }
     if (preset.activeSnapshot == slot && preset.rememberedSnapshotEnabled) {
-        restoreStoredPresetToChainUnlocked(preset);
+        restoreSessionOrStoredPresetToChainUnlocked(preset);
         forgetRememberedSnapshot(preset);
         return true;
     }
@@ -2905,7 +3017,7 @@ void Engine::applySnapshotToChain(const Snapshot& snapshot) {
         stateLoaded = true;
     }
     if (mutedTransition && stateLoaded) transitionRequested_.store(true, std::memory_order_release);
-    if (Preset* preset = activePreset()) applyTempoLinksUnlocked(*preset, mutedTransition);
+    if (const Preset* preset = effectiveActivePreset()) applyTempoLinksUnlocked(*preset, mutedTransition);
     armAnalogCatchUnlocked();
 }
 
@@ -3047,7 +3159,15 @@ bool Engine::restoreLiveFromStoredPreset(std::string& error) {
         error = "no active preset";
         return false;
     }
-    restoreStoredPresetToChainUnlocked(*preset);
+    std::string chainError;
+    std::unique_ptr<Chain> restored = buildChain(*preset, chainError);
+    if (!restored) {
+        error = chainError.empty() ? "could not restore the saved preset" : chainError;
+        return false;
+    }
+    clearSessionDraft(preset->id);
+    publishChain(std::move(restored));
+    preset->activeSnapshot = -1;
     preset->rememberedSnapshotEnabled = false;
     refreshLeds();
     notify();
@@ -3071,7 +3191,7 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
         forgetRememberedSnapshot(*preset);
     }
     if (preset->activeSnapshot == found->slot) {
-        restoreStoredPresetToChainUnlocked(*preset);
+        restoreSessionOrStoredPresetToChainUnlocked(*preset);
         forgetRememberedSnapshot(*preset);
         preset->activeSnapshot = -1;
     }
@@ -3164,7 +3284,7 @@ void Engine::cancelControlLearn() {
 
 void Engine::overlayPresetBind(ActionRequest& request) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    const Preset* preset = activePreset();
+    const Preset* preset = effectiveActivePreset();
     if (!preset) {
         return;
     }
@@ -3177,9 +3297,16 @@ void Engine::overlayPresetBind(ActionRequest& request) {
     request.binding.action = bind->action;
     request.binding.slotId = bind->slotId;
     request.binding.portSymbol = bind->portSymbol;
+    request.binding.bankId = bind->bankId;
+    request.binding.presetId = bind->presetId;
+    request.binding.snapshotId = bind->snapshotId;
+    request.binding.snapshotSlot = bind->snapshotSlot;
     request.binding.minimum = bind->minimum;
     request.binding.maximum = bind->maximum;
-    request.binding.inverted = bind->inverted;
+    // Physical direction is owned by Hardware Setup. Per-preset reversal is
+    // reserved for preset-owned virtual controls and is edited with the
+    // Virtual Controls layout.
+    request.binding.inverted = findVirtualControl(request.controlId).has_value() && bind->inverted;
 }
 
 void Engine::migrateHardwareParameterBinds() {
@@ -3217,7 +3344,8 @@ void Engine::migrateHardwareParameterBinds() {
             continue;
         }
         const std::string action = control.binding.action;
-        if (action.empty() || action == "none" || action == "setParameter" || action == "toggleEffect") {
+        if (action.empty() || action == "none" || action == "setParameter" || action == "toggleEffect"
+            || action == "virtualControlProxy") {
             continue;
         }
         control.binding.action = "none";
@@ -3236,9 +3364,16 @@ void Engine::migrateHardwareParameterBinds() {
 
 bool Engine::bindPresetControl(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* preset = activePreset();
+    const std::string requestedPresetId = json["ownerPresetId"].asString();
+    Preset* preset = requestedPresetId.empty() ? activePreset() : findPresetAnywhere(requestedPresetId);
     if (!preset) {
-        error = "no active preset";
+        error = requestedPresetId.empty() ? "no active preset" : "no such preset";
+        return false;
+    }
+    Bank* owner = requestedPresetId.empty() ? activeBank() : findBankForPreset(requestedPresetId);
+    const std::string requestedBankId = json["ownerBankId"].asString();
+    if (!requestedBankId.empty() && (!owner || owner->id != requestedBankId)) {
+        error = "preset is not in that bank";
         return false;
     }
 
@@ -3248,15 +3383,20 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
         error = "controlId required";
         return false;
     }
+    const std::optional<VirtualControl> virtualControl = findVirtualControl(controlId);
 
     ParameterBinding bind;
     bind.controlId = controlId;
     bind.action = action;
     bind.slotId = json["slotId"].asString();
     bind.portSymbol = json["portSymbol"].asString();
+    bind.bankId = json["targetBankId"].asString();
+    bind.presetId = json["targetPresetId"].asString();
+    bind.snapshotId = json["snapshotId"].asString();
+    bind.snapshotSlot = json["snapshotSlot"].asInt(-1);
     bind.minimum = json["min"].asFloat(0.0f);
     bind.maximum = json["max"].asFloat(1.0f);
-    bind.inverted = json["inverted"].asBool(false);
+    bind.inverted = virtualControl && json["inverted"].asBool(false);
 
     if (action == "setParameter" || action == "toggleEffect") {
         if (bind.slotId.empty()) {
@@ -3271,24 +3411,386 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
             error = "no such effect";
             return false;
         }
-    } else if (action != "none" && !action.empty()) {
-        error = "action must be setParameter, toggleEffect, or none";
+        if (action == "setParameter") {
+            const EffectSlot* slot = preset->findSlot(bind.slotId);
+            const PluginInfo* plugin = slot ? catalog_.find(slot->uri) : nullptr;
+            if (plugin) {
+                const auto port = std::find_if(plugin->ports.begin(), plugin->ports.end(),
+                    [&](const PortInfo& item) {
+                        return item.symbol == bind.portSymbol && item.control && item.input && !item.notOnGui;
+                    });
+                if (port == plugin->ports.end()) {
+                    error = "no such bindable parameter";
+                    return false;
+                }
+                if (virtualControl) {
+                    const ControlKind kind = virtualControl->kind;
+                    const bool compatible = kind == ControlKind::Momentary ? port->trigger
+                        : kind == ControlKind::Latching ? port->toggled
+                        : (kind == ControlKind::Pot || kind == ControlKind::Slider
+                            || kind == ControlKind::Expression) ? !port->trigger && !port->toggled
+                        : kind == ControlKind::Encoder ? !port->trigger
+                        : false;
+                    if (!compatible) {
+                        error = "parameter is incompatible with that virtual control type";
+                        return false;
+                    }
+                }
+            }
+        }
+    } else if (action != "none" && !action.empty() && !presetActionAllowed(action)) {
+        error = "unsupported preset control action";
         return false;
     }
+    if (action == "selectPreset") {
+        Preset* targetPreset = bind.presetId.empty() ? nullptr : findPresetAnywhere(bind.presetId);
+        Bank* targetBank = bind.presetId.empty() ? nullptr : findBankForPreset(bind.presetId);
+        if (!targetPreset || (!bind.bankId.empty() && (!targetBank || targetBank->id != bind.bankId))) {
+            error = "no such target preset";
+            return false;
+        }
+    }
+    if (action == "selectSnapshot" && (!virtualControl || virtualControl->kind != ControlKind::Encoder)) {
+        const bool foundSnapshot = std::any_of(preset->snapshots.begin(), preset->snapshots.end(),
+            [&](const Snapshot& snapshot) {
+                return (bind.snapshotSlot >= 0 && snapshot.slot == bind.snapshotSlot)
+                    || (!bind.snapshotId.empty() && snapshot.id == bind.snapshotId);
+            });
+        if (!foundSnapshot) {
+            error = "no such target snapshot";
+            return false;
+        }
+    }
+    if (virtualControl && action != "none" && !action.empty()) {
+        if ((virtualControl->kind == ControlKind::Pot || virtualControl->kind == ControlKind::Slider
+             || virtualControl->kind == ControlKind::Expression) && action != "setParameter") {
+            error = "continuous virtual controls require a parameter target";
+            return false;
+        }
+        if (action == "toggleEffect" && virtualControl->kind != ControlKind::Momentary
+            && virtualControl->kind != ControlKind::Latching
+            && virtualControl->kind != ControlKind::Encoder) {
+            error = "effect bypass is incompatible with that virtual control type";
+            return false;
+        }
+    }
 
+    const std::vector<ParameterBinding> previousBindings = preset->parameterBindings;
     preset->parameterBindings.erase(
         std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
                        [&](const ParameterBinding& item) { return item.controlId == controlId; }),
         preset->parameterBindings.end());
-    if (action == "setParameter" || action == "toggleEffect") {
+    if (action != "none" && !action.empty()) {
         preset->parameterBindings.push_back(std::move(bind));
     }
 
-    if (Bank* bank = activeBank()) {
-        storage_.saveBank(*bank);
+    if (owner && !storage_.saveBank(*owner)) {
+        preset->parameterBindings = previousBindings;
+        error = "could not save preset bindings";
+        return false;
     }
+    if (auto draft = sessionPresetDrafts_.find(preset->id); draft != sessionPresetDrafts_.end()) {
+        draft->second.parameterBindings = preset->parameterBindings;
+    }
+    proxyCatch_.clear();
     refreshLeds();
     notify();
+    return true;
+}
+
+VirtualControlsConfig Engine::effectiveVirtualControlsConfig() const {
+    const Preset* preset = effectiveActivePreset();
+    if (preset && preset->virtualControlSurface.isObject()
+        && preset->virtualControlSurface["mode"].asString("shared") != "shared"
+        && preset->virtualControlSurface["layout"].isObject()) {
+        return VirtualControlsConfig::fromJson(preset->virtualControlSurface["layout"]);
+    }
+    return settings_.virtualControls;
+}
+
+std::optional<VirtualControl> Engine::findVirtualControl(const std::string& controlId) const {
+    const VirtualControlsConfig config = effectiveVirtualControlsConfig();
+    for (const VirtualControl& control : config.controls) {
+        if (control.id == controlId) return control;
+    }
+    return std::nullopt;
+}
+
+bool Engine::applyVirtualControlsConfig(const Json& json, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const bool preserveBindings = json["preserveBindings"].asBool(false);
+    const bool presetScope = json["scope"].asString() == "preset";
+    const std::string requestedMode = json["mode"].asString(presetScope ? "custom" : "shared");
+    if (presetScope && requestedMode != "shared" && requestedMode != "custom" && requestedMode != "auto") {
+        error = "invalid virtual controls surface mode";
+        return false;
+    }
+    VirtualControlsConfig next = requestedMode == "shared"
+        ? settings_.virtualControls : VirtualControlsConfig::fromJson(json);
+    std::vector<std::string> ids;
+    ids.reserve(next.controls.size());
+    for (const VirtualControl& control : next.controls) {
+        if (control.id.empty()) {
+            error = "virtual control id required";
+            return false;
+        }
+        if (control.kind != ControlKind::Momentary && control.kind != ControlKind::Latching
+            && control.kind != ControlKind::Pot && control.kind != ControlKind::Encoder
+            && control.kind != ControlKind::Slider) {
+            error = "unsupported virtual control type";
+            return false;
+        }
+        if (std::find(ids.begin(), ids.end(), control.id) != ids.end()) {
+            error = "duplicate virtual control id";
+            return false;
+        }
+        for (const ControllerControl& physical : settings_.controller.controls) {
+            if (physical.id == control.id) {
+                error = "virtual control id conflicts with hardware";
+                return false;
+            }
+        }
+        ids.push_back(control.id);
+    }
+
+    if (presetScope) {
+        Preset* preset = activePreset();
+        Bank* owner = activeBank();
+        if (!preset || !owner) {
+            error = "no active preset";
+            return false;
+        }
+        const VirtualControlsConfig previous = effectiveVirtualControlsConfig();
+        const Json previousSurface = preset->virtualControlSurface;
+        std::vector<ParameterBinding> previousBindings = preset->parameterBindings;
+        Json surface = Json::object();
+        surface.set("mode", requestedMode);
+        if (requestedMode != "shared") surface.set("layout", next.toJson());
+        preset->virtualControlSurface = std::move(surface);
+
+        if (!preserveBindings) {
+            std::vector<std::string> removed;
+            for (const VirtualControl& old : previous.controls) {
+                if (std::find(ids.begin(), ids.end(), old.id) == ids.end()) removed.push_back(old.id);
+            }
+            preset->parameterBindings.erase(std::remove_if(
+                preset->parameterBindings.begin(), preset->parameterBindings.end(),
+                [&](const ParameterBinding& binding) {
+                    return std::find(removed.begin(), removed.end(), binding.controlId) != removed.end();
+                }), preset->parameterBindings.end());
+            if (std::find(removed.begin(), removed.end(), activeVirtualControlId_) != removed.end()) {
+                activeVirtualControlId_.clear();
+            }
+        }
+        if (!storage_.saveBank(*owner)) {
+            preset->virtualControlSurface = previousSurface;
+            preset->parameterBindings = std::move(previousBindings);
+            error = "could not save preset virtual controls";
+            return false;
+        }
+        if (auto draft = sessionPresetDrafts_.find(preset->id); draft != sessionPresetDrafts_.end()) {
+            draft->second.virtualControlSurface = preset->virtualControlSurface;
+            draft->second.parameterBindings = preset->parameterBindings;
+        }
+        proxyCatch_.clear();
+        notify();
+        error.clear();
+        return true;
+    }
+
+    std::vector<std::string> removed;
+    for (const VirtualControl& old : settings_.virtualControls.controls) {
+        if (std::find(ids.begin(), ids.end(), old.id) == ids.end()) removed.push_back(old.id);
+    }
+    const VirtualControlsConfig previousConfig = settings_.virtualControls;
+    const std::vector<Bank> previousBanks = banks_;
+    const std::string previousActiveControl = activeVirtualControlId_;
+    settings_.virtualControls = std::move(next);
+    if (!removed.empty() && !preserveBindings) {
+        for (Bank& bank : banks_) {
+            bool changed = false;
+            for (Preset& preset : bank.presets) {
+                if (preset.virtualControlSurface["mode"].asString("shared") != "shared") continue;
+                const size_t before = preset.parameterBindings.size();
+                preset.parameterBindings.erase(std::remove_if(
+                    preset.parameterBindings.begin(), preset.parameterBindings.end(),
+                    [&](const ParameterBinding& binding) {
+                        return std::find(removed.begin(), removed.end(), binding.controlId) != removed.end();
+                    }), preset.parameterBindings.end());
+                changed = changed || before != preset.parameterBindings.size();
+            }
+            if (changed && !storage_.saveBank(bank)) {
+                settings_.virtualControls = previousConfig;
+                banks_ = previousBanks;
+                activeVirtualControlId_ = previousActiveControl;
+                for (const Bank& restore : banks_) storage_.saveBank(restore);
+                error = "could not remove obsolete virtual bindings";
+                return false;
+            }
+        }
+    }
+    if (std::find(removed.begin(), removed.end(), activeVirtualControlId_) != removed.end()) {
+        activeVirtualControlId_.clear();
+    }
+    proxyCatch_.clear();
+    if (!persistSettings()) {
+        settings_.virtualControls = previousConfig;
+        banks_ = previousBanks;
+        activeVirtualControlId_ = previousActiveControl;
+        for (const Bank& restore : banks_) storage_.saveBank(restore);
+        persistSettings();
+        error = "could not save virtual controls";
+        return false;
+    }
+    notify();
+    error.clear();
+    return true;
+}
+
+bool Engine::selectVirtualSurfaceControl(const std::string& controlId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controlId.empty()) {
+        activeVirtualControlId_.clear();
+        proxyCatch_.clear();
+        ++virtualControlRevision_;
+        notifyPerformance();
+        error.clear();
+        return true;
+    }
+    if (!findVirtualControl(controlId)) {
+        error = "no such virtual control";
+        return false;
+    }
+    activeVirtualControlId_ = controlId;
+    proxyCatch_.clear();
+    ++virtualControlRevision_;
+    notifyPerformance();
+    return true;
+}
+
+bool Engine::toggleBoundParameter(const ParameterBinding& binding, std::string& error) {
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain) {
+        error = "no chain is running";
+        return false;
+    }
+    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+        if (slot->id != binding.slotId || !slot->plugin) continue;
+        for (const PortInfo& port : slot->plugin->info().ports) {
+            if (!port.control || !port.input || port.symbol != binding.portSymbol) continue;
+            const float current = slot->plugin->control(port.index);
+            const float low = binding.minimum;
+            const float high = binding.maximum;
+            const float next = current > low + (high - low) * 0.5f ? low : high;
+            return setControlValue(binding.slotId, binding.portSymbol, next, error, false);
+        }
+        error = "no such control on this effect";
+        return false;
+    }
+    error = "no such effect";
+    return false;
+}
+
+bool Engine::pressVirtualSurfaceControl(const std::string& controlId, bool pressed, std::string& error) {
+    const std::optional<VirtualControl> control = findVirtualControl(controlId);
+    if (!control) {
+        error = "no such virtual control";
+        return false;
+    }
+    selectVirtualSurfaceControl(controlId, error);
+    const Preset* preset = effectiveActivePreset();
+    const ParameterBinding* binding = preset ? preset->findParameterBinding(controlId) : nullptr;
+    if (!binding) return true;
+    if (control->kind == ControlKind::Latching && pressed && binding->action == "setParameter") {
+        const bool ok = toggleBoundParameter(*binding, error);
+        if (ok) { ++virtualControlRevision_; notifyPerformance(); }
+        return ok;
+    }
+    ActionRequest request;
+    request.controlId = controlId;
+    request.action = "none";
+    request.kind = control->kind == ControlKind::Latching ? ControlKind::Momentary : control->kind;
+    request.pressed = pressed;
+    request.value = pressed ? 1.0f : 0.0f;
+    request.fromScreen = true;
+    request.persist = false;
+    runAction(request);
+    ++virtualControlRevision_;
+    return true;
+}
+
+bool Engine::setVirtualSurfaceControlValue(const std::string& controlId, float value, std::string& error) {
+    const std::optional<VirtualControl> control = findVirtualControl(controlId);
+    if (!control || !isContinuousKind(control->kind)) {
+        error = control ? "virtual control is not continuous" : "no such virtual control";
+        return false;
+    }
+    selectVirtualSurfaceControl(controlId, error);
+    ActionRequest request;
+    request.controlId = controlId;
+    request.action = "none";
+    request.kind = control->kind;
+    request.pressed = true;
+    request.value = std::max(0.0f, std::min(1.0f, value));
+    request.fromScreen = true;
+    request.persist = false;
+    runAction(request);
+    ++virtualControlRevision_;
+    return true;
+}
+
+bool Engine::turnVirtualSurfaceEncoder(const std::string& controlId, int delta, std::string& error) {
+    const std::optional<VirtualControl> control = findVirtualControl(controlId);
+    if (!control || control->kind != ControlKind::Encoder) {
+        error = control ? "virtual control is not an encoder" : "no such virtual control";
+        return false;
+    }
+    selectVirtualSurfaceControl(controlId, error);
+    ActionRequest request;
+    request.controlId = controlId;
+    request.action = "none";
+    request.kind = ControlKind::Encoder;
+    request.pressed = true;
+    request.delta = delta < 0 ? -1 : 1;
+    request.value = static_cast<float>(request.delta);
+    request.fromScreen = true;
+    request.persist = false;
+    runAction(request);
+    ++virtualControlRevision_;
+    return true;
+}
+
+bool Engine::turnSelectedVirtualControl(int delta, std::string& error) {
+    ActionRequest request;
+    request.controlId = "contextualVirtualControlEncoder";
+    request.action = "virtualControlProxy";
+    request.kind = ControlKind::Encoder;
+    request.pressed = true;
+    request.delta = delta < 0 ? -1 : 1;
+    request.value = static_cast<float>(request.delta);
+    request.persist = false;
+    runAction(request);
+    error.clear();
+    return true;
+}
+
+bool Engine::toggleVirtualControlFine(std::string& error) {
+    ActionRequest request;
+    request.controlId = "contextualVirtualControlEncoderPush";
+    request.action = "virtualControlProxyFine";
+    request.kind = ControlKind::EncoderPush;
+    request.pressed = true;
+    runAction(request);
+    error.clear();
+    return true;
+}
+
+bool Engine::validatePresetEvent(const std::string& expectedPresetId, std::string& error) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!expectedPresetId.empty() && expectedPresetId != activePresetId_) {
+        error = "that control event belongs to a preset that is no longer active";
+        return false;
+    }
     return true;
 }
 
@@ -3441,7 +3943,118 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
     notify();
 }
 
+bool Engine::bindingTargetPosition(const ParameterBinding& binding, float& position) const {
+    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    if (!chain || binding.action != "setParameter") return false;
+    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+        if (slot->id != binding.slotId || !slot->plugin) continue;
+        for (const PortInfo& port : slot->plugin->info().ports) {
+            if (!port.control || !port.input || port.symbol != binding.portSymbol) continue;
+            const float value = slot->plugin->control(port.index);
+            const float minimum = binding.minimum;
+            const float maximum = binding.maximum;
+            if (maximum == minimum) return false;
+            double normal = 0.0;
+            if (port.logarithmic && minimum != 0.0f && maximum != 0.0f
+                && ((minimum > 0.0f) == (maximum > 0.0f)) && value != 0.0f) {
+                normal = std::log(static_cast<double>(value) / minimum)
+                       / std::log(static_cast<double>(maximum) / minimum);
+            } else {
+                normal = (static_cast<double>(value) - minimum) / (maximum - minimum);
+            }
+            position = static_cast<float>(std::max(0.0, std::min(1.0, normal)));
+            if (binding.inverted) position = 1.0f - position;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Engine::proxyCatchAllows(const ActionRequest& request, const ParameterBinding& binding) {
+    float target = 0.0f;
+    if (!bindingTargetPosition(binding, target)) return false;
+    ProxyCatch& state = proxyCatch_[request.controlId];
+    if (state.virtualControlId != activeVirtualControlId_ || state.presetId != activePresetId_) {
+        state = ProxyCatch{};
+        state.virtualControlId = activeVirtualControlId_;
+        state.presetId = activePresetId_;
+    }
+    if (state.acquired) return true;
+    const float incoming = std::max(0.0f, std::min(1.0f, request.value));
+    constexpr float kTolerance = 4.0f / 127.0f;
+    const bool close = std::fabs(incoming - target) <= kTolerance;
+    const bool crossed = state.lastVisual >= 0.0f
+        && ((state.lastVisual <= target && incoming >= target)
+            || (state.lastVisual >= target && incoming <= target));
+    state.lastVisual = incoming;
+    if (!close && !crossed) return false;
+    state.acquired = true;
+    return true;
+}
+
+void Engine::runVirtualControlProxy(const ActionRequest& request) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const std::optional<VirtualControl> target = findVirtualControl(activeVirtualControlId_);
+    const Preset* preset = effectiveActivePreset();
+    const ParameterBinding* binding = preset && target
+        ? preset->findParameterBinding(activeVirtualControlId_) : nullptr;
+    if (!target || !binding) return;
+
+    const bool encoder = request.kind == ControlKind::Encoder;
+    const bool absolute = request.kind == ControlKind::Pot
+        || request.kind == ControlKind::Slider || request.kind == ControlKind::Expression;
+    const bool targetContinuous = target->kind == ControlKind::Pot
+        || target->kind == ControlKind::Slider || target->kind == ControlKind::Expression
+        || target->kind == ControlKind::Encoder;
+    if ((!encoder && !absolute) || !targetContinuous) return;
+    if (absolute && (target->kind == ControlKind::Encoder || target->kind == ControlKind::Latching)) return;
+    if (absolute && !proxyCatchAllows(request, *binding)) return;
+
+    ActionRequest forwarded = request;
+    forwarded.controlId = activeVirtualControlId_;
+    forwarded.action = "none";
+    forwarded.binding = ControlBinding{};
+    forwarded.fromScreen = absolute;
+    forwarded.persist = false;
+    forwarded.fine = proxyFineMode_;
+    if (encoder && binding->action == "setParameter" && !proxyFineMode_) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto found = proxyEncoderAt_.find(request.controlId);
+        const auto elapsed = found == proxyEncoderAt_.end()
+            ? std::chrono::milliseconds(1000)
+            : std::chrono::duration_cast<std::chrono::milliseconds>(now - found->second);
+        proxyEncoderAt_[request.controlId] = now;
+        int& burst = proxyEncoderBurst_[request.controlId];
+        burst = elapsed.count() < 90 ? std::min(4, burst + 1) : elapsed.count() < 180 ? 2 : 1;
+        forwarded.delta = (request.delta < 0 ? -1 : 1) * burst;
+    }
+    runAction(forwarded);
+    ++virtualControlRevision_;
+    notifyPerformance();
+}
+
 void Engine::runAction(const ActionRequest& incoming) {
+    if (incoming.action == "navigateOrVirtualControlProxy") {
+        const int delta = incoming.delta != 0 ? incoming.delta : (incoming.value >= 0.0f ? 1 : -1);
+        notifyUiNav(delta < 0 ? -1 : 1, false, "turn");
+        return;
+    }
+    if (incoming.action == "selectOrVirtualControlFine") {
+        if (incoming.pressed) notifyUiNav(0, true, "fine");
+        return;
+    }
+    if (incoming.action == "virtualControlProxy") {
+        runVirtualControlProxy(incoming);
+        return;
+    }
+    if (incoming.action == "virtualControlProxyFine") {
+        if (incoming.pressed) {
+            proxyFineMode_ = !proxyFineMode_;
+            ++virtualControlRevision_;
+            notifyPerformance();
+        }
+        return;
+    }
     ActionRequest request = incoming;
     overlayPresetBind(request);
 
@@ -3600,7 +4213,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         reloadStoredPreset(error);
     } else if (request.action == "toggleEffect") {
         if (latching) {
-            setEffectEnabled(binding.slotId, latchOn(request), error);
+            setEffectEnabled(binding.slotId, latchOn(request), error, request.persist);
         } else {
             Chain* chain = activeChain_.load(std::memory_order_acquire);
             bool enabled = true;
@@ -3615,7 +4228,7 @@ void Engine::runAction(const ActionRequest& incoming) {
                     }
                 }
             }
-            setEffectEnabled(binding.slotId, enabled, error);
+            setEffectEnabled(binding.slotId, enabled, error, request.persist);
         }
     } else if (request.action == "setParameter") {
         if (request.kind == ControlKind::Encoder) {
@@ -3766,7 +4379,7 @@ void Engine::refreshLeds() {
 
         // An LED tied to a control follows what that control currently does,
         // so a switch bound to an effect lights only while that effect is on.
-        const Preset* preset = activePreset();
+        const Preset* preset = effectiveActivePreset();
         for (const ControllerControl& control : config.controls) {
             if (control.ledId != led.id) {
                 continue;
@@ -3906,6 +4519,13 @@ bool Engine::applyUiSettings(const Json& json, std::string& error) {
     settings_.ui = UiSettings::fromJson(merged);
     tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
         settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
+    tunerAutoBoost_.store(settings_.ui.tuner["detectionBoostMode"].asString("auto") != "manual", std::memory_order_relaxed);
+    tunerAnalysisBoost_.store(dbToGain(std::max(0.0f, std::min(24.0f,
+        settings_.ui.tuner["detectionBoostDb"].asFloat(0.0f)))), std::memory_order_relaxed);
+    const std::string tunerInstrument = settings_.ui.tuner["instrument"].asString("guitar6");
+    tunerExtendedRange_.store(tunerInstrument == "guitar8" || tunerInstrument == "guitar9"
+        || tunerInstrument == "bass5" || tunerInstrument == "bass6" || tunerInstrument == "bass7",
+        std::memory_order_relaxed);
     applyControllerFeel();
     if (settings_.ui.performanceEncoder != "session") {
         sessionPresets_.clear();
@@ -4234,11 +4854,9 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         return false;
     }
     const std::string dest = joinPath(destDir, fileName(path));
-    if (kind == "drumsample" || kind == "drumkit") {
-        std::error_code sampleEc;
-        if (std::filesystem::exists(dest, sampleEc) || sampleEc) {
-            error = "destination already exists; drum files are never overwritten"; return false;
-        }
+    std::error_code destinationEc;
+    if (std::filesystem::exists(dest, destinationEc) || destinationEc) {
+        error = "destination already exists; library moves never overwrite files"; return false;
     }
     if (!storage_.isPathInLibrary(dest)) {
         error = "could not move that there";
@@ -4258,13 +4876,14 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
 void Engine::tapTempo() {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (!transportEnabled_.load(std::memory_order_acquire)) {
-        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
+        if (const Preset* preset = effectiveActivePreset()) transport_.setBpm(preset->tempo);
     }
     const double bpm = transport_.tap();
-    if (Preset* preset = activePreset()) {
-        preset->tempo = bpm;
-        applyTempoLinksUnlocked(*preset);
-        requestBankPersist(false);
+    if (Preset* stored = activePreset(); stored && stored->activeSnapshot < 0) {
+        if (Preset* draft = activeSessionDraft(true)) {
+            draft->tempo = bpm;
+            applyTempoLinksUnlocked(*draft);
+        }
     }
     notifyPerformance();
 }
@@ -4284,6 +4903,7 @@ void Engine::setTunerViewState(bool open, bool muted) {
 }
 
 void Engine::tunerThread() {
+    std::vector<float> captured(8192, 0.0f);
     std::vector<float> window(4096, 0.0f);
     TunerReading stable;
     int pendingMidi = -1;
@@ -4297,12 +4917,31 @@ void Engine::tunerThread() {
         }
 
         const size_t write = tunerWrite_.load(std::memory_order_acquire);
-        for (size_t i = 0; i < window.size(); ++i) {
-            const size_t index = (write + kTunerRingSize - window.size() + i) % kTunerRingSize;
-            window[i] = tunerRing_[index];
+        const bool extendedRange = tunerExtendedRange_.load(std::memory_order_relaxed);
+        const size_t captureCount = extendedRange ? captured.size() : window.size();
+        for (size_t i = 0; i < captureCount; ++i) {
+            const size_t index = (write + kTunerRingSize - captureCount + i) % kTunerRingSize;
+            captured[i] = tunerRing_[index];
+        }
+        if (extendedRange) {
+            for (size_t i = 0; i < window.size(); ++i) {
+                window[i] = 0.5f * (captured[i * 2] + captured[i * 2 + 1]);
+            }
+        } else {
+            std::copy(captured.begin(), captured.begin() + static_cast<std::ptrdiff_t>(window.size()), window.begin());
+        }
+        double rmsEnergy = 0.0;
+        for (float sample : window) rmsEnergy += static_cast<double>(sample) * sample;
+        const float rms = static_cast<float>(std::sqrt(rmsEnergy / window.size()));
+        const float analysisBoost = tunerAutoBoost_.load(std::memory_order_relaxed)
+            ? std::max(1.0f, std::min(15.8489f, 0.12f / std::max(rms, 0.000001f)))
+            : tunerAnalysisBoost_.load(std::memory_order_relaxed);
+        for (float& sample : window) {
+            sample *= analysisBoost;
         }
 
-        TunerReading reading = analysePitch(window, sampleRate_.load(std::memory_order_acquire),
+        const unsigned analysisRate = sampleRate_.load(std::memory_order_acquire) / (extendedRange ? 2u : 1u);
+        TunerReading reading = analysePitch(window, analysisRate,
             tunerThreshold_.load(std::memory_order_relaxed));
         if (reading.valid && stable.valid) {
             if (reading.midiNote == stable.midiNote) {
@@ -4487,13 +5126,14 @@ void Engine::notifyPerformance() {
     }
 }
 
-void Engine::notifyUiNav(int delta, bool select) {
+void Engine::notifyUiNav(int delta, bool select, const std::string& virtualControlAction) {
     std::lock_guard<std::mutex> lock(listenerMutex_);
     if (!listener_) {
         return;
     }
     Json json = Json::object();
     json.set("type", "uiNav");
+    if (!virtualControlAction.empty()) json.set("virtualControlAction", virtualControlAction);
     if (select) {
         json.set("select", true);
     } else {
@@ -4540,6 +5180,21 @@ Json Engine::fullState() const {
     json.set("communityCatalogFeatureEnabled", false);
 #endif
     json.set("controller", describeControllerRuntime());
+    json.set("virtualControls", effectiveVirtualControlsConfig().toJson());
+    json.set("sharedVirtualControls", settings_.virtualControls.toJson());
+    if (const Preset* preset = effectiveActivePreset()) {
+        json.set("virtualControlsMode", preset->virtualControlSurface["mode"].asString("shared"));
+    } else {
+        json.set("virtualControlsMode", "shared");
+    }
+    json.set("activeVirtualControlId", activeVirtualControlId_);
+    json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
+    json.set("virtualControlFine", proxyFineMode_);
+    json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
+    json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
+    Json dirtyPresetIds = Json::array();
+    for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
+    json.set("sessionPresetDirtyIds", std::move(dirtyPresetIds));
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
@@ -4567,7 +5222,7 @@ Json Engine::fullState() const {
             slotJson.set("id", slot->id);
             slotJson.set("uri", slot->plugin->uri());
             slotJson.set("enabled", slot->enabled.load(std::memory_order_relaxed));
-            if (const Preset* preset = activePreset()) {
+            if (const Preset* preset = effectiveActivePreset()) {
                 if (const EffectSlot* stored = preset->findSlot(slot->id)) {
                     slotJson.set("name", stored->name);
                     slotJson.set("tempoLinks", stored->tempoLinks);
@@ -4607,9 +5262,19 @@ Json Engine::performanceState() const {
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
     json.set("presetReloadCount", presetReloadCount_);
+    json.set("activeVirtualControlId", activeVirtualControlId_);
+    json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
+    json.set("virtualControlFine", proxyFineMode_);
+    json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
+    json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
+    Json dirtyPresetIds = Json::array();
+    for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
+    json.set("sessionPresetDirtyIds", std::move(dirtyPresetIds));
 
     if (const Preset* preset = activePreset()) {
-        json.set("tempo", transportEnabled_.load(std::memory_order_acquire) ? transport_.bpm() : preset->tempo);
+        const Preset* effective = effectiveActivePreset();
+        json.set("tempo", transportEnabled_.load(std::memory_order_acquire)
+            ? transport_.bpm() : (effective ? effective->tempo : preset->tempo));
         json.set("activeSnapshot", preset->activeSnapshot);
     }
 
@@ -4936,6 +5601,8 @@ Json Engine::meterState() const {
         && !tunerOutputMuted_.load(std::memory_order_relaxed));
     tunerJson.set("valid", reading.valid);
     tunerJson.set("frequency", reading.frequency);
+    tunerJson.set("inputLevel", reading.inputLevel);
+    tunerJson.set("confidence", reading.confidence);
     tunerJson.set("note", reading.noteName);
     tunerJson.set("cents", reading.cents);
     json.set("tuner", tunerJson);

@@ -38,6 +38,9 @@ export interface PerformanceTile {
     analogValue?: string;
     assigned?: boolean;
     kind?: string;
+    orientation?: "vertical" | "horizontal";
+    detentCount?: number;
+    detentIndex?: number;
     rect?: { x: number; y: number; width: number; height: number };
     value?: number;
     presetSlotIndex?: number;
@@ -46,9 +49,11 @@ export interface PerformanceTile {
     pressed?: boolean;
     encoderSelected?: boolean;
     freeform?: boolean;
+    scrollFriendly?: boolean;
     onPress: () => void;
     onValue?: (value: number) => void;
     onStep?: (delta: number) => void;
+    onPageSwipe?: (delta: -1 | 1) => void;
     onLongPress?: () => void;
     onDoublePress?: () => void;
     onMenu?: () => void;
@@ -104,6 +109,7 @@ export function PerformanceControl({
     const assigned = tile.assigned ?? Boolean(tile.analogFunction && tile.analogFunction !== "UNASSIGNED");
     const popoutScale = loadUiBehavior().controlPopoutScale;
     const [popout, setPopout] = useState(false);
+    const popoutCloseTimer = useRef<number | null>(null);
     const drag = useRef<{
         pointerId: number;
         startY: number;
@@ -111,17 +117,23 @@ export function PerformanceControl({
         bounds: DOMRect;
         keep: boolean;
         emittedSteps: number;
+        direction: "pending" | "adjusting" | "scrolling" | "paging";
+        adjusted: boolean;
+        scrollTouch: boolean;
+        pageSwipeTouch: boolean;
     } | null>(null);
     const encoderGestureCleanup = useRef<(() => void) | null>(null);
+    const analogTouchCleanup = useRef<(() => void) | null>(null);
     const hold = useRef<{
         timer: number | null;
         pointerId: number;
         startX: number;
         startY: number;
         suppressed: boolean;
+        scrolling: boolean;
         doubleTimer: number | null;
         contextMenuAt: number;
-    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false, doubleTimer: null, contextMenuAt: 0 });
+    }>({ timer: null, pointerId: -1, startX: 0, startY: 0, suppressed: false, scrolling: false, doubleTimer: null, contextMenuAt: 0 });
     const range = clampUnit(tile.value ?? (tile.active ? 1 : 0));
     const displayRole: SwitchRole = tile.lightState === "snapshot"
         ? "snapshot"
@@ -132,15 +144,37 @@ export function PerformanceControl({
     const vars = visualVars(displayRole, visualActive);
     const led = indicatorColor(tile, visualActive, vars);
 
+    const clearPopoutClose = () => {
+        if (popoutCloseTimer.current !== null) {
+            window.clearTimeout(popoutCloseTimer.current);
+            popoutCloseTimer.current = null;
+        }
+    };
+
+    const revealPopout = () => {
+        clearPopoutClose();
+        setPopout(true);
+    };
+
+    const schedulePopoutClose = () => {
+        clearPopoutClose();
+        const duration = loadUiBehavior().controlPopoutDurationMs;
+        popoutCloseTimer.current = window.setTimeout(() => {
+            popoutCloseTimer.current = null;
+            if (!drag.current && !tile.hardwarePopout) setPopout(false);
+        }, duration);
+    };
+
     useEffect(() => {
         if (!analog) {
             return;
         }
         if (tile.hardwarePopout) {
-            setPopout(true);
+            revealPopout();
             return;
         }
         if (!drag.current) {
+            clearPopoutClose();
             setPopout(false);
         }
     }, [analog, tile.hardwarePopout]);
@@ -161,10 +195,30 @@ export function PerformanceControl({
 
     useEffect(() => () => {
         encoderGestureCleanup.current?.();
+        analogTouchCleanup.current?.();
+        clearPopoutClose();
         clearHold();
         clearDouble();
         tile.onCancelPress?.();
     }, []);
+
+    useEffect(() => {
+        const cancelForSurfaceSwipe = () => {
+            encoderGestureCleanup.current?.();
+            analogTouchCleanup.current?.();
+            clearPopoutClose();
+            clearHold();
+            clearDouble();
+            drag.current = null;
+            hold.current.pointerId = -1;
+            hold.current.suppressed = true;
+            hold.current.scrolling = true;
+            setPopout(false);
+            tile.onCancelPress?.();
+        };
+        window.addEventListener("pimfx-surface-swipe-start", cancelForSurfaceSwipe);
+        return () => window.removeEventListener("pimfx-surface-swipe-start", cancelForSurfaceSwipe);
+    }, [tile.onCancelPress]);
 
     const openHoldMenu = () => {
         clearDouble();
@@ -203,23 +257,103 @@ export function PerformanceControl({
         const delta = steps - active.emittedSteps;
         if (delta === 0) return;
         active.emittedSteps = steps;
+        active.adjusted = true;
+        const behavior = loadUiBehavior();
+        if (behavior.controlPopout || active.keep) revealPopout();
         tile.onStep(delta > 0 ? 1 : -1);
+    };
+
+    const continueAnalogTouch = (pointerId: number, clientX: number, clientY: number) => {
+        const active = drag.current;
+        if (!active || active.pointerId !== pointerId || !tile.onValue) return;
+        const kind = tile.kind ?? "pot";
+        let next: number;
+        if (active.scrollTouch) {
+            const sensitivity = Math.max(110, active.bounds.width * 1.15);
+            next = active.startValue + (clientX - hold.current.startX) / sensitivity;
+        } else if (kind === "slider" || kind === "expression") {
+            next = tile.orientation === "horizontal"
+                ? (clientX - active.bounds.left) / Math.max(1, active.bounds.width)
+                : 1 - (clientY - active.bounds.top) / Math.max(1, active.bounds.height);
+        } else {
+            const sensitivity = Math.max(90, active.bounds.height * 0.9);
+            next = active.startValue + (active.startY - clientY) / sensitivity;
+        }
+        const value = clampUnit(next);
+        active.adjusted = true;
+        tile.onValue(value);
+        tile.onFeedback?.({
+            source: tile.analogSource || tile.switchLabel,
+            effect: tile.analogFunction?.split(" · ")[0] || "",
+            parameter: tile.analogFunction?.split(" · ")[1] || tile.analogFunction || "",
+            value: value.toFixed(2),
+            range: value
+        });
+    };
+
+    const preserveAnalogTouch = (pointerId: number) => {
+        if (analogTouchCleanup.current) return;
+        const finish = (endEvent: Event) => {
+            if (drag.current?.pointerId !== pointerId) return;
+            endEvent.preventDefault();
+            endEvent.stopPropagation();
+            clearHold();
+            tile.onRelease?.();
+            drag.current = null;
+            analogTouchCleanup.current?.();
+            schedulePopoutClose();
+        };
+        const onPointerUp = (event: PointerEvent) => {
+            if (event.pointerId === pointerId) finish(event);
+        };
+        const onPointerCancel = (event: PointerEvent) => {
+            if (event.pointerId === pointerId) event.stopPropagation();
+        };
+        const onTouchMove = (event: TouchEvent) => {
+            if (drag.current?.pointerId !== pointerId) return;
+            const touch = event.touches.item(0);
+            if (!touch) return;
+            event.preventDefault();
+            event.stopPropagation();
+            continueAnalogTouch(pointerId, touch.clientX, touch.clientY);
+        };
+        const onTouchEnd = (event: TouchEvent) => finish(event);
+        analogTouchCleanup.current = () => {
+            window.removeEventListener("pointerup", onPointerUp, true);
+            window.removeEventListener("pointercancel", onPointerCancel, true);
+            window.removeEventListener("touchmove", onTouchMove, true);
+            window.removeEventListener("touchend", onTouchEnd, true);
+            window.removeEventListener("touchcancel", onTouchEnd, true);
+            analogTouchCleanup.current = null;
+        };
+        window.addEventListener("pointerup", onPointerUp, { capture: true, passive: false });
+        window.addEventListener("pointercancel", onPointerCancel, { capture: true, passive: false });
+        window.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
+        window.addEventListener("touchend", onTouchEnd, { capture: true, passive: false });
+        window.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: false });
     };
 
     const begin = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>, keep: boolean) => {
         if (event.pointerType === "mouse" && event.button !== 0) {
             return;
         }
-        event.preventDefault();
+        clearPopoutClose();
+        const scrollTouch = Boolean(tile.scrollFriendly && event.pointerType !== "mouse");
+        const pageSwipeTouch = Boolean(tile.onPageSwipe && event.pointerType !== "mouse");
+        const intentTouch = scrollTouch || pageSwipeTouch;
+        if (!intentTouch) event.preventDefault();
         event.stopPropagation();
         hold.current.suppressed = false;
+        hold.current.scrolling = false;
         hold.current.pointerId = event.pointerId;
         hold.current.startX = event.clientX;
         hold.current.startY = event.clientY;
-        try {
-            event.currentTarget.setPointerCapture(event.pointerId);
-        } catch {
-            // optional on older touch browsers
+        if (!intentTouch) {
+            try {
+                event.currentTarget.setPointerCapture(event.pointerId);
+            } catch {
+                // optional on older touch browsers
+            }
         }
         tile.onEngage?.();
         if (tile.onDoublePress && hold.current.doubleTimer !== null) {
@@ -229,21 +363,22 @@ export function PerformanceControl({
             tile.onDoublePress();
             return;
         }
-        if (analog && (tile.onValue || tile.onStep)) {
-            const behavior = loadUiBehavior();
-            if (behavior.controlPopout || keep) {
-                setPopout(true);
-            }
+        const adjustable = analog && Boolean(tile.onValue || tile.onStep);
+        if (adjustable || pageSwipeTouch) {
             drag.current = {
                 pointerId: event.pointerId,
                 startY: event.clientY,
                 startValue: range,
                 bounds: event.currentTarget.getBoundingClientRect(),
                 keep,
-                emittedSteps: 0
+                emittedSteps: 0,
+                direction: intentTouch ? "pending" : "adjusting",
+                adjusted: false,
+                scrollTouch,
+                pageSwipeTouch
             };
-            publishFeedback();
-            if ((tile.kind ?? "pot") === "encoder" && tile.onStep) {
+            if (adjustable) publishFeedback();
+            if ((tile.kind ?? "pot") === "encoder" && tile.onStep && !intentTouch) {
                 encoderGestureCleanup.current?.();
                 const pointerId = event.pointerId;
                 const touchGesture = event.pointerType !== "mouse";
@@ -274,8 +409,7 @@ export function PerformanceControl({
                     drag.current = null;
                     tile.onRelease?.();
                     encoderGestureCleanup.current?.();
-                    const duration = loadUiBehavior().controlPopoutDurationMs;
-                    window.setTimeout(() => setPopout(false), duration);
+                    schedulePopoutClose();
                     if (!cancelled && tapped) queueTap();
                 };
                 const onUp = (endEvent: PointerEvent) => {
@@ -330,6 +464,9 @@ export function PerformanceControl({
         if (hold.current.timer !== null && (dx * dx + dy * dy) > cancelPx * cancelPx) {
             clearHold();
         }
+        if (tile.scrollFriendly && !analog && Math.hypot(dx, dy) >= 10) {
+            hold.current.scrolling = true;
+        }
         if (hold.current.suppressed) {
             return;
         }
@@ -343,6 +480,35 @@ export function PerformanceControl({
         if (!drag.current || drag.current.pointerId !== event.pointerId) {
             return;
         }
+        const activeDrag = drag.current;
+        if (activeDrag.direction === "pending") {
+            if (Math.hypot(dx, dy) < 10) return;
+            if (activeDrag.pageSwipeTouch && Math.abs(dx) > Math.abs(dy) * 1.15) {
+                activeDrag.direction = "paging";
+                clearHold();
+                event.preventDefault();
+                return;
+            }
+            if (activeDrag.scrollTouch && Math.abs(dy) > Math.abs(dx) * 1.15) {
+                activeDrag.direction = "scrolling";
+                clearHold();
+                return;
+            }
+            if (Math.abs(dx) <= Math.abs(dy) * 1.15 && activeDrag.scrollTouch) return;
+            if (!analog) {
+                activeDrag.direction = "scrolling";
+                hold.current.scrolling = true;
+                return;
+            }
+            activeDrag.direction = "adjusting";
+            clearHold();
+            try {
+                event.currentTarget.setPointerCapture(event.pointerId);
+            } catch {
+                // optional on older touch browsers
+            }
+        }
+        if (activeDrag.direction === "scrolling" || activeDrag.direction === "paging") return;
         event.preventDefault();
         const kind = tile.kind ?? "pot";
         if (kind === "encoder" && tile.onStep) {
@@ -351,13 +517,26 @@ export function PerformanceControl({
         }
         if (!tile.onValue) return;
         let next: number;
-        if (kind === "slider" || kind === "expression") {
-            next = 1 - (event.clientY - drag.current.bounds.top) / Math.max(1, drag.current.bounds.height);
+        if (activeDrag.scrollTouch) {
+            const sensitivity = Math.max(110, activeDrag.bounds.width * 1.15);
+            next = activeDrag.startValue + dx / sensitivity;
+        } else if (kind === "slider" || kind === "expression") {
+            next = tile.orientation === "horizontal"
+                ? (event.clientX - activeDrag.bounds.left) / Math.max(1, activeDrag.bounds.width)
+                : 1 - (event.clientY - activeDrag.bounds.top) / Math.max(1, activeDrag.bounds.height);
         } else {
-            const sensitivity = Math.max(90, drag.current.bounds.height * 0.9);
-            next = drag.current.startValue + (drag.current.startY - event.clientY) / sensitivity;
+            const sensitivity = Math.max(90, activeDrag.bounds.height * 0.9);
+            next = activeDrag.startValue + (activeDrag.startY - event.clientY) / sensitivity;
         }
         const value = clampUnit(next);
+        if (!activeDrag.adjusted) {
+            const behavior = loadUiBehavior();
+            if (event.pointerType !== "mouse" && kind !== "encoder") {
+                preserveAnalogTouch(event.pointerId);
+            }
+            if (behavior.controlPopout || activeDrag.keep) revealPopout();
+        }
+        activeDrag.adjusted = true;
         tile.onValue(value);
         tile.onFeedback?.({
             source: tile.analogSource || tile.switchLabel,
@@ -381,9 +560,14 @@ export function PerformanceControl({
     };
 
     const finishPointer = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>, cancelled: boolean) => {
-        const analogDrag = drag.current && drag.current.pointerId === event.pointerId;
+        const completedDrag = drag.current?.pointerId === event.pointerId ? drag.current : null;
+        const analogDrag = Boolean(analog && completedDrag);
+        const tapGesture = Boolean(completedDrag
+            && completedDrag.direction === "pending" && !completedDrag.adjusted);
         const encoderTap = analogDrag && (tile.kind ?? "pot") === "encoder"
-            && drag.current?.emittedSteps === 0;
+            && completedDrag?.emittedSteps === 0;
+        const manualEntryTap = Boolean(analogDrag && tile.onDoublePress
+            && completedDrag && !completedDrag.adjusted && completedDrag.emittedSteps === 0);
         const fromTouchMenu = Date.now() - hold.current.contextMenuAt < 800;
         if (!cancelled && fromTouchMenu) {
             if (hold.current.timer !== null) {
@@ -393,9 +577,18 @@ export function PerformanceControl({
             tile.onCancelPress?.();
             return;
         }
-        const suppressed = hold.current.suppressed;
+        const suppressed = hold.current.suppressed || hold.current.scrolling;
         clearHold();
+        analogTouchCleanup.current?.();
         drag.current = null;
+        if (!cancelled && completedDrag?.direction === "paging") {
+            tile.onCancelPress?.();
+            if (Math.abs(event.clientX - hold.current.startX) >= 50) {
+                tile.onPageSwipe?.(event.clientX < hold.current.startX ? 1 : -1);
+            }
+            schedulePopoutClose();
+            return;
+        }
         if (cancelled) {
             tile.onCancelPress?.();
         } else if (suppressed) {
@@ -405,16 +598,17 @@ export function PerformanceControl({
             tile.onRelease?.();
             if (dragged) {
                 if (analogDrag) {
-                    const behavior = loadUiBehavior();
-                    window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
+                    schedulePopoutClose();
                 }
                 return;
             }
         }
         if (analogDrag) {
-            const behavior = loadUiBehavior();
-            window.setTimeout(() => setPopout(false), behavior.controlPopoutDurationMs);
-            if (!cancelled && !suppressed && encoderTap) queueTap();
+            schedulePopoutClose();
+            if (!cancelled && !suppressed && manualEntryTap) queueTap();
+            else if (!cancelled && !suppressed
+                && (completedDrag?.scrollTouch || completedDrag?.pageSwipeTouch) && tapGesture) queueTap();
+            else if (!cancelled && !suppressed && encoderTap) queueTap();
             return;
         }
         if (!cancelled && !suppressed) {
@@ -427,6 +621,10 @@ export function PerformanceControl({
     };
 
     const onPointerCancelHold = (event: ReactPointerEvent<HTMLButtonElement | HTMLDivElement>) => {
+        if (event.pointerType !== "mouse" && analogTouchCleanup.current && drag.current?.adjusted) {
+            event.stopPropagation();
+            return;
+        }
         // Touch Chromium synthesizes contextmenu and often pointercancel on a
         // long-press. Keep a pending hold so the assigned function still fires.
         if (event.pointerType !== "mouse" && hold.current.timer !== null) {
@@ -450,7 +648,7 @@ export function PerformanceControl({
                 inset: "auto",
                 width: "100%",
                 height: "100%",
-                touchAction: "none",
+                touchAction: tile.scrollFriendly ? "pan-y" : "none",
                 WebkitTouchCallout: "none",
                 userSelect: "none",
                 ...style
@@ -461,10 +659,16 @@ export function PerformanceControl({
             onPointerCancel={onPointerCancelHold}
             onContextMenu={suppressBrowserMenu}
             onWheel={(event) => {
+                // Controls embedded in a scrollable editor/page must never
+                // steal the wheel from page navigation.
+                if (tile.scrollFriendly) return;
                 if ((tile.kind ?? "pot") !== "encoder" || !tile.onStep || event.deltaY === 0) return;
                 event.preventDefault();
                 event.stopPropagation();
+                const behavior = loadUiBehavior();
+                if (behavior.controlPopout) revealPopout();
                 tile.onStep(event.deltaY < 0 ? 1 : -1);
+                schedulePopoutClose();
             }}
         >
             {(tile.analogSource || tile.switchLabel).trim() ? (
@@ -476,6 +680,9 @@ export function PerformanceControl({
                     range={range}
                     active={Boolean(tile.active || tile.pressed)}
                     pressed={Boolean(tile.pressed)}
+                    orientation={tile.orientation}
+                    detentCount={tile.detentCount}
+                    detentIndex={tile.detentIndex}
                 />
             </div>
             {tile.analogFunction ? (
@@ -524,11 +731,13 @@ export function PerformanceControl({
             data-mfx-has-menu={hasMenu ? "true" : undefined}
             data-mfx-encoder-selected={tile.encoderSelected ? "true" : undefined}
             onContextMenu={suppressBrowserMenu}
+            style={{ touchAction: tile.scrollFriendly ? "pan-y" : "none" }}
         >
         <button
             type="button"
             className="mfx-performance-switch"
             data-mfx-role={displayRole}
+            data-control-kind={tile.kind || undefined}
             data-mfx-active={visualActive ? "true" : "false"}
             data-mfx-modified={tile.lightState === "modified" ? "true" : "false"}
             data-mfx-light-state={bypassed && displayRole === "preset" && tile.active ? "bypass" : tile.lightState}
@@ -565,11 +774,18 @@ export function PerformanceControl({
                 userSelect: "none",
                 WebkitUserSelect: "none",
                 WebkitTouchCallout: "none",
-                touchAction: "none"
+                touchAction: tile.scrollFriendly ? "pan-y" : "none"
             }}
         >
-            <MultiFXFootswitchGraphic color={led} />
-            <MultiFXArcadeButtonGraphic color={led} />
+            {tile.kind === "toggle" ? (
+                <ToggleSwitchGraphic active={visualActive} valueText={tile.valueText} />
+            ) : tile.kind === "momentary" ? (
+                <MultiFXFootswitchGraphic color={led} />
+            ) : tile.kind === "latching" ? (
+                <MultiFXArcadeButtonGraphic color={led} />
+            ) : (
+                <><MultiFXFootswitchGraphic color={led} /><MultiFXArcadeButtonGraphic color={led} /></>
+            )}
             <span
                 aria-hidden="true"
                 className="mfx-performance-indicator"
@@ -773,12 +989,24 @@ export function TileMenuButton({
     );
 }
 
-function ControlGraphic({ kind, range, active, pressed }: { kind: string; range: number; active: boolean; pressed?: boolean }) {
+function ControlGraphic({ kind, range, active, pressed, orientation = "vertical", detentCount = 0, detentIndex = -1 }: {
+    kind: string;
+    range: number;
+    active: boolean;
+    pressed?: boolean;
+    orientation?: "vertical" | "horizontal";
+    detentCount?: number;
+    detentIndex?: number;
+}) {
     if (kind === "slider" || kind === "expression") {
         return (
-            <div className="mfx-hardware-slider" aria-hidden="true">
-                <div className="mfx-hardware-slider__fill" style={{ height: `${range * 100}%` }} />
-                <div className="mfx-hardware-slider__thumb" style={{ bottom: `calc(${range * 100}% - 5px)` }} />
+            <div className="mfx-hardware-slider" data-orientation={orientation} aria-hidden="true">
+                <div className="mfx-hardware-slider__fill" style={orientation === "horizontal"
+                    ? { width: `${range * 100}%` }
+                    : { height: `${range * 100}%` }} />
+                <div className="mfx-hardware-slider__thumb" style={orientation === "horizontal"
+                    ? { left: `calc(${range * 100}% - 5px)` }
+                    : { bottom: `calc(${range * 100}% - 5px)` }} />
             </div>
         );
     }
@@ -786,14 +1014,23 @@ function ControlGraphic({ kind, range, active, pressed }: { kind: string; range:
         return <div className="mfx-hardware-button" data-active={active ? "true" : "false"} aria-hidden="true" />;
     }
     const degrees = -135 + range * 270;
+    const encoder = kind === "encoder";
     return (
         <div
             className="mfx-hardware-knob"
-            data-encoder={kind === "encoder" ? "true" : "false"}
-            data-pressed={kind === "encoder" && pressed ? "true" : "false"}
+            data-encoder={encoder ? "true" : "false"}
+            data-pressed={encoder && pressed ? "true" : "false"}
             aria-hidden="true"
         >
             <div className="mfx-hardware-knob__pointer" style={{ transform: `rotate(${degrees}deg)` }} />
+            {encoder && detentCount >= 2 && detentCount <= 12 ? (
+                <div className="mfx-hardware-knob__option-detents">
+                    {Array.from({ length: detentCount }, (_, index) => (
+                        <i key={index} className={index === detentIndex ? "active" : ""}
+                            style={{ transform: `rotate(${-135 + index * 270 / Math.max(1, detentCount - 1)}deg)` }} />
+                    ))}
+                </div>
+            ) : encoder ? <div className="mfx-hardware-knob__detents" /> : null}
             <div
                 className="mfx-hardware-knob__arc"
                 style={{
@@ -801,6 +1038,17 @@ function ControlGraphic({ kind, range, active, pressed }: { kind: string; range:
                 }}
             />
         </div>
+    );
+}
+
+function ToggleSwitchGraphic({ active, valueText }: { active: boolean; valueText: string }) {
+    return (
+        <span className="mfx-toggle-hardware" data-active={active ? "true" : "false"} aria-hidden="true">
+            <span className="mfx-toggle-hardware__track">
+                <span className="mfx-toggle-hardware__thumb" />
+            </span>
+            {valueText && <span className="mfx-toggle-hardware__value">{valueText}</span>}
+        </span>
     );
 }
 

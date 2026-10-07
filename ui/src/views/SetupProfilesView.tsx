@@ -25,10 +25,11 @@ export function SetupProfilesView({ engine, run }: {
 
     const contents = () => JSON.stringify({
         format: "pimfx-setup-profile",
-        version: 1,
+        version: 2,
         audio: obj(state.audio),
         ui: obj(state.ui),
         controller: controllerSnapshot(),
+        virtualControls: obj(state.virtualControls),
         system: obj(state.system),
         transport: obj(state.transportSettings),
         looper: {
@@ -43,7 +44,7 @@ export function SetupProfilesView({ engine, run }: {
     }, null, 2);
 
     const accept = (profile: JsonObject) => {
-        if (str(profile.format) !== "pimfx-setup-profile" || num(profile.version) !== 1) {
+        if (str(profile.format) !== "pimfx-setup-profile" || ![1, 2].includes(num(profile.version))) {
             setNotice("That is not a Pi-MFX setup profile.");
             return;
         }
@@ -56,7 +57,7 @@ export function SetupProfilesView({ engine, run }: {
         if (!profile) return;
         void run(async () => {
             const before = {
-                controller: controllerSnapshot(), ui: obj(state.ui), system: obj(state.system),
+                controller: controllerSnapshot(), virtualControls: obj(state.virtualControls), ui: obj(state.ui), system: obj(state.system),
                 transport: obj(state.transportSettings), audio: obj(state.audio),
                 looper: {
                     quantization: str(engine.looper.quantization, "free"), countIn: bool(engine.looper.countIn),
@@ -66,6 +67,9 @@ export function SetupProfilesView({ engine, run }: {
             };
             try {
                 await engine.client.request("controller/config", obj(profile.controller));
+                if (num(profile.version) >= 2 && profile.virtualControls) {
+                    await engine.client.request("virtual-controls/config", { ...obj(profile.virtualControls), preserveBindings: true });
+                }
                 await engine.client.request("ui/settings", obj(profile.ui));
                 await engine.client.request("system/settings", obj(profile.system));
                 if (profile.transport) await engine.client.request("transport/settings", obj(profile.transport));
@@ -82,6 +86,7 @@ export function SetupProfilesView({ engine, run }: {
             } catch (caught) {
                 // Restore the complete prior setup so a failed section never leaves a half-loaded rig.
                 await engine.client.request("controller/config", before.controller).catch(() => undefined);
+                await engine.client.request("virtual-controls/config", { ...before.virtualControls, preserveBindings: true }).catch(() => undefined);
                 await engine.client.request("ui/settings", before.ui).catch(() => undefined);
                 await engine.client.request("system/settings", before.system).catch(() => undefined);
                 await engine.client.request("transport/settings", before.transport).catch(() => undefined);
