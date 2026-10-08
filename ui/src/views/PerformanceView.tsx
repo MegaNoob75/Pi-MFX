@@ -53,6 +53,7 @@ type AssignMenu = {
     kind: "assign";
     controlId: string;
     slotIndex: number;
+    presetId: string;
 };
 
 type DeleteMenu = {
@@ -1009,7 +1010,12 @@ export function PerformanceView({
                 break;
             case "Assign Preset to This Switch":
             case "Assign Different Preset":
-                setMenu({ kind: "assign", controlId: current.controlId, slotIndex: current.slotIndex });
+                setMenu({
+                    kind: "assign",
+                    controlId: current.controlId,
+                    slotIndex: current.slotIndex,
+                    presetId: current.presetId
+                });
                 break;
             case "Remove From Switch": {
                 closeMenu();
@@ -1492,7 +1498,7 @@ export function PerformanceView({
                             <button
                                 key={str(item.id)}
                                 type="button"
-                                className={`mfx-overlay-option${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
+                                className={`mfx-overlay-option${str(item.id) === menu.presetId ? " selected" : ""}`}
                                 onClick={() => assignPreset(str(item.id), menu.controlId)}
                             >
                                 {str(item.name)}
