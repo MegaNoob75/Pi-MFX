@@ -67,6 +67,32 @@ function toneName(tone: JsonObject): string {
     return str(tone.name, str(tone.title, "TONE3000 tone"));
 }
 
+function tonePageUrl(tone: JsonObject): string {
+    const saved = str(tone.url).trim();
+    if (saved) {
+        try {
+            const url = new URL(saved, "https://www.tone3000.com");
+            if (url.protocol === "https:"
+                && (url.hostname === "tone3000.com" || url.hostname === "www.tone3000.com")
+                && url.pathname.startsWith("/tones/")) {
+                return url.toString();
+            }
+        } catch {
+            // Derive the public page from the documented title and ID below.
+        }
+    }
+    const toneId = jsonId(tone.id).trim();
+    const slug = str(tone.slug, toneName(tone))
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const suffix = `-${toneId}`;
+    const pageSlug = toneId && slug.endsWith(suffix) ? slug : `${slug}${suffix}`;
+    return toneId && slug ? `https://www.tone3000.com/tones/${pageSlug}` : "";
+}
+
 function creatorName(tone: JsonObject): string {
     const user = obj(tone.user);
     const name = str(user.username, str(tone.creator, str(user.name))).replace(/^@/, "").trim();
@@ -360,6 +386,7 @@ export function Tone3000View({
                     toneTitle: toneName(tone),
                     creator: creatorName(tone).replace(/^@/, ""),
                     sourceLicense: str(obj(tone.license).name, str(tone.license)),
+                    sourceUrl: tonePageUrl(tone),
                     architecture: str(model.architecture_version),
                     name,
                     kind,

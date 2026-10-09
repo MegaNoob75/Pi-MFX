@@ -951,7 +951,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         std::string storedPath;
         Json provenance = Json::object();
         for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                                "creator", "sourceLicense"}) {
+                                "creator", "sourceLicense", "sourceUrl"}) {
             const std::string value = payload[key].asString();
             if (!value.empty()) provenance.set(key, value);
         }
@@ -991,7 +991,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
                     result.name = item["name"].asString("TONE3000 model");
                     Json provenance = Json::object();
                     for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                                            "creator", "sourceLicense"}) {
+                                            "creator", "sourceLicense", "sourceUrl"}) {
                         const std::string value = item[key].asString();
                         if (!value.empty()) provenance.set(key, value);
                     }
@@ -1079,7 +1079,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
                         }
                         Json provenance = Json::object();
                         for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                                                "creator", "sourceLicense"}) {
+                                                "creator", "sourceLicense", "sourceUrl"}) {
                             const std::string value = item[key].asString();
                             if (!value.empty()) provenance.set(key, value);
                         }

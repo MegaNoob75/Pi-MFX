@@ -814,7 +814,7 @@ bool Tone3000Client::downloadModel(const std::string& url,
     asset.set("expectedFilename", fileName(storedPath));
     asset.set("kind", isIr ? "ir" : isAidax ? "aidax" : "model");
     for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                            "creator", "sourceLicense"}) {
+                            "creator", "sourceLicense", "sourceUrl"}) {
         const std::string value = provenance[key].asString();
         if (!value.empty()) asset.set(key, value);
     }
