@@ -2729,9 +2729,13 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
                         selected = point;
                     }
                 }
+                // Encoder acceleration is useful for continuous ranges, but an
+                // enumerated selector must visit every adjacent choice.  A
+                // burst delta of two would otherwise skip the middle option.
+                const long direction = delta < 0 ? -1L : 1L;
                 const long nextIndex = std::max<long>(0, std::min<long>(
                     static_cast<long>(port.scalePoints.size()) - 1,
-                    static_cast<long>(selected) + delta));
+                    static_cast<long>(selected) + direction));
                 return setControlValue(request.binding.slotId, request.binding.portSymbol,
                                        port.scalePoints[static_cast<size_t>(nextIndex)].value,
                                        error, false);

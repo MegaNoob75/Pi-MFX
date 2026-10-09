@@ -84,6 +84,8 @@ assert.match(host, /port\.trigger[\s\S]*\.exchange\([\s\S]*port\.defaultValue/,
     'trigger values must automatically reset after one audio block');
 assert.match(engine, /port\.enumerated && !port\.scalePoints\.empty\(\)/,
     'engine value validation must constrain enumerations to their scale points');
+assert.match(engine, /port\.enumerated && !port\.scalePoints\.empty\(\)[\s\S]*const long direction = delta < 0 \? -1L : 1L;[\s\S]*static_cast<long>\(selected\) \+ direction/,
+    'accelerated hardware encoders must still visit each adjacent enumeration choice');
 assert.match(engine, /slot\.plugin->setControl\(port\.index, clamped\)[\s\S]*notifyPerformance\(\)/,
     'engine acknowledgement must expose the requested control value immediately');
 assert.match(engine, /port\.rangeSteps > 1/,

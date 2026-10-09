@@ -468,6 +468,15 @@ function instrumentProfileFrom(source: JsonObject, name = str(source.instrumentP
     };
 }
 
+function sameInstrumentProfile(left: JsonObject, right: JsonObject): boolean {
+    return str(left.name) === str(right.name)
+        && str(left.inputMode, "instrument") === str(right.inputMode, "instrument")
+        && str(left.calibrationMode, "unmeasured") === str(right.calibrationMode, "unmeasured")
+        && num(left.instrumentLevelDbU, -6) === num(right.instrumentLevelDbU, -6)
+        && num(left.interfaceReferenceDbU, 12) === num(right.interfaceReferenceDbU, 12)
+        && num(left.interfaceGainDb) === num(right.interfaceGainDb);
+}
+
 function profileName(requested: string, profiles: JsonObject[], except = ""): string {
     const base = requested.trim() || "New instrument";
     const used = new Set(profiles.filter((profile) => str(profile.name) !== except).map((profile) => str(profile.name).toLowerCase()));
@@ -499,6 +508,7 @@ function AudioSettings({
     const [setupResult, setSetupResult] = useState<InputSetupResult | null>(null);
     const [selectedProfile, setSelectedProfile] = useState(str(audio.instrumentProfileName, "Guitar 1"));
     const [confirmProfileDelete, setConfirmProfileDelete] = useState(false);
+    const [calibrationNotice, setCalibrationNotice] = useState("");
     const setupDeadline = useRef(0);
     const silenceRmsTotal = useRef(0);
     const silenceSamples = useRef(0);
@@ -551,6 +561,14 @@ function AudioSettings({
     const guitarRms = num(meters.guitarInputRms);
     const savedProfiles = objects(draft.instrumentProfiles);
     const instrumentProfiles = savedProfiles.length > 0 ? savedProfiles : [instrumentProfileFrom(draft)];
+    const savedPersistedProfiles = objects(audio.instrumentProfiles);
+    const persistedProfiles = savedPersistedProfiles.length > 0
+        ? savedPersistedProfiles : [instrumentProfileFrom(audio)];
+    const persistedProfile = persistedProfiles.find((item) => str(item.name) === selectedProfile);
+    const draftProfile = instrumentProfileFrom(draft, str(draft.instrumentProfileName, "Guitar 1"));
+    const profileChanged = !persistedProfile
+        || !sameInstrumentProfile(draftProfile, persistedProfile)
+        || bool(draft.namCalibrationManaged, true) !== bool(audio.namCalibrationManaged, true);
 
     useEffect(() => {
         if (setupPhase === "silence") {
@@ -597,6 +615,7 @@ function AudioSettings({
         playingSamples.current = 0;
         maximumPeak.current = 0;
         setSetupResult(null);
+        setCalibrationNotice("");
         setSetupPhase("silence");
         setupDeadline.current = performance.now() + 3000;
         setSetupSeconds(3);
@@ -722,7 +741,10 @@ function AudioSettings({
         selectProfile(name);
         setDraft(next);
         updateUiSessionSection(client, "settings", { audioDraft: next });
-        void run(() => queueLiveRequest("audio/settings", calibrationPatch(next)));
+        void run(async () => {
+            await queueLiveRequest("audio/settings", calibrationPatch(next));
+            setCalibrationNotice(`Saved “${name}”.`);
+        });
     };
 
     const deleteCalibrationProfile = () => {
@@ -747,6 +769,7 @@ function AudioSettings({
             updateUiSessionSection(client, "settings", { audioDraft: next });
             return next;
         });
+        setCalibrationNotice(`Wizard estimate applied: ${estimated.toFixed(1)} dBu. Save the profile to keep it.`);
     };
 
     return (
@@ -793,7 +816,7 @@ function AudioSettings({
                     <label className="field"><span>Guitar input</span>
                         <select value={guitarInput} onChange={(event) => set("guitarInput", Number(event.target.value))}>
                             {Array.from({ length: maxInputs }, (_, index) => <option key={index + 1} value={index + 1}>
-                                Input {index + 1}{index === 0 ? " · often mic / line" : index === 1 ? " · often instrument" : ""}
+                                Input {index + 1}{index === 1 ? " · often instrument" : ""}
                             </option>)}
                         </select>
                     </label>
@@ -890,14 +913,15 @@ function AudioSettings({
                             <label className="field"><span>0 dBFS reference at minimum gain (dBu)</span><input type="number" min={-30} max={40} step={0.1} value={num(draft.interfaceReferenceDbU, 12)} onChange={(event) => set("interfaceReferenceDbU", Number(event.target.value))} /><small><strong>What to enter:</strong> the analog input level that the manufacturer says produces 0 dBFS when the input gain is at minimum. Look for “maximum input level” for the correct input mode in the manual. Example: if the Instrument input maximum is +12 dBu, enter 12. Do not copy a Line-input value when using Instrument/Hi-Z. If you cannot find it, do not guess—use Unmeasured instead.</small></label>
                             <label className="field"><span>Current hardware gain (dB)</span><input type="number" min={-20} max={80} step={0.1} value={num(draft.interfaceGainDb)} onChange={(event) => set("interfaceGainDb", Number(event.target.value))} /><small><strong>What to enter:</strong> the gain added above the interface's minimum-gain position. Leave this at <strong>0 dB</strong> if the physical gain knob is at minimum. If the knob or control panel reports +10 dB, enter 10. If it only has an unnumbered ring, the exact gain is unknown; use Unmeasured for the safest result.</small></label>
                         </div>
-                        <div className="audio-field-note"><strong>Next step</strong><span>Run Input Level Setup above. When it finishes, return here and select Use Wizard Estimate. Review the calculated Guitar signal level, then save the profile.</span></div>
-                        <button type="button" className="btn" disabled={!setupResult} onClick={useEstimatedCalibration}>USE WIZARD ESTIMATE</button>
+                        <div className="audio-field-note"><strong>Next step</strong><span>Run Input Level Setup above. When it finishes, return here and select Apply Wizard Estimate. Review the calculated Guitar signal level, then save the profile.</span></div>
+                        <button type="button" className={`btn${setupResult ? " btn-accent" : ""}`} disabled={!setupResult} onClick={useEstimatedCalibration}>APPLY WIZARD ESTIMATE</button>
                     </div>}
                     <button type="button" className={`btn ${bool(draft.namCalibrationManaged, true) ? "btn-active" : ""}`} onClick={() => set("namCalibrationManaged", !bool(draft.namCalibrationManaged, true))}>
                         MANAGE TOOB NAM FROM THIS PROFILE · {bool(draft.namCalibrationManaged, true) ? "ON" : "OFF"}
                     </button>
                     <div className="audio-field-note"><strong>What does management do?</strong><span><strong>On:</strong> Pi-MFX applies this profile's guitar signal level to every TooB NAM effect, so you do not have to configure each preset separately.</span><span><strong>Off:</strong> every TooB NAM effect uses the calibration value saved in its preset.</span></div>
-                    <button type="button" className="btn btn-accent" onClick={saveCalibration}>SAVE CURRENT PROFILE</button>
+                    {calibrationNotice && <div className="audio-field-note"><strong>Profile status</strong><span>{calibrationNotice}</span></div>}
+                    <button type="button" className={`btn${profileChanged ? " btn-accent" : ""}`} disabled={!profileChanged} onClick={saveCalibration}>SAVE CURRENT PROFILE</button>
                     {confirmProfileDelete && <ConfirmDialog
                         title="DELETE INSTRUMENT PROFILE?"
                         body={`Delete “${selectedProfile}”? This removes its saved calibration values. This cannot be undone.`}

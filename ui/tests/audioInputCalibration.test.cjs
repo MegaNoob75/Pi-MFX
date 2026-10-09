@@ -44,6 +44,10 @@ assert.match(settings, /What does management do\?[\s\S]*configure each preset se
     'managed calibration must explain both choices in beginner language');
 assert.match(settings, /LOAD SELECTED[\s\S]*NEW PROFILE[\s\S]*DELETE SELECTED[\s\S]*SAVE CURRENT PROFILE/,
     'the calibration page must provide explicit multi-profile controls');
+assert.match(settings, /Wizard estimate applied:[\s\S]*Save the profile to keep it/,
+    'applying the wizard estimate must provide visible confirmation');
+assert.match(settings, /profileChanged[\s\S]*SAVE CURRENT PROFILE/,
+    'the save-profile emphasis must reflect unsaved profile changes');
 assert.match(settings, /loadCalibrationProfile[\s\S]*audio\/settings[\s\S]*deleteCalibrationProfile/,
     'loading and deleting profiles must persist the newly active profile');
 assert.match(settings, /MANAGE TOOB NAM FROM THIS PROFILE/,
