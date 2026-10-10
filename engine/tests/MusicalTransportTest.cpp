@@ -48,6 +48,8 @@ int main() {
     auto slower = transport.beginAudioBlock(64);
     assert(closeTo(slower.framesPerBeat, 48000.0));
     assert(slower.frame == 128);
+    assert(!transport.setBpmIfStopped(90.0));
+    assert(closeTo(transport.bpm(), 60.0));
 
     transport.setTimeSignature(3, 4);
     transport.restart();
@@ -72,6 +74,8 @@ int main() {
     assert(json["beatsPerBar"].asInt(0) == 3);
 
     transport.stop();
+    assert(transport.setBpmIfStopped(90.0));
+    assert(closeTo(transport.bpm(), 90.0));
     auto finalBlock = transport.beginAudioBlock(64);
     assert(!finalBlock.playing);
     assert(finalBlock.speed == 0.0);

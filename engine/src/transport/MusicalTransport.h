@@ -33,6 +33,7 @@ class MusicalTransport {
 public:
     void setSampleRate(unsigned sampleRate) noexcept;
     void setBpm(double bpm) noexcept;
+    bool setBpmIfStopped(double bpm) noexcept;
     void setTimeSignature(int beatsPerBar, int beatUnit) noexcept;
     void setCountInBars(int bars) noexcept;
     void setMetronomeEnabled(bool enabled) noexcept;

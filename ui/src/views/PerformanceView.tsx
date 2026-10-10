@@ -53,6 +53,7 @@ type AssignMenu = {
     kind: "assign";
     controlId: string;
     slotIndex: number;
+    presetId: string;
 };
 
 type DeleteMenu = {
@@ -136,7 +137,6 @@ export function PerformanceView({
     const [confirmOverwrite, setConfirmOverwrite] = useState(false);
     const [notice, setNotice] = useState("");
     const [removeAssignment, setRemoveAssignment] = useState<{ controlId: string; name: string } | null>(null);
-    const [renameValue, setRenameValue] = useState("");
     const [toast, setToast] = useState("");
     const [pressedId, setPressedId] = useState("");
     const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
@@ -371,9 +371,7 @@ export function PerformanceView({
     };
 
     const openPresetMenu = (controlId: string, slotIndex: number, presetId: string, canAssign: boolean) => {
-        const item = presets.find((entry) => str(entry.id) === presetId);
         armMenuUntilIdle();
-        setRenameValue(str(obj(item).name));
         setMenu({ kind: "preset", controlId, slotIndex, presetId, canAssign });
     };
 
@@ -1012,7 +1010,12 @@ export function PerformanceView({
                 break;
             case "Assign Preset to This Switch":
             case "Assign Different Preset":
-                setMenu({ kind: "assign", controlId: current.controlId, slotIndex: current.slotIndex });
+                setMenu({
+                    kind: "assign",
+                    controlId: current.controlId,
+                    slotIndex: current.slotIndex,
+                    presetId: current.presetId
+                });
                 break;
             case "Remove From Switch": {
                 closeMenu();
@@ -1046,13 +1049,18 @@ export function PerformanceView({
     };
 
     const renameMenuPreset = () => {
-        if (menu?.kind !== "preset" || !menu.presetId || !renameValue.trim()) {
+        if (menu?.kind !== "preset" || !menu.presetId) {
             return;
         }
-        void run(() => client.request("preset/rename", {
-            presetId: menu.presetId,
-            name: renameValue.trim()
-        }));
+        const presetId = menu.presetId;
+        const preset = presets.find((item) => str(item.id) === presetId);
+        closeMenu();
+        void askText("Rename Preset", str(obj(preset).name)).then((value) => {
+            const name = value?.trim();
+            if (name) {
+                void run(() => client.request("preset/rename", { presetId, name }));
+            }
+        });
     };
 
     const deleteMenuPreset = (current: DeleteMenu) => {
@@ -1465,16 +1473,7 @@ export function PerformanceView({
                         onClick={(event) => event.stopPropagation()}
                     >
                         <div className="mfx-overlay-title">PRESET SWITCH {menu.slotIndex + 1}</div>
-                        {selectedPreset && (
-                            <div className="row" style={{ marginBottom: 10 }}>
-                                <input
-                                    className="input"
-                                    value={renameValue}
-                                    onChange={(event) => setRenameValue(event.target.value)}
-                                />
-                                <button type="button" className="btn" onClick={renameMenuPreset}>RENAME</button>
-                            </div>
-                        )}
+                        {selectedPreset && <button type="button" className="btn" onClick={renameMenuPreset}>RENAME</button>}
                         {presetOptions(menu).map((option) => (
                             <button
                                 key={option}
@@ -1499,7 +1498,7 @@ export function PerformanceView({
                             <button
                                 key={str(item.id)}
                                 type="button"
-                                className={`mfx-overlay-option${str(item.id) === str(state.activePresetId) ? " selected" : ""}`}
+                                className={`mfx-overlay-option${str(item.id) === menu.presetId ? " selected" : ""}`}
                                 onClick={() => assignPreset(str(item.id), menu.controlId)}
                             >
                                 {str(item.name)}

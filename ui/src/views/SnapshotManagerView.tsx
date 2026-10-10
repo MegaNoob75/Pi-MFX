@@ -5,6 +5,7 @@ import type { EngineSnapshot } from "../api";
 import { findPreset } from "../api";
 import { num, obj, str, objects } from "../json";
 import { snapshotAtSlot, snapshotLayoutSlots } from "../layout";
+import { askText } from "../keyboard/ask";
 import { MarqueeText } from "./MarqueeText";
 
 const DEFAULT_SNAPSHOT_COLORS = [
@@ -29,8 +30,6 @@ export function SnapshotManagerView({
     const snapshots = objects(obj(preset).snapshots);
     const active = num(obj(preset).activeSnapshot, -1);
     const slots = snapshotLayoutSlots(obj(obj(state.controller).performanceLayout));
-    const [renameSlot, setRenameSlot] = useState<number | null>(null);
-    const [renameValue, setRenameValue] = useState("");
     const [message, setMessage] = useState("");
     const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string; slot: number } | null>(null);
 
@@ -43,6 +42,16 @@ export function SnapshotManagerView({
     }, [message]);
 
     const show = (text: string) => setMessage(text);
+
+    const renameSnapshot = (snapshotId: string, currentName: string) => {
+        void askText("Rename Snapshot", currentName).then((value) => {
+            const name = value?.trim();
+            if (name) {
+                void run(() => client.request("snapshot/rename", { snapshotId, name }))
+                    .then(() => show("SNAPSHOT RENAMED"));
+            }
+        });
+    };
 
     return (
         <div className="mfx-screen snapshot-manager">
@@ -86,45 +95,9 @@ export function SnapshotManagerView({
                             </div>
                             {snapshot ? (
                                 <>
-                                    {renameSlot === slot ? (
-                                        <div className="row" style={{ marginTop: 10 }}>
-                                            <input
-                                                className="input"
-                                                value={renameValue}
-                                                onChange={(event) => setRenameValue(event.target.value)}
-                                                onKeyDown={(event) => {
-                                                    if (event.key === "Enter" && renameValue.trim()) {
-                                                        void run(() => client.request("snapshot/rename", {
-                                                            snapshotId: str(snapshot.id),
-                                                            name: renameValue.trim()
-                                                        })).then(() => {
-                                                            setRenameSlot(null);
-                                                            show("SNAPSHOT RENAMED");
-                                                        });
-                                                    }
-                                                    if (event.key === "Escape") {
-                                                        setRenameSlot(null);
-                                                    }
-                                                }}
-                                            />
-                                            <button type="button" className="btn" onClick={() => {
-                                                if (!renameValue.trim()) {
-                                                    return;
-                                                }
-                                                void run(() => client.request("snapshot/rename", {
-                                                    snapshotId: str(snapshot.id),
-                                                    name: renameValue.trim()
-                                                })).then(() => {
-                                                    setRenameSlot(null);
-                                                    show("SNAPSHOT RENAMED");
-                                                });
-                                            }}>SAVE</button>
-                                        </div>
-                                    ) : (
-                                        <div className="snapshot-card-name">
-                                            <MarqueeText text={str(snapshot.name, `Snapshot ${slot + 1}`)} align="left" fontWeight={900} />
-                                        </div>
-                                    )}
+                                    <div className="snapshot-card-name">
+                                        <MarqueeText text={str(snapshot.name, `Snapshot ${slot + 1}`)} align="left" fontWeight={900} />
+                                    </div>
                                     <div className="snapshot-card-state">
                                         <label className="snapshot-color">
                                             <input
@@ -152,10 +125,9 @@ export function SnapshotManagerView({
                                             void run(() => client.request("snapshot/update", { snapshotId: str(snapshot.id) }))
                                                 .then(() => show(`${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} UPDATED`));
                                         }}>UPDATE</button>
-                                        <button type="button" className="btn" onClick={() => {
-                                            setRenameSlot(slot);
-                                            setRenameValue(str(snapshot.name, `Snapshot ${slot + 1}`));
-                                        }}>RENAME</button>
+                                        <button type="button" className="btn" onClick={() => renameSnapshot(
+                                            str(snapshot.id), str(snapshot.name, `Snapshot ${slot + 1}`)
+                                        )}>RENAME</button>
                                         <button type="button" className="btn btn-danger" onClick={() => {
                                             setPendingDelete({
                                                 id: str(snapshot.id),

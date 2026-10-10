@@ -937,12 +937,6 @@ void Engine::releaseResources() {}
 
 void Engine::applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                      unsigned frames, const float* dryInput, float dryGain) {
-    const bool allowFadeIn = outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted
-        && pendingChain_.peek() == nullptr
-        && !chainPublicationExpected_.load(std::memory_order_acquire)
-        && deferredRetiredChain_ == nullptr
-        && !transitionRequested_.load(std::memory_order_acquire)
-        && !activeChainTransitionPending();
     const bool tunerOpen = tunerViewOpen_.load(std::memory_order_relaxed);
     const bool tunerMuted = tunerOutputMuted_.load(std::memory_order_relaxed);
     const float dryTarget = tunerOpen && !tunerMuted && dryInput ? 1.0f : 0.0f;
@@ -959,8 +953,9 @@ void Engine::applyMasterOutputSafety(float* const* outputs, unsigned outputChann
             }
         }
     }
-    // Dry tuner audio still passes through the final DC blocker/limiter.
-    outputSafety_.process(outputs, outputChannels, frames, allowFadeIn);
+    // Dry tuner audio and independent playback still pass through the final
+    // DC blocker and limiter, but not the preset-chain transition gain.
+    outputSafety_.processProtection(outputs, outputChannels, frames);
     for (unsigned frame = 0; frame < frames; ++frame) {
         if (tunerOutputGain_ < target) tunerOutputGain_ = std::min(target, tunerOutputGain_ + step);
         else if (tunerOutputGain_ > target) tunerOutputGain_ = std::max(target, tunerOutputGain_ - step);
@@ -968,6 +963,17 @@ void Engine::applyMasterOutputSafety(float* const* outputs, unsigned outputChann
             outputs[channel][frame] *= tunerOutputGain_;
         }
     }
+}
+
+void Engine::applyPresetTransition(float* const* outputs, unsigned outputChannels,
+                                   unsigned frames) {
+    const bool allowFadeIn = outputSafety_.transitionState() == MasterOutputSafety::TransitionState::Muted
+        && pendingChain_.peek() == nullptr
+        && !chainPublicationExpected_.load(std::memory_order_acquire)
+        && deferredRetiredChain_ == nullptr
+        && !transitionRequested_.load(std::memory_order_acquire)
+        && !activeChainTransitionPending();
+    outputSafety_.processTransition(outputs, outputChannels, frames, allowFadeIn);
 }
 
 void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
@@ -1048,6 +1054,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             recorder_->captureSource(MultitrackRecorder::Source::Processed,
                 reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
         }
+        applyPresetTransition(outputs, outputChannels, frames);
         looper_->process(reinterpret_cast<const float* const*>(outputs), outputChannels,
                          outputs, outputChannels, frames,
                          transportEnabled ? &transportBlock : nullptr);
@@ -1168,6 +1175,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         recorder_->captureSource(MultitrackRecorder::Source::Processed,
             reinterpret_cast<const float* const*>(outputs), outputChannels, frames);
     }
+    applyPresetTransition(outputs, outputChannels, frames);
     looper_->process(reinterpret_cast<const float* const*>(rendered->data()), channels,
                      outputs, outputChannels, frames,
                      transportEnabled ? &transportBlock : nullptr);
@@ -1244,7 +1252,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
         plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
         applyManagedNamCalibration(settings_.audio, *plugin);
         if (transportEnabled_.load(std::memory_order_acquire)) {
-            applyTempoLinksToPlugin(slot, *plugin, preset.tempo);
+            applyTempoLinksToPlugin(slot, *plugin, transport_.bpm());
         }
 
         auto chainSlot = std::make_unique<ChainSlot>();
@@ -1634,7 +1642,7 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     effectivePreset.rememberedSnapshotSlot = target->rememberedSnapshotSlot;
     effectivePreset.rememberedSnapshotEnabled = target->rememberedSnapshotEnabled;
     if (transportEnabled_.load(std::memory_order_acquire)) {
-        transport_.setBpm(effectivePreset.tempo);
+        transport_.setBpmIfStopped(effectivePreset.tempo);
     }
     if (target->rememberedSnapshotEnabled && target->rememberedSnapshotSlot >= 0) {
         if (Snapshot* snapshot = findSnapshotBySlot(*target, target->rememberedSnapshotSlot)) {
@@ -2012,7 +2020,7 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
         if (Preset* next = activePreset()) {
             const auto draft = sessionPresetDrafts_.find(next->id);
             const Preset& effective = draft == sessionPresetDrafts_.end() ? *next : draft->second;
-            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpm(effective.tempo);
+            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpmIfStopped(effective.tempo);
             publishChain(buildChain(effective, chainError));
         }
         settings_.activeBankId = activeBankId_;
@@ -2186,7 +2194,7 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
             std::string chainError;
             const auto draft = sessionPresetDrafts_.find(preset->id);
             const Preset& effective = draft == sessionPresetDrafts_.end() ? *preset : draft->second;
-            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpm(effective.tempo);
+            if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpmIfStopped(effective.tempo);
             publishChain(buildChain(effective, chainError));
         }
         settings_.activeBankId = activeBankId_;
@@ -2729,9 +2737,13 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
                         selected = point;
                     }
                 }
+                // Encoder acceleration is useful for continuous ranges, but an
+                // enumerated selector must visit every adjacent choice.  A
+                // burst delta of two would otherwise skip the middle option.
+                const long direction = delta < 0 ? -1L : 1L;
                 const long nextIndex = std::max<long>(0, std::min<long>(
                     static_cast<long>(port.scalePoints.size()) - 1,
-                    static_cast<long>(selected) + delta));
+                    static_cast<long>(selected) + direction));
                 return setControlValue(request.binding.slotId, request.binding.portSymbol,
                                        port.scalePoints[static_cast<size_t>(nextIndex)].value,
                                        error, false);

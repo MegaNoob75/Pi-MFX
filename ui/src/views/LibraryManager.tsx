@@ -10,6 +10,36 @@ const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
 const AIDAX_DIR_KEY = "pimfx-t3k-aidax-dir";
 const LONG_PRESS_MS = 550;
+const TONE3000_ORIGIN = "https://www.tone3000.com";
+
+function libraryPathKey(path: string): string {
+    return path.replace(/\\/g, "/").toLowerCase();
+}
+
+function tone3000PageUrl(asset: JsonObject): string {
+    const saved = str(asset.sourceUrl).trim();
+    if (saved) {
+        try {
+            const url = new URL(saved);
+            if (url.protocol === "https:"
+                && (url.hostname === "tone3000.com" || url.hostname === "www.tone3000.com")
+                && url.pathname.startsWith("/tones/")) {
+                return url.toString();
+            }
+        } catch {
+            // Older provenance records do not contain a URL; derive it below.
+        }
+    }
+
+    const toneId = str(asset.toneId).trim();
+    const slug = str(asset.toneTitle)
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return toneId && slug ? `${TONE3000_ORIGIN}/tones/${slug}-${encodeURIComponent(toneId)}` : "";
+}
 
 export function loadTone3000Dir(kind: LibraryKind): string {
     const key = kind === "ir" ? IR_DIR_KEY : kind === "aidax" ? AIDAX_DIR_KEY : MODEL_DIR_KEY;
@@ -213,7 +243,8 @@ export function LibraryFileManager({
                     </button>
                 ))}
             </div>
-            <LibraryBrowser key={kind} engine={engine} run={run} kind={kind} refreshToken={refreshToken} />
+            <LibraryBrowser key={kind} engine={engine} run={run} kind={kind} refreshToken={refreshToken}
+                showTone3000Links={kind === "model" || kind === "ir"} />
         </div>
     );
 }
@@ -661,7 +692,8 @@ export function LibraryBrowser({
     allowMove = true,
     allowSplitView = true,
     readOnly = false,
-    openFoldersOnSecondClick = true
+    openFoldersOnSecondClick = true,
+    showTone3000Links = false
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
     run: (work: () => Promise<unknown>) => Promise<void>;
@@ -684,6 +716,7 @@ export function LibraryBrowser({
     allowSplitView?: boolean;
     readOnly?: boolean;
     openFoldersOnSecondClick?: boolean;
+    showTone3000Links?: boolean;
 }) {
     const explorerRef = useRef<HTMLDivElement | null>(null);
     const [internalDir, setInternalDir] = useState(baseDirectory);
@@ -722,6 +755,7 @@ export function LibraryBrowser({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [menu, setMenu] = useState<{ x: number; y: number; item: LibraryItem | null } | null>(null);
+    const [tone3000Assets, setTone3000Assets] = useState<JsonObject[]>([]);
     const [confirm, setConfirm] = useState<{ title: string; body: string; run: () => void } | null>(null);
     const uploadRef = useRef<HTMLInputElement | null>(null);
     const folderUploadRef = useRef<HTMLInputElement | null>(null);
@@ -737,6 +771,9 @@ export function LibraryBrowser({
     const allowedPathSet = useMemo(() => allowedFilePaths
         ? new Set(allowedFilePaths.map((path) => path.replace(/\\/g, "/").toLowerCase()))
         : null, [allowedFilePaths]);
+    const tone3000AssetByPath = useMemo(() => new Map(
+        tone3000Assets.map((asset) => [libraryPathKey(str(asset.path)), asset])
+    ), [tone3000Assets]);
     const stopDevicePreview = () => {
         window.clearTimeout(deviceTimer.current); deviceAudio.current?.pause(); deviceAudio.current = null;
         if (deviceUrl.current) URL.revokeObjectURL(deviceUrl.current);
@@ -836,10 +873,25 @@ export function LibraryBrowser({
         }
     };
 
+    const refreshTone3000Assets = async () => {
+        if (!showTone3000Links) return;
+        const result = await engine.client.request("tone3000/installed");
+        setTone3000Assets(objects(result.assets));
+    };
+
     useEffect(() => {
         void refresh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet, baseDirectory, refreshToken]);
+
+    useEffect(() => {
+        if (!showTone3000Links) {
+            setTone3000Assets([]);
+            return;
+        }
+        void refreshTone3000Assets().catch(() => setTone3000Assets([]));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [engine.client, kind, refreshToken, showTone3000Links]);
 
     useEffect(() => {
         if (!baseDirectory) return;
@@ -890,6 +942,7 @@ export function LibraryBrowser({
                 await engine.client.request("backing/rescan");
             }
             await refresh();
+            await refreshTone3000Assets().catch(() => undefined);
             await engine.client.request("library").catch(() => undefined);
         });
     };
@@ -1125,6 +1178,10 @@ export function LibraryBrowser({
         ? str([...leftFolders, ...leftFiles].find((item) => str(item.path) === controlledSelectedPath)?.name,
             controlledSelectedPath.split(/[\\/]/).pop() || "nothing selected")
         : "nothing selected";
+    const menuTone3000Asset = menu?.item && str(menu.item.type) === "file"
+        ? tone3000AssetByPath.get(libraryPathKey(str(menu.item.path)))
+        : undefined;
+    const menuTone3000Url = menuTone3000Asset ? tone3000PageUrl(menuTone3000Asset) : "";
 
     return (
         <div ref={explorerRef} className={`explorer ${dual && !picker && !filePicker ? "explorer-dual" : ""}`}>
@@ -1343,6 +1400,15 @@ export function LibraryBrowser({
                                 work(() => engine.client.request("backing/setlist/add", { path: str(menu.item!.path) }));
                                 setMenu(null);
                             }}>ADD TO SET LIST</button>
+                        )}
+                        {menuTone3000Url && (
+                            <button type="button" title={`${str(menuTone3000Asset?.toneTitle)}${str(menuTone3000Asset?.creator) ? ` by @${str(menuTone3000Asset?.creator).replace(/^@/, "")}` : ""}`}
+                                onClick={() => {
+                                    window.open(menuTone3000Url, "_blank", "noopener,noreferrer");
+                                    setMenu(null);
+                                }}>
+                                VIEW ON TONE3000
+                            </button>
                         )}
                         {menu.item && allowMutations && (
                             <button type="button" onClick={() => { void renameItem(menu.item!); setMenu(null); }}>RENAME</button>

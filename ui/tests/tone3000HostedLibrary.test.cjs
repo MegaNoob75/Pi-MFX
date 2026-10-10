@@ -44,6 +44,14 @@ assert.doesNotMatch(view, /aidax|AIDA-X/i, 'AIDA-X must stay outside the TONE300
 assert.match(library, /kinds\?: LibraryKind\[\]/, 'the shared file manager must support a focused set of roots');
 assert.match(library, /<LibraryBrowser key=\{kind\} engine=\{engine\} run=\{run\} kind=\{kind\}/,
     'switching between NAM and IR roots must remount the browser so stale files cannot remain visible');
+assert.match(library, /showTone3000Links=\{kind === "model" \|\| kind === "ir"\}/,
+    'the main NAM and IR library must enable links back to downloaded tones');
+assert.match(library, /tone3000\/installed[\s\S]*tone3000AssetByPath[\s\S]*VIEW ON TONE3000/,
+    'recognized local assets must offer their original TONE3000 page from the context menu');
+assert.match(library, /function tone3000PageUrl[\s\S]*sourceUrl[\s\S]*toneTitle[\s\S]*toneId/,
+    'saved canonical URLs and older title-plus-id provenance must both resolve to a tone page');
+assert.match(library, /window\.open\(menuTone3000Url, "_blank", "noopener,noreferrer"\)/,
+    'viewing creator information must open the tone page without replacing Pi-MFX');
 assert.match(library, /safeLibraryFolderName[\s\S]*library\/mkdir[\s\S]*onPick\(target, activeKind\)/,
     'the folder picker must safely create a tone-named folder before downloading into it');
 assert.match(library, /library\/delete-impact[\s\S]*DELETE FILES AND PRESETS[\s\S]*bank\/delete/,
@@ -90,6 +98,12 @@ assert.match(router, /installedPaths[\s\S]*file\.state = "installed"[\s\S]*state
     'download jobs must defensively skip model IDs already present in the library');
 assert.match(client, /recursive_directory_iterator[\s\S]*installedDigestCache_[\s\S]*toHex\(sha256\(contents\)\)[\s\S]*registry\[digest\]/,
     'installed detection must scan nested library folders and match content hashes with a metadata cache');
+assert.match(view, /function tonePageUrl[\s\S]*str\(tone\.url\)[\s\S]*sourceUrl: tonePageUrl\(tone\)/,
+    'new downloads must retain the API-provided public tone page alongside their provenance');
+assert.match(router, /"sourceLicense", "sourceUrl"/,
+    'download commands must pass the tone page through to the provenance registry');
+assert.match(client, /"sourceLicense", "sourceUrl"/,
+    'downloaded asset provenance must persist the tone page URL');
 assert.match(styles, /\.t3k-download-actions[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/,
     'Download Selected and Download All must have equal widths');
 
