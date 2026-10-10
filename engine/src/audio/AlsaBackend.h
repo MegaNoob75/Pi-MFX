@@ -58,8 +58,13 @@ private:
     void closeStream(Stream& stream);
     void run();
     void reportFailure(AudioFailureCategory category, int errorCode) noexcept;
-    void writeSilence(unsigned frames, unsigned periodCount);
+    bool writeSilence(unsigned frames, unsigned periodCount, int& errorCode);
     bool resyncAfterXrun(unsigned frames, unsigned periodCount);
+
+    long readFrames(Stream& stream, unsigned frames, bool& shortTransfer);
+    long writeFrames(Stream& stream, unsigned frames, bool& shortTransfer);
+    void recordXrun(AudioXrunDirection direction, int errorCode,
+                    uint64_t periodIndex) noexcept;
 
     void deinterleave(const Stream& stream, unsigned frames);
     void interleave(Stream& stream, unsigned frames);

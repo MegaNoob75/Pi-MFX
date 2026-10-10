@@ -20,6 +20,8 @@ constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
 constexpr int kRequiredControllerFirmwareMajor = 1;
 constexpr int kRequiredControllerFirmwareMinor = 1;
 constexpr const char* kRequiredControllerFirmwareVersion = "1.1";
+static_assert(std::atomic<float>::is_always_lock_free,
+              "tuner handoff requires lock-free float atomics");
 
 float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
@@ -40,6 +42,8 @@ float audioBufferPeak(const std::vector<float*>& buffers, unsigned channels,
 
 const char* audioFailureDescription(AudioFailureCategory category) {
     switch (category) {
+        case AudioFailureCategory::PrimePlayback:
+            return "cannot prime playback";
         case AudioFailureCategory::StartCapture:
             return "cannot start capture";
         case AudioFailureCategory::PreparePlaybackAfterXrun:
@@ -48,6 +52,8 @@ const char* audioFailureDescription(AudioFailureCategory category) {
             return "cannot prepare capture after xrun";
         case AudioFailureCategory::RelinkAfterXrun:
             return "cannot re-link capture and playback after xrun";
+        case AudioFailureCategory::PrimePlaybackAfterXrun:
+            return "cannot prime playback after xrun";
         case AudioFailureCategory::RestartCaptureAfterXrun:
             return "cannot restart capture after xrun";
         case AudioFailureCategory::None:
@@ -503,9 +509,10 @@ bool latchOn(const ActionRequest& request) {
 
 Engine::Engine(Paths paths)
     : storage_(std::move(paths)),
-      tunerRing_(kTunerRingSize, 0.0f),
+      tunerRing_(kTunerRingSize),
       backing_(std::make_unique<BackingTrackPlayer>(storage_.paths().backingTracksDir)),
       looper_(std::make_unique<StereoLooper>(storage_.paths().loopsDir)) {
+    for (auto& sample : tunerRing_) sample.store(0.0f, std::memory_order_relaxed);
 #ifdef PIMFX_ENABLE_MULTITRACK_RECORDER
     recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
     recorderEnabled_.store(true, std::memory_order_relaxed);
@@ -588,6 +595,7 @@ bool Engine::start(std::string& error) {
     }
 
     backend_ = createAudioBackend();
+    startChainPreparationThread();
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
     const Preset* gainPreset = activePreset();
@@ -632,6 +640,8 @@ bool Engine::start(std::string& error) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
+    logInfo("shutdown: stopping chain preparation");
+    stopChainPreparationThread();
     logInfo("shutdown: stopping backing tracks");
     if (backing_) backing_->stop();
     logInfo("shutdown: stopping looper");
@@ -650,6 +660,7 @@ void Engine::stop() {
     {
         std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         persistActiveBankUnlocked();
+        flushPendingPersistence(true);
     }
 
     logInfo("shutdown: stopping MIDI");
@@ -689,6 +700,11 @@ bool Engine::restartAudio(std::string& error) {
     // stopped it is safe to dispose of every published/retired chain before
     // opening a stream that may negotiate a different block size.
     {
+        // The preparation worker takes this mutex before its final publish.
+        // Holding it across the chain clear prevents an old-rate chain from
+        // appearing after the restart has disposed of the old generation.
+        std::lock_guard<std::mutex> preparationLock(chainPreparationMutex_);
+        cancelChainPreparationsLocked();
         std::lock_guard<std::mutex> lock(chainMutex_);
         delete activeChain_.exchange(nullptr, std::memory_order_acq_rel);
         delete pendingChain_.clear();
@@ -907,6 +923,18 @@ bool Engine::transportRestart(std::string& error) {
 
 void Engine::resetMeters() {
     metrics_.xruns.store(0, std::memory_order_relaxed);
+    metrics_.captureXruns.store(0, std::memory_order_relaxed);
+    metrics_.playbackXruns.store(0, std::memory_order_relaxed);
+    metrics_.shortCaptureTransfers.store(0, std::memory_order_relaxed);
+    metrics_.shortPlaybackTransfers.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunDirection.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunError.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunPeriod.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunTransitionPhase.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunWorkerTransitions.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunChainPreparationActive.store(false, std::memory_order_relaxed);
+    metrics_.lastXrunChainGeneration.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunDspLoad.store(0.0f, std::memory_order_relaxed);
     metrics_.dspLoadPeak.store(0.0f, std::memory_order_relaxed);
 }
 
@@ -974,6 +1002,8 @@ void Engine::applyPresetTransition(float* const* outputs, unsigned outputChannel
         && !transitionRequested_.load(std::memory_order_acquire)
         && !activeChainTransitionPending();
     outputSafety_.processTransition(outputs, outputChannels, frames, allowFadeIn);
+    metrics_.transitionPhase.store(
+        static_cast<uint32_t>(outputSafety_.transitionState()), std::memory_order_relaxed);
 }
 
 void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
@@ -981,12 +1011,24 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                           unsigned frames) {
     audioGeneration_.fetch_add(1, std::memory_order_release);
     beginAudioTransitionBlock();
+    metrics_.transitionPhase.store(
+        static_cast<uint32_t>(outputSafety_.transitionState()), std::memory_order_relaxed);
 
     const bool transportEnabled = transportEnabled_.load(std::memory_order_acquire);
     const TransportBlock transportBlock = transportEnabled
         ? transport_.beginAudioBlock(frames) : TransportBlock{};
 
     Chain* chain = activeChain_.load(std::memory_order_acquire);
+    uint32_t workerTransitions = 0;
+    if (chain) {
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            if (slot->enabled.load(std::memory_order_relaxed) && slot->plugin
+                && slot->plugin->propertyTransitionPending()) {
+                ++workerTransitions;
+            }
+        }
+    }
+    metrics_.activeWorkerTransitions.store(workerTransitions, std::memory_order_relaxed);
 
     const unsigned channels = chain ? chain->channels : std::min(outputChannels, 2u);
     const float inputGain = inputGain_.load(std::memory_order_relaxed);
@@ -1035,7 +1077,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             // Analyse the same gain-adjusted guitar signal used by the dry
             // tuner passthrough. Otherwise a quiet interface input remains
             // close to the detector noise floor even after Input Gain is set.
-            tunerRing_[write] = source[frame] * inputGain;
+            tunerRing_[write].store(source[frame] * inputGain, std::memory_order_relaxed);
             write = (write + 1) % kTunerRingSize;
         }
         tunerWrite_.store(write, std::memory_order_release);
@@ -1224,6 +1266,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     const unsigned channels = std::max(1u, std::min(settings_.audio.outputChannels, 2u));
     const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
 
+    chain->presetId = preset.id;
     chain->channels = channels;
     chain->outputGain = dbToGain(settings_.audio.outputGainDb + preset.outputGainDb);
     chain->bufferA.assign(channels, std::vector<float>(frames, 0.0f));
@@ -1270,12 +1313,124 @@ void Engine::publishChain(std::unique_ptr<Chain> chain) {
     if (!chain) {
         return;
     }
+    chainPublicationExpected_.store(true, std::memory_order_release);
+
+    std::unique_lock<std::mutex> preparationLock(chainPreparationMutex_);
+    const uint64_t requestGeneration =
+        chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    chainAwaitingPreparation_.reset();
+    if (chainNeedsPreparation(*chain) && chainPreparationWorker_.joinable()
+        && !chainPreparationStopping_.load(std::memory_order_acquire)) {
+        chainAwaitingPreparation_ = std::move(chain);
+        preparationLock.unlock();
+        chainPreparationWake_.notify_one();
+        return;
+    }
+
+    (void)requestGeneration;
+    // Publish while holding the preparation mutex so an older preparation
+    // request cannot win the final race and replace this newer chain.
+    publishPreparedChain(std::move(chain));
+}
+
+void Engine::publishPreparedChain(std::unique_ptr<Chain> chain) {
+    if (!chain) return;
+    chain->publicationGeneration =
+        chainPublicationGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
     std::lock_guard<std::mutex> lock(chainMutex_);
     // Only the latest unpublished chain matters. Superseded chains have never
     // been visible to the audio thread, so they can be destroyed here.
     pendingChain_.publish(std::move(chain));
-    chainPublicationExpected_.store(false, std::memory_order_release);
     transitionRequested_.store(true, std::memory_order_release);
+}
+
+bool Engine::chainNeedsPreparation(const Chain& chain) const noexcept {
+    for (const std::unique_ptr<ChainSlot>& slot : chain.slots) {
+        if (slot->plugin && slot->plugin->propertyTransitionPending()) return true;
+    }
+    return false;
+}
+
+bool Engine::prepareChainForPublication(Chain& chain, uint64_t requestGeneration) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
+    while (chainNeedsPreparation(chain)) {
+        if (chainPreparationStopping_.load(std::memory_order_acquire)
+            || chainPreparationRequestGeneration_.load(std::memory_order_acquire)
+                != requestGeneration) {
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            logWarn("chain: preparation timed out; using the muted transition fallback");
+            return true;
+        }
+
+        for (auto& buffer : chain.bufferA) std::fill(buffer.begin(), buffer.end(), 0.0f);
+        for (auto& buffer : chain.bufferB) std::fill(buffer.begin(), buffer.end(), 0.0f);
+        for (const std::unique_ptr<ChainSlot>& slot : chain.slots) {
+            if (!slot->plugin || !slot->plugin->propertyTransitionPending()) continue;
+            slot->plugin->process(
+                reinterpret_cast<const float* const*>(chain.pointersA.data()),
+                std::min(slot->plugin->audioInputs(), chain.channels),
+                chain.pointersB.data(),
+                std::min(slot->plugin->audioOutputs(), chain.channels),
+                frames, nullptr);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+void Engine::chainPreparationThread() {
+    while (!chainPreparationStopping_.load(std::memory_order_acquire)) {
+        std::unique_ptr<Chain> chain;
+        uint64_t requestGeneration = 0;
+        {
+            std::unique_lock<std::mutex> lock(chainPreparationMutex_);
+            chainPreparationWake_.wait(lock, [&]() {
+                return chainPreparationStopping_.load(std::memory_order_acquire)
+                    || chainAwaitingPreparation_ != nullptr;
+            });
+            if (chainPreparationStopping_.load(std::memory_order_acquire)) break;
+            chain = std::move(chainAwaitingPreparation_);
+            requestGeneration = chainPreparationRequestGeneration_.load(std::memory_order_acquire);
+        }
+
+        metrics_.chainPreparationActive.store(true, std::memory_order_release);
+        const bool publish = chain && prepareChainForPublication(*chain, requestGeneration);
+        metrics_.chainPreparationActive.store(false, std::memory_order_release);
+
+        std::lock_guard<std::mutex> lock(chainPreparationMutex_);
+        if (publish && !chainPreparationStopping_.load(std::memory_order_acquire)
+            && chainPreparationRequestGeneration_.load(std::memory_order_acquire)
+                == requestGeneration) {
+            publishPreparedChain(std::move(chain));
+        }
+    }
+    metrics_.chainPreparationActive.store(false, std::memory_order_release);
+}
+
+void Engine::startChainPreparationThread() {
+    if (chainPreparationWorker_.joinable()) return;
+    chainPreparationStopping_.store(false, std::memory_order_release);
+    chainPreparationWorker_ = std::thread(&Engine::chainPreparationThread, this);
+}
+
+void Engine::stopChainPreparationThread() {
+    {
+        std::lock_guard<std::mutex> lock(chainPreparationMutex_);
+        chainPreparationStopping_.store(true, std::memory_order_release);
+        chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        chainAwaitingPreparation_.reset();
+    }
+    chainPreparationWake_.notify_all();
+    if (chainPreparationWorker_.joinable()) chainPreparationWorker_.join();
+}
+
+void Engine::cancelChainPreparationsLocked() {
+    chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    chainAwaitingPreparation_.reset();
+    metrics_.chainPreparationActive.store(false, std::memory_order_release);
 }
 
 void Engine::collectRetiredChains() {
@@ -1288,6 +1443,10 @@ void Engine::collectRetiredChains() {
     }
     const uint64_t now = audioGeneration_.load(std::memory_order_acquire);
     const bool audioRunning = backend_ && backend_->isRunning();
+
+    if (chainReaders_.load(std::memory_order_acquire) != 0) {
+        return;
+    }
 
     retiredChains_.erase(
         std::remove_if(retiredChains_.begin(), retiredChains_.end(),
@@ -1313,6 +1472,8 @@ bool Engine::swapPendingChainFromAudio() {
     }
 
     Chain* previous = activeChain_.exchange(next, std::memory_order_acq_rel);
+    chainPublicationExpected_.store(false, std::memory_order_release);
+    metrics_.chainGeneration.store(next->publicationGeneration, std::memory_order_relaxed);
     targetOutputGain_.store(next->outputGain, std::memory_order_relaxed);
     // Serializing and broadcasting state is not realtime-safe. Let the
     // housekeeping thread publish the newly active chain after this block.
@@ -1326,6 +1487,13 @@ bool Engine::swapPendingChainFromAudio() {
         }
     }
     return true;
+}
+
+bool Engine::activeChainReadyForPreset(const Preset& preset) const noexcept {
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) return false;
+    ActiveChainReadGuard chainGuard(*this);
+    const Chain* chain = chainGuard.get();
+    return chain && chain->presetId == preset.id;
 }
 
 void Engine::beginAudioTransitionBlock() {
@@ -1464,8 +1632,11 @@ const Preset* Engine::effectiveActivePreset() const {
 }
 
 void Engine::captureChainIntoPreset(Preset& preset) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain || preset.activeSnapshot >= 0) return;
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != preset.id || preset.activeSnapshot >= 0) return;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         EffectSlot* working = preset.findSlot(slot->id);
         if (!working || !slot->plugin) continue;
@@ -1496,9 +1667,10 @@ void Engine::persistBankUnlocked(Bank* bank, bool syncFromChain) {
         }
     }
     if (bank) {
-        storage_.saveBank(*bank);
+        if (storage_.saveBank(*bank)) pendingBankPersistIds_.erase(bank->id);
     }
-    bankPersistPending_.store(false, std::memory_order_relaxed);
+    bankPersistPending_.store(!pendingBankPersistIds_.empty() || settingsPersistPending_,
+                              std::memory_order_relaxed);
 }
 
 void Engine::persistActiveBankUnlocked() {
@@ -1565,35 +1737,47 @@ void Engine::flushPendingBasePresetUnlocked() {
     if (preset && preset->activeSnapshot < 0 && activeSessionDraft()) captureActiveSessionDraft();
 }
 
-void Engine::requestBankPersist(bool immediate) {
-    Preset* preset = activePreset();
-    if (!preset) {
-        return;
-    }
-    if (immediate) {
-        persistActiveBankUnlocked();
-        return;
-    }
+void Engine::requestBankPersist(const std::string& bankId) {
+    if (bankId.empty()) return;
+    pendingBankPersistIds_.insert(bankId);
     const auto due = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() + 400;
     bankPersistDueMs_.store(due, std::memory_order_relaxed);
     bankPersistPending_.store(true, std::memory_order_relaxed);
 }
 
-void Engine::flushBankPersistIfDue() {
+void Engine::requestSettingsPersist() {
+    settingsPersistPending_ = true;
+    const auto due = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() + 400;
+    bankPersistDueMs_.store(due, std::memory_order_relaxed);
+    bankPersistPending_.store(true, std::memory_order_relaxed);
+}
+
+void Engine::flushPendingPersistence(bool force) {
     if (!bankPersistPending_.load(std::memory_order_relaxed)) {
         return;
     }
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (now < bankPersistDueMs_.load(std::memory_order_relaxed)) {
+    if (!force && now < bankPersistDueMs_.load(std::memory_order_relaxed)) {
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (!bankPersistPending_.load(std::memory_order_relaxed)) {
         return;
     }
-    persistActiveBankUnlocked();
+    std::vector<std::string> bankIds(pendingBankPersistIds_.begin(),
+                                     pendingBankPersistIds_.end());
+    for (const std::string& bankId : bankIds) {
+        Bank* bank = findBank(bankId);
+        if (!bank || storage_.saveBank(*bank)) pendingBankPersistIds_.erase(bankId);
+    }
+    if (settingsPersistPending_ && persistSettings()) settingsPersistPending_ = false;
+
+    const bool pending = !pendingBankPersistIds_.empty() || settingsPersistPending_;
+    bankPersistPending_.store(pending, std::memory_order_relaxed);
+    if (pending) bankPersistDueMs_.store(now + 1000, std::memory_order_relaxed);
 }
 
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
@@ -1624,10 +1808,10 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
     if (outgoingBank && outgoingBank->id != bank->id) {
         outgoingBank->lastPresetId = activePresetId_;
-        persistBankUnlocked(outgoingBank, false);
+        requestBankPersist(outgoingBank->id);
     }
     if (outgoing && outgoing->id != target->id && outgoingBank && outgoingBank->id == bank->id) {
-        persistActiveBankUnlocked();
+        requestBankPersist(outgoingBank->id);
     }
 
     activeBankId_ = bank->id;
@@ -1670,8 +1854,8 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
-    persistSettings();
-    persistActiveBankUnlocked();
+    requestSettingsPersist();
+    requestBankPersist(bank->id);
     armAnalogCatchUnlocked();
     refreshLeds();
     notify();
@@ -2555,10 +2739,17 @@ bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& er
 
 bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
                               bool persist) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     (void)persist; // All sound changes remain in the session draft until Save.
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
@@ -2590,10 +2781,17 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
 
 bool Engine::setControlValue(const std::string& slotId, const std::string& portSymbol,
                              float value, std::string& error, bool persist) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     (void)persist; // Preview and release both update the same live session draft.
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
 
@@ -2652,9 +2850,15 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
     }
     Preset* preset = activeSessionDraft(true);
     EffectSlot* stored = preset->findSlot(slotId);
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!stored || !chain) {
         error = "no such effect";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
@@ -2686,8 +2890,10 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
 
 void Engine::applyTempoLinksUnlocked(const Preset& preset, bool deferControls) {
     if (!transportEnabled_.load(std::memory_order_acquire)) return;
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) return;
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != preset.id) return;
     const double bpm = transport_.bpm();
     for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
         ChainSlot& live = *chain->slots[slotIndex];
@@ -2708,9 +2914,16 @@ void Engine::applyTempoLinksUnlocked(const Preset& preset, bool deferControls) {
 }
 
 bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& error) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     int delta = request.delta != 0 ? request.delta : (request.value >= 0.0f ? 1 : -1);
@@ -2786,6 +2999,7 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
 
 bool Engine::setEffectProperty(const std::string& slotId, const std::string& propertyUri,
                                const std::string& path, std::string& error, bool persist) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     std::string resolved = path;
     if (!path.empty()) {
         resolved = resolvePluginFilePath(storage_, propertyUri, path, error);
@@ -2794,9 +3008,15 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
         }
     }
 
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
@@ -2864,8 +3084,10 @@ Snapshot Engine::captureCurrentChain(const std::string& name) const {
     snapshot.id = newId("snap");
     snapshot.name = name.empty() ? "Snapshot" : name;
 
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) {
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
         return snapshot;
     }
     Json slots = Json::object();
@@ -2906,8 +3128,10 @@ const Snapshot* Engine::findSnapshotBySlot(const Preset& preset, int slot) const
 }
 
 void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) {
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != preset.id) {
         return;
     }
     const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
@@ -2953,6 +3177,10 @@ void Engine::rememberSnapshot(Preset& preset, int slot, bool enabled) {
 }
 
 bool Engine::toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error) {
+    if (!activeChainReadyForPreset(preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     if (preset.rememberedSnapshotSlot < 0) {
         return true;
     }
@@ -2991,6 +3219,10 @@ bool Engine::applyRememberedSnapshotUnlocked(Preset& preset) {
 }
 
 bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& error) {
+    if (!activeChainReadyForPreset(preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     Snapshot* snapshot = findSnapshotBySlot(preset, slot);
     if (!snapshot) {
         error = "snapshot is empty";
@@ -3009,8 +3241,10 @@ bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& er
 }
 
 void Engine::applySnapshotToChain(const Snapshot& snapshot) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) {
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
         return;
     }
     const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
@@ -3038,6 +3272,10 @@ bool Engine::captureSnapshot(const std::string& name, int slot, std::string& sna
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
+        return false;
+    }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "preset is still preparing";
         return false;
     }
     int targetSlot = slot;
@@ -3076,6 +3314,10 @@ bool Engine::selectSnapshot(const std::string& snapshotId, std::string& error) {
         error = "no active preset";
         return false;
     }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     for (Snapshot& snapshot : preset->snapshots) {
         if (snapshot.id != snapshotId) {
             continue;
@@ -3098,6 +3340,10 @@ bool Engine::updateSnapshot(const std::string& snapshotId, std::string& error) {
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
+        return false;
+    }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "preset is still preparing";
         return false;
     }
     for (Snapshot& snapshot : preset->snapshots) {
@@ -3166,7 +3412,8 @@ bool Engine::setSnapshotMode(bool enabled) {
 bool Engine::restoreLiveFromStoredPreset(std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!preset || !chain) {
         error = "no active preset";
         return false;
@@ -3203,6 +3450,10 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
         forgetRememberedSnapshot(*preset);
     }
     if (preset->activeSnapshot == found->slot) {
+        if (!activeChainReadyForPreset(*preset)) {
+            error = "preset is still preparing";
+            return false;
+        }
         restoreSessionOrStoredPresetToChainUnlocked(*preset);
         forgetRememberedSnapshot(*preset);
         preset->activeSnapshot = -1;
@@ -3681,9 +3932,16 @@ bool Engine::selectVirtualSurfaceControl(const std::string& controlId, std::stri
 }
 
 bool Engine::toggleBoundParameter(const ParameterBinding& binding, std::string& error) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
@@ -3956,8 +4214,12 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
 }
 
 bool Engine::bindingTargetPosition(const ParameterBinding& binding, float& position) const {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain || binding.action != "setParameter") return false;
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || binding.action != "setParameter"
+        || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) return false;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         if (slot->id != binding.slotId || !slot->plugin) continue;
         for (const PortInfo& port : slot->plugin->info().ports) {
@@ -4227,16 +4489,19 @@ void Engine::runAction(const ActionRequest& incoming) {
         if (latching) {
             setEffectEnabled(binding.slotId, latchOn(request), error, request.persist);
         } else {
-            Chain* chain = activeChain_.load(std::memory_order_acquire);
             bool enabled = true;
-            if (chain) {
-                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                    if (slot->id == binding.slotId) {
-                        const int pending = slot->pendingEnabled.load(std::memory_order_acquire);
-                        const bool current = pending >= 0
-                            ? pending != 0 : slot->enabled.load(std::memory_order_relaxed);
-                        enabled = !current;
-                        break;
+            {
+                std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+                ActiveChainReadGuard chainGuard(*this);
+                if (Chain* chain = chainGuard.get()) {
+                    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                        if (slot->id == binding.slotId) {
+                            const int pending = slot->pendingEnabled.load(std::memory_order_acquire);
+                            const bool current = pending >= 0
+                                ? pending != 0 : slot->enabled.load(std::memory_order_relaxed);
+                            enabled = !current;
+                            break;
+                        }
                     }
                 }
             }
@@ -4247,21 +4512,26 @@ void Engine::runAction(const ActionRequest& incoming) {
             nudgeEncoderParameter(request, error);
         } else {
             const bool persist = request.persist && !isContinuousKind(request.kind);
-            const PortInfo* boundPort = nullptr;
-            if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
-                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                    if (slot->id != binding.slotId || !slot->plugin) continue;
-                    for (const PortInfo& port : slot->plugin->info().ports) {
-                        if (port.control && port.input && port.symbol == binding.portSymbol) {
-                            boundPort = &port;
-                            break;
+            std::optional<PortInfo> boundPort;
+            {
+                std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+                ActiveChainReadGuard chainGuard(*this);
+                if (Chain* chain = chainGuard.get()) {
+                    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                        if (slot->id != binding.slotId || !slot->plugin) continue;
+                        for (const PortInfo& port : slot->plugin->info().ports) {
+                            if (port.control && port.input && port.symbol == binding.portSymbol) {
+                                boundPort = port;
+                                break;
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
             }
             setControlValue(binding.slotId, binding.portSymbol,
-                            mappedBindingValue(request, boundPort), error, persist);
+                            mappedBindingValue(request, boundPort ? &*boundPort : nullptr),
+                            error, persist);
             notifyPerformance();
         }
     } else if (request.action == "bypassAll") {
@@ -4359,6 +4629,7 @@ void Engine::runAction(const ActionRequest& incoming) {
 }
 
 void Engine::refreshLeds() {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     const ControllerConfig config = controller_.config();
     if (!config.enabled || !config.syncLedColours || config.leds.empty()) {
         return;
@@ -4377,7 +4648,8 @@ void Engine::refreshLeds() {
         {"danger", 0xF8, 0x71, 0x71},
     };
 
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     std::vector<LedState> states;
     states.reserve(config.leds.size());
 
@@ -4933,7 +5205,7 @@ void Engine::tunerThread() {
         const size_t captureCount = extendedRange ? captured.size() : window.size();
         for (size_t i = 0; i < captureCount; ++i) {
             const size_t index = (write + kTunerRingSize - captureCount + i) % kTunerRingSize;
-            captured[i] = tunerRing_[index];
+            captured[i] = tunerRing_[index].load(std::memory_order_relaxed);
         }
         if (extendedRange) {
             for (size_t i = 0; i < window.size(); ++i) {
@@ -4999,6 +5271,7 @@ void Engine::tunerThread() {
 void Engine::housekeepingThread() {
     int ticks = 0;
     int audioRetryLog = 0;
+    uint64_t reportedXruns = metrics_.xruns.load(std::memory_order_relaxed);
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
 
@@ -5027,14 +5300,45 @@ void Engine::housekeepingThread() {
             audioRetryLog = 0;
         }
 
+        const uint64_t xruns = metrics_.xruns.load(std::memory_order_relaxed);
+        if (xruns < reportedXruns) {
+            reportedXruns = xruns; // the user reset the counters
+        } else if (xruns > reportedXruns) {
+            const uint64_t added = xruns - reportedXruns;
+            reportedXruns = xruns;
+            const uint32_t direction =
+                metrics_.lastXrunDirection.load(std::memory_order_relaxed);
+            const uint32_t transition =
+                metrics_.lastXrunTransitionPhase.load(std::memory_order_relaxed);
+            const int errorCode = metrics_.lastXrunError.load(std::memory_order_relaxed);
+            const char* directionName = direction == static_cast<uint32_t>(
+                AudioXrunDirection::Capture) ? "capture" : "playback";
+            const char* transitionName = transition == static_cast<uint32_t>(
+                MasterOutputSafety::TransitionState::FadingOut) ? "fading-out"
+                : transition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::Muted)
+                ? "muted"
+                : transition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::FadingIn)
+                ? "fading-in" : "running";
+            logWarn("audio: " + std::to_string(added) + " xrun(s), last="
+                + directionName + ", transition=" + transitionName
+                + ", chain=" + std::to_string(
+                    metrics_.lastXrunChainGeneration.load(std::memory_order_relaxed))
+                + ", workers=" + std::to_string(
+                    metrics_.lastXrunWorkerTransitions.load(std::memory_order_relaxed))
+                + ", preparing=" + (metrics_.lastXrunChainPreparationActive.load(
+                    std::memory_order_relaxed) ? "yes" : "no")
+                + (errorCode != 0 ? ", error=" + std::string(std::strerror(errorCode)) : ""));
+        }
+
         for (const ActionRequest& request : controller_.pollHolds()) {
             runAction(request);
         }
         collectRetiredChains();
         if (chainStateDirty_.exchange(false, std::memory_order_acq_rel)) {
+            refreshLeds();
             notify();
         }
-        flushBankPersistIfDue();
+        flushPendingPersistence();
         if (recorderOwnsTransport_.load(std::memory_order_acquire) && recorder_
             && !recorder_->recording() && !recorder_->playing()) {
             transport_.stop();
@@ -5049,21 +5353,25 @@ void Engine::housekeepingThread() {
         // Meters update several times a second; the full state only changes
         // when something actually changes, so it is not sent on a timer.
         if (++ticks % 4 == 0) {
-            std::lock_guard<std::mutex> lock(listenerMutex_);
-            if (listener_) {
-                listener_(meterState());
+            StateListener listener;
+            {
+                std::lock_guard<std::mutex> lock(listenerMutex_);
+                listener = listener_;
+            }
+            if (listener) {
+                listener(meterState());
                 if (transportEnabled_.load(std::memory_order_acquire)) {
-                    listener_(transportState());
+                    listener(transportState());
                 }
                 if (backingEnabled_.load(std::memory_order_acquire)) {
-                    listener_(backing_->state());
+                    listener(backing_->state());
                 }
-                listener_(looperState());
+                listener(looperState());
                 if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
-                    listener_(recorderState());
+                    listener(recorderState());
                 }
                 if (drumsEnabled_.load(std::memory_order_acquire) && drums_) {
-                    listener_(drumState());
+                    listener(drumState());
                 }
             }
             if (transportEnabled_.load(std::memory_order_acquire)
@@ -5115,13 +5423,16 @@ void Engine::notify() {
     // before that swap would serialize the outgoing chain alongside the new
     // preset metadata. The swap marks chainStateDirty_, and housekeeping sends
     // one coherent state as soon as the new chain is active.
-    if (pendingChain_.peek() != nullptr) {
+    if (pendingChain_.peek() != nullptr
+        || chainPublicationExpected_.load(std::memory_order_acquire)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (listener_) {
-        listener_(fullState());
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
     }
+    if (listener) listener(fullState());
 }
 
 void Engine::publishState() {
@@ -5129,20 +5440,25 @@ void Engine::publishState() {
 }
 
 void Engine::notifyPerformance() {
-    if (pendingChain_.peek() != nullptr) {
+    if (pendingChain_.peek() != nullptr
+        || chainPublicationExpected_.load(std::memory_order_acquire)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (listener_) {
-        listener_(performanceState());
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
     }
+    if (listener) listener(performanceState());
 }
 
 void Engine::notifyUiNav(int delta, bool select, const std::string& virtualControlAction) {
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (!listener_) {
-        return;
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
     }
+    if (!listener) return;
     Json json = Json::object();
     json.set("type", "uiNav");
     if (!virtualControlAction.empty()) json.set("virtualControlAction", virtualControlAction);
@@ -5151,7 +5467,7 @@ void Engine::notifyUiNav(int delta, bool select, const std::string& virtualContr
     } else {
         json.set("delta", delta);
     }
-    listener_(json);
+    listener(json);
 }
 
 Json Engine::fullState() const {
@@ -5225,7 +5541,9 @@ Json Engine::fullState() const {
     // Live chain contents, which can differ from the stored preset when a
     // plugin named by the preset is not installed.
     Json chainArray = Json::array();
-    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
+        json.set("activeChainPresetId", chain->presetId);
         for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
             if (!slot->plugin) {
                 continue;
@@ -5267,6 +5585,7 @@ Json Engine::fullState() const {
 }
 
 Json Engine::performanceState() const {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "performance");
     json.set("activeBankId", activeBankId_);
@@ -5291,7 +5610,8 @@ Json Engine::performanceState() const {
     }
 
     Json slotArray = Json::array();
-    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
         for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
             Json slotJson = Json::object();
             slotJson.set("id", slot->id);
@@ -5317,12 +5637,16 @@ Json Engine::transportState() const {
 }
 
 void Engine::notifyUiView(const std::string& view) {
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (!listener_) return;
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
+    }
+    if (!listener) return;
     Json json = Json::object();
     json.set("type", "uiView");
     json.set("view", view);
-    listener_(json);
+    listener(json);
 }
 
 Json Engine::backingState() const { return backing_ ? backing_->state() : Json::object(); }
@@ -5570,9 +5894,18 @@ bool Engine::drumCommand(const std::string& command, const Json& payload, std::s
 }
 
 Json Engine::meterState() const {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "meters");
     json.set("xruns", static_cast<int64_t>(metrics_.xruns.load(std::memory_order_relaxed)));
+    json.set("captureXruns", static_cast<int64_t>(
+        metrics_.captureXruns.load(std::memory_order_relaxed)));
+    json.set("playbackXruns", static_cast<int64_t>(
+        metrics_.playbackXruns.load(std::memory_order_relaxed)));
+    json.set("shortCaptureTransfers", static_cast<int64_t>(
+        metrics_.shortCaptureTransfers.load(std::memory_order_relaxed)));
+    json.set("shortPlaybackTransfers", static_cast<int64_t>(
+        metrics_.shortPlaybackTransfers.load(std::memory_order_relaxed)));
     json.set("dspLoad", metrics_.dspLoad.load(std::memory_order_relaxed));
     json.set("dspLoadPeak", metrics_.dspLoadPeak.load(std::memory_order_relaxed));
     json.set("inputPeak", metrics_.inputPeak.load(std::memory_order_relaxed));
@@ -5580,7 +5913,8 @@ Json Engine::meterState() const {
     json.set("guitarInputPeak", guitarInputPeak_.load(std::memory_order_relaxed));
     json.set("guitarInputRms", guitarInputRms_.load(std::memory_order_relaxed));
     Json effectMeters = Json::array();
-    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
         for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
             Json meter = Json::object();
             meter.set("slotId", slot->id);
@@ -5591,6 +5925,35 @@ Json Engine::meterState() const {
     }
     json.set("effects", std::move(effectMeters));
     json.set("running", metrics_.running.load(std::memory_order_relaxed));
+    json.set("chainPreparing",
+        chainPublicationExpected_.load(std::memory_order_acquire)
+            || pendingChain_.peek() != nullptr
+            || metrics_.chainPreparationActive.load(std::memory_order_relaxed));
+
+    const uint32_t lastDirection = metrics_.lastXrunDirection.load(std::memory_order_relaxed);
+    const uint32_t lastTransition =
+        metrics_.lastXrunTransitionPhase.load(std::memory_order_relaxed);
+    Json lastXrun = Json::object();
+    lastXrun.set("direction", lastDirection == static_cast<uint32_t>(AudioXrunDirection::Capture)
+        ? "capture" : lastDirection == static_cast<uint32_t>(AudioXrunDirection::Playback)
+        ? "playback" : "none");
+    lastXrun.set("error", metrics_.lastXrunError.load(std::memory_order_relaxed));
+    lastXrun.set("period", static_cast<int64_t>(
+        metrics_.lastXrunPeriod.load(std::memory_order_relaxed)));
+    lastXrun.set("transition", lastTransition == static_cast<uint32_t>(
+        MasterOutputSafety::TransitionState::FadingOut) ? "fadingOut"
+        : lastTransition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::Muted)
+        ? "muted"
+        : lastTransition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::FadingIn)
+        ? "fadingIn" : "running");
+    lastXrun.set("workerTransitions", static_cast<int>(
+        metrics_.lastXrunWorkerTransitions.load(std::memory_order_relaxed)));
+    lastXrun.set("chainPreparing",
+        metrics_.lastXrunChainPreparationActive.load(std::memory_order_relaxed));
+    lastXrun.set("chainGeneration", static_cast<int64_t>(
+        metrics_.lastXrunChainGeneration.load(std::memory_order_relaxed)));
+    lastXrun.set("dspLoad", metrics_.lastXrunDspLoad.load(std::memory_order_relaxed));
+    json.set("lastXrun", std::move(lastXrun));
 
     const unsigned rate = sampleRate_.load(std::memory_order_acquire);
     const uint32_t hardwareFrames = metrics_.roundTripFrames.load(std::memory_order_relaxed);
@@ -5604,6 +5967,8 @@ Json Engine::meterState() const {
     json.set("safetyLookaheadMs", rate > 0 ? (1000.0 * lookaheadFrames) / rate : 0.0);
     json.set("roundTripMs", rate > 0 ? (1000.0 * totalFrames) / rate : 0.0);
     json.set("bufferMs", settings_.audio.bufferMs());
+    json.set("separateClockDomains", !settings_.audio.captureDevice.empty()
+        && settings_.audio.captureDevice != settings_.audio.device);
 
     const TunerReading reading = tuner();
     Json tunerJson = Json::object();

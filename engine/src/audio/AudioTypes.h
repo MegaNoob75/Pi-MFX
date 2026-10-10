@@ -7,6 +7,12 @@
 
 namespace pimfx {
 
+enum class AudioXrunDirection : uint32_t {
+    None = 0,
+    Capture = 1,
+    Playback = 2,
+};
+
 struct InstrumentInputProfile {
     std::string name = "Guitar 1";
     std::string inputMode = "instrument";
@@ -131,6 +137,10 @@ struct AudioDeviceInfo {
 /// no lock may ever be taken on the audio side.
 struct AudioMetrics {
     std::atomic<uint64_t> xruns{0};
+    std::atomic<uint64_t> captureXruns{0};
+    std::atomic<uint64_t> playbackXruns{0};
+    std::atomic<uint64_t> shortCaptureTransfers{0};
+    std::atomic<uint64_t> shortPlaybackTransfers{0};
     std::atomic<uint64_t> periods{0};
 
     /// Fraction of one period spent inside the processing callback, smoothed.
@@ -144,17 +154,49 @@ struct AudioMetrics {
     std::atomic<float> inputPeak{0.0f};
     std::atomic<float> outputPeak{0.0f};
 
+    // The engine publishes fixed-size context once per callback. If ALSA
+    // reports an xrun, the backend snapshots it here without allocating or
+    // formatting text on the realtime thread.
+    std::atomic<uint32_t> transitionPhase{0};
+    std::atomic<uint32_t> activeWorkerTransitions{0};
+    std::atomic<bool> chainPreparationActive{false};
+    std::atomic<uint64_t> chainGeneration{0};
+    std::atomic<uint32_t> lastXrunDirection{0};
+    std::atomic<int32_t> lastXrunError{0};
+    std::atomic<uint64_t> lastXrunPeriod{0};
+    std::atomic<uint32_t> lastXrunTransitionPhase{0};
+    std::atomic<uint32_t> lastXrunWorkerTransitions{0};
+    std::atomic<bool> lastXrunChainPreparationActive{false};
+    std::atomic<uint64_t> lastXrunChainGeneration{0};
+    std::atomic<float> lastXrunDspLoad{0.0f};
+
     /// Set when the stream is running and processing.
     std::atomic<bool> running{false};
 
     void reset() {
         xruns.store(0, std::memory_order_relaxed);
+        captureXruns.store(0, std::memory_order_relaxed);
+        playbackXruns.store(0, std::memory_order_relaxed);
+        shortCaptureTransfers.store(0, std::memory_order_relaxed);
+        shortPlaybackTransfers.store(0, std::memory_order_relaxed);
         periods.store(0, std::memory_order_relaxed);
         dspLoad.store(0.0f, std::memory_order_relaxed);
         dspLoadPeak.store(0.0f, std::memory_order_relaxed);
         roundTripFrames.store(0, std::memory_order_relaxed);
         inputPeak.store(0.0f, std::memory_order_relaxed);
         outputPeak.store(0.0f, std::memory_order_relaxed);
+        transitionPhase.store(0, std::memory_order_relaxed);
+        activeWorkerTransitions.store(0, std::memory_order_relaxed);
+        chainPreparationActive.store(false, std::memory_order_relaxed);
+        chainGeneration.store(0, std::memory_order_relaxed);
+        lastXrunDirection.store(0, std::memory_order_relaxed);
+        lastXrunError.store(0, std::memory_order_relaxed);
+        lastXrunPeriod.store(0, std::memory_order_relaxed);
+        lastXrunTransitionPhase.store(0, std::memory_order_relaxed);
+        lastXrunWorkerTransitions.store(0, std::memory_order_relaxed);
+        lastXrunChainPreparationActive.store(false, std::memory_order_relaxed);
+        lastXrunChainGeneration.store(0, std::memory_order_relaxed);
+        lastXrunDspLoad.store(0.0f, std::memory_order_relaxed);
     }
 };
 

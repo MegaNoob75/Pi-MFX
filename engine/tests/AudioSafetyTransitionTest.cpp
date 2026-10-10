@@ -92,6 +92,33 @@ void independentAudioBypassesPresetTransition() {
     for (float sample : mixed) assert(std::fabs(sample - 0.5f) < 1e-6f);
 }
 
+void liveSafetyChangesRemainFiniteAndBounded() {
+    AudioSettings settings;
+    settings.dcBlockerEnabled = true;
+    settings.limiterEnabled = true;
+    settings.limiterCeilingDb = -1.0f;
+    settings.limiterLookaheadMs = 0.0f;
+    MasterOutputSafety safety;
+    safety.configure(settings, 48000);
+    safety.prepare(48000);
+
+    std::vector<float> samples(1024, 0.75f);
+    processMono(safety, samples);
+
+    settings.dcBlockerEnabled = false;
+    settings.limiterCeilingDb = -6.0f;
+    settings.limiterLookaheadMs = 2.0f;
+    safety.configure(settings, 48000);
+    for (int block = 0; block < 16; ++block) {
+        std::fill(samples.begin(), samples.end(), block % 2 == 0 ? 0.75f : -0.75f);
+        processMono(safety, samples);
+        for (float sample : samples) {
+            assert(std::isfinite(sample));
+            assert(std::fabs(sample) <= 1.0f);
+        }
+    }
+}
+
 struct TrackedChain {
     explicit TrackedChain(int value) : id(value) {}
     ~TrackedChain() { ++destroyed; }
@@ -134,6 +161,7 @@ int main() {
     dcBlockerRejectsOffset();
     fadesReachSilenceBeforeRelease();
     independentAudioBypassesPresetTransition();
+    liveSafetyChangesRemainFiniteAndBounded();
     rapidPublicationKeepsNewestChain();
     lv2WorkerTransitionWaitsForTheWholePipeline();
     return 0;

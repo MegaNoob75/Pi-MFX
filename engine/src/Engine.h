@@ -19,6 +19,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -27,6 +28,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace pimfx {
@@ -248,8 +250,33 @@ private:
         std::vector<std::vector<float>> bufferB;
         std::vector<float*> pointersA;
         std::vector<float*> pointersB;
+        std::string presetId;
         unsigned channels = 2;
         float outputGain = 1.0f;
+        uint64_t publicationGeneration = 0;
+    };
+
+    /// Pins retired chains while non-audio threads inspect the current one.
+    /// The audio thread remains lock-free; housekeeping simply postpones
+    /// deletion while any control-side reader is active.
+    class ActiveChainReadGuard {
+    public:
+        explicit ActiveChainReadGuard(const Engine& engine) noexcept
+            : engine_(engine) {
+            engine_.chainReaders_.fetch_add(1, std::memory_order_acq_rel);
+            chain_ = engine_.activeChain_.load(std::memory_order_acquire);
+        }
+        ~ActiveChainReadGuard() {
+            engine_.chainReaders_.fetch_sub(1, std::memory_order_release);
+        }
+        Chain* get() const noexcept { return chain_; }
+
+        ActiveChainReadGuard(const ActiveChainReadGuard&) = delete;
+        ActiveChainReadGuard& operator=(const ActiveChainReadGuard&) = delete;
+
+    private:
+        const Engine& engine_;
+        Chain* chain_ = nullptr;
     };
 
     struct RetiredChain {
@@ -259,8 +286,16 @@ private:
 
     bool restartAudio(std::string& error);
     void publishChain(std::unique_ptr<Chain> chain);
+    void publishPreparedChain(std::unique_ptr<Chain> chain);
+    bool chainNeedsPreparation(const Chain& chain) const noexcept;
+    bool prepareChainForPublication(Chain& chain, uint64_t requestGeneration);
+    void chainPreparationThread();
+    void startChainPreparationThread();
+    void stopChainPreparationThread();
+    void cancelChainPreparationsLocked();
     void collectRetiredChains();
     bool swapPendingChainFromAudio();
+    bool activeChainReadyForPreset(const Preset& preset) const noexcept;
     void beginAudioTransitionBlock();
     bool applyDeferredTransitionStateFromAudio();
     bool activeChainTransitionPending() const;
@@ -299,8 +334,9 @@ private:
     void persistActiveBankUnlocked();
     void persistBankUnlocked(Bank* bank, bool syncFromChain);
     void flushPendingBasePresetUnlocked();
-    void requestBankPersist(bool immediate);
-    void flushBankPersistIfDue();
+    void requestBankPersist(const std::string& bankId);
+    void requestSettingsPersist();
+    void flushPendingPersistence(bool force = false);
     bool persistSettings();
     void notify();
     void notifyPerformance();
@@ -352,8 +388,17 @@ private:
     Chain* deferredRetiredChain_ = nullptr; // audio thread only
     std::vector<std::pair<std::unique_ptr<Chain>, uint64_t>> retiredChains_;
     std::atomic<uint64_t> audioGeneration_{0};
+    mutable std::atomic<uint32_t> chainReaders_{0};
+    std::atomic<uint64_t> chainPublicationGeneration_{0};
     std::atomic<bool> chainStateDirty_{false};
     mutable std::mutex chainMutex_;
+
+    std::thread chainPreparationWorker_;
+    std::mutex chainPreparationMutex_;
+    std::condition_variable chainPreparationWake_;
+    std::unique_ptr<Chain> chainAwaitingPreparation_;
+    std::atomic<bool> chainPreparationStopping_{false};
+    std::atomic<uint64_t> chainPreparationRequestGeneration_{0};
 
     std::atomic<bool> bypassAll_{false};
     std::atomic<int> pendingBypassAll_{-1};
@@ -383,7 +428,7 @@ private:
     // Tuner: the audio thread copies a decimated mono signal into this ring
     // and a background thread does the analysis, so pitch detection can never
     // affect the audio path.
-    std::vector<float> tunerRing_;
+    std::vector<std::atomic<float>> tunerRing_;
     std::atomic<size_t> tunerWrite_{0};
     std::atomic<bool> tunerEnabled_{true};
     std::atomic<bool> tunerViewOpen_{false};
@@ -402,6 +447,8 @@ private:
     std::atomic<bool> shuttingDown_{false};
     std::atomic<bool> bankPersistPending_{false};
     std::atomic<int64_t> bankPersistDueMs_{0};
+    std::unordered_set<std::string> pendingBankPersistIds_;
+    bool settingsPersistPending_ = false;
 
     std::atomic<unsigned> sampleRate_{48000};
     std::atomic<unsigned> maxFrames_{64};

@@ -348,15 +348,101 @@ void AlsaBackend::closeStream(Stream& stream) {
     stream.buffer.clear();
 }
 
-void AlsaBackend::writeSilence(unsigned frames, unsigned periodCount) {
+long AlsaBackend::readFrames(Stream& stream, unsigned frames, bool& shortTransfer) {
+    shortTransfer = false;
+    unsigned total = 0;
+    const size_t bytesPerFrame = static_cast<size_t>(stream.channels) * stream.sampleBytes;
+    while (total < frames) {
+        uint8_t* destination = stream.buffer.data() + static_cast<size_t>(total) * bytesPerFrame;
+        const unsigned remaining = frames - total;
+        const snd_pcm_sframes_t result = stream.mmap
+            ? snd_pcm_mmap_readi(stream.pcm, destination, remaining)
+            : snd_pcm_readi(stream.pcm, destination, remaining);
+        if (result == -EINTR) {
+            continue;
+        }
+        if (result < 0) {
+            return static_cast<long>(result);
+        }
+        if (result == 0) {
+            return -EIO;
+        }
+        if (static_cast<unsigned>(result) < remaining) {
+            shortTransfer = true;
+        }
+        total += static_cast<unsigned>(result);
+    }
+    return static_cast<long>(total);
+}
+
+long AlsaBackend::writeFrames(Stream& stream, unsigned frames, bool& shortTransfer) {
+    shortTransfer = false;
+    unsigned total = 0;
+    const size_t bytesPerFrame = static_cast<size_t>(stream.channels) * stream.sampleBytes;
+    while (total < frames) {
+        const uint8_t* source = stream.buffer.data() + static_cast<size_t>(total) * bytesPerFrame;
+        const unsigned remaining = frames - total;
+        const snd_pcm_sframes_t result = stream.mmap
+            ? snd_pcm_mmap_writei(stream.pcm, source, remaining)
+            : snd_pcm_writei(stream.pcm, source, remaining);
+        if (result == -EINTR) {
+            continue;
+        }
+        if (result < 0) {
+            return static_cast<long>(result);
+        }
+        if (result == 0) {
+            return -EIO;
+        }
+        if (static_cast<unsigned>(result) < remaining) {
+            shortTransfer = true;
+        }
+        total += static_cast<unsigned>(result);
+    }
+    return static_cast<long>(total);
+}
+
+void AlsaBackend::recordXrun(AudioXrunDirection direction, int errorCode,
+                             uint64_t periodIndex) noexcept {
+    if (!metrics_) {
+        return;
+    }
+    metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
+    if (direction == AudioXrunDirection::Capture) {
+        metrics_->captureXruns.fetch_add(1, std::memory_order_relaxed);
+    } else if (direction == AudioXrunDirection::Playback) {
+        metrics_->playbackXruns.fetch_add(1, std::memory_order_relaxed);
+    }
+    metrics_->lastXrunDirection.store(static_cast<uint32_t>(direction), std::memory_order_relaxed);
+    metrics_->lastXrunError.store(errorCode < 0 ? -errorCode : errorCode,
+                                  std::memory_order_relaxed);
+    metrics_->lastXrunPeriod.store(periodIndex, std::memory_order_relaxed);
+    metrics_->lastXrunTransitionPhase.store(
+        metrics_->transitionPhase.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    metrics_->lastXrunWorkerTransitions.store(
+        metrics_->activeWorkerTransitions.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    metrics_->lastXrunChainPreparationActive.store(
+        metrics_->chainPreparationActive.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    metrics_->lastXrunChainGeneration.store(
+        metrics_->chainGeneration.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    metrics_->lastXrunDspLoad.store(metrics_->dspLoad.load(std::memory_order_relaxed),
+                                    std::memory_order_relaxed);
+}
+
+bool AlsaBackend::writeSilence(unsigned frames, unsigned periodCount, int& errorCode) {
     std::fill(playback_.buffer.begin(), playback_.buffer.end(), 0);
     for (unsigned i = 0; i + 1 < periodCount; ++i) {
-        if (playback_.mmap) {
-            snd_pcm_mmap_writei(playback_.pcm, playback_.buffer.data(), frames);
-        } else {
-            snd_pcm_writei(playback_.pcm, playback_.buffer.data(), frames);
+        bool shortTransfer = false;
+        const long written = writeFrames(playback_, frames, shortTransfer);
+        if (written < 0) {
+            errorCode = static_cast<int>(written);
+            return false;
         }
     }
+    errorCode = 0;
+    return true;
 }
 
 bool AlsaBackend::resyncAfterXrun(unsigned frames, unsigned periodCount) {
@@ -400,7 +486,10 @@ bool AlsaBackend::resyncAfterXrun(unsigned frames, unsigned periodCount) {
         }
     }
 
-    writeSilence(frames, periodCount);
+    if (!writeSilence(frames, periodCount, err)) {
+        reportFailure(AudioFailureCategory::PrimePlaybackAfterXrun, err);
+        return false;
+    }
 
     err = snd_pcm_start(capture_.pcm);
     if (err < 0 && err != -EBADFD) {
@@ -500,6 +589,11 @@ void AlsaBackend::stop() {
         return;
     }
     stopRequested_.store(true, std::memory_order_release);
+    // Unblock a driver that is stuck in a blocking read/write before joining
+    // the owner thread. The loop checks stopRequested_ before classifying the
+    // resulting ALSA error, so shutdown never creates a false xrun.
+    if (capture_.pcm) snd_pcm_abort(capture_.pcm);
+    if (playback_.pcm) snd_pcm_abort(playback_.pcm);
     if (thread_.joinable()) {
         thread_.join();
     }
@@ -578,13 +672,16 @@ void AlsaBackend::run() {
 
     const unsigned frames = runPeriodFrames_;
     const unsigned periodCount = runPeriodCount_;
-    const double periodSeconds = static_cast<double>(frames) / runSampleRate_;
-
     // Queue periodCount-1 silent periods before the first real write. USB
     // needs that slack; one period was not enough and xran at settings that
     // were previously stable. startImmediately only changes the start
     // threshold, not how much is queued.
-    writeSilence(frames, periodCount);
+    int primeError = 0;
+    if (!writeSilence(frames, periodCount, primeError)) {
+        reportFailure(AudioFailureCategory::PrimePlayback, primeError);
+        running_.store(false, std::memory_order_release);
+        return;
+    }
 
     int result = snd_pcm_start(capture_.pcm);
     if (result < 0 && result != -EBADFD) {
@@ -601,18 +698,19 @@ void AlsaBackend::run() {
     uint64_t periodIndex = 0;
 
     while (!stopRequested_.load(std::memory_order_acquire)) {
-        snd_pcm_sframes_t got = capture_.mmap
-            ? snd_pcm_mmap_readi(capture_.pcm, capture_.buffer.data(), frames)
-            : snd_pcm_readi(capture_.pcm, capture_.buffer.data(), frames);
+        bool shortCapture = false;
+        const long got = readFrames(capture_, frames, shortCapture);
 
         if (got < 0) {
-            if (metrics_) {
-                metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
-            }
+            if (stopRequested_.load(std::memory_order_acquire)) break;
+            recordXrun(AudioXrunDirection::Capture, static_cast<int>(got), periodIndex);
             if (!resyncAfterXrun(frames, periodCount)) {
                 break;
             }
             continue;
+        }
+        if (shortCapture && metrics_) {
+            metrics_->shortCaptureTransfers.fetch_add(1, std::memory_order_relaxed);
         }
 
         const unsigned actualFrames = static_cast<unsigned>(got);
@@ -636,24 +734,26 @@ void AlsaBackend::run() {
 
         const auto processEnd = std::chrono::steady_clock::now();
 
-        snd_pcm_sframes_t written = playback_.mmap
-            ? snd_pcm_mmap_writei(playback_.pcm, playback_.buffer.data(), actualFrames)
-            : snd_pcm_writei(playback_.pcm, playback_.buffer.data(), actualFrames);
+        bool shortPlayback = false;
+        const long written = writeFrames(playback_, actualFrames, shortPlayback);
 
         if (written < 0) {
-            if (metrics_) {
-                metrics_->xruns.fetch_add(1, std::memory_order_relaxed);
-            }
+            if (stopRequested_.load(std::memory_order_acquire)) break;
+            recordXrun(AudioXrunDirection::Playback, static_cast<int>(written), periodIndex);
             if (!resyncAfterXrun(frames, periodCount)) {
                 break;
             }
             continue;
         }
+        if (shortPlayback && metrics_) {
+            metrics_->shortPlaybackTransfers.fetch_add(1, std::memory_order_relaxed);
+        }
 
         if (metrics_) {
             const double elapsed =
                 std::chrono::duration<double>(processEnd - processStart).count();
-            const float load = static_cast<float>(elapsed / periodSeconds);
+            const double actualPeriodSeconds = static_cast<double>(actualFrames) / runSampleRate_;
+            const float load = static_cast<float>(elapsed / actualPeriodSeconds);
             // A one-pole average is readable on screen; the peak below is what
             // actually tells you whether you are about to drop out.
             loadAverage = loadAverage * 0.95f + load * 0.05f;
@@ -681,7 +781,7 @@ void AlsaBackend::run() {
             // The driver knows the true distance between the converter and the
             // buffer; asking it beats calculating from period size, which
             // ignores whatever the hardware adds.
-            if ((periodIndex++ % 16) == 0) {
+            if ((periodIndex % 16) == 0) {
                 snd_pcm_sframes_t captureDelay = 0;
                 snd_pcm_sframes_t playbackDelay = 0;
                 snd_pcm_delay(capture_.pcm, &captureDelay);
@@ -690,6 +790,7 @@ void AlsaBackend::run() {
                 metrics_->roundTripFrames.store(static_cast<uint32_t>(total), std::memory_order_relaxed);
             }
         }
+        ++periodIndex;
     }
 
     if (metrics_) {

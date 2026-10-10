@@ -34,6 +34,15 @@ void MasterOutputSafety::prepare(unsigned sampleRate) {
     dcPreviousOutput_.fill(0.0f);
     limiterGain_ = 1.0f;
     limiterHoldFrames_ = 0;
+    activeLookaheadFrames_ = std::min<size_t>(
+        limiterLookaheadFrames_.load(std::memory_order_relaxed), limiterDelayFrames_ - 1);
+    previousLookaheadFrames_ = activeLookaheadFrames_;
+    lookaheadCrossfadeRemaining_ = 0;
+    limiterWet_ = limiterEnabled_.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    dcWet_ = dcBlockerEnabled_.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    smoothedDcPole_ = dcBlockerPole_.load(std::memory_order_relaxed);
+    smoothedCeilingGain_ = limiterCeilingGain_.load(std::memory_order_relaxed);
+    smoothedReleaseStep_ = limiterReleaseStep_.load(std::memory_order_relaxed);
 }
 
 void MasterOutputSafety::updateCoefficients(unsigned sampleRate) noexcept {
@@ -53,6 +62,11 @@ void MasterOutputSafety::updateCoefficients(unsigned sampleRate) noexcept {
         std::memory_order_relaxed);
     fadeInStep_.store(1.0f / std::max(1.0f,
         fadeInMs_.load(std::memory_order_relaxed) * rate / 1000.0f),
+        std::memory_order_relaxed);
+    parameterSmoothingStep_.store(1.0f / std::max(1.0f, rate * 0.005f),
+                                  std::memory_order_relaxed);
+    lookaheadCrossfadeFrames_.store(
+        static_cast<unsigned>(std::max(1.0f, rate * 0.005f)),
         std::memory_order_relaxed);
 }
 
@@ -106,23 +120,40 @@ void MasterOutputSafety::processProtection(float* const* outputs, unsigned outpu
                                            unsigned frames) noexcept {
     const unsigned channels = std::min(outputChannels, kMaxChannels);
     const bool dcEnabled = dcBlockerEnabled_.load(std::memory_order_relaxed);
-    const float dcPole = dcBlockerPole_.load(std::memory_order_relaxed);
+    const float targetDcPole = dcBlockerPole_.load(std::memory_order_relaxed);
     const bool limiterEnabled = limiterEnabled_.load(std::memory_order_relaxed);
-    const float ceiling = limiterCeilingGain_.load(std::memory_order_relaxed);
-    const float releaseStep = limiterReleaseStep_.load(std::memory_order_relaxed);
+    const float targetCeiling = limiterCeilingGain_.load(std::memory_order_relaxed);
+    const float targetReleaseStep = limiterReleaseStep_.load(std::memory_order_relaxed);
+    const float smoothingStep = parameterSmoothingStep_.load(std::memory_order_relaxed);
     const size_t requestedLookahead = limiterLookaheadFrames_.load(std::memory_order_relaxed);
     const size_t lookahead = limiterDelay_.empty() ? 0
         : std::min(requestedLookahead, limiterDelayFrames_ - 1);
+    if (lookahead != activeLookaheadFrames_) {
+        previousLookaheadFrames_ = activeLookaheadFrames_;
+        activeLookaheadFrames_ = lookahead;
+        lookaheadCrossfadeRemaining_ =
+            lookaheadCrossfadeFrames_.load(std::memory_order_relaxed);
+    }
     for (unsigned frame = 0; frame < frames; ++frame) {
+        const float dcTargetWet = dcEnabled ? 1.0f : 0.0f;
+        dcWet_ += std::max(-smoothingStep,
+            std::min(smoothingStep, dcTargetWet - dcWet_));
+        const float limiterTargetWet = limiterEnabled ? 1.0f : 0.0f;
+        limiterWet_ += std::max(-smoothingStep,
+            std::min(smoothingStep, limiterTargetWet - limiterWet_));
+        smoothedDcPole_ += (targetDcPole - smoothedDcPole_) * smoothingStep;
+        smoothedCeilingGain_ += (targetCeiling - smoothedCeilingGain_) * smoothingStep;
+        smoothedReleaseStep_ += (targetReleaseStep - smoothedReleaseStep_) * smoothingStep;
+
         float linkedPeak = 0.0f;
         for (unsigned channel = 0; channel < channels; ++channel) {
             float sample = outputs[channel][frame];
             if (!std::isfinite(sample)) sample = 0.0f;
             const float blocked = sample - dcPreviousInput_[channel]
-                                + dcPole * dcPreviousOutput_[channel];
+                                + smoothedDcPole_ * dcPreviousOutput_[channel];
             dcPreviousInput_[channel] = sample;
             dcPreviousOutput_[channel] = std::isfinite(blocked) ? blocked : 0.0f;
-            const float safeSample = dcEnabled ? dcPreviousOutput_[channel] : sample;
+            const float safeSample = sample + (dcPreviousOutput_[channel] - sample) * dcWet_;
             outputs[channel][frame] = safeSample;
             linkedPeak = std::max(linkedPeak, std::fabs(safeSample));
             if (!limiterDelay_.empty()) {
@@ -130,27 +161,47 @@ void MasterOutputSafety::processProtection(float* const* outputs, unsigned outpu
             }
         }
 
-        if (limiterEnabled) {
-            const float requiredGain = linkedPeak > ceiling && linkedPeak > 0.0f
-                ? ceiling / linkedPeak : 1.0f;
+        if (limiterEnabled || limiterWet_ > 0.0f) {
+            const float requiredGain = limiterEnabled
+                && linkedPeak > smoothedCeilingGain_ && linkedPeak > 0.0f
+                ? smoothedCeilingGain_ / linkedPeak : 1.0f;
             if (requiredGain < limiterGain_) limiterGain_ = requiredGain;
-            if (requiredGain < 0.999999f) limiterHoldFrames_ = static_cast<unsigned>(lookahead);
+            if (requiredGain < 0.999999f) limiterHoldFrames_ = static_cast<unsigned>(
+                std::max(activeLookaheadFrames_, previousLookaheadFrames_));
             else if (limiterHoldFrames_ > 0) --limiterHoldFrames_;
-            else limiterGain_ += (1.0f - limiterGain_) * releaseStep;
+            else limiterGain_ += (1.0f - limiterGain_) * smoothedReleaseStep_;
         } else {
             limiterGain_ = 1.0f;
             limiterHoldFrames_ = 0;
         }
 
-        const size_t readFrame = limiterDelay_.empty() ? 0
-            : (limiterWriteFrame_ + limiterDelayFrames_ - lookahead) % limiterDelayFrames_;
+        const size_t activeReadFrame = limiterDelay_.empty() ? 0
+            : (limiterWriteFrame_ + limiterDelayFrames_ - activeLookaheadFrames_)
+                % limiterDelayFrames_;
+        const size_t previousReadFrame = limiterDelay_.empty() ? 0
+            : (limiterWriteFrame_ + limiterDelayFrames_ - previousLookaheadFrames_)
+                % limiterDelayFrames_;
+        const unsigned crossfadeFrames =
+            lookaheadCrossfadeFrames_.load(std::memory_order_relaxed);
+        const float lookaheadMix = lookaheadCrossfadeRemaining_ == 0 ? 1.0f
+            : 1.0f - static_cast<float>(lookaheadCrossfadeRemaining_)
+                / static_cast<float>(std::max(1u, crossfadeFrames));
         for (unsigned channel = 0; channel < channels; ++channel) {
-            float sample = outputs[channel][frame];
-            if (limiterEnabled && !limiterDelay_.empty()) {
-                sample = limiterDelay_[readFrame * kMaxChannels + channel] * limiterGain_;
-                sample = std::max(-ceiling, std::min(ceiling, sample));
+            const float direct = outputs[channel][frame];
+            float limited = direct;
+            if (!limiterDelay_.empty()) {
+                const float previous = limiterDelay_[previousReadFrame * kMaxChannels + channel];
+                const float active = limiterDelay_[activeReadFrame * kMaxChannels + channel];
+                limited = (previous + (active - previous) * lookaheadMix) * limiterGain_;
+                limited = std::max(-smoothedCeilingGain_,
+                                   std::min(smoothedCeilingGain_, limited));
             }
-            outputs[channel][frame] = sample;
+            float output = direct + (limited - direct) * limiterWet_;
+            if (limiterEnabled) {
+                output = std::max(-smoothedCeilingGain_,
+                                  std::min(smoothedCeilingGain_, output));
+            }
+            outputs[channel][frame] = output;
         }
         for (unsigned channel = channels; channel < outputChannels; ++channel) {
             const float sample = outputs[channel][frame];
@@ -159,6 +210,7 @@ void MasterOutputSafety::processProtection(float* const* outputs, unsigned outpu
         if (!limiterDelay_.empty()) {
             limiterWriteFrame_ = (limiterWriteFrame_ + 1) % limiterDelayFrames_;
         }
+        if (lookaheadCrossfadeRemaining_ > 0) --lookaheadCrossfadeRemaining_;
     }
 }
 
