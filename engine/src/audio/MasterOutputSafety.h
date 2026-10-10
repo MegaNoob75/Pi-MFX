@@ -17,6 +17,10 @@ public:
     void prepare(unsigned sampleRate);
     void resetTransition(bool muted) noexcept;
     void beginFadeOut() noexcept;
+    void processTransition(float* const* outputs, unsigned outputChannels,
+                           unsigned frames, bool allowFadeIn) noexcept;
+    void processProtection(float* const* outputs, unsigned outputChannels,
+                           unsigned frames) noexcept;
     void process(float* const* outputs, unsigned outputChannels, unsigned frames,
                  bool allowFadeIn) noexcept;
 

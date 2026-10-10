@@ -73,6 +73,25 @@ void fadesReachSilenceBeforeRelease() {
     assert(std::fabs(fadeIn.back() - 1.0f) < 1e-6f);
 }
 
+void independentAudioBypassesPresetTransition() {
+    AudioSettings settings;
+    settings.dcBlockerEnabled = false;
+    settings.limiterEnabled = false;
+    settings.patchFadeOutMs = 1.0f;
+    MasterOutputSafety safety;
+    safety.configure(settings, 1000);
+    safety.prepare(1000);
+    safety.beginFadeOut();
+
+    std::vector<float> mixed(4, 1.0f);
+    float* channels[] = {mixed.data()};
+    safety.processTransition(channels, 1, static_cast<unsigned>(mixed.size()), false);
+    assert(safety.transitionState() == MasterOutputSafety::TransitionState::Muted);
+    for (float& sample : mixed) sample += 0.5f;
+    safety.processProtection(channels, 1, static_cast<unsigned>(mixed.size()));
+    for (float sample : mixed) assert(std::fabs(sample - 0.5f) < 1e-6f);
+}
+
 struct TrackedChain {
     explicit TrackedChain(int value) : id(value) {}
     ~TrackedChain() { ++destroyed; }
@@ -114,6 +133,7 @@ int main() {
     limiterBoundsOutput();
     dcBlockerRejectsOffset();
     fadesReachSilenceBeforeRelease();
+    independentAudioBypassesPresetTransition();
     rapidPublicationKeepsNewestChain();
     lv2WorkerTransitionWaitsForTheWholePipeline();
     return 0;

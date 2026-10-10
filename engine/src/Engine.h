@@ -264,6 +264,8 @@ private:
     void beginAudioTransitionBlock();
     bool applyDeferredTransitionStateFromAudio();
     bool activeChainTransitionPending() const;
+    void applyPresetTransition(float* const* outputs, unsigned outputChannels,
+                               unsigned frames);
     void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                  unsigned frames, const float* dryInput, float dryGain);
     void configureAudioSafety(const AudioSettings& settings);

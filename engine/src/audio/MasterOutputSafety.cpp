@@ -69,8 +69,41 @@ void MasterOutputSafety::beginFadeOut() noexcept {
     }
 }
 
-void MasterOutputSafety::process(float* const* outputs, unsigned outputChannels,
-                                 unsigned frames, bool allowFadeIn) noexcept {
+void MasterOutputSafety::processTransition(float* const* outputs, unsigned outputChannels,
+                                           unsigned frames, bool allowFadeIn) noexcept {
+    TransitionState transition = transitionState_.load(std::memory_order_relaxed);
+    if (transition == TransitionState::Muted && allowFadeIn) {
+        transition = TransitionState::FadingIn;
+    }
+    const float fadeOutStep = fadeOutStep_.load(std::memory_order_relaxed);
+    const float fadeInStep = fadeInStep_.load(std::memory_order_relaxed);
+
+    for (unsigned frame = 0; frame < frames; ++frame) {
+        if (transition == TransitionState::FadingOut) {
+            transitionGain_ = std::max(0.0f, transitionGain_ - fadeOutStep);
+            if (transitionGain_ <= 0.0f) {
+                transitionGain_ = 0.0f;
+                transition = TransitionState::Muted;
+            }
+        } else if (transition == TransitionState::FadingIn) {
+            transitionGain_ = std::min(1.0f, transitionGain_ + fadeInStep);
+            if (transitionGain_ >= 1.0f) {
+                transitionGain_ = 1.0f;
+                transition = TransitionState::Running;
+            }
+        } else if (transition == TransitionState::Muted) transitionGain_ = 0.0f;
+        else transitionGain_ = 1.0f;
+
+        for (unsigned channel = 0; channel < outputChannels; ++channel) {
+            const float sample = outputs[channel][frame];
+            outputs[channel][frame] = std::isfinite(sample) ? sample * transitionGain_ : 0.0f;
+        }
+    }
+    transitionState_.store(transition, std::memory_order_relaxed);
+}
+
+void MasterOutputSafety::processProtection(float* const* outputs, unsigned outputChannels,
+                                           unsigned frames) noexcept {
     const unsigned channels = std::min(outputChannels, kMaxChannels);
     const bool dcEnabled = dcBlockerEnabled_.load(std::memory_order_relaxed);
     const float dcPole = dcBlockerPole_.load(std::memory_order_relaxed);
@@ -80,13 +113,6 @@ void MasterOutputSafety::process(float* const* outputs, unsigned outputChannels,
     const size_t requestedLookahead = limiterLookaheadFrames_.load(std::memory_order_relaxed);
     const size_t lookahead = limiterDelay_.empty() ? 0
         : std::min(requestedLookahead, limiterDelayFrames_ - 1);
-    TransitionState transition = transitionState_.load(std::memory_order_relaxed);
-    if (transition == TransitionState::Muted && allowFadeIn) {
-        transition = TransitionState::FadingIn;
-    }
-    const float fadeOutStep = fadeOutStep_.load(std::memory_order_relaxed);
-    const float fadeInStep = fadeInStep_.load(std::memory_order_relaxed);
-
     for (unsigned frame = 0; frame < frames; ++frame) {
         float linkedPeak = 0.0f;
         for (unsigned channel = 0; channel < channels; ++channel) {
@@ -116,21 +142,6 @@ void MasterOutputSafety::process(float* const* outputs, unsigned outputChannels,
             limiterHoldFrames_ = 0;
         }
 
-        if (transition == TransitionState::FadingOut) {
-            transitionGain_ = std::max(0.0f, transitionGain_ - fadeOutStep);
-            if (transitionGain_ <= 0.0f) {
-                transitionGain_ = 0.0f;
-                transition = TransitionState::Muted;
-            }
-        } else if (transition == TransitionState::FadingIn) {
-            transitionGain_ = std::min(1.0f, transitionGain_ + fadeInStep);
-            if (transitionGain_ >= 1.0f) {
-                transitionGain_ = 1.0f;
-                transition = TransitionState::Running;
-            }
-        } else if (transition == TransitionState::Muted) transitionGain_ = 0.0f;
-        else transitionGain_ = 1.0f;
-
         const size_t readFrame = limiterDelay_.empty() ? 0
             : (limiterWriteFrame_ + limiterDelayFrames_ - lookahead) % limiterDelayFrames_;
         for (unsigned channel = 0; channel < channels; ++channel) {
@@ -139,17 +150,22 @@ void MasterOutputSafety::process(float* const* outputs, unsigned outputChannels,
                 sample = limiterDelay_[readFrame * kMaxChannels + channel] * limiterGain_;
                 sample = std::max(-ceiling, std::min(ceiling, sample));
             }
-            outputs[channel][frame] = sample * transitionGain_;
+            outputs[channel][frame] = sample;
         }
         for (unsigned channel = channels; channel < outputChannels; ++channel) {
             const float sample = outputs[channel][frame];
-            outputs[channel][frame] = std::isfinite(sample) ? sample * transitionGain_ : 0.0f;
+            outputs[channel][frame] = std::isfinite(sample) ? sample : 0.0f;
         }
         if (!limiterDelay_.empty()) {
             limiterWriteFrame_ = (limiterWriteFrame_ + 1) % limiterDelayFrames_;
         }
     }
-    transitionState_.store(transition, std::memory_order_relaxed);
+}
+
+void MasterOutputSafety::process(float* const* outputs, unsigned outputChannels,
+                                 unsigned frames, bool allowFadeIn) noexcept {
+    processProtection(outputs, outputChannels, frames);
+    processTransition(outputs, outputChannels, frames, allowFadeIn);
 }
 
 } // namespace pimfx

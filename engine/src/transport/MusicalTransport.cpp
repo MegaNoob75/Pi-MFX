@@ -28,6 +28,12 @@ void MusicalTransport::setBpm(double bpm) noexcept {
                     std::memory_order_release);
 }
 
+bool MusicalTransport::setBpmIfStopped(double bpm) noexcept {
+    if (playing_.load(std::memory_order_acquire)) return false;
+    setBpm(bpm);
+    return true;
+}
+
 void MusicalTransport::setTimeSignature(int beatsPerBar, int beatUnit) noexcept {
     beatsPerBar_.store(std::max(1, std::min(32, beatsPerBar)), std::memory_order_release);
     const int validUnit = beatUnit == 1 || beatUnit == 2 || beatUnit == 4
