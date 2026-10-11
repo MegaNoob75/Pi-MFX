@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { EngineSnapshot } from "../api";
 import { askText } from "../keyboard/ask";
 import { bool, num, obj, objects, str, type JsonObject } from "../json";
@@ -17,6 +17,46 @@ function formatTime(seconds: number): string {
     return `${minutes}:${String(whole % 60).padStart(2, "0")}`;
 }
 
+function formatLoopTime(seconds: number): string {
+    const tenths = Math.max(0, Math.floor(seconds * 10));
+    const minutes = Math.floor(tenths / 600);
+    const remainder = tenths % 600;
+    return `${minutes}:${String(Math.floor(remainder / 10)).padStart(2, "0")}.${remainder % 10}`;
+}
+
+function LoopSecondsInput({ label, value, maximum, disabled, onCommit }: {
+    label: string;
+    value: number;
+    maximum: number;
+    disabled: boolean;
+    onCommit: (seconds: number) => void;
+}) {
+    const formatValue = (seconds: number) => seconds.toFixed(1);
+    const [draft, setDraft] = useState(() => formatValue(value));
+    useEffect(() => setDraft(formatValue(value)), [value]);
+
+    const commit = () => {
+        const parsed = Number(draft);
+        if (!Number.isFinite(parsed)) {
+            setDraft(formatValue(value));
+            return;
+        }
+        const bounded = Math.max(0, Math.min(maximum, parsed));
+        setDraft(formatValue(bounded));
+        onCommit(bounded);
+    };
+
+    return <label className="backing-loop-seconds" title={`${label} in seconds`}>
+        <input className="text-input" type="number" inputMode="decimal" min="0" max={maximum} step="0.1"
+            aria-label={label} disabled={disabled} value={draft} onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit} onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") { setDraft(formatValue(value)); event.currentTarget.blur(); }
+            }} />
+        <span>SEC</span>
+    </label>;
+}
+
 export function BackingTracksView({ engine, run }: Props) {
     const track = engine.backing;
     const command = (name: string, payload: JsonObject = {}) =>
@@ -32,6 +72,23 @@ export function BackingTracksView({ engine, run }: Props) {
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [removeEntry, setRemoveEntry] = useState<number | null>(null);
     const canControlTrack = bool(track.loaded) || str(track.status) === "loading";
+    const canSetLoop = bool(track.loaded) && duration > 0;
+    const loopStart = Math.max(0, Math.min(duration, num(track.loopStart)));
+    const loopEnd = Math.max(loopStart, Math.min(duration, num(track.loopEnd, duration)));
+    const trackDetails = [str(track.artist), str(track.album), str(track.notes)].filter(Boolean).join(" · ");
+
+    const setLoopStart = () => {
+        if (!canSetLoop) return;
+        const start = Math.min(position, Math.max(0, duration - 0.1));
+        const end = loopEnd > start ? loopEnd : duration;
+        void command("loop", { enabled: bool(track.loopEnabled), start, end });
+    };
+    const setLoopEnd = () => {
+        if (!canSetLoop) return;
+        const end = Math.max(0.1, position);
+        const start = loopStart < end ? loopStart : 0;
+        void command("loop", { enabled: bool(track.loopEnabled), start, end });
+    };
 
     const createSetList = async () => {
         const name = await askText("New set-list name", "");
@@ -98,9 +155,26 @@ export function BackingTracksView({ engine, run }: Props) {
                         <div className="backing-settings-grid">
                             <label className="backing-field backing-level-field"><span>LEVEL</span><input className="range" type="range" min="0" max="1.5" step="0.01" disabled={!bool(track.loaded)} value={num(track.level, 1)} onChange={(event) => void command("level", { level: Number(event.target.value) })} /></label>
                             <label className="backing-field"><span>MANUAL BPM</span><input className="text-input" type="number" min="0" max="300" disabled={!bool(track.loaded)} value={num(track.manualBpm, 0) || ""} onChange={(event) => void command("bpm", { bpm: Number(event.target.value) || 0 })} /></label>
-                            <label className="backing-field"><span>LOOP START</span><input className="text-input" type="number" min="0" max={duration} step="0.1" disabled={!bool(track.loaded)} value={num(track.loopStart)} onChange={(event) => void command("loop", { enabled: bool(track.loopEnabled), start: Number(event.target.value), end: num(track.loopEnd, duration) })} /></label>
-                            <label className="backing-field"><span>LOOP END</span><input className="text-input" type="number" min="0" max={duration} step="0.1" disabled={!bool(track.loaded)} value={num(track.loopEnd, duration)} onChange={(event) => void command("loop", { enabled: bool(track.loopEnabled), start: num(track.loopStart), end: Number(event.target.value) })} /></label>
-                            <label className="backing-loop-toggle"><input type="checkbox" disabled={!bool(track.loaded)} checked={bool(track.loopEnabled)} onChange={(event) => void command("loop", { enabled: event.target.checked, start: num(track.loopStart), end: num(track.loopEnd, duration) })} /> LOOP REGION</label>
+                            <div className="backing-loop-editor">
+                                <label className="backing-loop-toggle"><input type="checkbox" disabled={!canSetLoop} checked={bool(track.loopEnabled)} onChange={(event) => void command("loop", { enabled: event.target.checked, start: loopStart, end: loopEnd })} /> LOOP REGION</label>
+                                <div className="backing-loop-points">
+                                    <div className="backing-loop-point">
+                                        <button type="button" className="btn" disabled={!canSetLoop} onClick={setLoopStart} title="Set loop start to the current track position">
+                                            <span>SET START</span><strong>{formatLoopTime(loopStart)}</strong>
+                                        </button>
+                                        <LoopSecondsInput key={`${str(track.path)}-loop-start`} label="Loop start seconds" value={loopStart} maximum={duration}
+                                            disabled={!canSetLoop} onCommit={(start) => void command("loop", { enabled: bool(track.loopEnabled), start, end: loopEnd > start ? loopEnd : duration })} />
+                                    </div>
+                                    <div className="backing-loop-point">
+                                        <button type="button" className="btn" disabled={!canSetLoop} onClick={setLoopEnd} title="Set loop end to the current track position">
+                                            <span>SET END</span><strong>{formatLoopTime(loopEnd)}</strong>
+                                        </button>
+                                        <LoopSecondsInput key={`${str(track.path)}-loop-end`} label="Loop end seconds" value={loopEnd} maximum={duration}
+                                            disabled={!canSetLoop} onCommit={(end) => void command("loop", { enabled: bool(track.loopEnabled), start: loopStart < end ? loopStart : 0, end })} />
+                                    </div>
+                                </div>
+                                <small className="muted">Seek and press SET, or enter an exact time in seconds.</small>
+                            </div>
                         </div>
                     </section>
                 </aside>
@@ -111,25 +185,26 @@ export function BackingTracksView({ engine, run }: Props) {
                             <div className="backing-track-identity">
                                 <span className="muted">NOW PLAYING</span>
                                 <strong>{str(track.title, str(track.name, "No track loaded"))}</strong>
-                                {(str(track.artist) || str(track.album)) && <small className="muted">{str(track.artist)}{str(track.album) ? ` · ${str(track.album)}` : ""}</small>}
+                                {trackDetails && <small className="muted">{trackDetails}</small>}
+                            </div>
+                            <div className="backing-player-summary">
+                                <div><span>STATUS</span><strong>{str(track.status, "empty").toUpperCase()}</strong></div>
+                                <div><span>BUFFER</span><strong className={num(track.underruns) ? "danger" : ""}>{num(track.underruns) ? `${Math.trunc(num(track.underruns))} UNDERRUNS` : "READY"}</strong></div>
                             </div>
                         </div>
-                        <div className="backing-status-strip">
-                            <div><span>TIME</span><strong>{formatTime(position)} / {formatTime(duration)}</strong></div>
-                            <div><span>STATUS</span><strong>{str(track.status, "empty").toUpperCase()}</strong></div>
-                            <div><span>BUFFER</span><strong className={num(track.underruns) ? "danger" : ""}>{num(track.underruns) ? `${Math.trunc(num(track.underruns))} UNDERRUNS` : "READY"}</strong></div>
-                        </div>
-                        {str(track.notes) && <div className="backing-track-notes muted">{str(track.notes)}</div>}
                         {str(track.error) && <div className="error-banner">{str(track.error)}</div>}
-                        <WaveformTimeline peaks={waveform} position={position} duration={duration}
-                            bpm={num(track.manualBpm) || num(engine.transport.bpm)} beatsPerBar={num(engine.transport.beatsPerBar, 4)}
-                            emptyText="Load a track to see its waveform." onSeek={bool(track.loaded)
-                                ? (seconds) => void command("seek", { seconds }) : undefined} />
-                        <div className="backing-seek-row">
-                            <span>{formatTime(position)}</span>
-                            <input className="range" aria-label="Track position" type="range" min="0" max={duration || 1} step="0.01" value={position}
-                                onChange={(event) => void command("seek", { seconds: Number(event.target.value) })} />
-                            <span>{formatTime(duration)}</span>
+                        <div className="backing-waveform-stack">
+                            <WaveformTimeline peaks={waveform} position={position} duration={duration}
+                                bpm={num(track.manualBpm) || num(engine.transport.bpm)} beatsPerBar={num(engine.transport.beatsPerBar, 4)}
+                                loopEnabled={bool(track.loopEnabled)} loopStart={loopStart} loopEnd={loopEnd}
+                                emptyText="Load a track to see its waveform." onSeek={bool(track.loaded)
+                                    ? (seconds) => void command("seek", { seconds }) : undefined} />
+                            <div className="backing-seek-row">
+                                <span>{formatTime(position)}</span>
+                                <input className="range" aria-label="Track position" type="range" min="0" max={duration || 1} step="0.01" value={position}
+                                    onChange={(event) => void command("seek", { seconds: Number(event.target.value) })} />
+                                <span>{formatTime(duration)}</span>
+                            </div>
                         </div>
                         <div className="backing-transport-actions">
                             <button className="btn" onClick={() => void command("previous")}>PREV</button>

@@ -1,10 +1,40 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { EngineSnapshot } from "../api";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
 
 export type LibraryKind = "model" | "ir" | "aidax" | "plugin" | "layout" | "virtuallayout" | "theme" | "backup" | "bank" | "backing" | "loop" | "recording" | "drumsample" | "drumkit" | "drumproject" | "controllerprofile" | "setupprofile";
+
+type LibraryKindInfo = {
+    id: LibraryKind;
+    label: string;
+    group: string;
+    description: string;
+    readOnly?: boolean;
+};
+
+const LIBRARY_KINDS: LibraryKindInfo[] = [
+    { id: "model", label: "NAM Models", group: "AMPS & EFFECTS", description: "Neural Amp Modeler captures." },
+    { id: "aidax", label: "AIDA-X Models", group: "AMPS & EFFECTS", description: "AIDA-X amp and effect captures." },
+    { id: "ir", label: "Cabinet IRs", group: "AMPS & EFFECTS", description: "Cabinet and other impulse responses." },
+    { id: "plugin", label: "LV2 Plugins", group: "AMPS & EFFECTS", description: "Installed LV2 plugin bundles (view only).", readOnly: true },
+    { id: "bank", label: "Preset / Bank Exports", group: "PRESETS & SETUP", description: "Exported preset banks that can be copied or restored." },
+    { id: "setupprofile", label: "Settings / Setup Profiles", group: "PRESETS & SETUP", description: "Saved Pi-MFX setup and settings profiles." },
+    { id: "backup", label: "Backups", group: "PRESETS & SETUP", description: "Pi-MFX backup files." },
+    { id: "theme", label: "Themes", group: "PRESETS & SETUP", description: "Custom user-interface themes." },
+    { id: "layout", label: "Performance Layouts", group: "PRESETS & SETUP", description: "Saved performance-screen layouts." },
+    { id: "virtuallayout", label: "Virtual Control Layouts", group: "PRESETS & SETUP", description: "Saved virtual-control layouts." },
+    { id: "controllerprofile", label: "Controller Profiles", group: "PRESETS & SETUP", description: "Saved MIDI and hardware-controller profiles." },
+    { id: "backing", label: "Backing Tracks", group: "AUDIO & RECORDING", description: "Audio files used by the backing-track player." },
+    { id: "loop", label: "Saved Loops", group: "AUDIO & RECORDING", description: "Loops saved by the looper." },
+    { id: "recording", label: "Recordings", group: "AUDIO & RECORDING", description: "Audio captured by the recorder." },
+    { id: "drumsample", label: "Drum Samples", group: "DRUMS", description: "One-shot WAV files used by drum kits." },
+    { id: "drumkit", label: "Drum Kits", group: "DRUMS", description: "Saved drum-kit definitions." },
+    { id: "drumproject", label: "Drum Patterns & Songs", group: "DRUMS", description: "Drum patterns, variations, and song chains." }
+];
+
+const MODEL_PICKER_KINDS = LIBRARY_KINDS.filter((item) => ["model", "aidax", "ir"].includes(item.id));
 
 const MODEL_DIR_KEY = "pimfx-t3k-model-dir";
 const IR_DIR_KEY = "pimfx-t3k-ir-dir";
@@ -106,7 +136,7 @@ export function libraryRootLabel(kind: LibraryKind): string {
 }
 
 function libraryUploadAccept(kind: LibraryKind): string | undefined {
-    if (["theme", "layout", "backup", "bank", "controllerprofile", "setupprofile", "drumkit"].includes(kind)) return ".json,application/json";
+    if (["theme", "layout", "virtuallayout", "backup", "bank", "controllerprofile", "setupprofile", "drumkit"].includes(kind)) return ".json,application/json";
     if (kind === "drumsample" || kind === "loop") return ".wav,audio/wav";
     if (kind === "backing") return ".wav,.flac,.mp3,.ogg,audio/*";
     if (kind === "ir") return ".wav,.flac,.aif,.aiff,audio/*";
@@ -206,10 +236,10 @@ export function FilesView({
             <div className="mfx-screen-intro">
                 <div className="mfx-screen-intro-title">FILES</div>
                 <div className="mfx-screen-intro-sub">
-                    NAM, AIDA-X and impulse responses
+                    Pi-MFX libraries, media, presets, settings and backups
                 </div>
             </div>
-            <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
+            <div className="page-scroll files-view-scroll">
                 <LibraryFileManager engine={engine} run={run} />
             </div>
         </div>
@@ -219,7 +249,7 @@ export function FilesView({
 export function LibraryFileManager({
     engine,
     run,
-    kinds = ["model", "aidax", "ir"],
+    kinds = LIBRARY_KINDS.map((item) => item.id),
     refreshToken = 0
 }: {
     engine: EngineSnapshot & { client: import("../api").EngineClient };
@@ -227,33 +257,57 @@ export function LibraryFileManager({
     kinds?: LibraryKind[];
     refreshToken?: number;
 }) {
-    const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
+    const availableKinds = LIBRARY_KINDS.filter((item) => kinds.includes(item.id));
     const [kind, setKind] = useState<LibraryKind>(availableKinds[0]?.id ?? "model");
+    const selectedKind = availableKinds.find((item) => item.id === kind) ?? availableKinds[0];
+    const groupedKinds = availableKinds.reduce<Map<string, LibraryKindInfo[]>>((groups, item) => {
+        const group = groups.get(item.group) ?? [];
+        group.push(item);
+        groups.set(item.group, group);
+        return groups;
+    }, new Map());
     return (
         <div className="panel stack">
-            <div className="muted">
-                NAM files live in models. Impulse responses live in irs.
-                {kinds.includes("aidax") && " AIDA-X files live in aidax."}
-                Drag between the two panes, or long-press a row for more actions.
-            </div>
-            <div className="row explorer-kind-tabs">
-                {availableKinds.map((item) => (
-                    <button key={item.id} type="button" className={`btn ${kind === item.id ? "btn-active" : ""}`} onClick={() => setKind(item.id)}>
-                        {item.label}
-                    </button>
-                ))}
-            </div>
+            {availableKinds.length > 4 ? (
+                <div className="library-kind-selector">
+                    <label className="library-kind-field">
+                        <span>LIBRARY AREA</span>
+                        <select value={kind} onChange={(event) => setKind(event.target.value as LibraryKind)}>
+                            {[...groupedKinds].map(([group, items]) => (
+                                <optgroup key={group} label={group}>
+                                    {items.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                </optgroup>
+                            ))}
+                        </select>
+                    </label>
+                    <div className="muted library-kind-description">
+                        {selectedKind?.description} Locked to {libraryRootLabel(kind)}/ for safety.
+                    </div>
+                </div>
+            ) : (
+                <>
+                    <div className="muted">
+                        {selectedKind?.description} Drag between the two panes, or long-press a row for more actions.
+                    </div>
+                    <div className="row explorer-kind-tabs">
+                        {availableKinds.map((item) => (
+                            <button key={item.id} type="button" className={`btn ${kind === item.id ? "btn-active" : ""}`} onClick={() => setKind(item.id)}>
+                                {item.label}
+                            </button>
+                        ))}
+                    </div>
+                </>
+            )}
             <LibraryBrowser key={kind} engine={engine} run={run} kind={kind} refreshToken={refreshToken}
+                allowMutations={!selectedKind?.readOnly}
+                allowMove={!selectedKind?.readOnly}
+                allowUpload={!selectedKind?.readOnly}
+                allowCreateFolder={!selectedKind?.readOnly}
+                readOnly={selectedKind?.readOnly}
                 showTone3000Links={kind === "model" || kind === "ir"} />
         </div>
     );
 }
-
-const PICKER_KINDS: { id: Exclude<LibraryKind, "plugin">; label: string }[] = [
-    { id: "model", label: "NAM" },
-    { id: "aidax", label: "AIDA-X" },
-    { id: "ir", label: "IRs" }
-];
 
 export function LibraryFolderPicker({
     engine,
@@ -276,7 +330,7 @@ export function LibraryFolderPicker({
 }) {
     const [activeKind, setActiveKind] = useState<LibraryKind>(kind === "plugin" ? "model" : kind);
     const [directory, setDirectory] = useState(value || "TONE3000");
-    const availableKinds = PICKER_KINDS.filter((item) => kinds.includes(item.id));
+    const availableKinds = MODEL_PICKER_KINDS.filter((item) => kinds.includes(item.id));
     const title = activeKind === "ir" ? "IR FOLDER" : activeKind === "aidax" ? "AIDA-X FOLDER" : "NAM FOLDER";
     const suggestedFolder = createFolderName ? safeLibraryFolderName(createFolderName) : "";
     return (
@@ -755,6 +809,7 @@ export function LibraryBrowser({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const [menu, setMenu] = useState<{ x: number; y: number; item: LibraryItem | null } | null>(null);
+    const menuRef = useRef<HTMLDivElement | null>(null);
     const [tone3000Assets, setTone3000Assets] = useState<JsonObject[]>([]);
     const [confirm, setConfirm] = useState<{ title: string; body: string; run: () => void } | null>(null);
     const uploadRef = useRef<HTMLInputElement | null>(null);
@@ -1172,6 +1227,22 @@ export function LibraryBrowser({
         }
     };
 
+    useLayoutEffect(() => {
+        const popup = menuRef.current;
+        if (!menu || !popup) return;
+        const margin = 8;
+        const placeMenu = () => {
+            const bounds = popup.getBoundingClientRect();
+            const left = Math.max(margin, Math.min(menu.x, window.innerWidth - bounds.width - margin));
+            const top = Math.max(margin, Math.min(menu.y, window.innerHeight - bounds.height - margin));
+            popup.style.left = `${left}px`;
+            popup.style.top = `${top}px`;
+        };
+        placeMenu();
+        window.addEventListener("resize", placeMenu);
+        return () => window.removeEventListener("resize", placeMenu);
+    }, [menu]);
+
     const selectedLabel = selected
         ? str(selected.name)
         : controlledSelectedPath
@@ -1388,8 +1459,9 @@ export function LibraryBrowser({
             {menu && (
                 <div className="explorer-menu-dismiss" onClick={() => setMenu(null)}>
                     <div
+                        ref={menuRef}
                         className="explorer-menu"
-                        style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 220) }}
+                        style={{ left: menu.x, top: menu.y }}
                         onClick={(event) => event.stopPropagation()}
                     >
                         {menu.item && str(menu.item.type) === "dir" && openFoldersOnSecondClick && (

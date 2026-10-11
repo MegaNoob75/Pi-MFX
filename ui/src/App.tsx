@@ -84,7 +84,7 @@ const MENU_ENTRIES: readonly MenuEntry[] = [
     { id: "edit", view: "edit", label: "PRESET EDITOR", subtitle: "Plugins, controls and signal chain", icon: "edit" },
     { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "Manage local NAM and IR files or browse TONE3000", icon: "library" },
     { id: "plugins", view: "plugins", label: "PLUGINS", subtitle: "Installed effects and Raspberry Pi OS / PatchStorage installs", icon: "plugins" },
-    { id: "files", view: "files", label: "FILES", subtitle: "Browse NAM, AIDA-X and IR folders", icon: "files" },
+    { id: "files", view: "files", label: "FILES", subtitle: "Browse Pi-MFX libraries, media and backups", icon: "files" },
     { id: "settings", view: "settings", label: "SETTINGS", subtitle: "Controller, theme, PI-MFX UI and system", icon: "settings" },
     { id: "about", view: "about", label: "ABOUT", subtitle: "About Pi-MFX", icon: "about" }
 ] as const;
