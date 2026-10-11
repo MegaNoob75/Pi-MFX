@@ -36,9 +36,26 @@ std::string newId(const std::string& prefix) {
 Json EffectSlot::toJson() const {
     Json json = Json::object();
     json.set("id", id);
-    json.set("uri", uri);
     json.set("name", name);
     json.set("enabled", enabled);
+    if (isParallel()) {
+        json.set("kind", "parallel");
+        Json a = Json::array();
+        for (const EffectSlot& slot : laneA) a.push(slot.toJson());
+        Json b = Json::array();
+        for (const EffectSlot& slot : laneB) b.push(slot.toJson());
+        json.set("laneA", std::move(a));
+        json.set("laneB", std::move(b));
+        json.set("levelADb", levelADb);
+        json.set("levelBDb", levelBDb);
+        json.set("balance", balance);
+        json.set("stereo", stereo);
+        json.set("panA", panA);
+        json.set("panB", panB);
+        json.set("outputDb", outputDb);
+        return json;
+    }
+    json.set("uri", uri);
     json.set("state", state);
     if (tempoLinks.isObject() && tempoLinks.size() > 0) {
         json.set("tempoLinks", tempoLinks);
@@ -49,9 +66,32 @@ Json EffectSlot::toJson() const {
 EffectSlot EffectSlot::fromJson(const Json& json) {
     EffectSlot slot;
     slot.id = json["id"].asString(newId("slot"));
-    slot.uri = json["uri"].asString();
+    slot.kind = json["kind"].asString("effect");
     slot.name = json["name"].asString();
     slot.enabled = json["enabled"].asBool(true);
+    if (slot.isParallel()) {
+        slot.name = json["name"].asString("Parallel Section");
+        for (const Json& child : json["laneA"].items()) slot.laneA.push_back(fromJson(child));
+        for (const Json& child : json["laneB"].items()) slot.laneB.push_back(fromJson(child));
+        slot.levelADb = json["levelADb"].asFloat(0.0f);
+        slot.levelBDb = json["levelBDb"].asFloat(0.0f);
+        slot.balance = std::max(-1.0f, std::min(1.0f, json["balance"].asFloat(0.0f)));
+        if (json.has("stereo") || json.has("panA") || json.has("panB")) {
+            slot.stereo = json["stereo"].asBool(false);
+            slot.panA = std::max(-1.0f, std::min(1.0f, json["panA"].asFloat(-1.0f)));
+            slot.panB = std::max(-1.0f, std::min(1.0f, json["panB"].asFloat(1.0f)));
+        } else {
+            // Migrate the short-lived Width format: zero was mono and positive
+            // values progressively spread A left and B right.
+            const float width = std::max(0.0f, std::min(1.0f, json["width"].asFloat(0.0f)));
+            slot.stereo = width > 0.001f;
+            slot.panA = -width;
+            slot.panB = width;
+        }
+        slot.outputDb = json["outputDb"].asFloat(0.0f);
+        return slot;
+    }
+    slot.uri = json["uri"].asString();
     slot.state = json["state"].isObject() ? json["state"] : Json::object();
     slot.tempoLinks = json["tempoLinks"].isObject() ? json["tempoLinks"] : Json::object();
     return slot;
@@ -84,6 +124,8 @@ const EffectSlot* Preset::findSlot(const std::string& slotId) const {
         if (slot.id == slotId) {
             return &slot;
         }
+        for (const EffectSlot& child : slot.laneA) if (child.id == slotId) return &child;
+        for (const EffectSlot& child : slot.laneB) if (child.id == slotId) return &child;
     }
     return nullptr;
 }
@@ -93,6 +135,8 @@ EffectSlot* Preset::findSlot(const std::string& slotId) {
         if (slot.id == slotId) {
             return &slot;
         }
+        for (EffectSlot& child : slot.laneA) if (child.id == slotId) return &child;
+        for (EffectSlot& child : slot.laneB) if (child.id == slotId) return &child;
     }
     return nullptr;
 }

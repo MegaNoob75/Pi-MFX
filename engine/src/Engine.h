@@ -134,10 +134,14 @@ public:
     bool uninstallCommunityPreset(const std::string& catalogId, int& removed, std::string& error);
 
     // --- chain -----------------------------------------------------------
-    bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error);
+    bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error,
+                   const std::string& parallelId = {}, const std::string& lane = {});
+    bool addParallelSection(int index, std::string& sectionId, std::string& error);
+    bool setParallelSection(const std::string& sectionId, const Json& values, std::string& error);
     bool replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error);
     bool removeEffect(const std::string& slotId, std::string& error);
-    bool moveEffect(const std::string& slotId, int newIndex, std::string& error);
+    bool moveEffect(const std::string& slotId, int newIndex, std::string& error,
+                    const std::string& parallelId = {}, const std::string& lane = {});
     bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
                           bool persist = true);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
@@ -242,10 +246,49 @@ private:
         std::atomic<float> outputPeak{0.0f};
     };
 
+    struct ParallelStage {
+        std::string id;
+        std::atomic<bool> enabled{true};
+        std::vector<ChainSlot*> laneA;
+        std::vector<ChainSlot*> laneB;
+        std::vector<std::vector<float>> bufferA1;
+        std::vector<std::vector<float>> bufferA2;
+        std::vector<std::vector<float>> bufferB1;
+        std::vector<std::vector<float>> bufferB2;
+        std::vector<float*> pointersA1;
+        std::vector<float*> pointersA2;
+        std::vector<float*> pointersB1;
+        std::vector<float*> pointersB2;
+        std::atomic<float> levelADb{0.0f};
+        std::atomic<float> levelBDb{0.0f};
+        std::atomic<float> balance{0.0f};
+        std::atomic<bool> stereo{false};
+        std::atomic<float> panA{-1.0f};
+        std::atomic<float> panB{1.0f};
+        std::atomic<float> outputDb{0.0f};
+        // Audio-thread-only smoothing state. UI changes update the atomic
+        // targets above; the renderer glides to them without zipper noise.
+        bool mixInitialized = false;
+        float smoothGainA = 1.0f;
+        float smoothGainB = 1.0f;
+        float smoothRouteALeft = 1.0f;
+        float smoothRouteARight = 1.0f;
+        float smoothRouteBLeft = 1.0f;
+        float smoothRouteBRight = 1.0f;
+        float smoothOutputGain = 1.0f;
+    };
+
+    struct ChainStage {
+        ChainSlot* slot = nullptr;
+        ParallelStage* parallel = nullptr;
+    };
+
     /// A whole signal chain. Chains are built on the control thread and handed
     /// to the audio thread by pointer swap, never edited in place.
     struct Chain {
         std::vector<std::unique_ptr<ChainSlot>> slots;
+        std::vector<std::unique_ptr<ParallelStage>> parallelStages;
+        std::vector<ChainStage> stages;
         std::vector<std::vector<float>> bufferA;
         std::vector<std::vector<float>> bufferB;
         std::vector<float*> pointersA;

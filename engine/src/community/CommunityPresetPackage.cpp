@@ -194,6 +194,97 @@ Json cleanState(const Json& state, const std::string& pluginUri, const Paths& pa
     return cleaned;
 }
 
+bool validateChainItem(const Json& slot, std::set<std::string>& slotIds,
+                       std::set<std::string>& effectUris, int& slotCount,
+                       std::string& error) {
+    const std::string id = slot["id"].asString();
+    if (!safeId(id) || !slotIds.insert(id).second || ++slotCount > 96) {
+        error = "the preset contains an invalid or duplicate slot ID";
+        return false;
+    }
+    if (slot["kind"].asString() == "parallel") {
+        if (!allowedKeys(slot, {"id", "kind", "name", "enabled", "laneA", "laneB",
+                                "levelADb", "levelBDb", "balance", "stereo", "panA", "panB",
+                                "width", "outputDb"},
+                         "parallel section", error)
+            || !slot["laneA"].isArray() || !slot["laneB"].isArray()
+            || slot["laneA"].size() > 32 || slot["laneB"].size() > 32
+            || slot["balance"].asDouble() < -1.0 || slot["balance"].asDouble() > 1.0
+            || slot["panA"].asDouble(-1.0) < -1.0 || slot["panA"].asDouble(-1.0) > 1.0
+            || slot["panB"].asDouble(1.0) < -1.0 || slot["panB"].asDouble(1.0) > 1.0
+            || slot["width"].asDouble(0.0) < 0.0 || slot["width"].asDouble(0.0) > 1.0) {
+            if (error.empty()) error = "the preset contains an invalid parallel section";
+            return false;
+        }
+        for (const Json& child : slot["laneA"].items()) {
+            if (child["kind"].asString("effect") != "effect"
+                || !validateChainItem(child, slotIds, effectUris, slotCount, error)) return false;
+        }
+        for (const Json& child : slot["laneB"].items()) {
+            if (child["kind"].asString("effect") != "effect"
+                || !validateChainItem(child, slotIds, effectUris, slotCount, error)) return false;
+        }
+        return true;
+    }
+
+    const std::string uri = slot["uri"].asString();
+    if (!allowedKeys(slot, {"id", "uri", "name", "enabled", "state", "tempoLinks"},
+                     "effect slot", error)
+        || uri.empty() || uri.size() > 300
+        || (uri.rfind("urn:", 0) != 0 && uri.rfind("http://", 0) != 0
+            && uri.rfind("https://", 0) != 0)
+        || !slot["state"].isObject()) {
+        error = "the preset contains an invalid effect slot";
+        return false;
+    }
+    effectUris.insert(uri);
+    for (const Json::Member& property : slot["state"]["properties"].members()) {
+        if (!property.second.asString().empty() && !safeFileName(property.second.asString())) {
+            error = "plugin file properties must contain filenames only";
+            return false;
+        }
+        const std::string extension = lower(
+            std::filesystem::path(property.second.asString()).extension().string());
+        if (extension == ".nam" && uri != kTooBNamUri) {
+            error = "community NAM files must use TooB Neural Amp Modeler";
+            return false;
+        }
+        if (extension == ".wav" && uri != kTooBCabIrUri) {
+            error = "community cabinet IR files must use TooB Cab IR";
+            return false;
+        }
+    }
+    return true;
+}
+
+Json cleanChainItem(const Json& incoming, const Paths& paths, Json& localAssets,
+                    Json& effects, std::string& error) {
+    Json slot = incoming;
+    if (incoming["kind"].asString() == "parallel") {
+        Json a = Json::array();
+        for (const Json& child : incoming["laneA"].items()) {
+            a.push(cleanChainItem(child, paths, localAssets, effects, error));
+            if (!error.empty()) return Json();
+        }
+        Json b = Json::array();
+        for (const Json& child : incoming["laneB"].items()) {
+            b.push(cleanChainItem(child, paths, localAssets, effects, error));
+            if (!error.empty()) return Json();
+        }
+        slot.set("laneA", std::move(a));
+        slot.set("laneB", std::move(b));
+        return slot;
+    }
+    const std::string uri = incoming["uri"].asString();
+    slot.set("state", cleanState(incoming["state"], uri, paths, localAssets, error));
+    if (!error.empty()) return Json();
+    Json effect = Json::object();
+    effect.set("uri", uri);
+    if (uri == kTooBNamUri || uri == kTooBCabIrUri) effect.set("catalogId", "toobamp");
+    effects.push(effect);
+    return slot;
+}
+
 } // namespace
 
 bool CommunityPresetPackage::validate(const Json& manifest, std::string& error) {
@@ -312,34 +403,9 @@ bool CommunityPresetPackage::validate(const Json& manifest, std::string& error) 
     }
     std::set<std::string> slotIds;
     std::set<std::string> effectUris;
+    int slotCount = 0;
     for (const Json& slot : preset["chain"].items()) {
-        const std::string id = slot["id"].asString();
-        const std::string uri = slot["uri"].asString();
-        if (!allowedKeys(slot, {"id", "uri", "name", "enabled", "state", "tempoLinks"},
-                         "effect slot", error)
-            || !safeId(id) || !slotIds.insert(id).second
-            || uri.empty() || uri.size() > 300
-            || (uri.rfind("urn:", 0) != 0 && uri.rfind("http://", 0) != 0 && uri.rfind("https://", 0) != 0)
-            || !slot["state"].isObject()) {
-            error = "the preset contains an invalid effect slot";
-            return false;
-        }
-        effectUris.insert(uri);
-        for (const Json::Member& property : slot["state"]["properties"].members()) {
-            if (!property.second.asString().empty() && !safeFileName(property.second.asString())) {
-                error = "plugin file properties must contain filenames only";
-                return false;
-            }
-            const std::string extension = lower(std::filesystem::path(property.second.asString()).extension().string());
-            if (extension == ".nam" && uri != kTooBNamUri) {
-                error = "community NAM files must use TooB Neural Amp Modeler";
-                return false;
-            }
-            if (extension == ".wav" && uri != kTooBCabIrUri) {
-                error = "community cabinet IR files must use TooB Cab IR";
-                return false;
-            }
-        }
+        if (!validateChainItem(slot, slotIds, effectUris, slotCount, error)) return false;
     }
     const Json& dependencies = manifest["dependencies"];
     if (!allowedKeys(dependencies, {"effects", "tone3000", "irs", "localAssets"},
@@ -423,16 +489,9 @@ Json CommunityPresetPackage::create(const Preset& preset, const Paths& paths,
     Json localAssets = Json::array();
     Json chain = Json::array();
     for (const Json& incoming : cleanPreset["chain"].items()) {
-        Json slot = incoming;
-        slot.set("state", cleanState(incoming["state"], incoming["uri"].asString(), paths,
-                                     localAssets, error));
+        Json slot = cleanChainItem(incoming, paths, localAssets, effects, error);
         if (!error.empty()) return Json();
         chain.push(slot);
-        Json effect = Json::object();
-        effect.set("uri", incoming["uri"].asString());
-        if (incoming["uri"].asString() == kTooBNamUri
-            || incoming["uri"].asString() == kTooBCabIrUri) effect.set("catalogId", "toobamp");
-        effects.push(effect);
     }
     cleanPreset.set("chain", chain);
 

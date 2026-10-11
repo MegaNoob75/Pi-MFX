@@ -12,8 +12,9 @@ import { GainMeter } from "./GainMeter";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PerformanceControl, type PerformanceTile } from "./PerformanceControl";
 import { virtualControlPageId, virtualControlPages, virtualTargetCompatible } from "../virtualControls";
+import { loadUiBehavior } from "../uiBehavior";
 
-type EditPage = "chain" | "controls" | "io";
+type EditPage = "chain" | "controls" | "parallel" | "io";
 type PathBrowserKind = "model" | "ir";
 const PATH_BROWSER_DIR_KEYS: Record<PathBrowserKind, string> = {
     model: "pimfx-nam-browser-dir",
@@ -55,7 +56,21 @@ export function EditorView({
     onPageChange?: (page: EditPage, title?: string) => void;
 }) {
     const { client, state, catalog, library } = engine;
-    const chain = objects(state.chain);
+    const liveChain = objects(state.chain);
+    const hydrateLayoutItem = (item: JsonObject): JsonObject => {
+        if (str(item.kind) === "parallel") {
+            return {
+                ...item,
+                laneA: objects(item.laneA).map(hydrateLayoutItem),
+                laneB: objects(item.laneB).map(hydrateLayoutItem)
+            };
+        }
+        const live = liveChain.find((slot) => str(slot.id) === str(item.id));
+        return live ? { ...item, ...live, name: str(item.name) || str(live.name) } : item;
+    };
+    const chain = Array.isArray(state.chainLayout)
+        ? objects(state.chainLayout).map(hydrateLayoutItem)
+        : liveChain;
     const plugins = objects(catalog.plugins);
     const preset = findPreset(state);
     const bank = findBank(state);
@@ -63,7 +78,14 @@ export function EditorView({
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
-    const [browser, setBrowser] = useState<{ mode: "add" | "replace"; index: number } | null>(null);
+    const [browser, setBrowser] = useState<{
+        mode: "add" | "replace";
+        index: number;
+        parallelId?: string;
+        lane?: "a" | "b";
+        slotId?: string;
+    } | null>(null);
+    const [insertMenu, setInsertMenu] = useState<number | null>(null);
     const [dragId, setDragId] = useState("");
     const [dragOverTrash, setDragOverTrash] = useState(false);
     const [dropGap, setDropGap] = useState<number | null>(null);
@@ -80,10 +102,49 @@ export function EditorView({
     const [chainCardWidth, setChainCardWidth] = useState(142);
     const [sessionAction, setSessionAction] = useState<"save" | "reload" | "">("");
     const [sessionStatus, setSessionStatus] = useState("");
+    const [structureBusy, setStructureBusy] = useState(false);
+    const structureBusyRef = useRef(false);
     const sessionDirty = bool(state.sessionPresetDirty);
     const presetName = str(obj(preset).name, "current preset");
     const sessionPresetId = str(obj(preset).id, str(state.activePresetId));
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
+
+    const waitForChainGeneration = (generation: number) => new Promise<void>((resolve) => {
+        let finished = false;
+        let unsubscribe: () => void = () => undefined;
+        let timer = 0;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            window.clearTimeout(timer);
+            unsubscribe();
+            resolve();
+        };
+        timer = window.setTimeout(finish, 30000);
+        unsubscribe = client.subscribe((snapshot) => {
+            if (num(snapshot.state.chainGeneration) > generation) finish();
+        });
+    });
+
+    const runStructureChange = async (work: () => Promise<unknown>) => {
+        if (structureBusyRef.current) return;
+        structureBusyRef.current = true;
+        setStructureBusy(true);
+        setSessionStatus("PREPARING EFFECT CHAIN…");
+        const generation = num(client.snapshot.state.chainGeneration);
+        let accepted = false;
+        try {
+            await run(async () => {
+                await work();
+                accepted = true;
+            });
+            if (accepted) await waitForChainGeneration(generation);
+        } finally {
+            structureBusyRef.current = false;
+            setStructureBusy(false);
+            setSessionStatus("");
+        }
+    };
 
     const finishSessionAction = async (action: "save" | "reload") => {
         setSessionAction("");
@@ -101,7 +162,7 @@ export function EditorView({
 
     useEffect(() => {
         const sharedPage = str(engine.uiSession.editorPage) as EditPage;
-        if (["chain", "controls", "io"].includes(sharedPage) && sharedPage !== page) {
+        if (["chain", "controls", "parallel", "io"].includes(sharedPage) && sharedPage !== page) {
             setPage(sharedPage);
         }
         const sharedSelectedId = str(engine.uiSession.editorSelectedId);
@@ -114,7 +175,13 @@ export function EditorView({
         }
     }, [engine.uiSession.editorPage, engine.uiSession.editorSelectedId, engine.uiSession.editorIoKind]);
 
-    const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
+    const pluginSlots = chain.flatMap((item) => str(item.kind) === "parallel"
+        ? [...objects(item.laneA), ...objects(item.laneB)]
+        : [item]);
+    const selectedParallel = chain.find((item) => str(item.kind) === "parallel" && str(item.id) === selectedId);
+    const selectedParallelParent = chain.find((item) => str(item.kind) === "parallel"
+        && [...objects(item.laneA), ...objects(item.laneB)].some((slot) => str(slot.id) === selectedId));
+    const selected = pluginSlots.find((slot) => str(slot.id) === selectedId) ?? pluginSlots[0];
     const plugin = obj(obj(selected).plugin);
     const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control"
         && bool(port.input, true) && !bool(port.notOnGui));
@@ -154,7 +221,9 @@ export function EditorView({
         });
     };
     const selectedIndex = chain.findIndex((slot) => str(slot.id) === str(obj(selected).id));
-    const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
+    const effectTitle = selectedParallel
+        ? str(selectedParallel.name, "Parallel Section")
+        : str(obj(selected).name) || str(plugin.name, "Effect");
 
     useEffect(() => {
         onPageChange?.(page, page === "chain" ? undefined : page === "io" ? (ioKind === "input" ? "INPUT" : "OUTPUT") : effectTitle);
@@ -167,16 +236,27 @@ export function EditorView({
             return;
         }
         previousBackRequestRef.current = backRequest;
-        setPage("chain");
-        client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+        if (page === "controls" && selectedParallelParent) {
+            const parentId = str(selectedParallelParent.id);
+            setSelectedId(parentId);
+            setPage("parallel");
+            client.updateUiSession({
+                editorPage: "parallel",
+                editorSelectedId: parentId,
+                editSubpage: "parallel"
+            });
+        } else {
+            setPage("chain");
+            client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+        }
     }, [backRequest]);
 
     useEffect(() => {
-        const ids = new Set(chain.map((slot) => str(slot.id)));
+        const ids = new Set([...chain, ...pluginSlots].map((slot) => str(slot.id)));
         if (selectedId && !ids.has(selectedId)) {
             setSelectedId("");
         }
-    }, [str(state.activePresetId), chain.map((slot) => str(slot.id)).join("|")]);
+    }, [str(state.activePresetId), [...chain, ...pluginSlots].map((slot) => str(slot.id)).join("|")]);
 
     useEffect(() => {
         if (page !== "chain") {
@@ -242,10 +322,10 @@ export function EditorView({
     }, [chainNodes, chainItemsPerRow]);
 
     const addAfter = (globalIndex: number) => {
-        if (lockChain || globalIndex < 0 || globalIndex >= chainNodes.length - 1) {
+        if (lockChain || structureBusy || globalIndex < 0 || globalIndex >= chainNodes.length - 1) {
             return;
         }
-        setBrowser({ mode: "add", index: globalIndex });
+        setInsertMenu(globalIndex);
     };
 
     const renamePreset = () => {
@@ -269,8 +349,18 @@ export function EditorView({
         });
     };
 
+    const openParallel = (sectionId: string) => {
+        setSelectedId(sectionId);
+        setPage("parallel");
+        client.updateUiSession({
+            editorPage: "parallel",
+            editorSelectedId: sectionId,
+            editSubpage: "parallel"
+        });
+    };
+
     const onPointerDown = (slot: JsonObject, index: number, event: React.PointerEvent) => {
-        if (lockChain) {
+        if (lockChain || structureBusy) {
             return;
         }
         dragRef.current = {
@@ -318,7 +408,8 @@ export function EditorView({
         setDragGhost(null);
         setDropGap(null);
         if (!drag || !wasDragging) {
-            openControls(str(slot.id));
+            if (str(slot.kind) === "parallel") openParallel(str(slot.id));
+            else openControls(str(slot.id));
             return;
         }
         if (isTrashAtPoint(event.clientX, event.clientY)) {
@@ -329,7 +420,7 @@ export function EditorView({
         if (target) {
             const index = Number(target.dataset.chainIndex);
             if (Number.isInteger(index) && index !== drag.from) {
-                void run(() => client.request("chain/move", { slotId: drag.id, index }));
+                void runStructureChange(() => client.request("chain/move", { slotId: drag.id, index }));
             }
         }
     };
@@ -343,9 +434,9 @@ export function EditorView({
                     <small>{sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small>
                 </span>
                 {sessionStatus && <strong className="editor-session-status">{sessionStatus}</strong>}
-                <button type="button" className="btn" disabled={!sessionDirty || activeSnapshot >= 0}
+                <button type="button" className="btn" disabled={structureBusy || !sessionDirty || activeSnapshot >= 0}
                     onClick={() => setSessionAction("save")}>SAVE CHANGES</button>
-                <button type="button" className="btn" disabled={!sessionDirty}
+                <button type="button" className="btn" disabled={structureBusy || !sessionDirty}
                     onClick={() => setSessionAction("reload")}>RELOAD SAVED</button>
             </div>
             {page === "chain" && (
@@ -402,14 +493,14 @@ export function EditorView({
                                             return (
                                                 <div key={node.key} className="chain-node">
                                                     {node.kind === "plugin" && node.slot
-                                                        ? (
-                                                            <ChainPluginCard
-                                                                slot={node.slot}
+                                                        ? str(node.slot.kind) === "parallel" ? (
+                                                            <ChainParallelCard
+                                                                section={node.slot}
                                                                 chainIndex={node.chainIndex ?? 0}
                                                                 cardWidth={chainCardWidth}
-                                                                selected={str(obj(selected).id) === str(node.slot.id)}
+                                                                selected={selectedId === str(node.slot.id)}
                                                                 dragging={dragId === str(node.slot.id)}
-                                                                lockChain={lockChain}
+                                                                lockChain={lockChain || structureBusy}
                                                                 onPointerDown={(event) => onPointerDown(node.slot!, node.chainIndex ?? 0, event)}
                                                                 onPointerMove={onPointerMove}
                                                                 onPointerUp={(event) => onPointerUp(node.slot!, event)}
@@ -418,10 +509,35 @@ export function EditorView({
                                                                     setDragId("");
                                                                     setDragOverTrash(false);
                                                                 }}
-                                                                onToggle={() => void run(() => client.request("chain/enable", {
-                                                                    slotId: str(node.slot!.id),
-                                                                    enabled: !bool(node.slot!.enabled, true)
-                                                                }))}
+                                                                 onToggle={() => {
+                                                                     if (!structureBusy) void run(() => client.request("chain/parallel/settings", {
+                                                                         sectionId: str(node.slot!.id),
+                                                                         enabled: !bool(node.slot!.enabled, true)
+                                                                     }));
+                                                                 }}
+                                                            />
+                                                        ) : (
+                                                            <ChainPluginCard
+                                                                slot={node.slot}
+                                                                chainIndex={node.chainIndex ?? 0}
+                                                                cardWidth={chainCardWidth}
+                                                                selected={str(obj(selected).id) === str(node.slot.id)}
+                                                                dragging={dragId === str(node.slot.id)}
+                                                                lockChain={lockChain || structureBusy}
+                                                                onPointerDown={(event) => onPointerDown(node.slot!, node.chainIndex ?? 0, event)}
+                                                                onPointerMove={onPointerMove}
+                                                                onPointerUp={(event) => onPointerUp(node.slot!, event)}
+                                                                onPointerCancel={() => {
+                                                                    dragRef.current = null;
+                                                                    setDragId("");
+                                                                    setDragOverTrash(false);
+                                                                }}
+                                                                 onToggle={() => {
+                                                                     if (!structureBusy) void run(() => client.request("chain/enable", {
+                                                                         slotId: str(node.slot!.id),
+                                                                         enabled: !bool(node.slot!.enabled, true)
+                                                                     }));
+                                                                 }}
                                                                 bypassBound={Boolean(bindForBypass(str(node.slot.id)))}
                                                                 onBypassLongPress={() => setBindTarget({
                                                                     mode: "bypass",
@@ -460,7 +576,7 @@ export function EditorView({
                                                             <button
                                                                 type="button"
                                                                 className="chain-insert"
-                                                                disabled={lockChain}
+                                                                 disabled={lockChain || structureBusy}
                                                                 onClick={() => addAfter(sourceIndex)}
                                                             >
                                                                 +
@@ -478,7 +594,7 @@ export function EditorView({
                                             className={`chain-turn ${flowsLeft ? "left" : "right"}${dropGap === logicalRow[logicalRow.length - 1].globalIndex ? " drop-active" : ""}`}
                                             data-chain-index={logicalRow[logicalRow.length - 1].globalIndex}
                                         >
-                                            {!lockChain && (
+                                             {!lockChain && !structureBusy && (
                                                 <button
                                                     type="button"
                                                     className="chain-insert"
@@ -524,7 +640,56 @@ export function EditorView({
                 </>
             )}
 
-            {page !== "chain" && page !== "io" && selected && (
+            {page === "parallel" && selectedParallel && (
+                <>
+                    <div className="editor-toolbar">
+                        <div className="editor-toolbar-copy">
+                            <strong>{str(selectedParallel.name, "Parallel Section")}</strong>
+                            <span>Two independent effect lanes blended into one output</span>
+                        </div>
+                        <button type="button" className={`btn ${bool(selectedParallel.enabled, true) ? "btn-active" : ""}`}
+                            disabled={structureBusy}
+                            onClick={() => void run(() => client.request("chain/parallel/settings", {
+                                sectionId: str(selectedParallel.id),
+                                enabled: !bool(selectedParallel.enabled, true)
+                            }))}>
+                            {bool(selectedParallel.enabled, true) ? "ON" : "BYPASS"}
+                        </button>
+                        {!lockChain && <button type="button" className="btn btn-danger" disabled={structureBusy}
+                            onClick={() => setPendingTrashId(str(selectedParallel.id))}>REMOVE</button>}
+                    </div>
+                    <div className="page-scroll parallel-editor-scroll">
+                        <ParallelSectionEditor
+                            section={selectedParallel}
+                            lockChain={lockChain || structureBusy}
+                            settingsDisabled={structureBusy}
+                            onEdit={openControls}
+                            onAdd={(lane, index) => setBrowser({
+                                mode: "add",
+                                index,
+                                parallelId: str(selectedParallel.id),
+                                lane
+                            })}
+                            onRemove={(slotId) => setPendingTrashId(slotId)}
+                            onMove={(slotId, index, lane) => void runStructureChange(() => client.request("chain/move", {
+                                slotId,
+                                index,
+                                parallelId: str(selectedParallel.id),
+                                lane
+                            }))}
+                            onToggle={(slotId, enabled) => {
+                                if (!structureBusy) void run(() => client.request("chain/enable", { slotId, enabled }));
+                            }}
+                            onSetting={(values) => run(() => client.request("chain/parallel/settings", {
+                                sectionId: str(selectedParallel.id),
+                                ...values
+                            }))}
+                        />
+                    </div>
+                </>
+            )}
+
+            {page === "controls" && selected && (
                 <>
                     <div className="editor-toolbar">
                         <div className="editor-toolbar-copy">
@@ -534,6 +699,7 @@ export function EditorView({
                         <button
                             type="button"
                             className={`btn ${bool(selected.enabled, true) ? "btn-active" : ""}`}
+                            disabled={structureBusy}
                             onClick={() => void run(() => client.request("chain/enable", {
                                 slotId: str(selected.id),
                                 enabled: !bool(selected.enabled, true)
@@ -543,10 +709,15 @@ export function EditorView({
                         </button>
                         {!lockChain && (
                             <>
-                                <button type="button" className="btn" onClick={() => setBrowser({ mode: "replace", index: selectedIndex })}>
+                                <button type="button" className="btn" disabled={structureBusy}
+                                    onClick={() => setBrowser({
+                                        mode: "replace",
+                                        index: selectedIndex,
+                                        slotId: str(selected.id)
+                                    })}>
                                     REPLACE
                                 </button>
-                                <button type="button" className="btn btn-danger" onClick={() => {
+                                <button type="button" className="btn btn-danger" disabled={structureBusy} onClick={() => {
                                     setPendingTrashId(str(selected.id));
                                 }}>REMOVE</button>
                             </>
@@ -586,6 +757,9 @@ export function EditorView({
 
             <PluginBrowser
                 open={browser !== null}
+                sessionKey={browser
+                    ? `${browser.mode}:${browser.slotId ?? browser.parallelId ?? "serial"}:${browser.lane ?? ""}:${browser.index}`
+                    : "closed"}
                 catalog={catalog}
                 title={browser?.mode === "replace" ? "SELECT PLUGIN" : "ADD EFFECT"}
                 actionLabel={browser?.mode === "replace" ? "USE PLUGIN" : "ADD HERE"}
@@ -596,18 +770,54 @@ export function EditorView({
                     if (!target) {
                         return;
                     }
-                    void run(async () => {
-                        if (target.mode === "replace" && selected) {
-                            await client.request("chain/replace", {
-                                slotId: str(selected.id),
+                    let replacementId = "";
+                    void runStructureChange(async () => {
+                        if (target.mode === "replace" && target.slotId) {
+                            const result = obj(await client.request("chain/replace", {
+                                slotId: target.slotId,
                                 uri
-                            });
+                            }));
+                            replacementId = str(result.slotId);
                         } else {
-                            await client.request("chain/add", { uri, index: target.index });
+                            if (target.parallelId && target.lane) {
+                                await client.request("chain/add", {
+                                    uri,
+                                    index: target.index,
+                                    parallelId: target.parallelId,
+                                    lane: target.lane
+                                });
+                            } else {
+                                await client.request("chain/add", { uri, index: target.index });
+                            }
                         }
+                    }).then(() => {
+                        // The replacement ID is absent from the old live chain.
+                        // Open it only after the prepared chain has been swapped
+                        // and published, or selection fallback can show another effect.
+                        if (replacementId) openControls(replacementId);
                     });
                 }}
             />
+            {insertMenu !== null && createPortal(
+                <div className="mfx-overlay" onClick={() => setInsertMenu(null)}>
+                    <div className="mfx-overlay-card parallel-insert-menu" onClick={(event) => event.stopPropagation()}>
+                        <div className="mfx-overlay-title">ADD TO SIGNAL CHAIN</div>
+                        <div className="muted">Choose a normal serial effect or start two parallel lanes.</div>
+                        <button type="button" className="mfx-overlay-option" onClick={() => {
+                            const index = insertMenu;
+                            setInsertMenu(null);
+                            setBrowser({ mode: "add", index });
+                        }}><strong>EFFECT</strong><span>Continue the normal serial chain</span></button>
+                        <button type="button" className="mfx-overlay-option" onClick={() => {
+                            const index = insertMenu;
+                            setInsertMenu(null);
+                            void runStructureChange(() => client.request("chain/parallel/add", { index }));
+                        }}><strong>PARALLEL SECTION</strong><span>Two independent chains for NAMs, optional IRs, or any effects</span></button>
+                        <button type="button" className="btn" onClick={() => setInsertMenu(null)}>CANCEL</button>
+                    </div>
+                </div>,
+                document.body
+            )}
             {plugins.length === 0 && page === "chain" && (
                 <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Plugins.</div>
             )}
@@ -708,13 +918,19 @@ export function EditorView({
                 />
             )}
             {pendingTrashId && <ConfirmDialog title="REMOVE EFFECT?"
-                body={str(obj(chain.find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
+                body={str(obj([...chain, ...pluginSlots].find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
                 confirmLabel="REMOVE" danger onCancel={() => setPendingTrashId("")} onConfirm={() => {
                     const slotId = pendingTrashId;
+                    const parent = chain.find((item) => str(item.kind) === "parallel"
+                        && [...objects(item.laneA), ...objects(item.laneB)].some((slot) => str(slot.id) === slotId));
                     setPendingTrashId("");
-                    void run(() => client.request("chain/remove", { slotId })).then(() => {
-                        setPage("chain");
-                        client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+                    void runStructureChange(() => client.request("chain/remove", { slotId })).then(() => {
+                        if (parent) {
+                            openParallel(str(parent.id));
+                        } else {
+                            setPage("chain");
+                            client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+                        }
                     });
                 }} />}
             {confirmDelete && <ConfirmDialog title="DELETE PRESET?"
@@ -862,6 +1078,384 @@ function ChainPluginCard({
                 TAP TO EDIT • LED = BYPASS{bypassBound ? " • BOUND" : ""}
             </div>
         </button>
+    );
+}
+
+function ChainParallelCard({
+    section,
+    chainIndex,
+    cardWidth,
+    selected,
+    dragging,
+    lockChain,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel,
+    onToggle
+}: {
+    section: JsonObject;
+    chainIndex: number;
+    cardWidth: number;
+    selected: boolean;
+    dragging: boolean;
+    lockChain: boolean;
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
+    onPointerCancel: () => void;
+    onToggle: () => void;
+}) {
+    const on = bool(section.enabled, true);
+    const panText = (value: number) => value <= -0.99 ? "L" : value >= 0.99 ? "R" : Math.abs(value) < 0.01 ? "C" : value < 0 ? `L${Math.round(-value * 100)}` : `R${Math.round(value * 100)}`;
+    const laneSummary = (lane: JsonObject[], fallback: string) => lane.length
+        ? lane.map((slot) => str(slot.name) || str(obj(slot.plugin).name, "Effect")).join(" → ")
+        : fallback;
+    return (
+        <button type="button" data-chain-index={chainIndex}
+            className={`chain-slot chain-parallel-card${selected ? " selected" : ""}${on ? "" : " off"}${dragging ? " dragging" : ""}`}
+            style={{ flex: `0 0 ${cardWidth}px`, width: cardWidth }}
+            onPointerDown={lockChain ? undefined : onPointerDown}
+            onPointerMove={lockChain ? undefined : onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={lockChain ? undefined : onPointerCancel}>
+            <div className="chain-slot-top">
+                <span className="chain-handle">⋮⋮</span>
+                <MarqueeText text={str(section.name, "Parallel Section")} align="left" fontWeight={900} />
+                <span className={`chain-led${on ? " on" : ""}`} role="switch" aria-checked={on}
+                    onPointerDown={(event) => { event.stopPropagation(); event.preventDefault(); }}
+                    onPointerUp={(event) => { event.stopPropagation(); onToggle(); }}
+                    onClick={(event) => { event.stopPropagation(); event.preventDefault(); }} />
+            </div>
+            <div className="parallel-card-lane"><strong>A</strong><span>{laneSummary(objects(section.laneA), "DRY")}</span></div>
+            <div className="parallel-card-lane"><strong>B</strong><span>{laneSummary(objects(section.laneB), "DRY")}</span></div>
+            <div className="muted parallel-card-mix">{bool(section.stereo)
+                ? `STEREO · A ${panText(num(section.panA, -1))} · B ${panText(num(section.panB, 1))}`
+                : "MONO BLEND"}</div>
+        </button>
+    );
+}
+
+function LiveRange({ label, value, min, max, step, format, disabled, onLive, onCommit }: {
+    label: string;
+    value: number;
+    min: number;
+    max: number;
+    step: number;
+    format: (value: number) => string;
+    disabled?: boolean;
+    onLive: (value: number) => void;
+    onCommit: (value: number) => void;
+}) {
+    const [draft, setDraft] = useState(value);
+    const [popout, setPopout] = useState(false);
+    const draftRef = useRef(value);
+    const popoutCloseTimer = useRef<number | null>(null);
+    useEffect(() => {
+        draftRef.current = value;
+        setDraft(value);
+    }, [value]);
+    useEffect(() => () => {
+        if (popoutCloseTimer.current !== null) window.clearTimeout(popoutCloseTimer.current);
+    }, []);
+    const revealPopout = () => {
+        if (!loadUiBehavior().controlPopout || disabled) return;
+        if (popoutCloseTimer.current !== null) {
+            window.clearTimeout(popoutCloseTimer.current);
+            popoutCloseTimer.current = null;
+        }
+        setPopout(true);
+    };
+    const schedulePopoutClose = () => {
+        if (popoutCloseTimer.current !== null) window.clearTimeout(popoutCloseTimer.current);
+        popoutCloseTimer.current = window.setTimeout(() => {
+            popoutCloseTimer.current = null;
+            setPopout(false);
+        }, loadUiBehavior().controlPopoutDurationMs);
+    };
+    const update = (next: number) => {
+        draftRef.current = next;
+        setDraft(next);
+        onLive(next);
+        revealPopout();
+    };
+    const commit = () => {
+        onCommit(draftRef.current);
+        schedulePopoutClose();
+    };
+    const range = max === min ? 0 : Math.max(0, Math.min(1, (draft - min) / (max - min)));
+    const zeroRange = max === min ? 0 : (0 - min) / (max - min);
+    const slider = (inPopout = false) => (
+        <div className="parallel-themed-slider">
+            <div className="mfx-hardware-slider" data-orientation="horizontal" aria-hidden="true">
+                <div className="mfx-hardware-slider__fill" style={{ width: `${range * 100}%` }} />
+                {min < 0 && max > 0 && <span className="parallel-slider-center" style={{ left: `${zeroRange * 100}%` }} />}
+                <div className="mfx-hardware-slider__thumb" style={{ left: `${range * 100}%` }} />
+            </div>
+            <input aria-label={inPopout ? `${label} enlarged` : label} type="range" min={min} max={max} step={step}
+                value={draft} disabled={disabled}
+                onPointerDown={(event) => {
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                    revealPopout();
+                }}
+                onChange={(event) => update(Number(event.target.value))}
+                onPointerUp={commit} onPointerCancel={commit} onKeyUp={commit} onBlur={commit} />
+        </div>
+    );
+    const popoutScale = loadUiBehavior().controlPopoutScale;
+    return (
+        <>
+            <label className="parallel-mix-control">
+                <span>{label}</span>
+                {slider()}
+                <strong>{format(draft)}</strong>
+            </label>
+            {popout && createPortal(
+                <div className="mfx-performance-control-popout" role="dialog" aria-modal="true"
+                    aria-label={`${label} adjustment`} onPointerDown={(event) => event.stopPropagation()}>
+                    <div className="parallel-slider-popout-card mfx-performance-control--popout" style={{
+                        width: `min(calc(100vw - 32px), ${Math.round(300 * popoutScale)}px)`,
+                        height: `min(calc(100vh - 32px), ${Math.round(140 * popoutScale)}px)`
+                    }}>
+                        <span>{label}</span>
+                        {slider(true)}
+                        <strong>{format(draft)}</strong>
+                    </div>
+                </div>
+            , document.body)}
+        </>
+    );
+}
+
+function ParallelSectionEditor({ section, lockChain, settingsDisabled, onEdit, onAdd, onRemove, onMove, onToggle, onSetting }: {
+    section: JsonObject;
+    lockChain: boolean;
+    settingsDisabled: boolean;
+    onEdit: (slotId: string) => void;
+    onAdd: (lane: "a" | "b", index: number) => void;
+    onRemove: (slotId: string) => void;
+    onMove: (slotId: string, index: number, lane: "a" | "b") => void;
+    onToggle: (slotId: string, enabled: boolean) => void;
+    onSetting: (values: JsonObject) => Promise<void>;
+}) {
+    const dragRef = useRef<{
+        id: string;
+        title: string;
+        lane: "a" | "b";
+        from: number;
+        x: number;
+        y: number;
+        dragging: boolean;
+    } | null>(null);
+    const [dragId, setDragId] = useState("");
+    const [dragOverTrash, setDragOverTrash] = useState(false);
+    const [dropTarget, setDropTarget] = useState("");
+    const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
+    const settingInFlight = useRef(false);
+    const pendingSetting = useRef<{ values: JsonObject; persist: boolean } | null>(null);
+    const settingFrame = useRef<number | null>(null);
+    const pumpSetting = () => {
+        if (settingInFlight.current || !pendingSetting.current) return;
+        const next = pendingSetting.current;
+        pendingSetting.current = null;
+        settingInFlight.current = true;
+        void onSetting({ ...next.values, persist: next.persist }).finally(() => {
+            settingInFlight.current = false;
+            if (pendingSetting.current) pumpSetting();
+        });
+    };
+    const queueSetting = (values: JsonObject, persist: boolean) => {
+        const pending = pendingSetting.current;
+        pendingSetting.current = {
+            values: { ...(pending?.values ?? {}), ...values },
+            persist: persist || Boolean(pending?.persist)
+        };
+        if (persist) {
+            if (settingFrame.current !== null) window.cancelAnimationFrame(settingFrame.current);
+            settingFrame.current = null;
+            pumpSetting();
+            return;
+        }
+        if (settingFrame.current === null) {
+            settingFrame.current = window.requestAnimationFrame(() => {
+                settingFrame.current = null;
+                pumpSetting();
+            });
+        }
+    };
+    useEffect(() => () => {
+        if (settingFrame.current !== null) window.cancelAnimationFrame(settingFrame.current);
+    }, []);
+    const clearDrag = () => {
+        dragRef.current = null;
+        setDragId("");
+        setDragOverTrash(false);
+        setDropTarget("");
+        setDragGhost(null);
+    };
+    const trashAt = (x: number, y: number) => {
+        const trash = document.querySelector("[data-parallel-trash]") as HTMLElement | null;
+        if (!trash) return false;
+        const bounds = trash.getBoundingClientRect();
+        return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
+    };
+    const pointerDown = (slot: JsonObject, lane: "a" | "b", index: number, event: React.PointerEvent<HTMLButtonElement>) => {
+        if (lockChain) return;
+        dragRef.current = {
+            id: str(slot.id),
+            title: str(slot.name) || str(obj(slot.plugin).name, "Effect"),
+            lane,
+            from: index,
+            x: event.clientX,
+            y: event.clientY,
+            dragging: false
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+    };
+    const pointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+        const drag = dragRef.current;
+        if (!drag) return;
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 10) {
+            drag.dragging = true;
+            setDragId(drag.id);
+            setDragGhost({ title: drag.title, x: event.clientX, y: event.clientY });
+        }
+        setDragOverTrash(trashAt(event.clientX, event.clientY));
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-parallel-drop]") as HTMLElement | null;
+        const lane = target?.dataset.parallelLane;
+        const index = Number(target?.dataset.parallelIndex);
+        setDropTarget((lane === "a" || lane === "b") && Number.isInteger(index) ? `${lane}:${index}` : "");
+    };
+    const pointerUp = (slot: JsonObject, event: React.PointerEvent<HTMLButtonElement>) => {
+        const drag = dragRef.current;
+        if (!drag || !drag.dragging) {
+            clearDrag();
+            onEdit(str(slot.id));
+            return;
+        }
+        if (trashAt(event.clientX, event.clientY)) {
+            const id = drag.id;
+            clearDrag();
+            onRemove(id);
+            return;
+        }
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-parallel-drop]") as HTMLElement | null;
+        const lane = target?.dataset.parallelLane;
+        const index = Number(target?.dataset.parallelIndex);
+        clearDrag();
+        if ((lane === "a" || lane === "b") && Number.isInteger(index)
+            && (lane !== drag.lane || index !== drag.from)) {
+            onMove(drag.id, index, lane);
+        }
+    };
+    const renderConnector = (lane: "a" | "b", index: number) => (
+        <div key={`gap-${lane}-${index}`}
+            className={`parallel-chain-connector${dropTarget === `${lane}:${index}` ? " drop-active" : ""}`}
+            data-parallel-drop data-parallel-lane={lane} data-parallel-index={index}>
+            <button type="button" className="chain-insert" disabled={lockChain} onClick={() => onAdd(lane, index)}>+</button>
+            <span className="chain-flow-line" />
+            <span className="chain-flow-arrow">▶</span>
+        </div>
+    );
+    const renderLane = (laneId: "a" | "b", slots: JsonObject[]) => (
+        <section className="parallel-lane">
+            <div className="parallel-lane-heading">
+                <div><strong>RIG {laneId.toUpperCase()}</strong><span>Independent serial path · position it in the stereo mixer</span></div>
+            </div>
+            <div className="parallel-lane-chain">
+                <button type="button" className="chain-slot endpoint parallel-endpoint"><strong>INPUT</strong><span className="muted">SPLIT</span></button>
+                {renderConnector(laneId, 0)}
+                {slots.map((slot, index) => <div className="parallel-lane-item" key={str(slot.id)}
+                    data-parallel-drop data-parallel-lane={laneId} data-parallel-index={index}>
+                    <ChainPluginCard
+                        slot={slot}
+                        chainIndex={index}
+                        cardWidth={142}
+                        selected={false}
+                        dragging={dragId === str(slot.id)}
+                        lockChain={lockChain}
+                        onPointerDown={(event) => pointerDown(slot, laneId, index, event)}
+                        onPointerMove={pointerMove}
+                        onPointerUp={(event) => pointerUp(slot, event)}
+                        onPointerCancel={clearDrag}
+                        onToggle={() => onToggle(str(slot.id), !bool(slot.enabled, true))}
+                    />
+                    {renderConnector(laneId, index + 1)}
+                </div>)}
+                {slots.length === 0 && <span className="parallel-empty-lane">DRY PATH</span>}
+                <button type="button" className="chain-slot endpoint parallel-endpoint"><strong>MIX</strong><span className="muted">OUTPUT</span></button>
+            </div>
+        </section>
+    );
+    const stereo = bool(section.stereo);
+    const formatPan = (value: number) => value <= -0.99 ? "LEFT" : value >= 0.99 ? "RIGHT"
+        : Math.abs(value) < 0.01 ? "CENTER" : value < 0 ? `L ${Math.round(-value * 100)}` : `R ${Math.round(value * 100)}`;
+    return (
+        <div className="parallel-editor">
+            <div className="parallel-routing-note">
+                Both lanes receive the same input. Cabinet IRs are optional—add one only when that NAM capture needs it.
+            </div>
+            {renderLane("a", objects(section.laneA))}
+            {renderLane("b", objects(section.laneB))}
+            {dragGhost && <>
+                <div className={`chain-trash-icon${dragOverTrash ? " active" : ""}`} data-parallel-trash>🗑</div>
+                {createPortal(<div className="chain-ghost" style={{ left: dragGhost.x + 16, top: dragGhost.y + 14 }}>
+                    <div>{dragGhost.title}</div><div className="muted">MOVE EFFECT</div>
+                </div>, document.body)}
+            </>}
+            <section className="parallel-mixer">
+                <div className="parallel-lane-heading"><div><strong>BLEND & OUTPUT</strong><span>Combine the two finished paths</span></div></div>
+                <div className="parallel-output-mode">
+                    <span>OUTPUT MODE</span>
+                    <div>
+                        <button type="button" className={`btn ${!stereo ? "btn-active" : ""}`} disabled={settingsDisabled}
+                            onClick={() => queueSetting({ stereo: false }, true)}>MONO</button>
+                        <button type="button" className={`btn ${stereo ? "btn-active" : ""}`} disabled={settingsDisabled}
+                            onClick={() => queueSetting({ stereo: true }, true)}>STEREO</button>
+                    </div>
+                    <small>{stereo ? "Each rig can be placed independently across left and right." : "Both rigs are blended equally to the left and right outputs."}</small>
+                </div>
+                <div className="parallel-mixer-grid">
+                    <LiveRange label="RIG A LEVEL" value={num(section.levelADb)} min={-24} max={12} step={0.1} disabled={settingsDisabled}
+                        format={(value) => `${value.toFixed(1)} dB`}
+                        onLive={(levelADb) => queueSetting({ levelADb }, false)}
+                        onCommit={(levelADb) => queueSetting({ levelADb }, true)} />
+                    <LiveRange label="RIG B LEVEL" value={num(section.levelBDb)} min={-24} max={12} step={0.1} disabled={settingsDisabled}
+                        format={(value) => `${value.toFixed(1)} dB`}
+                        onLive={(levelBDb) => queueSetting({ levelBDb }, false)}
+                        onCommit={(levelBDb) => queueSetting({ levelBDb }, true)} />
+                    {stereo && <LiveRange label="RIG A PAN" value={num(section.panA, -1)} min={-1} max={1} step={0.01} disabled={settingsDisabled}
+                        format={formatPan}
+                        onLive={(panA) => queueSetting({ panA }, false)}
+                        onCommit={(panA) => queueSetting({ panA }, true)} />}
+                    {stereo && <LiveRange label="RIG B PAN" value={num(section.panB, 1)} min={-1} max={1} step={0.01} disabled={settingsDisabled}
+                        format={formatPan}
+                        onLive={(panB) => queueSetting({ panB }, false)}
+                        onCommit={(panB) => queueSetting({ panB }, true)} />}
+                    <LiveRange label="BALANCE" value={num(section.balance)} min={-1} max={1} step={0.01} disabled={settingsDisabled}
+                        format={(value) => value < -0.01 ? `A ${Math.round(-value * 100)}` : value > 0.01 ? `B ${Math.round(value * 100)}` : "CENTER"}
+                        onLive={(balance) => queueSetting({ balance }, false)}
+                        onCommit={(balance) => queueSetting({ balance }, true)} />
+                    <LiveRange label="OUTPUT" value={num(section.outputDb)} min={-24} max={12} step={0.1} disabled={settingsDisabled}
+                        format={(value) => `${value.toFixed(1)} dB`}
+                        onLive={(outputDb) => queueSetting({ outputDb }, false)}
+                        onCommit={(outputDb) => queueSetting({ outputDb }, true)} />
+                </div>
+                {stereo && <div className="parallel-pan-presets">
+                    <span>QUICK POSITION</span>
+                    <button type="button" className="btn" disabled={settingsDisabled}
+                        onClick={() => queueSetting({ panA: 0, panB: 0 }, true)}>CENTER BOTH</button>
+                    <button type="button" className="btn" disabled={settingsDisabled}
+                        onClick={() => queueSetting({ panA: -1, panB: -1 }, true)}>ALL LEFT</button>
+                    <button type="button" className="btn" disabled={settingsDisabled}
+                        onClick={() => queueSetting({ panA: 1, panB: 1 }, true)}>ALL RIGHT</button>
+                    <button type="button" className="btn" disabled={settingsDisabled}
+                        onClick={() => queueSetting({ panA: -1, panB: 1 }, true)}>SPLIT A-L / B-R</button>
+                    <button type="button" className="btn" disabled={settingsDisabled}
+                        onClick={() => queueSetting({ panA: 1, panB: -1 }, true)}>SWAP L/R</button>
+                </div>}
+            </section>
+        </div>
     );
 }
 

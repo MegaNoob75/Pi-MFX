@@ -143,6 +143,45 @@ int main() {
     invalidPreset.set("parameterBindings", invalidBindings);
     assert(Preset::fromJson(invalidPreset).parameterBindings.empty());
 
+    Preset parallelPreset;
+    parallelPreset.id = "parallel-preset";
+    parallelPreset.name = "Parallel Rigs";
+    EffectSlot parallel;
+    parallel.id = "parallel-1";
+    parallel.kind = "parallel";
+    parallel.name = "Parallel Section";
+    parallel.balance = -0.25f;
+    parallel.stereo = true;
+    parallel.panA = -0.75f;
+    parallel.panB = 0.5f;
+    EffectSlot laneA;
+    laneA.id = "slot-a";
+    laneA.uri = "urn:test:gain";
+    laneA.name = "Rig A";
+    EffectSlot laneB = laneA;
+    laneB.id = "slot-b";
+    laneB.name = "Rig B";
+    parallel.laneA.push_back(laneA);
+    parallel.laneB.push_back(laneB);
+    parallelPreset.chain.push_back(parallel);
+    const Preset restoredParallel = Preset::fromJson(parallelPreset.toJson());
+    assert(restoredParallel.chain.size() == 1);
+    assert(restoredParallel.chain[0].isParallel());
+    assert(restoredParallel.chain[0].laneA.size() == 1);
+    assert(restoredParallel.findSlot("slot-b") != nullptr);
+    assert(restoredParallel.chain[0].balance == -0.25f);
+    assert(restoredParallel.chain[0].stereo);
+    assert(restoredParallel.chain[0].panA == -0.75f);
+    assert(restoredParallel.chain[0].panB == 0.5f);
+
+    Json parallelManifest = validManifest();
+    Json parallelManifestPreset = parallelManifest["preset"];
+    Json parallelChain = Json::array();
+    parallelChain.push(parallel.toJson());
+    parallelManifestPreset.set("chain", parallelChain);
+    parallelManifest.set("preset", parallelManifestPreset);
+    assert(CommunityPresetPackage::validate(parallelManifest, error));
+
     Json unsafeBindingManifest = validManifest();
     Json unsafeBindingPreset = unsafeBindingManifest["preset"];
     Json unsafeBindings = Json::array();

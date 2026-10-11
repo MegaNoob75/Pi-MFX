@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { str, objects, arr, num } from "../json";
 import type { JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
@@ -9,6 +9,7 @@ export function isChainPlugin(plugin: JsonObject): boolean {
 
 export function PluginBrowser({
     open,
+    sessionKey,
     title,
     actionLabel,
     catalog,
@@ -16,24 +17,30 @@ export function PluginBrowser({
     onChoose
 }: {
     open: boolean;
+    sessionKey: string;
     title: string;
     actionLabel: string;
     catalog: JsonObject;
     onCancel: () => void;
     onChoose: (uri: string) => void;
 }) {
-    const plugins = objects(catalog.plugins).filter(isChainPlugin);
+    const plugins = useMemo(() => objects(catalog.plugins)
+        .filter(isChainPlugin)
+        .sort((a, b) => str(a.name).localeCompare(str(b.name))), [catalog.plugins]);
     const [query, setQuery] = useState("");
     const [category, setCategory] = useState("All");
-    const [selected, setSelected] = useState("");
+    const [selection, setSelection] = useState({ sessionKey: "", uri: "" });
+    const [visibleCount, setVisibleCount] = useState(60);
+    const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (open) {
             setQuery("");
             setCategory("All");
-            setSelected("");
+            setSelection({ sessionKey, uri: "" });
+            setVisibleCount(60);
         }
-    }, [open]);
+    }, [open, sessionKey]);
 
     const categoryNames = useMemo(() => {
         const names = new Set<string>();
@@ -61,13 +68,28 @@ export function PluginBrowser({
             }
             const haystack = `${str(item.name)} ${str(item.brand)} ${str(item.category)} ${str(item.uri)}`.toLowerCase();
             return haystack.includes(needle);
-        }).sort((a, b) => str(a.name).localeCompare(str(b.name)));
+        });
     }, [plugins, query, category]);
+
+    useEffect(() => setVisibleCount(60), [query, category, sessionKey]);
+
+    useEffect(() => {
+        const target = loadMoreRef.current;
+        if (!open || !target || visibleCount >= filtered.length) return;
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                setVisibleCount((current) => Math.min(filtered.length, current + 60));
+            }
+        }, { rootMargin: "240px" });
+        observer.observe(target);
+        return () => observer.disconnect();
+    }, [open, filtered.length, visibleCount]);
 
     if (!open) {
         return null;
     }
 
+    const selected = selection.sessionKey === sessionKey ? selection.uri : "";
     const chosen = plugins.find((item) => str(item.uri) === selected);
 
     return (
@@ -97,12 +119,12 @@ export function PluginBrowser({
             </div>
             <div className="plugin-browser-grid-wrap">
                 <div className="plugin-browser-grid" data-mfx-nav-list="plugins">
-                    {filtered.map((item) => (
+                    {filtered.slice(0, visibleCount).map((item) => (
                         <button
                             key={str(item.uri)}
                             type="button"
                             className={`plugin-tile${selected === str(item.uri) ? " selected" : ""}`}
-                            onClick={() => setSelected(str(item.uri))}
+                            onClick={() => setSelection({ sessionKey, uri: str(item.uri) })}
                             onDoubleClick={() => {
                                 const uri = str(item.uri);
                                 if (uri) {
@@ -110,19 +132,16 @@ export function PluginBrowser({
                                 }
                             }}
                         >
-                            <strong>
-                                <MarqueeText text={str(item.name)} align="left" fontWeight={800} />
-                            </strong>
-                            <small>
-                                <MarqueeText
-                                    text={[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}
-                                    align="left"
-                                    fontWeight={700}
-                                />
+                            <strong title={str(item.name)}>{str(item.name)}</strong>
+                            <small title={[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}>
+                                {[str(item.category, "Plugin"), str(item.brand)].filter(Boolean).join(" • ")}
                             </small>
                         </button>
                     ))}
                 </div>
+                {visibleCount < filtered.length && <div ref={loadMoreRef} className="plugin-browser-load-more">
+                    Loading more effects…
+                </div>}
                 {filtered.length === 0 && <div className="muted" style={{ padding: 30, textAlign: "center" }}>No plugins match this search.</div>}
             </div>
             <div className="plugin-browser-footer">

@@ -499,10 +499,22 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     // --- chain ------------------------------------------------------------
     if (command == "chain/add") {
         std::string slotId;
-        ok = engine_.addEffect(payload["uri"].asString(), payload["index"].asInt(-1), slotId, error);
+        ok = engine_.addEffect(payload["uri"].asString(), payload["index"].asInt(-1), slotId, error,
+                               payload["parallelId"].asString(), payload["lane"].asString());
         Json result = Json::object();
         result.set("slotId", slotId);
         return result;
+    }
+    if (command == "chain/parallel/add") {
+        std::string sectionId;
+        ok = engine_.addParallelSection(payload["index"].asInt(-1), sectionId, error);
+        Json result = Json::object();
+        result.set("sectionId", sectionId);
+        return result;
+    }
+    if (command == "chain/parallel/settings") {
+        ok = engine_.setParallelSection(payload["sectionId"].asString(), payload, error);
+        return Json::object();
     }
     if (command == "chain/replace") {
         std::string slotId;
@@ -516,7 +528,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "chain/move") {
-        ok = engine_.moveEffect(payload["slotId"].asString(), payload["index"].asInt(0), error);
+        ok = engine_.moveEffect(payload["slotId"].asString(), payload["index"].asInt(0), error,
+                                payload["parallelId"].asString(), payload["lane"].asString());
         return Json::object();
     }
     if (command == "chain/enable") {

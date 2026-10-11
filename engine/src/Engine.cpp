@@ -938,6 +938,34 @@ void Engine::resetMeters() {
     metrics_.dspLoadPeak.store(0.0f, std::memory_order_relaxed);
 }
 
+std::vector<EffectSlot>* containingLane(std::vector<EffectSlot>& chain,
+                                        const std::string& slotId) {
+    for (EffectSlot& item : chain) {
+        if (item.id == slotId) return &chain;
+        for (EffectSlot& child : item.laneA) if (child.id == slotId) return &item.laneA;
+        for (EffectSlot& child : item.laneB) if (child.id == slotId) return &item.laneB;
+    }
+    return nullptr;
+}
+
+void collectSlotIds(const EffectSlot& item, std::vector<std::string>& ids) {
+    ids.push_back(item.id);
+    for (const EffectSlot& child : item.laneA) collectSlotIds(child, ids);
+    for (const EffectSlot& child : item.laneB) collectSlotIds(child, ids);
+}
+
+template <typename Function>
+void forEachPluginSlot(std::vector<EffectSlot>& chain, Function&& function) {
+    for (EffectSlot& item : chain) {
+        if (item.isParallel()) {
+            for (EffectSlot& child : item.laneA) function(child);
+            for (EffectSlot& child : item.laneB) function(child);
+        } else {
+            function(item);
+        }
+    }
+}
+
 void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
     sampleRate_.store(sampleRate, std::memory_order_release);
     maxFrames_.store(maxFrames, std::memory_order_release);
@@ -1155,38 +1183,133 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         std::vector<float*>* destination = &chain->pointersB;
         float sourcePeak = audioBufferPeak(*source, channels, frames);
 
-        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-            slot->inputPeak.store(sourcePeak, std::memory_order_relaxed);
+        const auto runSlot = [&](ChainSlot& slot, std::vector<float*>*& slotSource,
+                                 std::vector<float*>*& slotDestination, float& peak) {
+            slot.inputPeak.store(peak, std::memory_order_relaxed);
+            if (!slot.enabled.load(std::memory_order_relaxed) || !slot.plugin) {
+                slot.outputPeak.store(peak, std::memory_order_relaxed);
+                return;
+            }
+            const unsigned pluginInputs = slot.plugin->audioInputs();
+            const unsigned pluginOutputs = slot.plugin->audioOutputs();
+            if (pluginInputs == 0 && pluginOutputs == 0) {
+                slot.outputPeak.store(peak, std::memory_order_relaxed);
+                return;
+            }
+            slot.plugin->process(reinterpret_cast<const float* const*>(slotSource->data()),
+                                 std::min(pluginInputs, channels), slotDestination->data(),
+                                 std::min(pluginOutputs, channels), frames,
+                                 transportEnabled ? &transportBlock : nullptr);
+            if (pluginOutputs == 1 && channels > 1) {
+                for (unsigned channel = 1; channel < channels; ++channel) {
+                    std::memcpy((*slotDestination)[channel], (*slotDestination)[0],
+                                frames * sizeof(float));
+                }
+            }
+            peak = audioBufferPeak(*slotDestination, channels, frames);
+            slot.outputPeak.store(peak, std::memory_order_relaxed);
+            std::swap(slotSource, slotDestination);
+        };
 
-            if (!slot->enabled.load(std::memory_order_relaxed) || !slot->plugin) {
-                slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
+        for (const ChainStage& stage : chain->stages) {
+            if (stage.slot) {
+                runSlot(*stage.slot, source, destination, sourcePeak);
+                continue;
+            }
+            ParallelStage* parallel = stage.parallel;
+            if (!parallel) continue;
+            if (!parallel->enabled.load(std::memory_order_relaxed)) {
+                for (ChainSlot* slot : parallel->laneA) {
+                    slot->inputPeak.store(sourcePeak, std::memory_order_relaxed);
+                    slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
+                }
+                for (ChainSlot* slot : parallel->laneB) {
+                    slot->inputPeak.store(sourcePeak, std::memory_order_relaxed);
+                    slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
+                }
                 continue;
             }
 
-            const unsigned pluginInputs = slot->plugin->audioInputs();
-            const unsigned pluginOutputs = slot->plugin->audioOutputs();
-            if (pluginInputs == 0 && pluginOutputs == 0) {
-                slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
-                continue; // a plugin with no audio ports has nothing to do here
+            const auto renderLane = [&](const std::vector<ChainSlot*>& lane,
+                                        std::vector<float*>& first,
+                                        std::vector<float*>& second) {
+                std::vector<float*>* laneSource = source;
+                std::vector<float*>* laneDestination = &first;
+                float lanePeak = sourcePeak;
+                for (ChainSlot* slot : lane) {
+                    runSlot(*slot, laneSource, laneDestination, lanePeak);
+                    laneDestination = laneDestination == &first ? &second : &first;
+                    if (laneDestination == laneSource) {
+                        laneDestination = laneDestination == &first ? &second : &first;
+                    }
+                }
+                return laneSource;
+            };
+            std::vector<float*>* renderedA = renderLane(
+                parallel->laneA, parallel->pointersA1, parallel->pointersA2);
+            std::vector<float*>* renderedB = renderLane(
+                parallel->laneB, parallel->pointersB1, parallel->pointersB2);
+
+            const float balance = std::max(-1.0f, std::min(1.0f,
+                parallel->balance.load(std::memory_order_relaxed)));
+            const float blendAngle = (balance + 1.0f) * 0.78539816339f;
+            const float gainA = std::cos(blendAngle)
+                * dbToGain(parallel->levelADb.load(std::memory_order_relaxed));
+            const float gainB = std::sin(blendAngle)
+                * dbToGain(parallel->levelBDb.load(std::memory_order_relaxed));
+            const bool stereo = parallel->stereo.load(std::memory_order_relaxed);
+            const float panA = std::max(-1.0f, std::min(1.0f,
+                parallel->panA.load(std::memory_order_relaxed)));
+            const float panB = std::max(-1.0f, std::min(1.0f,
+                parallel->panB.load(std::memory_order_relaxed)));
+            const float panAngleA = (panA + 1.0f) * 0.78539816339f;
+            const float panAngleB = (panB + 1.0f) * 0.78539816339f;
+            const float routeALeft = stereo ? std::cos(panAngleA) : 1.0f;
+            const float routeARight = stereo ? std::sin(panAngleA) : 1.0f;
+            const float routeBLeft = stereo ? std::cos(panAngleB) : 1.0f;
+            const float routeBRight = stereo ? std::sin(panAngleB) : 1.0f;
+            const float output = dbToGain(parallel->outputDb.load(std::memory_order_relaxed));
+            if (!parallel->mixInitialized) {
+                parallel->smoothGainA = gainA;
+                parallel->smoothGainB = gainB;
+                parallel->smoothRouteALeft = routeALeft;
+                parallel->smoothRouteARight = routeARight;
+                parallel->smoothRouteBLeft = routeBLeft;
+                parallel->smoothRouteBRight = routeBRight;
+                parallel->smoothOutputGain = output;
+                parallel->mixInitialized = true;
             }
-
-            slot->plugin->process(reinterpret_cast<const float* const*>(source->data()),
-                                  std::min(pluginInputs, channels),
-                                  destination->data(),
-                                  std::min(pluginOutputs, channels),
-                                  frames, transportEnabled ? &transportBlock : nullptr);
-
-            // A mono plugin in a stereo chain feeds both sides rather than
-            // silencing the right channel.
-            if (pluginOutputs == 1 && channels > 1) {
-                for (unsigned channel = 1; channel < channels; ++channel) {
-                    std::memcpy((*destination)[channel], (*destination)[0], frames * sizeof(float));
+            const float smoothing = 1.0f - std::exp(-1.0f / std::max(1.0f,
+                sampleRate_.load(std::memory_order_relaxed) * 0.015f));
+            for (unsigned frame = 0; frame < frames; ++frame) {
+                parallel->smoothGainA += smoothing * (gainA - parallel->smoothGainA);
+                parallel->smoothGainB += smoothing * (gainB - parallel->smoothGainB);
+                parallel->smoothRouteALeft += smoothing * (routeALeft - parallel->smoothRouteALeft);
+                parallel->smoothRouteARight += smoothing * (routeARight - parallel->smoothRouteARight);
+                parallel->smoothRouteBLeft += smoothing * (routeBLeft - parallel->smoothRouteBLeft);
+                parallel->smoothRouteBRight += smoothing * (routeBRight - parallel->smoothRouteBRight);
+                parallel->smoothOutputGain += smoothing * (output - parallel->smoothOutputGain);
+                const float a = channels > 1
+                    ? 0.5f * ((*renderedA)[0][frame] + (*renderedA)[1][frame])
+                    : (*renderedA)[0][frame];
+                const float b = channels > 1
+                    ? 0.5f * ((*renderedB)[0][frame] + (*renderedB)[1][frame])
+                    : (*renderedB)[0][frame];
+                const float weightedA = a * parallel->smoothGainA;
+                const float weightedB = b * parallel->smoothGainB;
+                const float mono = weightedA + weightedB;
+                if (channels == 1) {
+                    (*destination)[0][frame] = parallel->smoothOutputGain * mono;
+                } else {
+                    (*destination)[0][frame] = parallel->smoothOutputGain
+                        * (weightedA * parallel->smoothRouteALeft
+                           + weightedB * parallel->smoothRouteBLeft);
+                    (*destination)[1][frame] = parallel->smoothOutputGain
+                        * (weightedA * parallel->smoothRouteARight
+                           + weightedB * parallel->smoothRouteBRight);
                 }
             }
-
             sourcePeak = audioBufferPeak(*destination, channels, frames);
-            slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
-
             std::swap(source, destination);
         }
 
@@ -1280,7 +1403,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
 
     std::string failures;
     missingPluginFiles_.clear();
-    for (const EffectSlot& slot : preset.chain) {
+    const auto createSlot = [&](const EffectSlot& slot) -> ChainSlot* {
         std::string slotError;
         std::unique_ptr<PluginInstance> plugin = PluginInstance::create(
             catalog_, slot.uri, sampleRate_.load(std::memory_order_acquire), frames, slotError);
@@ -1290,7 +1413,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             // loads; the missing effect is reported and skipped rather than
             // taking the whole preset down.
             failures += (failures.empty() ? "" : "; ") + slotError;
-            continue;
+            return nullptr;
         }
         plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
         applyManagedNamCalibration(settings_.audio, *plugin);
@@ -1302,7 +1425,47 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
         chainSlot->id = slot.id;
         chainSlot->plugin = std::move(plugin);
         chainSlot->enabled.store(slot.enabled, std::memory_order_relaxed);
+        ChainSlot* result = chainSlot.get();
         chain->slots.push_back(std::move(chainSlot));
+        return result;
+    };
+    const auto allocateBranchBuffers = [&](std::vector<std::vector<float>>& storage,
+                                           std::vector<float*>& pointers) {
+        storage.assign(channels, std::vector<float>(frames, 0.0f));
+        pointers.resize(channels);
+        for (unsigned channel = 0; channel < channels; ++channel) {
+            pointers[channel] = storage[channel].data();
+        }
+    };
+
+    for (const EffectSlot& slot : preset.chain) {
+        if (!slot.isParallel()) {
+            if (ChainSlot* live = createSlot(slot)) chain->stages.push_back({live, nullptr});
+            continue;
+        }
+        auto parallel = std::make_unique<ParallelStage>();
+        parallel->id = slot.id;
+        parallel->enabled.store(slot.enabled, std::memory_order_relaxed);
+        parallel->levelADb.store(slot.levelADb, std::memory_order_relaxed);
+        parallel->levelBDb.store(slot.levelBDb, std::memory_order_relaxed);
+        parallel->balance.store(slot.balance, std::memory_order_relaxed);
+        parallel->stereo.store(slot.stereo, std::memory_order_relaxed);
+        parallel->panA.store(slot.panA, std::memory_order_relaxed);
+        parallel->panB.store(slot.panB, std::memory_order_relaxed);
+        parallel->outputDb.store(slot.outputDb, std::memory_order_relaxed);
+        for (const EffectSlot& child : slot.laneA) {
+            if (ChainSlot* live = createSlot(child)) parallel->laneA.push_back(live);
+        }
+        for (const EffectSlot& child : slot.laneB) {
+            if (ChainSlot* live = createSlot(child)) parallel->laneB.push_back(live);
+        }
+        allocateBranchBuffers(parallel->bufferA1, parallel->pointersA1);
+        allocateBranchBuffers(parallel->bufferA2, parallel->pointersA2);
+        allocateBranchBuffers(parallel->bufferB1, parallel->pointersB1);
+        allocateBranchBuffers(parallel->bufferB2, parallel->pointersB2);
+        ParallelStage* live = parallel.get();
+        chain->parallelStages.push_back(std::move(parallel));
+        chain->stages.push_back({nullptr, live});
     }
 
     error = failures;
@@ -1830,12 +1993,12 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
     if (target->rememberedSnapshotEnabled && target->rememberedSnapshotSlot >= 0) {
         if (Snapshot* snapshot = findSnapshotBySlot(*target, target->rememberedSnapshotSlot)) {
-            for (EffectSlot& slot : effectivePreset.chain) {
-                if (!snapshot->slots.has(slot.id)) continue;
+            forEachPluginSlot(effectivePreset.chain, [&](EffectSlot& slot) {
+                if (!snapshot->slots.has(slot.id)) return;
                 const Json& state = snapshot->slots[slot.id];
                 slot.state = state;
                 slot.enabled = state["enabled"].asBool(true);
-            }
+            });
             target->activeSnapshot = snapshot->slot;
         } else {
             forgetRememberedSnapshot(*target);
@@ -2436,7 +2599,9 @@ bool Engine::importBank(const Json& json, std::string& error) {
     for (Preset& preset : bank.presets) {
         preset.id = newId("preset");
         for (EffectSlot& slot : preset.chain) {
-            slot.id = newId("slot");
+            slot.id = newId(slot.isParallel() ? "parallel" : "slot");
+            for (EffectSlot& child : slot.laneA) child.id = newId("slot");
+            for (EffectSlot& child : slot.laneB) child.id = newId("slot");
         }
     }
 
@@ -2565,7 +2730,8 @@ bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed
 // Chain editing
 // ---------------------------------------------------------------------------
 
-bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error) {
+bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error,
+                       const std::string& parallelId, const std::string& lane) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* stored = activePreset();
     if (!stored) {
@@ -2574,6 +2740,10 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
     }
     if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
         error = "snapshot editing cannot add, remove or reorder effects";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
         return false;
     }
     Preset* preset = activeSessionDraft(true);
@@ -2591,9 +2761,18 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
     slot.name = info->name;
     slot.enabled = true;
 
-    index = index < 0 ? static_cast<int>(preset->chain.size())
-                      : std::min(index, static_cast<int>(preset->chain.size()));
-    preset->chain.insert(preset->chain.begin() + index, slot);
+    std::vector<EffectSlot>* destination = &preset->chain;
+    if (!parallelId.empty()) {
+        EffectSlot* parallel = preset->findSlot(parallelId);
+        if (!parallel || !parallel->isParallel() || (lane != "a" && lane != "b")) {
+            error = "no such parallel lane";
+            return false;
+        }
+        destination = lane == "a" ? &parallel->laneA : &parallel->laneB;
+    }
+    index = index < 0 ? static_cast<int>(destination->size())
+                      : std::min(index, static_cast<int>(destination->size()));
+    destination->insert(destination->begin() + index, slot);
     slotId = slot.id;
 
     std::string chainError;
@@ -2602,8 +2781,82 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
         error = chainError;
     }
     publishChain(std::move(chain));
-    notify();
     return true;
+}
+
+bool Engine::addParallelSection(int index, std::string& sectionId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Preset* stored = activePreset();
+    if (!stored) { error = "no active preset"; return false; }
+    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
+        error = "snapshot editing cannot add, remove or reorder effects";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
+    Preset* preset = activeSessionDraft(true);
+    syncPresetFromChain();
+    EffectSlot section;
+    section.id = newId("parallel");
+    section.kind = "parallel";
+    section.name = "Parallel Section";
+    section.enabled = true;
+    index = index < 0 ? static_cast<int>(preset->chain.size())
+                      : std::min(index, static_cast<int>(preset->chain.size()));
+    preset->chain.insert(preset->chain.begin() + index, section);
+    sectionId = section.id;
+    std::string chainError;
+    publishChain(buildChain(*preset, chainError));
+    if (!chainError.empty()) error = chainError;
+    return true;
+}
+
+bool Engine::setParallelSection(const std::string& sectionId, const Json& values,
+                                std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
+    Preset* preset = activeSessionDraft(true);
+    if (!preset) { error = "no active preset"; return false; }
+    EffectSlot* section = preset->findSlot(sectionId);
+    if (!section || !section->isParallel()) { error = "no such parallel section"; return false; }
+    const bool publishState = values["persist"].asBool(true);
+    if (values.has("enabled")) section->enabled = values["enabled"].asBool(section->enabled);
+    if (values.has("levelADb")) section->levelADb = std::max(-60.0f, std::min(12.0f, values["levelADb"].asFloat()));
+    if (values.has("levelBDb")) section->levelBDb = std::max(-60.0f, std::min(12.0f, values["levelBDb"].asFloat()));
+    if (values.has("balance")) section->balance = std::max(-1.0f, std::min(1.0f, values["balance"].asFloat()));
+    if (values.has("stereo")) section->stereo = values["stereo"].asBool(section->stereo);
+    if (values.has("panA")) section->panA = std::max(-1.0f, std::min(1.0f, values["panA"].asFloat()));
+    if (values.has("panB")) section->panB = std::max(-1.0f, std::min(1.0f, values["panB"].asFloat()));
+    if (values.has("width") && !values.has("stereo")) {
+        const float width = std::max(0.0f, std::min(1.0f, values["width"].asFloat()));
+        section->stereo = width > 0.001f;
+        section->panA = -width;
+        section->panB = width;
+    }
+    if (values.has("outputDb")) section->outputDb = std::max(-60.0f, std::min(12.0f, values["outputDb"].asFloat()));
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
+        for (const std::unique_ptr<ParallelStage>& live : chain->parallelStages) {
+            if (live->id != sectionId) continue;
+            live->enabled.store(section->enabled, std::memory_order_relaxed);
+            live->levelADb.store(section->levelADb, std::memory_order_relaxed);
+            live->levelBDb.store(section->levelBDb, std::memory_order_relaxed);
+            live->balance.store(section->balance, std::memory_order_relaxed);
+            live->stereo.store(section->stereo, std::memory_order_relaxed);
+            live->panA.store(section->panA, std::memory_order_relaxed);
+            live->panB.store(section->panB, std::memory_order_relaxed);
+            live->outputDb.store(section->outputDb, std::memory_order_relaxed);
+            if (publishState) notify();
+            return true;
+        }
+    }
+    error = "parallel section is still preparing";
+    return false;
 }
 
 bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error) {
@@ -2617,6 +2870,10 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
     Preset* preset = activeSessionDraft(true);
     const PluginInfo* info = catalog_.find(uri);
     if (!info) {
@@ -2624,26 +2881,28 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
         return false;
     }
     syncPresetFromChain();
-    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
+    std::vector<EffectSlot>* container = containingLane(preset->chain, slotId);
+    if (!container) { error = "no such effect"; return false; }
+    const auto found = std::find_if(container->begin(), container->end(),
                                     [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (found == preset->chain.end()) {
+    if (found == container->end() || found->isParallel()) {
         error = "no such effect";
         return false;
     }
-    const int index = static_cast<int>(found - preset->chain.begin());
+    const int index = static_cast<int>(found - container->begin());
     EffectSlot next;
     next.id = newId("slot");
     next.uri = uri;
     next.name = info->name;
     next.enabled = true;
-    preset->chain.insert(preset->chain.begin() + index, next);
+    container->insert(container->begin() + index, next);
     newSlotId = next.id;
 
     std::string chainError;
     std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
     if (!chain) {
         error = chainError.empty() ? "could not load that plugin" : chainError;
-        preset->chain.erase(preset->chain.begin() + index);
+        container->erase(container->begin() + index);
         return false;
     }
     bool loaded = false;
@@ -2655,14 +2914,14 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
     }
     if (!loaded) {
         error = chainError.empty() ? "could not load that plugin" : chainError;
-        preset->chain.erase(preset->chain.begin() + index);
+        container->erase(container->begin() + index);
         return false;
     }
 
-    const auto old = std::find_if(preset->chain.begin(), preset->chain.end(),
+    const auto old = std::find_if(container->begin(), container->end(),
                                   [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (old != preset->chain.end()) {
-        preset->chain.erase(old);
+    if (old != container->end()) {
+        container->erase(old);
     }
     preset->parameterBindings.erase(
         std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
@@ -2670,7 +2929,6 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
         preset->parameterBindings.end());
     chain = buildChain(*preset, chainError);
     publishChain(std::move(chain));
-    notify();
     return true;
 }
 
@@ -2685,28 +2943,39 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
     Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
-    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
+    std::vector<EffectSlot>* container = containingLane(preset->chain, slotId);
+    if (!container) { error = "no such effect"; return false; }
+    const auto found = std::find_if(container->begin(), container->end(),
                                     [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (found == preset->chain.end()) {
+    if (found == container->end()) {
         error = "no such effect";
         return false;
     }
-    preset->chain.erase(found);
+    std::vector<std::string> removedIds;
+    collectSlotIds(*found, removedIds);
+    container->erase(found);
     preset->parameterBindings.erase(
         std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
-                       [&](const ParameterBinding& binding) { return binding.slotId == slotId; }),
+                       [&](const ParameterBinding& binding) {
+                           return std::find(removedIds.begin(), removedIds.end(), binding.slotId)
+                               != removedIds.end();
+                       }),
         preset->parameterBindings.end());
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
-    notify();
     return true;
 }
 
-bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& error) {
+bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& error,
+                        const std::string& parallelId, const std::string& lane) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* stored = activePreset();
     if (!stored) {
@@ -2717,23 +2986,42 @@ bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& er
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
     Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
-    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
+    std::vector<EffectSlot>* container = containingLane(preset->chain, slotId);
+    if (!container) { error = "no such effect"; return false; }
+    const auto found = std::find_if(container->begin(), container->end(),
                                     [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (found == preset->chain.end()) {
+    if (found == container->end()) {
         error = "no such effect";
         return false;
     }
+    const int sourceIndex = static_cast<int>(found - container->begin());
     EffectSlot moved = *found;
-    preset->chain.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(preset->chain.size())));
-    preset->chain.insert(preset->chain.begin() + newIndex, std::move(moved));
+    container->erase(found);
+    std::vector<EffectSlot>* destination = container;
+    if (!parallelId.empty()) {
+        EffectSlot* parallel = preset->findSlot(parallelId);
+        if (!parallel || !parallel->isParallel() || (lane != "a" && lane != "b")) {
+            error = "no such parallel lane";
+            container->insert(container->begin() + sourceIndex, std::move(moved));
+            return false;
+        }
+        destination = lane == "a" ? &parallel->laneA : &parallel->laneB;
+    }
+    // UI drop indices describe the gaps in the original lane. Once the source
+    // has been removed, every later gap shifts left by one.
+    if (destination == container && newIndex > sourceIndex) --newIndex;
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(destination->size())));
+    destination->insert(destination->begin() + newIndex, std::move(moved));
 
     std::string chainError;
     publishChain(buildChain(*preset, chainError));
-    notify();
     return true;
 }
 
@@ -5519,6 +5807,8 @@ Json Engine::fullState() const {
     json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
     json.set("virtualControlFine", proxyFineMode_);
     json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
+    json.set("chainGeneration", static_cast<int64_t>(
+        metrics_.chainGeneration.load(std::memory_order_relaxed)));
     json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
     Json dirtyPresetIds = Json::array();
     for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
@@ -5538,21 +5828,78 @@ Json Engine::fullState() const {
     json.set("lv2Available", catalog_.available());
     json.set("pluginCount", static_cast<int>(catalog_.plugins().size()));
 
-    // Live chain contents, which can differ from the stored preset when a
-    // plugin named by the preset is not installed.
+    // Keep `chain` as the flat live-plugin list consumed by Performance,
+    // snapshots, and control layout editors. `chainLayout` adds the nested
+    // routing description used by the preset editor.
     Json chainArray = Json::array();
+    Json chainLayout = Json::array();
     ActiveChainReadGuard chainGuard(*this);
     if (Chain* chain = chainGuard.get()) {
         json.set("activeChainPresetId", chain->presetId);
-        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-            if (!slot->plugin) {
-                continue;
+        const Preset* preset = effectiveActivePreset();
+        const auto findLive = [&](const std::string& id) -> ChainSlot* {
+            for (const std::unique_ptr<ChainSlot>& live : chain->slots) {
+                if (live->id == id) return live.get();
             }
+            return nullptr;
+        };
+        const auto describe = [&](const auto& self, const EffectSlot& stored) -> Json {
+            Json slotJson = Json::object();
+            slotJson.set("id", stored.id);
+            slotJson.set("name", stored.name);
+            slotJson.set("enabled", stored.enabled);
+            if (stored.isParallel()) {
+                slotJson.set("kind", "parallel");
+                Json a = Json::array();
+                for (const EffectSlot& child : stored.laneA) a.push(self(self, child));
+                Json b = Json::array();
+                for (const EffectSlot& child : stored.laneB) b.push(self(self, child));
+                slotJson.set("laneA", std::move(a));
+                slotJson.set("laneB", std::move(b));
+                slotJson.set("levelADb", stored.levelADb);
+                slotJson.set("levelBDb", stored.levelBDb);
+                slotJson.set("balance", stored.balance);
+                slotJson.set("stereo", stored.stereo);
+                slotJson.set("panA", stored.panA);
+                slotJson.set("panB", stored.panB);
+                slotJson.set("outputDb", stored.outputDb);
+                for (const std::unique_ptr<ParallelStage>& live : chain->parallelStages) {
+                    if (live->id != stored.id) continue;
+                    slotJson.set("enabled", live->enabled.load(std::memory_order_relaxed));
+                    slotJson.set("levelADb", live->levelADb.load(std::memory_order_relaxed));
+                    slotJson.set("levelBDb", live->levelBDb.load(std::memory_order_relaxed));
+                    slotJson.set("balance", live->balance.load(std::memory_order_relaxed));
+                    slotJson.set("stereo", live->stereo.load(std::memory_order_relaxed));
+                    slotJson.set("panA", live->panA.load(std::memory_order_relaxed));
+                    slotJson.set("panB", live->panB.load(std::memory_order_relaxed));
+                    slotJson.set("outputDb", live->outputDb.load(std::memory_order_relaxed));
+                    break;
+                }
+                return slotJson;
+            }
+            ChainSlot* live = findLive(stored.id);
+            slotJson.set("uri", stored.uri);
+            slotJson.set("tempoLinks", stored.tempoLinks);
+            if (!live || !live->plugin) {
+                slotJson.set("missing", true);
+                slotJson.set("state", stored.state);
+                return slotJson;
+            }
+            slotJson.set("enabled", live->enabled.load(std::memory_order_relaxed));
+            slotJson.set("plugin", live->plugin->info().toJson(true));
+            slotJson.set("state", live->plugin->saveState());
+            return slotJson;
+        };
+        if (preset) {
+            for (const EffectSlot& slot : preset->chain) chainLayout.push(describe(describe, slot));
+        }
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            if (!slot->plugin) continue;
             Json slotJson = Json::object();
             slotJson.set("id", slot->id);
             slotJson.set("uri", slot->plugin->uri());
             slotJson.set("enabled", slot->enabled.load(std::memory_order_relaxed));
-            if (const Preset* preset = effectiveActivePreset()) {
+            if (preset) {
                 if (const EffectSlot* stored = preset->findSlot(slot->id)) {
                     slotJson.set("name", stored->name);
                     slotJson.set("tempoLinks", stored->tempoLinks);
@@ -5560,10 +5907,11 @@ Json Engine::fullState() const {
             }
             slotJson.set("plugin", slot->plugin->info().toJson(true));
             slotJson.set("state", slot->plugin->saveState());
-            chainArray.push(slotJson);
+            chainArray.push(std::move(slotJson));
         }
     }
     json.set("chain", chainArray);
+    json.set("chainLayout", chainLayout);
 
     Json missing = Json::array();
     for (const std::string& item : missingPluginFiles_) {

@@ -328,6 +328,20 @@ export class EngineClient {
             }
             const liveSlots = objects(message.slots);
             if (liveSlots.length > 0) {
+                const mergeLive = (slot: Json): Json => {
+                    if (!isObj(slot)) return slot;
+                    if (str(slot.kind) === "parallel") {
+                        return {
+                            ...slot,
+                            laneA: arr(slot.laneA).map(mergeLive),
+                            laneB: arr(slot.laneB).map(mergeLive)
+                        };
+                    }
+                    const live = liveSlots.find((item) => str(item.id) === str(slot.id));
+                    return live
+                        ? { ...slot, enabled: live.enabled ?? slot.enabled, state: live.state ?? slot.state }
+                        : slot;
+                };
                 nextState.chain = arr(this.snapshot.state.chain).map((slot) => {
                     if (!isObj(slot)) {
                         return slot;
@@ -337,6 +351,7 @@ export class EngineClient {
                         ? { ...slot, enabled: live.enabled ?? slot.enabled, state: live.state ?? slot.state }
                         : slot;
                 });
+                nextState.chainLayout = arr(this.snapshot.state.chainLayout).map(mergeLive);
             }
             this.patch({ state: nextState });
         }
