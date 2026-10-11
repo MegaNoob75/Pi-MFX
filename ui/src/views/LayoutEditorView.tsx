@@ -1335,7 +1335,7 @@ export function LayoutEditorView({
                                     }
                                 }}
                             >
-                                <div className={`layout-item-preview layout-item-preview--status${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}`}>
+                                <div className={`layout-item-preview layout-item-preview--status${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}>
                                     {isMeterWidget(id) ? (
                                         <GainMeter
                                             label={id === "inputMeter" ? "In" : "Out"}
@@ -1345,10 +1345,12 @@ export function LayoutEditorView({
                                         />
                                     ) : (
                                         <>
-                                            {widget.showLabel && (
+                                            {widget.showLabel && id !== "cpuUsage" && (
                                                 <div className="mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
                                             )}
-                                            <strong className="mfx-performance-ui-value">{STATUS_WIDGET_LABELS[id]}</strong>
+                                            <strong className={`mfx-performance-ui-value${id === "cpuUsage" ? " cpu-load-readings" : ""}`}>
+                                                {id === "cpuUsage" ? "AUDIO 38%\nCPU 22%" : STATUS_WIDGET_LABELS[id]}
+                                            </strong>
                                         </>
                                     )}
                                 </div>

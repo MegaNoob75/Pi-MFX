@@ -271,7 +271,7 @@ export function LibraryFileManager({
             {availableKinds.length > 4 ? (
                 <div className="library-kind-selector">
                     <label className="library-kind-field">
-                        <span>LIBRARY AREA</span>
+                        <span>FILES AND DIRECTORIES</span>
                         <select value={kind} onChange={(event) => setKind(event.target.value as LibraryKind)}>
                             {[...groupedKinds].map(([group, items]) => (
                                 <optgroup key={group} label={group}>

@@ -972,7 +972,8 @@ function AudioSettings({
                     <div><span>Active buffer</span><strong>{formatMs(num(meters.bufferMs, num(actualAudio.bufferMs, num(audio.bufferMs))))} · {num(actualAudio.periodFrames, num(audio.periodFrames, 0))} × {num(actualAudio.periodCount, num(audio.periodCount, 0))}</strong></div>
                     <div><span>Measured round trip</span><strong>{formatMs(num(meters.roundTripMs))}</strong></div>
                     <div><span>Limiter look-ahead</span><strong>{formatMs(num(meters.safetyLookaheadMs))}</strong></div>
-                    <div><span>DSP load</span><strong>{(num(meters.dspLoad) * 100).toFixed(0)}%</strong></div>
+                    <div><span>Audio callback load</span><strong>{(num(meters.dspLoad) * 100).toFixed(0)}%</strong></div>
+                    <div><span>Engine CPU</span><strong>{bool(meters.engineCpuLoadAvailable) ? `${(num(meters.engineCpuLoad) * 100).toFixed(0)}%` : "—"}</strong></div>
                     <div><span>XRuns</span><strong>{num(meters.xruns)}</strong></div>
                     <div><span>Capture / playback</span><strong>{num(meters.captureXruns)} / {num(meters.playbackXruns)}</strong></div>
                     <div><span>Preset preparation</span><strong>{bool(meters.chainPreparing) ? "PREPARING" : "READY"}</strong></div>
@@ -980,6 +981,7 @@ function AudioSettings({
                     {num(meters.xruns) > 0 && <div><span>Last XRun</span><strong>{str(obj(meters.lastXrun).direction, "unknown")} · {str(obj(meters.lastXrun).transition, "running")}</strong></div>}
                     {num(meters.xruns) > 0 && <div><span>XRun context</span><strong>chain {num(obj(meters.lastXrun).chainGeneration)} · workers {num(obj(meters.lastXrun).workerTransitions)} · {(num(obj(meters.lastXrun).dspLoad) * 100).toFixed(0)}%</strong></div>}
                 </div>
+                <div className="audio-help">Audio callback load shows how much of each real-time deadline is being used. Engine CPU shows the whole Pi-MFX process, including plugin helper and LV2 worker threads; 100% means every Pi CPU core is fully occupied.</div>
                 {bool(meters.separateClockDomains) && <div className="audio-help">Separate capture and playback devices use independent hardware clocks. For dependable live latency, use one duplex interface.</div>}
                 <button type="button" className="btn" onClick={() => void run(() => client.request("meters/reset"))}>RESET XRUNS</button>
             </section>}

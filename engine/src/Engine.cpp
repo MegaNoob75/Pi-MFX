@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -5560,6 +5561,11 @@ void Engine::housekeepingThread() {
     int ticks = 0;
     int audioRetryLog = 0;
     uint64_t reportedXruns = metrics_.xruns.load(std::memory_order_relaxed);
+    const unsigned logicalProcessors = std::max(1u, std::thread::hardware_concurrency());
+    std::clock_t previousProcessCpu = std::clock();
+    auto previousProcessCpuWall = std::chrono::steady_clock::now();
+    float smoothedEngineCpu = 0.0f;
+    bool engineCpuReady = false;
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
 
@@ -5641,6 +5647,29 @@ void Engine::housekeepingThread() {
         // Meters update several times a second; the full state only changes
         // when something actually changes, so it is not sent on a timer.
         if (++ticks % 4 == 0) {
+            const std::clock_t processCpu = std::clock();
+            const auto processCpuWall = std::chrono::steady_clock::now();
+            if (processCpu != static_cast<std::clock_t>(-1)
+                && previousProcessCpu != static_cast<std::clock_t>(-1)
+                && processCpu >= previousProcessCpu) {
+                const double cpuSeconds = static_cast<double>(processCpu - previousProcessCpu)
+                    / static_cast<double>(CLOCKS_PER_SEC);
+                const double wallSeconds = std::chrono::duration<double>(
+                    processCpuWall - previousProcessCpuWall).count();
+                if (wallSeconds > 0.0) {
+                    const float measured = static_cast<float>(std::max(0.0,
+                        std::min(1.0, cpuSeconds / wallSeconds / logicalProcessors)));
+                    smoothedEngineCpu = engineCpuReady
+                        ? smoothedEngineCpu * 0.8f + measured * 0.2f
+                        : measured;
+                    engineCpuReady = true;
+                    engineCpuLoad_.store(smoothedEngineCpu, std::memory_order_relaxed);
+                    engineCpuLoadAvailable_.store(true, std::memory_order_release);
+                }
+            }
+            previousProcessCpu = processCpu;
+            previousProcessCpuWall = processCpuWall;
+
             StateListener listener;
             {
                 std::lock_guard<std::mutex> lock(listenerMutex_);
@@ -6256,6 +6285,9 @@ Json Engine::meterState() const {
         metrics_.shortPlaybackTransfers.load(std::memory_order_relaxed)));
     json.set("dspLoad", metrics_.dspLoad.load(std::memory_order_relaxed));
     json.set("dspLoadPeak", metrics_.dspLoadPeak.load(std::memory_order_relaxed));
+    json.set("engineCpuLoad", engineCpuLoad_.load(std::memory_order_relaxed));
+    json.set("engineCpuLoadAvailable",
+        engineCpuLoadAvailable_.load(std::memory_order_acquire));
     json.set("inputPeak", metrics_.inputPeak.load(std::memory_order_relaxed));
     json.set("outputPeak", metrics_.outputPeak.load(std::memory_order_relaxed));
     json.set("guitarInputPeak", guitarInputPeak_.load(std::memory_order_relaxed));

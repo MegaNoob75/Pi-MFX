@@ -423,6 +423,8 @@ private:
     std::unique_ptr<AudioBackend> backend_;
     std::string audioDeviceName_;
     AudioMetrics metrics_;
+    std::atomic<float> engineCpuLoad_{0.0f};
+    std::atomic<bool> engineCpuLoadAvailable_{false};
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 
     std::atomic<Chain*> activeChain_{nullptr};

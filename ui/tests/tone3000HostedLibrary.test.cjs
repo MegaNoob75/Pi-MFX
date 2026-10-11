@@ -72,6 +72,12 @@ assert.match(styles, /\.model-library-body[\s\S]*overflow: hidden/,
     'the Model Library page itself must not scroll');
 assert.match(styles, /\.model-library-files \.explorer-panes[\s\S]*flex: 1 1 auto/,
     'only the file manager panes should consume and scroll within remaining height');
+assert.match(library, /<span>FILES AND DIRECTORIES<\/span>/,
+    'the Files view must clearly label the library root selector');
+assert.match(styles, /\.page-scroll\.files-view-scroll[\s\S]*overflow: hidden/,
+    'the Files screen itself must not scroll');
+assert.match(styles, /\.files-view-scroll \.explorer-panes[\s\S]*flex: 1 1 auto[\s\S]*min-height: 0/,
+    'the Files view panes must fit the remaining small-screen height and scroll internally');
 assert.match(styles, /\.t3k-dialog-image[\s\S]*width: 112px[\s\S]*height: 70px/,
     'selected-tone artwork must remain a compact thumbnail');
 assert.match(styles, /\.t3k-dialog \.t3k-models[\s\S]*flex: 1 1 auto[\s\S]*overflow: auto/,

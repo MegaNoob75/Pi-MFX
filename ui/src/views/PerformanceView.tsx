@@ -1338,7 +1338,7 @@ export function PerformanceView({
                     return (
                         <div
                             key={id}
-                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}`}
+                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}
                             style={{
                                 ...rectStyle(widget.rect, isMeterWidget(id) && widget.orientation === "vertical"),
                                 zIndex: pickerOpen ? 50 : undefined
@@ -1365,10 +1365,10 @@ export function PerformanceView({
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
                                         <>
-                                            {widget.showLabel && (
+                                            {widget.showLabel && id !== "cpuUsage" && (
                                                 <div className="field-label mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
                                             )}
-                                            <strong className="marquee mfx-performance-ui-value">
+                                            <strong className={`marquee mfx-performance-ui-value${id === "cpuUsage" ? " cpu-load-readings" : ""}`}>
                                                 <LiveMeterText
                                                     client={client}
                                                     id={id}
@@ -1842,7 +1842,9 @@ function LiveMeterText({
     const meters = useMeters(client);
     const tuner = obj(meters.tuner);
     return widgetText(id, {
-        dsp: `${(num(meters.dspLoad) * 100).toFixed(0)}%`,
+        load: `AUDIO ${(num(meters.dspLoad) * 100).toFixed(0)}%\nCPU ${bool(meters.engineCpuLoadAvailable)
+            ? `${(num(meters.engineCpuLoad) * 100).toFixed(0)}%`
+            : "—"}`,
         xruns: `${num(meters.xruns)}`,
         audio: bool(meters.running, audioRunning) ? "RUN" : "STOP",
         tuner: bool(tuner.valid)
@@ -1881,7 +1883,7 @@ function widgetText(id: string, values: Record<string, string>): string {
     switch (id) {
         case "currentBank": return values.bank;
         case "activePreset": return values.preset;
-        case "cpuUsage": return values.dsp;
+        case "cpuUsage": return values.load;
         case "xruns": return values.xruns;
         case "audioStatus": return values.audio;
         case "chainBypassStatus": return values.bypass;

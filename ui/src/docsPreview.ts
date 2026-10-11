@@ -228,7 +228,7 @@ const drums: Body = {
     song: [{ variation: 0, repeats: 4 }, { variation: 1, repeats: 4 }, { variation: 2, repeats: 2 }]
 };
 const meters: Body = {
-    type: "meters", running: true, dspLoad: .09, xruns: 0, bufferMs: 2.67, roundTripMs: 5.25,
+    type: "meters", running: true, dspLoad: .09, engineCpuLoad: .14, engineCpuLoadAvailable: true, xruns: 0, bufferMs: 2.67, roundTripMs: 5.25,
     input: [.31, .08], output: [.27, .25], inputPeak: [.62, .12], outputPeak: [.55, .51], guitarInputPeak: .31, guitarInputRms: .12, safetyLookaheadMs: .75,
     effects: [
         { slotId: "slot-gate", inputPeak: .31, outputPeak: .29 },

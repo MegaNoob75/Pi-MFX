@@ -23,7 +23,7 @@ export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
 export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     currentBank: "Current Bank",
     activePreset: "Active Preset",
-    cpuUsage: "CPU",
+    cpuUsage: "Load",
     xruns: "XRuns",
     audioStatus: "Audio",
     chainBypassStatus: "Bypass",
