@@ -45,7 +45,7 @@
     z-index: 2147483645;
     display: grid;
     place-items: center;
-    pointer-events: auto;
+    pointer-events: none;
     touch-action: none;
     overscroll-behavior: contain;
     background: transparent;

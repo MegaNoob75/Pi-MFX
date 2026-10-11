@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { controlValue, findBank, findPreset, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
+import { announceControlPopout, CONTROL_POPOUT_OPEN_EVENT } from "../controlPopout";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
@@ -1151,6 +1152,8 @@ function LiveRange({ label, value, min, max, step, format, disabled, onLive, onC
     const [popout, setPopout] = useState(false);
     const draftRef = useRef(value);
     const popoutCloseTimer = useRef<number | null>(null);
+    const popoutCard = useRef<HTMLDivElement | null>(null);
+    const popoutOwner = useRef({});
     useEffect(() => {
         draftRef.current = value;
         setDraft(value);
@@ -1164,8 +1167,36 @@ function LiveRange({ label, value, min, max, step, format, disabled, onLive, onC
             window.clearTimeout(popoutCloseTimer.current);
             popoutCloseTimer.current = null;
         }
+        announceControlPopout(popoutOwner.current);
         setPopout(true);
     };
+    const dismissPopout = () => {
+        if (popoutCloseTimer.current !== null) {
+            window.clearTimeout(popoutCloseTimer.current);
+            popoutCloseTimer.current = null;
+        }
+        setPopout(false);
+    };
+    useEffect(() => {
+        if (!popout) return;
+        const dismissForOutsideInteraction = (event: Event) => {
+            const target = event.target;
+            if (target instanceof Node && popoutCard.current?.contains(target)) return;
+            dismissPopout();
+        };
+        const dismissForReplacement = (event: Event) => {
+            if ((event as CustomEvent<object>).detail === popoutOwner.current) return;
+            dismissPopout();
+        };
+        window.addEventListener("pointerdown", dismissForOutsideInteraction, true);
+        window.addEventListener("wheel", dismissForOutsideInteraction, true);
+        window.addEventListener(CONTROL_POPOUT_OPEN_EVENT, dismissForReplacement);
+        return () => {
+            window.removeEventListener("pointerdown", dismissForOutsideInteraction, true);
+            window.removeEventListener("wheel", dismissForOutsideInteraction, true);
+            window.removeEventListener(CONTROL_POPOUT_OPEN_EVENT, dismissForReplacement);
+        };
+    }, [popout]);
     const schedulePopoutClose = () => {
         if (popoutCloseTimer.current !== null) window.clearTimeout(popoutCloseTimer.current);
         popoutCloseTimer.current = window.setTimeout(() => {
@@ -1211,9 +1242,9 @@ function LiveRange({ label, value, min, max, step, format, disabled, onLive, onC
                 <strong>{format(draft)}</strong>
             </label>
             {popout && createPortal(
-                <div className="mfx-performance-control-popout" role="dialog" aria-modal="true"
-                    aria-label={`${label} adjustment`} onPointerDown={(event) => event.stopPropagation()}>
-                    <div className="parallel-slider-popout-card mfx-performance-control--popout" style={{
+                <div className="mfx-performance-control-popout" role="dialog"
+                    aria-label={`${label} adjustment`}>
+                    <div ref={popoutCard} className="parallel-slider-popout-card mfx-performance-control--popout" style={{
                         width: `min(calc(100vw - 32px), ${Math.round(300 * popoutScale)}px)`,
                         height: `min(calc(100vh - 32px), ${Math.round(140 * popoutScale)}px)`
                     }}>
@@ -2226,6 +2257,16 @@ export function EffectControls({
                                     freeform: true,
                                     scrollFriendly: true,
                                     hardwarePopout: hardwarePopoutSymbol === symbol,
+                                    onPopoutDismiss: () => {
+                                        setHardwarePopoutSymbol((current) => {
+                                            if (current !== symbol) return current;
+                                            if (hardwarePopoutTimer.current !== null) {
+                                                window.clearTimeout(hardwarePopoutTimer.current);
+                                                hardwarePopoutTimer.current = null;
+                                            }
+                                            return "";
+                                        });
+                                    },
                                     encoderSelected: selectedControlSymbol === symbol,
                                     onEngage: () => setSelectedControlSymbol(symbol),
                                     onPress: () => {

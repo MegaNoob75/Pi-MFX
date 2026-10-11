@@ -905,7 +905,17 @@ export function PerformanceView({
                     onPresetPointerUp: canAssign && displayPresetId && encoderMode !== "session"
                         ? (event) => endPresetDrag(event)
                         : undefined,
-                    hardwarePopout: analog && hardwarePopoutId === controlId
+                    hardwarePopout: analog && hardwarePopoutId === controlId,
+                    onPopoutDismiss: () => {
+                        setHardwarePopoutId((current) => {
+                            if (current !== controlId) return current;
+                            if (physicalPopoutTimer.current !== null) {
+                                window.clearTimeout(physicalPopoutTimer.current);
+                                physicalPopoutTimer.current = null;
+                            }
+                            return "";
+                        });
+                    }
                 };
                 });
             })()

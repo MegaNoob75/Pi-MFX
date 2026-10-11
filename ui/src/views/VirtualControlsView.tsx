@@ -168,6 +168,16 @@ export function VirtualControlsView({
             freeform: true,
             scrollFriendly: analog,
             hardwarePopout: proxyPopoutId === id,
+            onPopoutDismiss: () => {
+                setProxyPopoutId((current) => {
+                    if (current !== id) return current;
+                    if (popoutTimer.current !== null) {
+                        window.clearTimeout(popoutTimer.current);
+                        popoutTimer.current = null;
+                    }
+                    return "";
+                });
+            },
             rect: clampRect({
                 x: num(control.x, 0.08),
                 y: num(control.y, 0.12),
