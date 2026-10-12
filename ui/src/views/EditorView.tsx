@@ -78,6 +78,7 @@ export function EditorView({
     const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
+    const [parallelView, setParallelView] = useState<"chains" | "mixer">("chains");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
     const [browser, setBrowser] = useState<{
         mode: "add" | "replace";
@@ -86,7 +87,6 @@ export function EditorView({
         lane?: "a" | "b";
         slotId?: string;
     } | null>(null);
-    const [insertMenu, setInsertMenu] = useState<number | null>(null);
     const [dragId, setDragId] = useState("");
     const [dragOverTrash, setDragOverTrash] = useState(false);
     const [dropGap, setDropGap] = useState<number | null>(null);
@@ -326,7 +326,7 @@ export function EditorView({
         if (lockChain || structureBusy || globalIndex < 0 || globalIndex >= chainNodes.length - 1) {
             return;
         }
-        setInsertMenu(globalIndex);
+        setBrowser({ mode: "add", index: globalIndex });
     };
 
     const renamePreset = () => {
@@ -648,6 +648,14 @@ export function EditorView({
                             <strong>{str(selectedParallel.name, "Parallel Section")}</strong>
                             <span>Two independent effect lanes blended into one output</span>
                         </div>
+                        <div className="parallel-editor-tabs" role="tablist" aria-label="Parallel section editor">
+                            <button type="button" role="tab" aria-selected={parallelView === "chains"}
+                                className={`btn ${parallelView === "chains" ? "btn-active" : ""}`}
+                                onClick={() => setParallelView("chains")}>CHAINS</button>
+                            <button type="button" role="tab" aria-selected={parallelView === "mixer"}
+                                className={`btn ${parallelView === "mixer" ? "btn-active" : ""}`}
+                                onClick={() => setParallelView("mixer")}>MIXER</button>
+                        </div>
                         <button type="button" className={`btn ${bool(selectedParallel.enabled, true) ? "btn-active" : ""}`}
                             disabled={structureBusy}
                             onClick={() => void run(() => client.request("chain/parallel/settings", {
@@ -661,6 +669,7 @@ export function EditorView({
                     </div>
                     <div className="page-scroll parallel-editor-scroll">
                         <ParallelSectionEditor
+                            view={parallelView}
                             section={selectedParallel}
                             lockChain={lockChain || structureBusy}
                             settingsDisabled={structureBusy}
@@ -765,6 +774,12 @@ export function EditorView({
                 title={browser?.mode === "replace" ? "SELECT PLUGIN" : "ADD EFFECT"}
                 actionLabel={browser?.mode === "replace" ? "USE PLUGIN" : "ADD HERE"}
                 onCancel={() => setBrowser(null)}
+                secondaryActionLabel={browser?.mode === "add" && !browser.parallelId ? "ADD PARALLEL SECTION" : undefined}
+                onSecondaryAction={browser?.mode === "add" && !browser.parallelId ? () => {
+                    const index = browser.index;
+                    setBrowser(null);
+                    void runStructureChange(() => client.request("chain/parallel/add", { index }));
+                } : undefined}
                 onChoose={(uri) => {
                     const target = browser;
                     setBrowser(null);
@@ -799,26 +814,6 @@ export function EditorView({
                     });
                 }}
             />
-            {insertMenu !== null && createPortal(
-                <div className="mfx-overlay" onClick={() => setInsertMenu(null)}>
-                    <div className="mfx-overlay-card parallel-insert-menu" onClick={(event) => event.stopPropagation()}>
-                        <div className="mfx-overlay-title">ADD TO SIGNAL CHAIN</div>
-                        <div className="muted">Choose a normal serial effect or start two parallel lanes.</div>
-                        <button type="button" className="mfx-overlay-option" onClick={() => {
-                            const index = insertMenu;
-                            setInsertMenu(null);
-                            setBrowser({ mode: "add", index });
-                        }}><strong>EFFECT</strong><span>Continue the normal serial chain</span></button>
-                        <button type="button" className="mfx-overlay-option" onClick={() => {
-                            const index = insertMenu;
-                            setInsertMenu(null);
-                            void runStructureChange(() => client.request("chain/parallel/add", { index }));
-                        }}><strong>PARALLEL SECTION</strong><span>Two independent chains for NAMs, optional IRs, or any effects</span></button>
-                        <button type="button" className="btn" onClick={() => setInsertMenu(null)}>CANCEL</button>
-                    </div>
-                </div>,
-                document.body
-            )}
             {plugins.length === 0 && page === "chain" && (
                 <div className="muted" style={{ padding: 12 }}>No LV2 plugins in the catalog. Install them from Plugins.</div>
             )}
@@ -1258,7 +1253,8 @@ function LiveRange({ label, value, min, max, step, format, disabled, onLive, onC
     );
 }
 
-function ParallelSectionEditor({ section, lockChain, settingsDisabled, onEdit, onAdd, onRemove, onMove, onToggle, onSetting }: {
+function ParallelSectionEditor({ view, section, lockChain, settingsDisabled, onEdit, onAdd, onRemove, onMove, onToggle, onSetting }: {
+    view: "chains" | "mixer";
     section: JsonObject;
     lockChain: boolean;
     settingsDisabled: boolean;
@@ -1423,19 +1419,20 @@ function ParallelSectionEditor({ section, lockChain, settingsDisabled, onEdit, o
         : Math.abs(value) < 0.01 ? "CENTER" : value < 0 ? `L ${Math.round(-value * 100)}` : `R ${Math.round(value * 100)}`;
     return (
         <div className="parallel-editor">
-            <div className="parallel-routing-note">
-                Both lanes receive the same input. Cabinet IRs are optional—add one only when that NAM capture needs it.
-            </div>
-            {renderLane("a", objects(section.laneA))}
-            {renderLane("b", objects(section.laneB))}
+            {view === "chains" && <>
+                {renderLane("a", objects(section.laneA))}
+                {renderLane("b", objects(section.laneB))}
+            </>}
             {dragGhost && <>
                 <div className={`chain-trash-icon${dragOverTrash ? " active" : ""}`} data-parallel-trash>🗑</div>
                 {createPortal(<div className="chain-ghost" style={{ left: dragGhost.x + 16, top: dragGhost.y + 14 }}>
                     <div>{dragGhost.title}</div><div className="muted">MOVE EFFECT</div>
                 </div>, document.body)}
             </>}
-            <section className="parallel-mixer">
-                <div className="parallel-lane-heading"><div><strong>BLEND & OUTPUT</strong><span>Combine the two finished paths</span></div></div>
+            {view === "mixer" && <section className="parallel-mixer">
+                <div className="parallel-lane-heading">
+                    <div><strong>BLEND & OUTPUT</strong><span>Combine the two finished paths</span></div>
+                </div>
                 <div className="parallel-output-mode">
                     <span>OUTPUT MODE</span>
                     <div>
@@ -1485,7 +1482,7 @@ function ParallelSectionEditor({ section, lockChain, settingsDisabled, onEdit, o
                     <button type="button" className="btn" disabled={settingsDisabled}
                         onClick={() => queueSetting({ panA: 1, panB: -1 }, true)}>SWAP L/R</button>
                 </div>}
-            </section>
+            </section>}
         </div>
     );
 }

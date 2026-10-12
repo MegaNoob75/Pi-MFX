@@ -14,6 +14,8 @@ export function PluginBrowser({
     actionLabel,
     catalog,
     onCancel,
+    secondaryActionLabel,
+    onSecondaryAction,
     onChoose
 }: {
     open: boolean;
@@ -22,6 +24,8 @@ export function PluginBrowser({
     actionLabel: string;
     catalog: JsonObject;
     onCancel: () => void;
+    secondaryActionLabel?: string;
+    onSecondaryAction?: () => void;
     onChoose: (uri: string) => void;
 }) {
     const plugins = useMemo(() => objects(catalog.plugins)
@@ -151,6 +155,11 @@ export function PluginBrowser({
                         : "Select a plugin"}
                 </div>
                 <button type="button" className="btn" onClick={onCancel}>CANCEL</button>
+                {secondaryActionLabel && onSecondaryAction && (
+                    <button type="button" className="btn plugin-browser-secondary-action" onClick={onSecondaryAction}>
+                        {secondaryActionLabel}
+                    </button>
+                )}
                 <button
                     type="button"
                     className="btn btn-accent"
