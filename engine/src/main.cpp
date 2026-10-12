@@ -123,6 +123,7 @@ int main(int argc, char** argv) {
     PluginStore plugins(paths);
     CommunityCatalog community(paths);
     HttpServer server;
+    server.setAccessFile(joinPath(paths.dataRoot, "access.json"));
     ApiRouter router(engine, tone3000, plugins, community, server);
     router.attach();
 

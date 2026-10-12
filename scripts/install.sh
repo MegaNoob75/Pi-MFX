@@ -89,7 +89,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config git \
     libasound2-dev liblilv-dev lv2-dev \
-    libcurl4-openssl-dev libsndfile1-dev libsamplerate0-dev \
+    libcurl4-openssl-dev libssl-dev libsndfile1-dev libsamplerate0-dev \
     nodejs npm python3 xz-utils unzip gnupg ca-certificates \
     network-manager dnsmasq-base iw \
     avahi-daemon avahi-utils

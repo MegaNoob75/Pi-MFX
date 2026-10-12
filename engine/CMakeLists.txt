@@ -38,6 +38,7 @@ target_sources(pimfx PRIVATE
     src/model/Model.cpp
     src/model/Storage.cpp
     src/control/HttpServer.cpp
+    src/control/AccessControl.cpp
     src/control/ApiRouter.cpp
     src/midi/Mapping.cpp
     src/midi/MidiInput.cpp
@@ -52,6 +53,9 @@ target_sources(pimfx PRIVATE
     src/community/CommunityPresetPackage.cpp
     src/community/CommunityCatalog.cpp
 )
+
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+target_link_libraries(pimfx PRIVATE OpenSSL::Crypto)
 
 # ---------------------------------------------------------------------------
 # ALSA: the realtime audio and MIDI path. Linux only; other platforms build
@@ -163,6 +167,26 @@ install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(pimfx_access_control_test
+        tests/AccessControlTest.cpp
+        src/control/AccessControl.cpp
+        src/control/HttpServer.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_access_control_test PRIVATE src)
+    target_compile_options(pimfx_access_control_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_access_control_test PRIVATE OpenSSL::Crypto Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pimfx_access_control_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME access_control COMMAND pimfx_access_control_test)
+
     add_executable(pimfx_audio_safety_transition_test
         tests/AudioSafetyTransitionTest.cpp
         src/audio/MasterOutputSafety.cpp

@@ -20,6 +20,7 @@ export interface KeyboardSession {
     label: string;
     layout: KeyboardLayout;
     value: string;
+    secret?: boolean;
     selectionStart: number;
     selectionEnd: number;
     resolve?: (value: string | null) => void;
@@ -243,7 +244,7 @@ export function Keyboard({
                                         ? "pimfx-keyboard-selection"
                                         : undefined}
                                 >
-                                    {character}
+                                    {session.secret ? "•" : character}
                                 </span>
                             </span>
                         ))}
@@ -282,7 +283,7 @@ export function Keyboard({
                         "is-wide"
                     )}
                     {session.layout === "text" && key("SPACE", () => insert(" "), "is-space")}
-                    {session.layout === "numeric" && key("⌫", erase, "is-wide")}
+                    {(session.layout === "numeric" || layer === "symbols") && key("⌫", erase, "is-wide")}
                     {key("CANCEL", onCancel, "is-wide is-cancel")}
                     {key("DONE", () => onDone(value), "is-wide is-done")}
                 </div>

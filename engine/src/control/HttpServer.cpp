@@ -70,6 +70,7 @@ const char* statusText(int status) {
         case 404: return "Not Found";
         case 409: return "Conflict";
         case 413: return "Payload Too Large";
+        case 429: return "Too Many Requests";
         case 500: return "Internal Server Error";
         case 503: return "Service Unavailable";
         default: return "OK";
@@ -264,7 +265,8 @@ void HttpServer::run() {
                 const OutgoingMessage message = std::move(pending_.front());
                 pending_.pop_front();
                 for (Client& client : clients_) {
-                    if (!client.websocket || client.closing) {
+                    if (!client.websocket || client.closing
+                        || !access_.sessionValid(client.accessToken, client.trustedLocal)) {
                         continue;
                     }
                     if (message.clientId == 0 || message.clientId == client.id) {
@@ -304,6 +306,11 @@ void HttpServer::run() {
             for (size_t i = 0; i < clients_.size() && i + 1 < descriptors.size(); ++i) {
                 const short revents = descriptors[i + 1].revents;
                 Client& client = clients_[i];
+
+                if (client.websocket && !access_.sessionValid(client.accessToken, client.trustedLocal)) {
+                    doomed.push_back(i);
+                    continue;
+                }
 
                 if (revents & (POLLHUP | POLLERR | POLLNVAL)) {
                     doomed.push_back(i);
@@ -354,6 +361,7 @@ void HttpServer::acceptClient() {
         Client client;
         client.fd = static_cast<int>(fd);
         client.id = nextClientId_++;
+        client.local = (ntohl(address.sin_addr.s_addr) >> 24) == 127;
 
         std::lock_guard<std::mutex> lock(clientMutex_);
         if (clients_.size() >= 32) {
@@ -377,6 +385,7 @@ void HttpServer::dropClient(size_t index) {
 }
 
 bool HttpServer::serviceClient(Client& client) {
+    if (client.websocket && !access_.sessionValid(client.accessToken, client.trustedLocal)) return false;
     char buffer[16384];
     while (true) {
         const int received = static_cast<int>(::recv(static_cast<SocketHandle>(client.fd),
@@ -409,6 +418,7 @@ bool HttpServer::handleHttp(Client& client) {
         const std::string requestLine = head.substr(0, lineStart == std::string::npos ? head.size() : lineStart);
 
         HttpRequest request;
+        request.local = client.local;
         {
             const size_t firstSpace = requestLine.find(' ');
             const size_t secondSpace = requestLine.find(' ', firstSpace + 1);
@@ -467,14 +477,17 @@ bool HttpServer::handleHttp(Client& client) {
         request.body = client.inbox.substr(headerEnd + 4, bodyLength);
         client.inbox.erase(0, total);
 
-        if (toLower(request.header("upgrade")) == "websocket") {
+        HttpResponse response;
+        const bool accessHandled = access_.handle(request, response);
+        if (!accessHandled && toLower(request.header("upgrade")) == "websocket") {
+            client.trustedLocal = AccessControl::trustedLocal(request);
+            client.accessToken = AccessControl::sessionToken(request);
             completeUpgrade(client, request);
             return true;
         }
 
-        HttpResponse response;
-        bool handled = false;
-        if (requestHandler_) {
+        bool handled = accessHandled;
+        if (!handled && requestHandler_) {
             handled = requestHandler_(request, response);
         }
         if (!handled) {

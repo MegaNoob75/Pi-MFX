@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 
 DATA_ROOT = os.environ.get("PIMFX_DATA_ROOT", "/var/lib/pimfx")
 CONFIG_PATH = os.path.join(DATA_ROOT, "hotspot.json")
@@ -193,7 +194,8 @@ def hotspot_keyfile(device: str, ssid: str, password: str) -> str:
     )
 
 
-def wifi_keyfile(device: str, ssid: str, password: str) -> str:
+def wifi_keyfile(device: str, ssid: str, password: str, name: str = WIFI_CONN_NAME,
+                 connection_uuid: str = "") -> str:
     security = ""
     if password:
         security = (
@@ -201,9 +203,11 @@ def wifi_keyfile(device: str, ssid: str, password: str) -> str:
             "key-mgmt=wpa-psk\n"
             f"psk={password}\n"
         )
+    uuid_line = f"uuid={connection_uuid}\n" if connection_uuid else ""
     return (
         "[connection]\n"
-        f"id={WIFI_CONN_NAME}\n"
+        f"id={name}\n"
+        f"{uuid_line}"
         "type=wifi\n"
         f"interface-name={device}\n"
         "autoconnect=true\n"
@@ -328,11 +332,36 @@ def station_ssid() -> str:
     return ""
 
 
+def saved_wifi_connections() -> dict[str, tuple[str, str]]:
+    """Return SSIDs and UUIDs only; never expose saved passwords to browsers."""
+    result = nmcli("-t", "-f", "NAME,UUID,TYPE", "connection", "show")
+    saved: dict[str, tuple[str, str]] = {}
+    if result.returncode != 0:
+        return saved
+    for line in result.stdout.splitlines():
+        parts = split_nmcli(line)
+        if len(parts) != 3:
+            continue
+        name, connection_uuid, kind = parts
+        if kind not in {"wifi", "802-11-wireless"}:
+            continue
+        if name != WIFI_CONN_NAME and not re.fullmatch(r"pimfx-wifi-[0-9a-f]{32}", name):
+            continue
+        network = nmcli("--escape", "no", "-g", "802-11-wireless.ssid",
+                        "connection", "show", "uuid", connection_uuid)
+        if network.returncode == 0:
+            ssid = network.stdout.rstrip("\r\n")
+            if ssid:
+                saved[ssid] = (connection_uuid, name)
+    return saved
+
+
 def wifi_scan() -> dict:
     nmcli("device", "wifi", "rescan", timeout=20)
     result = nmcli("-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", timeout=40)
     networks: list[dict] = []
     seen: set[str] = set()
+    saved = saved_wifi_connections()
     if result.returncode == 0:
         for line in result.stdout.splitlines():
             parts = split_nmcli(line)
@@ -354,6 +383,7 @@ def wifi_scan() -> dict:
                 "security": security,
                 "open": security in {"", "--", "-- "},
                 "inUse": parts[0] == "*",
+                "saved": ssid in saved,
             })
     networks.sort(key=lambda item: item["signal"], reverse=True)
     status = live_status()
@@ -378,13 +408,22 @@ def wifi_connect(ssid: str, password: str) -> dict:
         status = live_status()
         status["error"] = "no Wi-Fi device was found"
         return status
-    path = os.path.join(NM_CONNECTIONS, f"{WIFI_CONN_NAME}.nmconnection")
-    error = write_keyfile(path, wifi_keyfile(device, ssid, password))
-    if error:
-        status = live_status()
-        status["error"] = error
-        return status
-    result = nmcli("connection", "up", WIFI_CONN_NAME, timeout=60)
+    saved = saved_wifi_connections().get(ssid)
+    if saved and not password:
+        saved_uuid, _ = saved
+        result = nmcli("connection", "up", "uuid", saved_uuid, timeout=60)
+    else:
+        # Stable safe filenames keep each network independent, including the legacy profile.
+        connection_uuid, name = saved or (
+            "", f"{WIFI_CONN_NAME}-{uuid.uuid5(uuid.NAMESPACE_URL, ssid).hex}"
+        )
+        path = os.path.join(NM_CONNECTIONS, f"{name}.nmconnection")
+        error = write_keyfile(path, wifi_keyfile(device, ssid, password, name, connection_uuid))
+        if error:
+            status = live_status()
+            status["error"] = error
+            return status
+        result = nmcli("connection", "up", "id", name, timeout=60)
     status = live_status()
     if result.returncode != 0:
         status["error"] = (result.stderr or result.stdout).strip() or "could not join that network"

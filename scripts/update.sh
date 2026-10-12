@@ -108,6 +108,10 @@ if [[ "${SKIP_PULL:-0}" != "1" || -z "${PIMFX_GIT_SHA:-}" ]]; then
 fi
 
 jobs="$(nproc)"
+if ! dpkg-query -W -f='${Status}' libssl-dev 2>/dev/null | grep -q 'install ok installed'; then
+    log "Installing the remote access security build dependency"
+    apt-get install -y --no-install-recommends libssl-dev
+fi
 # Leave one core when the pedal or kiosk is live so SSH and audio stay up.
 # A stopped engine can use every core.
 if { pgrep -x chromium >/dev/null 2>&1 || systemctl is-active --quiet pimfx.service; } && [[ "$jobs" -gt 1 ]]; then

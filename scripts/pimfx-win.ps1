@@ -1,5 +1,6 @@
 # Windows front end for Pi-MFX setup. SSH login is asked and saved locally
 # in .pimfx-remote (gitignored). Pi work is always scripts/pimfx.sh on the Pi.
+# Prefer pi-mfx.local so changing between Ethernet and Wi-Fi does not require a new IP.
 #
 #   .\pimfx.cmd
 #   .\scripts\pimfx-win.ps1
@@ -41,6 +42,7 @@ function Get-SshOpts {
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
         "-o", "NumberOfPasswordPrompts=1",
+        "-o", "ConnectTimeout=10",
         "-o", "StrictHostKeyChecking=accept-new"
     )
 }
@@ -82,7 +84,10 @@ function Ask-Login([switch]$Force) {
     $hostName = ""
     $userName = ""
     while (-not $hostName) {
-        $hostName = (Read-Host "Pi hostname or IP (for example pimfx.local)").Trim()
+        $hostName = (Read-Host "Pi hostname or IP [pi-mfx.local] (hostname follows IP changes)").Trim()
+        if (-not $hostName) {
+            $hostName = "pi-mfx.local"
+        }
     }
     while (-not $userName) {
         $userName = (Read-Host "Pi username").Trim()

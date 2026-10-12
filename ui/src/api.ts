@@ -108,6 +108,7 @@ export class EngineClient {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
+        if (response.status === 401) window.location.replace("/");
         const json: unknown = await response.json();
         if (!isObj(json as Json)) {
             throw new Error(`${command}: the engine did not return JSON`);
@@ -217,6 +218,13 @@ export class EngineClient {
         socket.onclose = () => {
             this.patch({ connected: false });
             if (!this.closed) {
+                // Password changes, logout, and session expiry return remote browsers to login.
+                void fetch("/access/status").then((response) => {
+                    if (response.status === 401) window.location.replace("/");
+                    else return response.json().then((status: unknown) => {
+                        if (isObj(status as Json) && !bool((status as JsonObject).authenticated, true)) window.location.replace("/");
+                    });
+                }).catch(() => { /* The Pi may simply be offline. */ });
                 this.reconnectTimer = window.setTimeout(() => this.connect(), 750);
             }
         };

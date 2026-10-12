@@ -14,6 +14,7 @@ import { MarqueeText } from "./MarqueeText";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { GainMeter } from "./GainMeter";
 import { SetupProfilesView } from "./SetupProfilesView";
+import { AccessSettings } from "./AccessSettings";
 
 export type SettingsPage =
     | "audio"
@@ -127,6 +128,7 @@ function SystemHub({
                 <HubCard title="WIFI / HOTSPOT" subtitle="Join a home network or host a tablet access point" onClick={() => onOpen?.("hotspot")} />
                 <HubCard title="UPDATES" subtitle="Check git and rebuild Pi-MFX on this Pi" onClick={() => onOpen?.("updates")} />
                 <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => openRealtime(true)} />
+                <AccessSettings />
                 <div className="system-power">
                     <button
                         type="button"

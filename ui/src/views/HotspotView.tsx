@@ -132,12 +132,21 @@ export function HotspotView({
                     });
                     applyStatus(next);
                     setMode("off");
+                    if (!str(next.error) && bool(next.stationConnected)) {
+                        const updated = networks.map((item) => ({
+                            ...item,
+                            saved: bool(item.saved) || str(item.ssid) === name,
+                            inUse: str(item.ssid) === name
+                        }));
+                        setNetworks(updated);
+                        updateDraft({ networks: updated });
+                    }
                 } finally {
                     setBusy(false);
                 }
             });
         };
-        if (open) {
+        if (open || bool(network.saved)) {
             connect("");
             return;
         }
@@ -204,25 +213,50 @@ export function HotspotView({
                             </button>
                         )}
                     </div>
-                    {networks.map((network) => (
-                        <button
-                            key={str(network.ssid)}
-                            type="button"
-                            className={`list-item ${bool(network.inUse) ? "selected" : ""}`}
-                            disabled={busy || joinBlocked}
-                            onClick={() => joinNetwork(network)}
-                        >
-                            <div>
-                                <strong>{str(network.ssid)}</strong>
-                                <div className="muted">
-                                    {num(network.signal)}%
-                                    {str(network.security) ? ` · ${str(network.security)}` : " · open"}
-                                    {bool(network.inUse) ? " · connected" : ""}
+                    <div className="muted">
+                        Joined networks are remembered. With the hotspot OFF, the Pi
+                        automatically reconnects to an available saved network.
+                    </div>
+                    {networks.map((network) => {
+                        const connected = stationConnected && stationSsid === str(network.ssid);
+                        return (
+                            <button
+                                key={str(network.ssid)}
+                                type="button"
+                                className={`list-item ${connected ? "selected" : ""}`}
+                                disabled={busy || joinBlocked}
+                                onClick={() => joinNetwork(network)}
+                            >
+                                <div>
+                                    <div className="wifi-network-name">
+                                        <span
+                                            className={`wifi-network-led ${connected ? "is-connected" : "is-disconnected"}`}
+                                            role="img"
+                                            aria-label={connected ? "Connected" : "Disconnected"}
+                                            title={connected ? "Connected" : "Disconnected"}
+                                        />
+                                        <strong>{str(network.ssid)}</strong>
+                                        {bool(network.saved) && (
+                                            <svg className="wifi-saved-icon" viewBox="0 0 24 24"
+                                                fill="none" stroke="currentColor" strokeWidth="2"
+                                                role="img" aria-label="Saved network">
+                                                <title>Saved network</title>
+                                                <path d="M6 3h12v18l-6-4-6 4V3Z" />
+                                                <path d="m9 9 2 2 4-4" />
+                                            </svg>
+                                        )}
+                                    </div>
+                                    <div className="muted">
+                                        {num(network.signal)}%
+                                        {str(network.security) ? ` · ${str(network.security)}` : " · open"}
+                                        {connected ? " · connected" : " · disconnected"}
+                                        {bool(network.saved) ? " · saved" : ""}
+                                    </div>
                                 </div>
-                            </div>
-                            <span className="muted">{bool(network.open) ? "JOIN" : "PASSWORD"}</span>
-                        </button>
-                    ))}
+                                <span className="muted">{bool(network.open) || bool(network.saved) ? "JOIN" : "PASSWORD"}</span>
+                            </button>
+                        );
+                    })}
                 </div>
                 <div className="panel stack">
                     <h2>WI-FI ACCESS POINT</h2>

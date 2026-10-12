@@ -3732,17 +3732,56 @@ button.list-item {
     height: 100%;
 }
 
+.wifi-network-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.wifi-network-name strong {
+    overflow-wrap: anywhere;
+}
+
+.wifi-network-led {
+    flex: 0 0 10px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.wifi-network-led.is-connected {
+    background: #32d96b;
+    box-shadow: 0 0 6px rgba(50, 217, 107, 0.65);
+}
+
+.wifi-network-led.is-disconnected {
+    background: #f04b4b;
+    box-shadow: 0 0 4px rgba(240, 75, 75, 0.4);
+}
+
+.wifi-saved-icon {
+    flex: 0 0 18px;
+    width: 18px;
+    height: 18px;
+    color: var(--mfx-cyan);
+}
+
 .keyboard-settings {
     min-height: 0;
     height: 100%;
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "themes settings";
     gap: 8px;
 }
 
 .keyboard-settings-main {
-    flex: 1 1 auto;
+    grid-area: settings;
+    min-width: 0;
     min-height: 0;
     overflow: auto;
     display: flex;
@@ -3750,16 +3789,30 @@ button.list-item {
     gap: 8px;
 }
 
-.keyboard-settings-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+.keyboard-settings-main > .panel {
+    flex: 0 0 auto;
+    min-width: 0;
     gap: 8px;
 }
 
+.keyboard-settings h2 {
+    margin-bottom: 0;
+}
+
+.keyboard-settings-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+}
+
+.keyboard-settings-grid .field {
+    min-width: 0;
+}
+
 .keyboard-theme-panel {
-    flex: 1 1 42%;
-    min-height: 180px;
-    max-height: none;
+    grid-area: themes;
+    min-width: 0;
+    min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -3767,8 +3820,7 @@ button.list-item {
 
 .keyboard-theme-scroller {
     flex: 1 1 auto;
-    min-height: 120px;
-    max-height: none;
+    min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -3777,8 +3829,17 @@ button.list-item {
 }
 
 .keyboard-theme-scroller .theme-pick {
+    flex-shrink: 0;
     min-height: 36px;
     padding: 6px 10px;
+}
+
+@media (max-width: 600px) {
+    .keyboard-settings {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr);
+        grid-template-areas: "themes" "settings";
+    }
 }
 
 .theme-pick-list {

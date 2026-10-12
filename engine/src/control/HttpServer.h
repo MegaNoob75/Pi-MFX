@@ -1,5 +1,7 @@
 #pragma once
 
+#include "control/AccessControl.h"
+
 #include <atomic>
 #include <cstdint>
 #include <deque>
@@ -14,6 +16,7 @@
 namespace pimfx {
 
 struct HttpRequest {
+    bool local = false; ///< Actual loopback peer, never a browser-supplied header.
     std::string method;
     std::string path;
     std::map<std::string, std::string> query;
@@ -60,6 +63,7 @@ public:
     bool isRunning() const { return running_.load(std::memory_order_acquire); }
 
     void setRequestHandler(RequestHandler handler) { requestHandler_ = std::move(handler); }
+    void setAccessFile(const std::string& file) { access_.load(file); }
     void setSocketOpenHandler(SocketOpenHandler handler) { socketOpen_ = std::move(handler); }
     void setSocketMessageHandler(SocketMessageHandler handler) { socketMessage_ = std::move(handler); }
     void setSocketCloseHandler(SocketCloseHandler handler) { socketClose_ = std::move(handler); }
@@ -77,6 +81,9 @@ private:
         int fd = -1;
         uint64_t id = 0;
         bool websocket = false;
+        bool local = false;
+        bool trustedLocal = false;
+        std::string accessToken;
         std::string inbox;
         std::string outbox;
         std::string frameBuffer;   ///< reassembles fragmented WebSocket messages
@@ -116,6 +123,7 @@ private:
     std::mutex pendingMutex_;
 
     RequestHandler requestHandler_;
+    AccessControl access_;
     SocketOpenHandler socketOpen_;
     SocketMessageHandler socketMessage_;
     SocketCloseHandler socketClose_;

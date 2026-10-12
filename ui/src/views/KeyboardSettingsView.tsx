@@ -206,8 +206,10 @@ export function KeyboardSettingsView({
                             RESTORE DEFAULTS
                         </button>
                     </div>
+                </div>
+                <div className="panel stack keyboard-preview-panel">
                     <KeyboardPreview settings={appearance} />
-                    {message && <div className="muted">{message}</div>}
+                    {message && <div className="muted" role="status">{message}</div>}
                 </div>
             </div>
 
