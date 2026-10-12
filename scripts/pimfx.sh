@@ -258,6 +258,23 @@ write_chromium_autostart() {
     wtype -M alt -M logo -k h -m logo -m alt >/dev/null 2>&1 || true
 ) &
 squeekboard >/dev/null 2>&1 &
+AUTOSTART
+    cat >> /etc/xdg/labwc/autostart <<'HOSTNAME_RECOVERY'
+# Chromium's profile lock contains the hostname. After a Pi rename, discard
+# the old host's singleton links only when this user's browser is not running.
+profile="${XDG_CONFIG_HOME:-$HOME/.config}/chromium"
+lock="$(readlink "$profile/SingletonLock" 2>/dev/null || true)"
+lock_host="${lock%-*}"
+lock_pid="${lock##*-}"
+if [[ -n "$lock" && "$lock_host" != "$(hostname)" && "$lock_pid" =~ ^[0-9]+$ ]] \
+    && ! pgrep -u "$(id -u)" -x chromium >/dev/null 2>&1 \
+    && ! pgrep -u "$(id -u)" -x chromium-browser >/dev/null 2>&1; then
+    for name in SingletonLock SingletonSocket SingletonCookie; do
+        [[ ! -L "$profile/$name" ]] || rm -f -- "$profile/$name"
+    done
+fi
+HOSTNAME_RECOVERY
+    cat >> /etc/xdg/labwc/autostart <<AUTOSTART
 exec /usr/bin/chromium \\
     --ozone-platform=wayland \\
     --start-maximized \\

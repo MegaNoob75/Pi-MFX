@@ -137,6 +137,21 @@ you used with sudo, and opens `http://127.0.0.1:8080` fullscreen after reboot.
 It does not use Chromium's strict kiosk mode. A tablet or phone on the LAN is
 still a complete control surface if you skip this.
 
+After changing the Pi's hostname (for example, to `pi-mfx`), Chromium can
+refuse to start because its saved profile lock still names the old host.
+The touchscreen startup script clears those old singleton links when no
+Chromium process is running for the display user. To apply this recovery to
+an existing installation, copy the updated scripts to the Pi, then run:
+
+```bash
+sudo bash ./scripts/pimfx.sh display-refresh
+sudo reboot
+```
+
+The attached screen uses the loopback address, so its URL needs no hostname
+change. Other devices can use `http://pi-mfx.local:8080`; the separately
+published `http://pimfx.local:8080` alias remains available as well.
+
 To undo just the screen session: menu item **6**, or
 `sudo bash ./scripts/pimfx.sh display-remove`.
 
