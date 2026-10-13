@@ -59,7 +59,7 @@ public:
     /// controller. Returns false only for failures that make the engine
     /// useless; a missing audio device is reported through the state instead,
     /// so the user can fix it from the UI.
-    bool start(std::string& error);
+    bool start(std::string& error, bool recoverStartup = false);
     void stop();
 
     /// Invoked whenever anything the UI shows has changed. The listener is
@@ -135,17 +135,15 @@ public:
 
     // --- chain -----------------------------------------------------------
     bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error,
-                   const std::string& parallelId = {}, const std::string& lane = {});
-    bool addParallelSection(int index, std::string& sectionId, std::string& error);
-    bool setParallelSection(const std::string& sectionId, const Json& values, std::string& error);
+                   const Json& layout = Json());
+    bool editRouting(const Json& values, std::string& error);
     bool replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error);
     bool removeEffect(const std::string& slotId, std::string& error);
-    bool moveEffect(const std::string& slotId, int newIndex, std::string& error,
-                    const std::string& parallelId = {}, const std::string& lane = {});
     bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
                           bool persist = true);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
+    bool setControlValues(const std::string& slotId, const Json& controls, std::string& error);
     bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
                       double quarterNoteBeats, std::string& error);
     bool setEffectProperty(const std::string& slotId, const std::string& propertyUri,
@@ -235,60 +233,46 @@ public:
     void releaseResources() override;
 
 private:
+    struct RoutingEdge {
+        size_t source = 0, destination = 0;
+        std::atomic<float> levelDb{0}, pan{0};
+        std::atomic<bool> mute{false}, solo{false};
+        float left = 1, right = 1;
+    };
     /// One live plugin plus the flag the audio thread reads to decide whether
     /// to run it.
     struct ChainSlot {
         std::string id;
-        std::unique_ptr<PluginInstance> plugin;
+        // Structural edits keep unaffected processors alive across the
+        // chain swap. Ownership changes only on non-audio threads.
+        std::shared_ptr<PluginInstance> plugin;
+        // Preparation must only run newly created, unpublished processors.
+        bool retainedProcessor = false;
         std::atomic<bool> enabled{true};
         std::atomic<int> pendingEnabled{-1};
         std::atomic<float> inputPeak{0.0f};
         std::atomic<float> outputPeak{0.0f};
     };
 
-    struct ParallelStage {
-        std::string id;
-        std::atomic<bool> enabled{true};
-        std::vector<ChainSlot*> laneA;
-        std::vector<ChainSlot*> laneB;
-        std::vector<std::vector<float>> bufferA1;
-        std::vector<std::vector<float>> bufferA2;
-        std::vector<std::vector<float>> bufferB1;
-        std::vector<std::vector<float>> bufferB2;
-        std::vector<float*> pointersA1;
-        std::vector<float*> pointersA2;
-        std::vector<float*> pointersB1;
-        std::vector<float*> pointersB2;
-        std::atomic<float> levelADb{0.0f};
-        std::atomic<float> levelBDb{0.0f};
-        std::atomic<float> balance{0.0f};
-        std::atomic<bool> stereo{false};
-        std::atomic<float> panA{-1.0f};
-        std::atomic<float> panB{1.0f};
-        std::atomic<float> outputDb{0.0f};
-        // Audio-thread-only smoothing state. UI changes update the atomic
-        // targets above; the renderer glides to them without zipper noise.
-        bool mixInitialized = false;
-        float smoothGainA = 1.0f;
-        float smoothGainB = 1.0f;
-        float smoothRouteALeft = 1.0f;
-        float smoothRouteARight = 1.0f;
-        float smoothRouteBLeft = 1.0f;
-        float smoothRouteBRight = 1.0f;
-        float smoothOutputGain = 1.0f;
-    };
-
-    struct ChainStage {
-        ChainSlot* slot = nullptr;
-        ParallelStage* parallel = nullptr;
-    };
-
     /// A whole signal chain. Chains are built on the control thread and handed
     /// to the audio thread by pointer swap, never edited in place.
     struct Chain {
+        ~Chain() {
+            // A plugin may still reference its last connected audio buffers
+            // while stopping its workers. Release it before those buffers.
+            slots.clear();
+        }
+        struct Node {
+            std::string id;
+            ChainSlot* slot = nullptr;
+            bool active = false;
+            std::vector<std::vector<float>> input, output;
+            std::vector<float*> inputPointers, outputPointers;
+            std::vector<RoutingEdge*> incoming;
+        };
+        std::vector<Node> nodes;
+        std::vector<std::unique_ptr<RoutingEdge>> edges;
         std::vector<std::unique_ptr<ChainSlot>> slots;
-        std::vector<std::unique_ptr<ParallelStage>> parallelStages;
-        std::vector<ChainStage> stages;
         std::vector<std::vector<float>> bufferA;
         std::vector<std::vector<float>> bufferB;
         std::vector<float*> pointersA;
@@ -297,6 +281,7 @@ private:
         unsigned channels = 2;
         float outputGain = 1.0f;
         uint64_t publicationGeneration = 0;
+        bool rebindOnSwap = false;
     };
 
     /// Pins retired chains while non-audio threads inspect the current one.
@@ -347,7 +332,10 @@ private:
     void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                  unsigned frames, const float* dryInput, float dryGain);
     void configureAudioSafety(const AudioSettings& settings);
-    std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error);
+    std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error,
+                                    const Chain* retained = nullptr,
+                                    const std::string& recreatedSlotId = "");
+    bool validateGraphEditChain(const Chain* chain, std::string& error) const;
     void applySnapshotToChain(const Snapshot& snapshot);
     Snapshot captureCurrentChain(const std::string& name) const;
     Snapshot* findSnapshotBySlot(Preset& preset, int slot);

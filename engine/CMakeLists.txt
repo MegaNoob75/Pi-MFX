@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pimfx VERSION 0.1.0 LANGUAGES CXX)
+project(pimfx VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -167,6 +167,29 @@ install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(pimfx_startup_guard_test
+        tests/StartupGuardTest.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_startup_guard_test PRIVATE src)
+    add_test(NAME startup_guard COMMAND pimfx_startup_guard_test)
+
+    if(LILV_FOUND)
+        add_executable(pimfx_cab_ir_live_mix_test
+            tests/CabIrLiveMixTest.cpp
+            src/host/Lv2Host.cpp
+            src/host/UridMap.cpp
+            src/core/Json.cpp
+            src/core/Log.cpp
+        )
+        target_include_directories(pimfx_cab_ir_live_mix_test PRIVATE src)
+        target_compile_definitions(pimfx_cab_ir_live_mix_test PRIVATE PIMFX_HAVE_LILV=1)
+        target_link_libraries(pimfx_cab_ir_live_mix_test PRIVATE PkgConfig::LILV Threads::Threads)
+        add_test(NAME cab_ir_live_mix COMMAND pimfx_cab_ir_live_mix_test)
+        set_tests_properties(cab_ir_live_mix PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+    endif()
+
     add_executable(pimfx_access_control_test
         tests/AccessControlTest.cpp
         src/control/AccessControl.cpp

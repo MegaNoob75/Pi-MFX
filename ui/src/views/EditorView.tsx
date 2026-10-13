@@ -1,7 +1,7 @@
+import { RoutingEditor } from "./RoutingEditor";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { controlValue, findBank, findPreset, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
-import { announceControlPopout, CONTROL_POPOUT_OPEN_EVENT } from "../controlPopout";
 import { arr, bool, isObj, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { updateUiSessionSection } from "../uiSession";
@@ -13,9 +13,8 @@ import { GainMeter } from "./GainMeter";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PerformanceControl, type PerformanceTile } from "./PerformanceControl";
 import { virtualControlPageId, virtualControlPages, virtualTargetCompatible } from "../virtualControls";
-import { loadUiBehavior } from "../uiBehavior";
 
-type EditPage = "chain" | "controls" | "parallel" | "io";
+type EditPage = "chain" | "mixers" | "controls" | "io";
 type PathBrowserKind = "model" | "ir";
 const PATH_BROWSER_DIR_KEYS: Record<PathBrowserKind, string> = {
     model: "pimfx-nam-browser-dir",
@@ -59,13 +58,6 @@ export function EditorView({
     const { client, state, catalog, library } = engine;
     const liveChain = objects(state.chain);
     const hydrateLayoutItem = (item: JsonObject): JsonObject => {
-        if (str(item.kind) === "parallel") {
-            return {
-                ...item,
-                laneA: objects(item.laneA).map(hydrateLayoutItem),
-                laneB: objects(item.laneB).map(hydrateLayoutItem)
-            };
-        }
         const live = liveChain.find((slot) => str(slot.id) === str(item.id));
         return live ? { ...item, ...live, name: str(item.name) || str(live.name) } : item;
     };
@@ -78,29 +70,18 @@ export function EditorView({
     const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
-    const [parallelView, setParallelView] = useState<"chains" | "mixer">("chains");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
     const [browser, setBrowser] = useState<{
         mode: "add" | "replace";
         index: number;
-        parallelId?: string;
-        lane?: "a" | "b";
         slotId?: string;
     } | null>(null);
-    const [dragId, setDragId] = useState("");
-    const [dragOverTrash, setDragOverTrash] = useState(false);
-    const [dropGap, setDropGap] = useState<number | null>(null);
-    const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [pendingTrashId, setPendingTrashId] = useState("");
     const [newPresetOpen, setNewPresetOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [bindTarget, setBindTarget] = useState<BindTarget | null>(null);
     const [dropBankId, setDropBankId] = useState("");
-    const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
-    const chainPageRef = useRef<HTMLDivElement | null>(null);
-    const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
-    const [chainCardWidth, setChainCardWidth] = useState(142);
     const [sessionAction, setSessionAction] = useState<"save" | "reload" | "">("");
     const [sessionStatus, setSessionStatus] = useState("");
     const [structureBusy, setStructureBusy] = useState(false);
@@ -125,6 +106,9 @@ export function EditorView({
         unsubscribe = client.subscribe((snapshot) => {
             if (num(snapshot.state.chainGeneration) > generation) finish();
         });
+        // subscribe immediately delivers the current state; finish can run
+        // before its unsubscribe handle has been assigned.
+        if (finished) unsubscribe();
     });
 
     const runStructureChange = async (work: () => Promise<unknown>) => {
@@ -163,7 +147,7 @@ export function EditorView({
 
     useEffect(() => {
         const sharedPage = str(engine.uiSession.editorPage) as EditPage;
-        if (["chain", "controls", "parallel", "io"].includes(sharedPage) && sharedPage !== page) {
+        if (["chain", "mixers", "controls", "io"].includes(sharedPage) && sharedPage !== page) {
             setPage(sharedPage);
         }
         const sharedSelectedId = str(engine.uiSession.editorSelectedId);
@@ -176,12 +160,7 @@ export function EditorView({
         }
     }, [engine.uiSession.editorPage, engine.uiSession.editorSelectedId, engine.uiSession.editorIoKind]);
 
-    const pluginSlots = chain.flatMap((item) => str(item.kind) === "parallel"
-        ? [...objects(item.laneA), ...objects(item.laneB)]
-        : [item]);
-    const selectedParallel = chain.find((item) => str(item.kind) === "parallel" && str(item.id) === selectedId);
-    const selectedParallelParent = chain.find((item) => str(item.kind) === "parallel"
-        && [...objects(item.laneA), ...objects(item.laneB)].some((slot) => str(slot.id) === selectedId));
+    const pluginSlots = chain.filter(item => str(item.kind) !== "mixer");
     const selected = pluginSlots.find((slot) => str(slot.id) === selectedId) ?? pluginSlots[0];
     const plugin = obj(obj(selected).plugin);
     const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control"
@@ -204,9 +183,7 @@ export function EditorView({
     const bindingsForBypass = (slotId: string) =>
         parameterBindings.filter((binding) =>
             str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
-    const bindForBypass = (slotId: string) =>
-        parameterBindings.find((binding) =>
-            str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
+
 
     const applyBind = (payload: JsonObject, close = true) => {
         if (!str(payload.controlId)) {
@@ -222,12 +199,10 @@ export function EditorView({
         });
     };
     const selectedIndex = chain.findIndex((slot) => str(slot.id) === str(obj(selected).id));
-    const effectTitle = selectedParallel
-        ? str(selectedParallel.name, "Parallel Section")
-        : str(obj(selected).name) || str(plugin.name, "Effect");
+    const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
 
     useEffect(() => {
-        onPageChange?.(page, page === "chain" ? undefined : page === "io" ? (ioKind === "input" ? "INPUT" : "OUTPUT") : effectTitle);
+        onPageChange?.(page, page === "chain" || page === "mixers" ? undefined : page === "io" ? (ioKind === "input" ? "INPUT" : "OUTPUT") : effectTitle);
     }, [page, effectTitle, ioKind]);
 
     const previousBackRequestRef = useRef(backRequest);
@@ -237,19 +212,8 @@ export function EditorView({
             return;
         }
         previousBackRequestRef.current = backRequest;
-        if (page === "controls" && selectedParallelParent) {
-            const parentId = str(selectedParallelParent.id);
-            setSelectedId(parentId);
-            setPage("parallel");
-            client.updateUiSession({
-                editorPage: "parallel",
-                editorSelectedId: parentId,
-                editSubpage: "parallel"
-            });
-        } else {
-            setPage("chain");
-            client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
-        }
+        setPage("chain");
+        client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
     }, [backRequest]);
 
     useEffect(() => {
@@ -258,76 +222,6 @@ export function EditorView({
             setSelectedId("");
         }
     }, [str(state.activePresetId), [...chain, ...pluginSlots].map((slot) => str(slot.id)).join("|")]);
-
-    useEffect(() => {
-        if (page !== "chain") {
-            return;
-        }
-        const element = chainPageRef.current;
-        if (!element) {
-            return;
-        }
-        const updateLayout = () => {
-            const style = getComputedStyle(element);
-            const availableWidth = Math.max(
-                1,
-                element.clientWidth
-                    - (parseFloat(style.paddingLeft) || 0)
-                    - (parseFloat(style.paddingRight) || 0)
-            );
-            const uiScale = Math.max(0.5, parseFloat(
-                getComputedStyle(document.documentElement).getPropertyValue("--mfx-ui-scale")
-            ) || 1);
-            const targetCardWidth = 142 * uiScale;
-            const connectorWidth = 70 * uiScale;
-            const itemsPerRow = Math.max(2, Math.floor(
-                (availableWidth + connectorWidth) / (targetCardWidth + connectorWidth)
-            ));
-            const widthForCards = (availableWidth - Math.max(0, itemsPerRow - 1) * connectorWidth) / itemsPerRow;
-            setChainItemsPerRow(itemsPerRow);
-            setChainCardWidth(Math.max(118 * uiScale, Math.min(210 * uiScale, widthForCards)));
-        };
-        updateLayout();
-        const observer = new ResizeObserver(updateLayout);
-        observer.observe(element);
-        return () => observer.disconnect();
-    }, [page]);
-
-    const chainNodes = useMemo(() => {
-        const nodes: {
-            key: string;
-            kind: "input" | "plugin" | "output";
-            globalIndex: number;
-            slot?: JsonObject;
-            chainIndex?: number;
-        }[] = [{ key: "input", kind: "input", globalIndex: 0 }];
-        chain.forEach((slot, index) => {
-            nodes.push({
-                key: str(slot.id),
-                kind: "plugin",
-                globalIndex: index + 1,
-                slot,
-                chainIndex: index
-            });
-        });
-        nodes.push({ key: "output", kind: "output", globalIndex: chain.length + 1 });
-        return nodes;
-    }, [chain]);
-
-    const chainRows = useMemo(() => {
-        const rows: typeof chainNodes[] = [];
-        for (let i = 0; i < chainNodes.length; i += chainItemsPerRow) {
-            rows.push(chainNodes.slice(i, i + chainItemsPerRow));
-        }
-        return rows;
-    }, [chainNodes, chainItemsPerRow]);
-
-    const addAfter = (globalIndex: number) => {
-        if (lockChain || structureBusy || globalIndex < 0 || globalIndex >= chainNodes.length - 1) {
-            return;
-        }
-        setBrowser({ mode: "add", index: globalIndex });
-    };
 
     const renamePreset = () => {
         void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
@@ -350,280 +244,57 @@ export function EditorView({
         });
     };
 
-    const openParallel = (sectionId: string) => {
-        setSelectedId(sectionId);
-        setPage("parallel");
-        client.updateUiSession({
-            editorPage: "parallel",
-            editorSelectedId: sectionId,
-            editSubpage: "parallel"
-        });
-    };
 
-    const onPointerDown = (slot: JsonObject, index: number, event: React.PointerEvent) => {
-        if (lockChain || structureBusy) {
-            return;
-        }
-        dragRef.current = {
-            id: str(slot.id),
-            title: str(slot.name) || str(obj(slot.plugin).name, "Effect"),
-            from: index,
-            x: event.clientX,
-            y: event.clientY,
-            dragging: false
-        };
-        event.currentTarget.setPointerCapture(event.pointerId);
-    };
-
-    const isTrashAtPoint = (x: number, y: number) => {
-        const trash = document.querySelector("[data-chain-trash]") as HTMLElement | null;
-        if (!trash) {
-            return false;
-        }
-        const rect = trash.getBoundingClientRect();
-        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-    };
-
-    const onPointerMove = (event: React.PointerEvent) => {
-        const drag = dragRef.current;
-        if (!drag) {
-            return;
-        }
-        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 10) {
-            drag.dragging = true;
-            setDragId(drag.id);
-            setDragGhost({ title: drag.title, x: event.clientX, y: event.clientY });
-        }
-        setDragOverTrash(isTrashAtPoint(event.clientX, event.clientY));
-        const gap = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
-        const gapIndex = Number(gap?.dataset.chainIndex);
-        setDropGap(Number.isInteger(gapIndex) ? gapIndex : null);
-    };
-
-    const onPointerUp = (slot: JsonObject, event: React.PointerEvent) => {
-        const drag = dragRef.current;
-        dragRef.current = null;
-        const wasDragging = Boolean(drag?.dragging);
-        setDragId("");
-        setDragOverTrash(false);
-        setDragGhost(null);
-        setDropGap(null);
-        if (!drag || !wasDragging) {
-            if (str(slot.kind) === "parallel") openParallel(str(slot.id));
-            else openControls(str(slot.id));
-            return;
-        }
-        if (isTrashAtPoint(event.clientX, event.clientY)) {
-            setPendingTrashId(drag.id);
-            return;
-        }
-        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
-        if (target) {
-            const index = Number(target.dataset.chainIndex);
-            if (Number.isInteger(index) && index !== drag.from) {
-                void runStructureChange(() => client.request("chain/move", { slotId: drag.id, index }));
-            }
-        }
-    };
+    const sessionButtons = <>
+        <button type="button" className="btn" disabled={structureBusy || bool(state.chainPreparing) || !sessionDirty || activeSnapshot >= 0}
+            onClick={() => setSessionAction("save")}><span className="routing-long-label">SAVE CHANGES</span><span className="routing-short-label">SAVE</span></button>
+        <button type="button" className="btn" disabled={structureBusy || bool(state.chainPreparing) || !sessionDirty}
+            onClick={() => setSessionAction("reload")}><span className="routing-long-label">RELOAD SAVED</span><span className="routing-short-label">RELOAD</span></button>
+    </>;
 
     return (
         <div className="mfx-screen editor-screen">
             <div className="editor-main">
-            <div className="editor-session-bar">
-                <span>
-                    <strong>{presetName}</strong>
-                    <small>{sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small>
-                </span>
+            {page !== "chain" && page !== "mixers" && <div className="editor-session-bar">
+                <span><strong>{presetName}</strong><small>{sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small></span>
                 {sessionStatus && <strong className="editor-session-status">{sessionStatus}</strong>}
-                <button type="button" className="btn" disabled={structureBusy || !sessionDirty || activeSnapshot >= 0}
-                    onClick={() => setSessionAction("save")}>SAVE CHANGES</button>
-                <button type="button" className="btn" disabled={structureBusy || !sessionDirty}
-                    onClick={() => setSessionAction("reload")}>RELOAD SAVED</button>
-            </div>
-            {page === "chain" && (
+                {sessionButtons}
+            </div>}
+            {(page === "chain" || page === "mixers") && (
                 <>
-                    <div className="editor-toolbar editor-chain-bar">
-                        <div className="editor-primary-actions">
-                            {!lockChain && (
-                                <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
-                            )}
+                    <RoutingEditor key={str(state.activePresetId)} client={client} catalog={catalog} blocks={chain} routing={obj(state.routing)}
+                        presetId={str(state.activePresetId)} locked={lockChain || structureBusy || bool(state.chainPreparing)}
+                        mix={page === "mixers"} onMixChange={mix => {
+                            const next = mix ? "mixers" : "chain";
+                            setPage(next);
+                            client.updateUiSession({ editorPage: next, editSubpage: next });
+                        }}
+                        toolbarContent={<>
+                            <button type="button" className="editor-preset-name routing-preset-selector" disabled={lockChain} onClick={() => setPickerOpen(true)}>
+                                <span className="routing-preset-copy">
+                                    <MarqueeText text={`${str(obj(bank).name, "Bank")} / ${str(obj(preset).name, "Preset")}`} align="center" fontWeight={900} />
+                                    <small role="status">{sessionStatus || (bool(state.chainPreparing) ? "PREPARING ROUTING…" : sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET")}</small>
+                                </span>
+                                <span className="editor-preset-chevron">▾</span>
+                            </button>
+                            {sessionButtons}
+                        </>}
+                        presetActions={<>
+                            {!lockChain && <button type="button" className="btn" onClick={() => setNewPresetOpen(true)}>NEW PRESET</button>}
                             <button type="button" className="btn" onClick={onSnapshots}>SNAPSHOTS</button>
-                        </div>
-                        <button
-                            type="button"
-                            className="editor-preset-name"
-                            onClick={() => {
-                                if (!lockChain) {
-                                    setPickerOpen(true);
-                                }
-                            }}
-                        >
-                            <MarqueeText
-                                text={`${str(obj(bank).name, "Bank")} / ${str(obj(preset).name, "Preset")}`}
-                                align="center"
-                                fontWeight={900}
-                            />
-                            <span className="editor-preset-chevron">▾</span>
-                        </button>
-                        {!lockChain ? (
-                            <div className="editor-primary-actions">
-                                <button type="button" className="btn" onClick={renamePreset}>RENAME</button>
-                                <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
-                                    DELETE
-                                </button>
-                            </div>
-                        ) : <div />}
-                        {lockChain && (
-                            <div className="editor-toolbar-copy">
-                                <span>Snapshot editing cannot add, remove or reorder effects.</span>
-                            </div>
-                        )}
-                    </div>
-                    <div className="chain-page" ref={chainPageRef}>
-                        {chainRows.map((logicalRow, rowIndex) => {
-                            const flowsLeft = rowIndex % 2 === 1;
-                            const visualRow = flowsLeft ? [...logicalRow].reverse() : logicalRow;
-                            return (
-                                <div key={`row-${rowIndex}`}>
-                                    <div className={`chain-row${flowsLeft ? " rtl" : ""}`}>
-                                        {visualRow.map((node, visualIndex) => {
-                                            const nextVisual = visualRow[visualIndex + 1];
-                                            const sourceIndex = nextVisual
-                                                ? Math.min(node.globalIndex, nextVisual.globalIndex)
-                                                : -1;
-                                            return (
-                                                <div key={node.key} className="chain-node">
-                                                    {node.kind === "plugin" && node.slot
-                                                        ? str(node.slot.kind) === "parallel" ? (
-                                                            <ChainParallelCard
-                                                                section={node.slot}
-                                                                chainIndex={node.chainIndex ?? 0}
-                                                                cardWidth={chainCardWidth}
-                                                                selected={selectedId === str(node.slot.id)}
-                                                                dragging={dragId === str(node.slot.id)}
-                                                                lockChain={lockChain || structureBusy}
-                                                                onPointerDown={(event) => onPointerDown(node.slot!, node.chainIndex ?? 0, event)}
-                                                                onPointerMove={onPointerMove}
-                                                                onPointerUp={(event) => onPointerUp(node.slot!, event)}
-                                                                onPointerCancel={() => {
-                                                                    dragRef.current = null;
-                                                                    setDragId("");
-                                                                    setDragOverTrash(false);
-                                                                }}
-                                                                 onToggle={() => {
-                                                                     if (!structureBusy) void run(() => client.request("chain/parallel/settings", {
-                                                                         sectionId: str(node.slot!.id),
-                                                                         enabled: !bool(node.slot!.enabled, true)
-                                                                     }));
-                                                                 }}
-                                                            />
-                                                        ) : (
-                                                            <ChainPluginCard
-                                                                slot={node.slot}
-                                                                chainIndex={node.chainIndex ?? 0}
-                                                                cardWidth={chainCardWidth}
-                                                                selected={str(obj(selected).id) === str(node.slot.id)}
-                                                                dragging={dragId === str(node.slot.id)}
-                                                                lockChain={lockChain || structureBusy}
-                                                                onPointerDown={(event) => onPointerDown(node.slot!, node.chainIndex ?? 0, event)}
-                                                                onPointerMove={onPointerMove}
-                                                                onPointerUp={(event) => onPointerUp(node.slot!, event)}
-                                                                onPointerCancel={() => {
-                                                                    dragRef.current = null;
-                                                                    setDragId("");
-                                                                    setDragOverTrash(false);
-                                                                }}
-                                                                 onToggle={() => {
-                                                                     if (!structureBusy) void run(() => client.request("chain/enable", {
-                                                                         slotId: str(node.slot!.id),
-                                                                         enabled: !bool(node.slot!.enabled, true)
-                                                                     }));
-                                                                 }}
-                                                                bypassBound={Boolean(bindForBypass(str(node.slot.id)))}
-                                                                onBypassLongPress={() => setBindTarget({
-                                                                    mode: "bypass",
-                                                                    slotId: str(node.slot!.id),
-                                                                    name: str(node.slot!.name) || str(obj(obj(node.slot).plugin).name, "Effect")
-                                                                })}
-                                                            />
-                                                        )
-                                                        : (
-                                                            <button
-                                                                type="button"
-                                                                className={`chain-slot endpoint${selectedId === node.kind ? " selected" : ""}`}
-                                                                style={{ flex: `0 0 ${chainCardWidth}px`, width: chainCardWidth }}
-                                                                onClick={() => {
-                                                                    const kind = node.kind === "input" ? "input" : "output";
-                                                                    setIoKind(kind);
-                                                                    setSelectedId(node.kind);
-                                                                    setPage("io");
-                                                                    client.updateUiSession({
-                                                                        editorPage: "io",
-                                                                        editorSelectedId: node.kind,
-                                                                        editorIoKind: kind,
-                                                                        editSubpage: "io"
-                                                                    });
-                                                                }}
-                                                            >
-                                                                <strong>{node.kind === "input" ? "INPUT" : "OUTPUT"}</strong>
-                                                                <div className="muted">{node.kind === "input" ? "SIGNAL IN" : "SIGNAL OUT"}</div>
-                                                            </button>
-                                                        )}
-                                                    {nextVisual && sourceIndex >= 0 && (
-                                                        <div
-                                                            className={`chain-connector${flowsLeft ? " left" : " right"}${dropGap === sourceIndex ? " drop-active" : ""}`}
-                                                            data-chain-index={sourceIndex}
-                                                        >
-                                                            <button
-                                                                type="button"
-                                                                className="chain-insert"
-                                                                 disabled={lockChain || structureBusy}
-                                                                onClick={() => addAfter(sourceIndex)}
-                                                            >
-                                                                +
-                                                            </button>
-                                                            <span className="chain-flow-line" />
-                                                            <span className="chain-flow-arrow">{flowsLeft ? "◀" : "▶"}</span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                    {rowIndex < chainRows.length - 1 && (
-                                        <div
-                                            className={`chain-turn ${flowsLeft ? "left" : "right"}${dropGap === logicalRow[logicalRow.length - 1].globalIndex ? " drop-active" : ""}`}
-                                            data-chain-index={logicalRow[logicalRow.length - 1].globalIndex}
-                                        >
-                                             {!lockChain && !structureBusy && (
-                                                <button
-                                                    type="button"
-                                                    className="chain-insert"
-                                                    onClick={() => addAfter(logicalRow[logicalRow.length - 1].globalIndex)}
-                                                >
-                                                    +
-                                                </button>
-                                            )}
-                                            <span className="chain-turn-line" />
-                                            <span className="chain-flow-arrow">▼</span>
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                        {dragGhost && (
-                            <>
-                                <div className={`chain-trash-icon${dragOverTrash ? " active" : ""}`} data-chain-trash="true">🗑</div>
-                                {createPortal(
-                                    <div className="chain-ghost" style={{ left: dragGhost.x + 16, top: dragGhost.y + 14 }}>
-                                        <div>{dragGhost.title}</div>
-                                        <div className="muted">MOVE EFFECT</div>
-                                    </div>,
-                                    document.body
-                                )}
-                            </>
-                        )}
-                    </div>
+                            {lockChain && <p className="muted">Snapshot editing cannot add, remove or reorder effects.</p>}
+                        </>}
+                        presetManagementActions={<>
+                            {!lockChain && <>
+                                <button type="button" className="btn" onClick={renamePreset}>RENAME PRESET</button>
+                                <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>DELETE PRESET</button>
+                            </>}
+                        </>}
+                        run={run} runStructure={runStructureChange} onRemove={id => runStructureChange(() => client.request("chain/remove", { slotId: id }))} onEdit={openControls} onIo={kind => {
+                            setIoKind(kind); setPage("io");
+                            client.updateUiSession({ editorPage: "io", editorIoKind: kind });
+                        }} />
+
                 </>
             )}
 
@@ -637,64 +308,6 @@ export function EditorView({
                     </div>
                     <div className="page-scroll" style={{ flex: 1, minHeight: 0 }}>
                         <ChainIoPanel kind={ioKind} engine={engine} run={run} />
-                    </div>
-                </>
-            )}
-
-            {page === "parallel" && selectedParallel && (
-                <>
-                    <div className="editor-toolbar">
-                        <div className="editor-toolbar-copy">
-                            <strong>{str(selectedParallel.name, "Parallel Section")}</strong>
-                            <span>Two independent effect lanes blended into one output</span>
-                        </div>
-                        <div className="parallel-editor-tabs" role="tablist" aria-label="Parallel section editor">
-                            <button type="button" role="tab" aria-selected={parallelView === "chains"}
-                                className={`btn ${parallelView === "chains" ? "btn-active" : ""}`}
-                                onClick={() => setParallelView("chains")}>CHAINS</button>
-                            <button type="button" role="tab" aria-selected={parallelView === "mixer"}
-                                className={`btn ${parallelView === "mixer" ? "btn-active" : ""}`}
-                                onClick={() => setParallelView("mixer")}>MIXER</button>
-                        </div>
-                        <button type="button" className={`btn ${bool(selectedParallel.enabled, true) ? "btn-active" : ""}`}
-                            disabled={structureBusy}
-                            onClick={() => void run(() => client.request("chain/parallel/settings", {
-                                sectionId: str(selectedParallel.id),
-                                enabled: !bool(selectedParallel.enabled, true)
-                            }))}>
-                            {bool(selectedParallel.enabled, true) ? "ON" : "BYPASS"}
-                        </button>
-                        {!lockChain && <button type="button" className="btn btn-danger" disabled={structureBusy}
-                            onClick={() => setPendingTrashId(str(selectedParallel.id))}>REMOVE</button>}
-                    </div>
-                    <div className="page-scroll parallel-editor-scroll">
-                        <ParallelSectionEditor
-                            view={parallelView}
-                            section={selectedParallel}
-                            lockChain={lockChain || structureBusy}
-                            settingsDisabled={structureBusy}
-                            onEdit={openControls}
-                            onAdd={(lane, index) => setBrowser({
-                                mode: "add",
-                                index,
-                                parallelId: str(selectedParallel.id),
-                                lane
-                            })}
-                            onRemove={(slotId) => setPendingTrashId(slotId)}
-                            onMove={(slotId, index, lane) => void runStructureChange(() => client.request("chain/move", {
-                                slotId,
-                                index,
-                                parallelId: str(selectedParallel.id),
-                                lane
-                            }))}
-                            onToggle={(slotId, enabled) => {
-                                if (!structureBusy) void run(() => client.request("chain/enable", { slotId, enabled }));
-                            }}
-                            onSetting={(values) => run(() => client.request("chain/parallel/settings", {
-                                sectionId: str(selectedParallel.id),
-                                ...values
-                            }))}
-                        />
                     </div>
                 </>
             )}
@@ -768,18 +381,12 @@ export function EditorView({
             <PluginBrowser
                 open={browser !== null}
                 sessionKey={browser
-                    ? `${browser.mode}:${browser.slotId ?? browser.parallelId ?? "serial"}:${browser.lane ?? ""}:${browser.index}`
+                    ? `${browser.mode}:${browser.slotId ?? "new"}:${browser.index}`
                     : "closed"}
                 catalog={catalog}
                 title={browser?.mode === "replace" ? "SELECT PLUGIN" : "ADD EFFECT"}
                 actionLabel={browser?.mode === "replace" ? "USE PLUGIN" : "ADD HERE"}
                 onCancel={() => setBrowser(null)}
-                secondaryActionLabel={browser?.mode === "add" && !browser.parallelId ? "ADD PARALLEL SECTION" : undefined}
-                onSecondaryAction={browser?.mode === "add" && !browser.parallelId ? () => {
-                    const index = browser.index;
-                    setBrowser(null);
-                    void runStructureChange(() => client.request("chain/parallel/add", { index }));
-                } : undefined}
                 onChoose={(uri) => {
                     const target = browser;
                     setBrowser(null);
@@ -795,16 +402,7 @@ export function EditorView({
                             }));
                             replacementId = str(result.slotId);
                         } else {
-                            if (target.parallelId && target.lane) {
-                                await client.request("chain/add", {
-                                    uri,
-                                    index: target.index,
-                                    parallelId: target.parallelId,
-                                    lane: target.lane
-                                });
-                            } else {
-                                await client.request("chain/add", { uri, index: target.index });
-                            }
+                            await client.request("chain/add", { uri, index: target.index });
                         }
                     }).then(() => {
                         // The replacement ID is absent from the old live chain.
@@ -917,13 +515,9 @@ export function EditorView({
                 body={str(obj([...chain, ...pluginSlots].find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
                 confirmLabel="REMOVE" danger onCancel={() => setPendingTrashId("")} onConfirm={() => {
                     const slotId = pendingTrashId;
-                    const parent = chain.find((item) => str(item.kind) === "parallel"
-                        && [...objects(item.laneA), ...objects(item.laneB)].some((slot) => str(slot.id) === slotId));
                     setPendingTrashId("");
                     void runStructureChange(() => client.request("chain/remove", { slotId })).then(() => {
-                        if (parent) {
-                            openParallel(str(parent.id));
-                        } else {
+                        {
                             setPage("chain");
                             client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
                         }
@@ -971,518 +565,6 @@ export function EditorView({
                 />,
                 document.body
             )}
-        </div>
-    );
-}
-
-function ChainPluginCard({
-    slot,
-    chainIndex,
-    cardWidth,
-    selected,
-    dragging,
-    lockChain,
-    onPointerDown,
-    onPointerMove,
-    onPointerUp,
-    onPointerCancel,
-    onToggle,
-    bypassBound = false,
-    onBypassLongPress
-}: {
-    slot: JsonObject;
-    chainIndex: number;
-    cardWidth: number;
-    selected: boolean;
-    dragging: boolean;
-    lockChain: boolean;
-    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerCancel: () => void;
-    onToggle: () => void;
-    bypassBound?: boolean;
-    onBypassLongPress?: () => void;
-}) {
-    const info = obj(slot.plugin);
-    const on = bool(slot.enabled, true);
-    const holdRef = useRef<number | null>(null);
-    const holdFiredRef = useRef(false);
-    const clearHold = () => {
-        if (holdRef.current !== null) {
-            window.clearTimeout(holdRef.current);
-            holdRef.current = null;
-        }
-    };
-    return (
-        <button
-            type="button"
-            data-chain-index={chainIndex}
-            className={`chain-slot${selected ? " selected" : ""}${on ? "" : " off"}${dragging ? " dragging" : ""}`}
-            style={{ flex: `0 0 ${cardWidth}px`, width: cardWidth }}
-            onPointerDown={lockChain ? undefined : onPointerDown}
-            onPointerMove={lockChain ? undefined : onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={lockChain ? undefined : onPointerCancel}
-        >
-            <div className="chain-slot-top">
-                <span className="chain-handle">⋮⋮</span>
-                <MarqueeText
-                    text={str(slot.name) || str(info.name, str(slot.uri))}
-                    align="left"
-                    fontWeight={900}
-                />
-                <span
-                    className={`chain-led${on ? " on" : ""}${bypassBound ? " bound" : ""}`}
-                    role="switch"
-                    aria-checked={on}
-                    onPointerDown={(event) => {
-                        event.stopPropagation();
-                        event.preventDefault();
-                        holdFiredRef.current = false;
-                        clearHold();
-                        try {
-                            event.currentTarget.setPointerCapture(event.pointerId);
-                        } catch {
-                            // optional
-                        }
-                        if (!onBypassLongPress) {
-                            return;
-                        }
-                        holdRef.current = window.setTimeout(() => {
-                            holdRef.current = null;
-                            holdFiredRef.current = true;
-                            onBypassLongPress();
-                        }, 550);
-                    }}
-                    onPointerUp={(event) => {
-                        event.stopPropagation();
-                        clearHold();
-                        if (!holdFiredRef.current) {
-                            onToggle();
-                        }
-                    }}
-                    onPointerCancel={() => clearHold()}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        event.preventDefault();
-                    }}
-                />
-            </div>
-            <div className="muted">{on ? "ACTIVE" : "BYPASSED"}</div>
-            <div className="muted" style={{ fontSize: "0.62rem" }}>
-                TAP TO EDIT • LED = BYPASS{bypassBound ? " • BOUND" : ""}
-            </div>
-        </button>
-    );
-}
-
-function ChainParallelCard({
-    section,
-    chainIndex,
-    cardWidth,
-    selected,
-    dragging,
-    lockChain,
-    onPointerDown,
-    onPointerMove,
-    onPointerUp,
-    onPointerCancel,
-    onToggle
-}: {
-    section: JsonObject;
-    chainIndex: number;
-    cardWidth: number;
-    selected: boolean;
-    dragging: boolean;
-    lockChain: boolean;
-    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerCancel: () => void;
-    onToggle: () => void;
-}) {
-    const on = bool(section.enabled, true);
-    const panText = (value: number) => value <= -0.99 ? "L" : value >= 0.99 ? "R" : Math.abs(value) < 0.01 ? "C" : value < 0 ? `L${Math.round(-value * 100)}` : `R${Math.round(value * 100)}`;
-    const laneSummary = (lane: JsonObject[], fallback: string) => lane.length
-        ? lane.map((slot) => str(slot.name) || str(obj(slot.plugin).name, "Effect")).join(" → ")
-        : fallback;
-    return (
-        <button type="button" data-chain-index={chainIndex}
-            className={`chain-slot chain-parallel-card${selected ? " selected" : ""}${on ? "" : " off"}${dragging ? " dragging" : ""}`}
-            style={{ flex: `0 0 ${cardWidth}px`, width: cardWidth }}
-            onPointerDown={lockChain ? undefined : onPointerDown}
-            onPointerMove={lockChain ? undefined : onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={lockChain ? undefined : onPointerCancel}>
-            <div className="chain-slot-top">
-                <span className="chain-handle">⋮⋮</span>
-                <MarqueeText text={str(section.name, "Parallel Section")} align="left" fontWeight={900} />
-                <span className={`chain-led${on ? " on" : ""}`} role="switch" aria-checked={on}
-                    onPointerDown={(event) => { event.stopPropagation(); event.preventDefault(); }}
-                    onPointerUp={(event) => { event.stopPropagation(); onToggle(); }}
-                    onClick={(event) => { event.stopPropagation(); event.preventDefault(); }} />
-            </div>
-            <div className="parallel-card-lane"><strong>A</strong><span>{laneSummary(objects(section.laneA), "DRY")}</span></div>
-            <div className="parallel-card-lane"><strong>B</strong><span>{laneSummary(objects(section.laneB), "DRY")}</span></div>
-            <div className="muted parallel-card-mix">{bool(section.stereo)
-                ? `STEREO · A ${panText(num(section.panA, -1))} · B ${panText(num(section.panB, 1))}`
-                : "MONO BLEND"}</div>
-        </button>
-    );
-}
-
-function LiveRange({ label, value, min, max, step, format, disabled, onLive, onCommit }: {
-    label: string;
-    value: number;
-    min: number;
-    max: number;
-    step: number;
-    format: (value: number) => string;
-    disabled?: boolean;
-    onLive: (value: number) => void;
-    onCommit: (value: number) => void;
-}) {
-    const [draft, setDraft] = useState(value);
-    const [popout, setPopout] = useState(false);
-    const draftRef = useRef(value);
-    const popoutCloseTimer = useRef<number | null>(null);
-    const popoutCard = useRef<HTMLDivElement | null>(null);
-    const popoutOwner = useRef({});
-    useEffect(() => {
-        draftRef.current = value;
-        setDraft(value);
-    }, [value]);
-    useEffect(() => () => {
-        if (popoutCloseTimer.current !== null) window.clearTimeout(popoutCloseTimer.current);
-    }, []);
-    const revealPopout = () => {
-        if (!loadUiBehavior().controlPopout || disabled) return;
-        if (popoutCloseTimer.current !== null) {
-            window.clearTimeout(popoutCloseTimer.current);
-            popoutCloseTimer.current = null;
-        }
-        announceControlPopout(popoutOwner.current);
-        setPopout(true);
-    };
-    const dismissPopout = () => {
-        if (popoutCloseTimer.current !== null) {
-            window.clearTimeout(popoutCloseTimer.current);
-            popoutCloseTimer.current = null;
-        }
-        setPopout(false);
-    };
-    useEffect(() => {
-        if (!popout) return;
-        const dismissForOutsideInteraction = (event: Event) => {
-            const target = event.target;
-            if (target instanceof Node && popoutCard.current?.contains(target)) return;
-            dismissPopout();
-        };
-        const dismissForReplacement = (event: Event) => {
-            if ((event as CustomEvent<object>).detail === popoutOwner.current) return;
-            dismissPopout();
-        };
-        window.addEventListener("pointerdown", dismissForOutsideInteraction, true);
-        window.addEventListener("wheel", dismissForOutsideInteraction, true);
-        window.addEventListener(CONTROL_POPOUT_OPEN_EVENT, dismissForReplacement);
-        return () => {
-            window.removeEventListener("pointerdown", dismissForOutsideInteraction, true);
-            window.removeEventListener("wheel", dismissForOutsideInteraction, true);
-            window.removeEventListener(CONTROL_POPOUT_OPEN_EVENT, dismissForReplacement);
-        };
-    }, [popout]);
-    const schedulePopoutClose = () => {
-        if (popoutCloseTimer.current !== null) window.clearTimeout(popoutCloseTimer.current);
-        popoutCloseTimer.current = window.setTimeout(() => {
-            popoutCloseTimer.current = null;
-            setPopout(false);
-        }, loadUiBehavior().controlPopoutDurationMs);
-    };
-    const update = (next: number) => {
-        draftRef.current = next;
-        setDraft(next);
-        onLive(next);
-        revealPopout();
-    };
-    const commit = () => {
-        onCommit(draftRef.current);
-        schedulePopoutClose();
-    };
-    const range = max === min ? 0 : Math.max(0, Math.min(1, (draft - min) / (max - min)));
-    const zeroRange = max === min ? 0 : (0 - min) / (max - min);
-    const slider = (inPopout = false) => (
-        <div className="parallel-themed-slider">
-            <div className="mfx-hardware-slider" data-orientation="horizontal" aria-hidden="true">
-                <div className="mfx-hardware-slider__fill" style={{ width: `${range * 100}%` }} />
-                {min < 0 && max > 0 && <span className="parallel-slider-center" style={{ left: `${zeroRange * 100}%` }} />}
-                <div className="mfx-hardware-slider__thumb" style={{ left: `${range * 100}%` }} />
-            </div>
-            <input aria-label={inPopout ? `${label} enlarged` : label} type="range" min={min} max={max} step={step}
-                value={draft} disabled={disabled}
-                onPointerDown={(event) => {
-                    event.currentTarget.setPointerCapture?.(event.pointerId);
-                    revealPopout();
-                }}
-                onChange={(event) => update(Number(event.target.value))}
-                onPointerUp={commit} onPointerCancel={commit} onKeyUp={commit} onBlur={commit} />
-        </div>
-    );
-    const popoutScale = loadUiBehavior().controlPopoutScale;
-    return (
-        <>
-            <label className="parallel-mix-control">
-                <span>{label}</span>
-                {slider()}
-                <strong>{format(draft)}</strong>
-            </label>
-            {popout && createPortal(
-                <div className="mfx-performance-control-popout" role="dialog"
-                    aria-label={`${label} adjustment`}>
-                    <div ref={popoutCard} className="parallel-slider-popout-card mfx-performance-control--popout" style={{
-                        width: `min(calc(100vw - 32px), ${Math.round(300 * popoutScale)}px)`,
-                        height: `min(calc(100vh - 32px), ${Math.round(140 * popoutScale)}px)`
-                    }}>
-                        <span>{label}</span>
-                        {slider(true)}
-                        <strong>{format(draft)}</strong>
-                    </div>
-                </div>
-            , document.body)}
-        </>
-    );
-}
-
-function ParallelSectionEditor({ view, section, lockChain, settingsDisabled, onEdit, onAdd, onRemove, onMove, onToggle, onSetting }: {
-    view: "chains" | "mixer";
-    section: JsonObject;
-    lockChain: boolean;
-    settingsDisabled: boolean;
-    onEdit: (slotId: string) => void;
-    onAdd: (lane: "a" | "b", index: number) => void;
-    onRemove: (slotId: string) => void;
-    onMove: (slotId: string, index: number, lane: "a" | "b") => void;
-    onToggle: (slotId: string, enabled: boolean) => void;
-    onSetting: (values: JsonObject) => Promise<void>;
-}) {
-    const dragRef = useRef<{
-        id: string;
-        title: string;
-        lane: "a" | "b";
-        from: number;
-        x: number;
-        y: number;
-        dragging: boolean;
-    } | null>(null);
-    const [dragId, setDragId] = useState("");
-    const [dragOverTrash, setDragOverTrash] = useState(false);
-    const [dropTarget, setDropTarget] = useState("");
-    const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
-    const settingInFlight = useRef(false);
-    const pendingSetting = useRef<{ values: JsonObject; persist: boolean } | null>(null);
-    const settingFrame = useRef<number | null>(null);
-    const pumpSetting = () => {
-        if (settingInFlight.current || !pendingSetting.current) return;
-        const next = pendingSetting.current;
-        pendingSetting.current = null;
-        settingInFlight.current = true;
-        void onSetting({ ...next.values, persist: next.persist }).finally(() => {
-            settingInFlight.current = false;
-            if (pendingSetting.current) pumpSetting();
-        });
-    };
-    const queueSetting = (values: JsonObject, persist: boolean) => {
-        const pending = pendingSetting.current;
-        pendingSetting.current = {
-            values: { ...(pending?.values ?? {}), ...values },
-            persist: persist || Boolean(pending?.persist)
-        };
-        if (persist) {
-            if (settingFrame.current !== null) window.cancelAnimationFrame(settingFrame.current);
-            settingFrame.current = null;
-            pumpSetting();
-            return;
-        }
-        if (settingFrame.current === null) {
-            settingFrame.current = window.requestAnimationFrame(() => {
-                settingFrame.current = null;
-                pumpSetting();
-            });
-        }
-    };
-    useEffect(() => () => {
-        if (settingFrame.current !== null) window.cancelAnimationFrame(settingFrame.current);
-    }, []);
-    const clearDrag = () => {
-        dragRef.current = null;
-        setDragId("");
-        setDragOverTrash(false);
-        setDropTarget("");
-        setDragGhost(null);
-    };
-    const trashAt = (x: number, y: number) => {
-        const trash = document.querySelector("[data-parallel-trash]") as HTMLElement | null;
-        if (!trash) return false;
-        const bounds = trash.getBoundingClientRect();
-        return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
-    };
-    const pointerDown = (slot: JsonObject, lane: "a" | "b", index: number, event: React.PointerEvent<HTMLButtonElement>) => {
-        if (lockChain) return;
-        dragRef.current = {
-            id: str(slot.id),
-            title: str(slot.name) || str(obj(slot.plugin).name, "Effect"),
-            lane,
-            from: index,
-            x: event.clientX,
-            y: event.clientY,
-            dragging: false
-        };
-        event.currentTarget.setPointerCapture(event.pointerId);
-    };
-    const pointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
-        const drag = dragRef.current;
-        if (!drag) return;
-        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 10) {
-            drag.dragging = true;
-            setDragId(drag.id);
-            setDragGhost({ title: drag.title, x: event.clientX, y: event.clientY });
-        }
-        setDragOverTrash(trashAt(event.clientX, event.clientY));
-        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-parallel-drop]") as HTMLElement | null;
-        const lane = target?.dataset.parallelLane;
-        const index = Number(target?.dataset.parallelIndex);
-        setDropTarget((lane === "a" || lane === "b") && Number.isInteger(index) ? `${lane}:${index}` : "");
-    };
-    const pointerUp = (slot: JsonObject, event: React.PointerEvent<HTMLButtonElement>) => {
-        const drag = dragRef.current;
-        if (!drag || !drag.dragging) {
-            clearDrag();
-            onEdit(str(slot.id));
-            return;
-        }
-        if (trashAt(event.clientX, event.clientY)) {
-            const id = drag.id;
-            clearDrag();
-            onRemove(id);
-            return;
-        }
-        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-parallel-drop]") as HTMLElement | null;
-        const lane = target?.dataset.parallelLane;
-        const index = Number(target?.dataset.parallelIndex);
-        clearDrag();
-        if ((lane === "a" || lane === "b") && Number.isInteger(index)
-            && (lane !== drag.lane || index !== drag.from)) {
-            onMove(drag.id, index, lane);
-        }
-    };
-    const renderConnector = (lane: "a" | "b", index: number) => (
-        <div key={`gap-${lane}-${index}`}
-            className={`parallel-chain-connector${dropTarget === `${lane}:${index}` ? " drop-active" : ""}`}
-            data-parallel-drop data-parallel-lane={lane} data-parallel-index={index}>
-            <button type="button" className="chain-insert" disabled={lockChain} onClick={() => onAdd(lane, index)}>+</button>
-            <span className="chain-flow-line" />
-            <span className="chain-flow-arrow">▶</span>
-        </div>
-    );
-    const renderLane = (laneId: "a" | "b", slots: JsonObject[]) => (
-        <section className="parallel-lane">
-            <div className="parallel-lane-heading">
-                <div><strong>RIG {laneId.toUpperCase()}</strong><span>Independent serial path · position it in the stereo mixer</span></div>
-            </div>
-            <div className="parallel-lane-chain">
-                <button type="button" className="chain-slot endpoint parallel-endpoint"><strong>INPUT</strong><span className="muted">SPLIT</span></button>
-                {renderConnector(laneId, 0)}
-                {slots.map((slot, index) => <div className="parallel-lane-item" key={str(slot.id)}
-                    data-parallel-drop data-parallel-lane={laneId} data-parallel-index={index}>
-                    <ChainPluginCard
-                        slot={slot}
-                        chainIndex={index}
-                        cardWidth={142}
-                        selected={false}
-                        dragging={dragId === str(slot.id)}
-                        lockChain={lockChain}
-                        onPointerDown={(event) => pointerDown(slot, laneId, index, event)}
-                        onPointerMove={pointerMove}
-                        onPointerUp={(event) => pointerUp(slot, event)}
-                        onPointerCancel={clearDrag}
-                        onToggle={() => onToggle(str(slot.id), !bool(slot.enabled, true))}
-                    />
-                    {renderConnector(laneId, index + 1)}
-                </div>)}
-                {slots.length === 0 && <span className="parallel-empty-lane">DRY PATH</span>}
-                <button type="button" className="chain-slot endpoint parallel-endpoint"><strong>MIX</strong><span className="muted">OUTPUT</span></button>
-            </div>
-        </section>
-    );
-    const stereo = bool(section.stereo);
-    const formatPan = (value: number) => value <= -0.99 ? "LEFT" : value >= 0.99 ? "RIGHT"
-        : Math.abs(value) < 0.01 ? "CENTER" : value < 0 ? `L ${Math.round(-value * 100)}` : `R ${Math.round(value * 100)}`;
-    return (
-        <div className="parallel-editor">
-            {view === "chains" && <>
-                {renderLane("a", objects(section.laneA))}
-                {renderLane("b", objects(section.laneB))}
-            </>}
-            {dragGhost && <>
-                <div className={`chain-trash-icon${dragOverTrash ? " active" : ""}`} data-parallel-trash>🗑</div>
-                {createPortal(<div className="chain-ghost" style={{ left: dragGhost.x + 16, top: dragGhost.y + 14 }}>
-                    <div>{dragGhost.title}</div><div className="muted">MOVE EFFECT</div>
-                </div>, document.body)}
-            </>}
-            {view === "mixer" && <section className="parallel-mixer">
-                <div className="parallel-lane-heading">
-                    <div><strong>BLEND & OUTPUT</strong><span>Combine the two finished paths</span></div>
-                </div>
-                <div className="parallel-output-mode">
-                    <span>OUTPUT MODE</span>
-                    <div>
-                        <button type="button" className={`btn ${!stereo ? "btn-active" : ""}`} disabled={settingsDisabled}
-                            onClick={() => queueSetting({ stereo: false }, true)}>MONO</button>
-                        <button type="button" className={`btn ${stereo ? "btn-active" : ""}`} disabled={settingsDisabled}
-                            onClick={() => queueSetting({ stereo: true }, true)}>STEREO</button>
-                    </div>
-                    <small>{stereo ? "Each rig can be placed independently across left and right." : "Both rigs are blended equally to the left and right outputs."}</small>
-                </div>
-                <div className="parallel-mixer-grid">
-                    <LiveRange label="RIG A LEVEL" value={num(section.levelADb)} min={-24} max={12} step={0.1} disabled={settingsDisabled}
-                        format={(value) => `${value.toFixed(1)} dB`}
-                        onLive={(levelADb) => queueSetting({ levelADb }, false)}
-                        onCommit={(levelADb) => queueSetting({ levelADb }, true)} />
-                    <LiveRange label="RIG B LEVEL" value={num(section.levelBDb)} min={-24} max={12} step={0.1} disabled={settingsDisabled}
-                        format={(value) => `${value.toFixed(1)} dB`}
-                        onLive={(levelBDb) => queueSetting({ levelBDb }, false)}
-                        onCommit={(levelBDb) => queueSetting({ levelBDb }, true)} />
-                    {stereo && <LiveRange label="RIG A PAN" value={num(section.panA, -1)} min={-1} max={1} step={0.01} disabled={settingsDisabled}
-                        format={formatPan}
-                        onLive={(panA) => queueSetting({ panA }, false)}
-                        onCommit={(panA) => queueSetting({ panA }, true)} />}
-                    {stereo && <LiveRange label="RIG B PAN" value={num(section.panB, 1)} min={-1} max={1} step={0.01} disabled={settingsDisabled}
-                        format={formatPan}
-                        onLive={(panB) => queueSetting({ panB }, false)}
-                        onCommit={(panB) => queueSetting({ panB }, true)} />}
-                    <LiveRange label="BALANCE" value={num(section.balance)} min={-1} max={1} step={0.01} disabled={settingsDisabled}
-                        format={(value) => value < -0.01 ? `A ${Math.round(-value * 100)}` : value > 0.01 ? `B ${Math.round(value * 100)}` : "CENTER"}
-                        onLive={(balance) => queueSetting({ balance }, false)}
-                        onCommit={(balance) => queueSetting({ balance }, true)} />
-                    <LiveRange label="OUTPUT" value={num(section.outputDb)} min={-24} max={12} step={0.1} disabled={settingsDisabled}
-                        format={(value) => `${value.toFixed(1)} dB`}
-                        onLive={(outputDb) => queueSetting({ outputDb }, false)}
-                        onCommit={(outputDb) => queueSetting({ outputDb }, true)} />
-                </div>
-                {stereo && <div className="parallel-pan-presets">
-                    <span>QUICK POSITION</span>
-                    <button type="button" className="btn" disabled={settingsDisabled}
-                        onClick={() => queueSetting({ panA: 0, panB: 0 }, true)}>CENTER BOTH</button>
-                    <button type="button" className="btn" disabled={settingsDisabled}
-                        onClick={() => queueSetting({ panA: -1, panB: -1 }, true)}>ALL LEFT</button>
-                    <button type="button" className="btn" disabled={settingsDisabled}
-                        onClick={() => queueSetting({ panA: 1, panB: 1 }, true)}>ALL RIGHT</button>
-                    <button type="button" className="btn" disabled={settingsDisabled}
-                        onClick={() => queueSetting({ panA: -1, panB: 1 }, true)}>SPLIT A-L / B-R</button>
-                    <button type="button" className="btn" disabled={settingsDisabled}
-                        onClick={() => queueSetting({ panA: 1, panB: -1 }, true)}>SWAP L/R</button>
-                </div>}
-            </section>}
         </div>
     );
 }

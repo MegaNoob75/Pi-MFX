@@ -148,6 +148,14 @@ void lv2WorkerTransitionWaitsForTheWholePipeline() {
     assert(!state.canDispatch(true, false, true, false));
     assert(state.canDispatch(true, false, true, true));
 
+    state.update(false, 0, false, true, true);
+    assert(state.active());
+    state.update(true, 1, false, true, true);
+    assert(state.active());
+    state.update(true, 0, true, true, true);
+    assert(state.active());
+    state.update(true, 0, false, false, true);
+    assert(state.active());
     state.update(true, 0, false, true, false);
     assert(state.active());
     state.update(true, 0, false, true, true);

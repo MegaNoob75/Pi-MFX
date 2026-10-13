@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { askText } from "../keyboard/ask";
-import { arr, obj, str, objects, type JsonObject } from "../json";
+import { arr, isObj, obj, str, objects, type Json, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
 import { LibraryJsonPicker } from "./LibraryManager";
 import { NewPresetDialog } from "./NewPresetDialog";
@@ -36,6 +36,7 @@ export function BanksView({
     const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
     const [dropBankId, setDropBankId] = useState("");
     const suppressPresetClickRef = useRef(false);
+    const bankImportRef = useRef<HTMLInputElement>(null);
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
@@ -125,6 +126,28 @@ export function BanksView({
         });
     };
 
+    const importBankFile = (file: File) => {
+        mutate(async () => {
+            if (file.size > 64 * 1024 * 1024) {
+                throw new Error("This bank exceeds the 64 MB file upload limit.");
+            }
+            let parsed: Json;
+            try {
+                parsed = JSON.parse(await file.text()) as Json;
+            } catch {
+                throw new Error("Choose a valid Pi-MFX bank JSON file.");
+            }
+            if (!isObj(parsed) || parsed.format !== "pimfx-bank" || parsed.formatVersion !== 2
+                || !Array.isArray(parsed.presets)) {
+                throw new Error("Choose a Pi-MFX bank exported in the current routing format.");
+            }
+            await client.request("bank/import", { bank: parsed });
+            // Import adds a bank; the user chooses when to load its audio.
+            setToast(`Imported “${str(parsed.name, file.name)}”. Select it in the bank list.`);
+            window.setTimeout(() => setToast(""), 5000);
+        });
+    };
+
     const defaultCloneName = () => {
         const base = str(obj(activeBank).name, "Bank");
         const names = new Set(banks.map((bank) => str(bank.name)));
@@ -180,7 +203,7 @@ export function BanksView({
                 mutate(async () => {
                     const exported = await client.request("bank/export", { bankId });
                     await client.request("bank/import", {
-                        bank: { ...obj(exported.bank), name, format: "pimfx-bank", formatVersion: 1 }
+                        bank: { ...obj(exported.bank), name }
                     });
                 });
             }
@@ -263,6 +286,15 @@ export function BanksView({
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={cloneBank}>CLONE</button>
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={saveBankToPi}>SAVE</button>
                     <button type="button" className="btn" disabled={busy} onClick={() => setPicker("load")}>LOAD</button>
+                    <button type="button" className="btn" disabled={busy}
+                        title="Import a bank JSON file from this device"
+                        onClick={() => bankImportRef.current?.click()}>IMPORT BANK</button>
+                    <input ref={bankImportRef} type="file" accept=".json,application/json" hidden
+                        aria-label="Choose a Pi-MFX bank file" onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (file) importBankFile(file);
+                        }} />
                 </div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={busy} onClick={createBank}>NEW</button>

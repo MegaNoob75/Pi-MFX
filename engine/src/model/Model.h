@@ -26,22 +26,7 @@ struct EffectSlot {
     /// remains in its native millisecond/second mode.
     Json tempoLinks = Json::object();
 
-    /// A normal slot has kind="effect". A parallel item occupies one place in
-    /// the serial chain and contains two independent effect lanes. Keeping the
-    /// lanes here preserves the existing chain order and old bank format while
-    /// allowing ordinary EffectSlots (and their stable IDs) inside each lane.
-    std::string kind = "effect";
-    std::vector<EffectSlot> laneA;
-    std::vector<EffectSlot> laneB;
-    float levelADb = 0.0f;
-    float levelBDb = 0.0f;
-    float balance = 0.0f;  ///< -1 = A only, 0 = equal power, +1 = B only
-    bool stereo = false;
-    float panA = -1.0f;    ///< -1 = left, 0 = centre, +1 = right
-    float panB = 1.0f;
-    float outputDb = 0.0f;
-
-    bool isParallel() const { return kind == "parallel"; }
+    std::string kind = "effect"; ///< effect or built-in mixer
 
     Json toJson() const;
     static EffectSlot fromJson(const Json& json);
@@ -54,6 +39,7 @@ struct Snapshot {
     std::string id;
     std::string name;
     Json slots = Json::object();
+    Json routingMix = Json::array();
     std::string color;
     /// Layout slot (Snapshot 1 = 0). Empty holes stay empty instead of shifting.
     int slot = -1;
@@ -94,6 +80,9 @@ struct Preset {
     float outputGainDb = 0.0f;
 
     std::vector<EffectSlot> chain;
+    /// Flat blocks and explicit stereo-bus edges. Position is presentation only.
+    Json routing = Json::object({{"version", 1}, {"positions", Json::object()},
+        {"edges", Json::array({Json::object({{"from", "input"}, {"to", "output"}})})}});
     std::vector<Snapshot> snapshots;
     std::vector<ParameterBinding> parameterBindings;
     /// Optional preset-owned touchscreen surface. Missing or mode=shared uses

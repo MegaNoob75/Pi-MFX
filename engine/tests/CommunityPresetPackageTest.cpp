@@ -1,3 +1,4 @@
+#include "model/Routing.h"
 #include "community/CommunityPresetPackage.h"
 
 #include <cassert>
@@ -23,6 +24,10 @@ Json validManifest() {
     preset.set("inputGainDb", 0.0); preset.set("outputGainDb", 0.0);
     preset.set("chain", chain); preset.set("snapshots", Json::array());
     preset.set("parameterBindings", Json::array());
+    preset.set("routingFormat", 1);
+    preset.set("routing", Json::object({{"version", 1}, {"positions", Json::object()},
+        {"edges", Json::array({Json::object({{"from", "input"}, {"to", "slot-1"}}),
+            Json::object({{"from", "slot-1"}, {"to", "output"}})})}}));
 
     Json effect = Json::object(); effect.set("uri", "urn:test:gain");
     Json effects = Json::array(); effects.push(effect);
@@ -31,7 +36,7 @@ Json validManifest() {
     deps.set("localAssets", Json::array());
 
     Json manifest = Json::object();
-    manifest.set("format", "pimfx-community-preset"); manifest.set("formatVersion", 2);
+    manifest.set("format", "pimfx-community-preset"); manifest.set("formatVersion", 3);
     manifest.set("id", "test-preset"); manifest.set("name", "Test");
     manifest.set("author", "Tester"); manifest.set("description", "Safe preset");
     manifest.set("tags", Json::array()); manifest.set("license", "MIT");
@@ -143,44 +148,45 @@ int main() {
     invalidPreset.set("parameterBindings", invalidBindings);
     assert(Preset::fromJson(invalidPreset).parameterBindings.empty());
 
-    Preset parallelPreset;
-    parallelPreset.id = "parallel-preset";
-    parallelPreset.name = "Parallel Rigs";
-    EffectSlot parallel;
-    parallel.id = "parallel-1";
-    parallel.kind = "parallel";
-    parallel.name = "Parallel Section";
-    parallel.balance = -0.25f;
-    parallel.stereo = true;
-    parallel.panA = -0.75f;
-    parallel.panB = 0.5f;
-    EffectSlot laneA;
-    laneA.id = "slot-a";
-    laneA.uri = "urn:test:gain";
-    laneA.name = "Rig A";
-    EffectSlot laneB = laneA;
-    laneB.id = "slot-b";
-    laneB.name = "Rig B";
-    parallel.laneA.push_back(laneA);
-    parallel.laneB.push_back(laneB);
-    parallelPreset.chain.push_back(parallel);
-    const Preset restoredParallel = Preset::fromJson(parallelPreset.toJson());
-    assert(restoredParallel.chain.size() == 1);
-    assert(restoredParallel.chain[0].isParallel());
-    assert(restoredParallel.chain[0].laneA.size() == 1);
-    assert(restoredParallel.findSlot("slot-b") != nullptr);
-    assert(restoredParallel.chain[0].balance == -0.25f);
-    assert(restoredParallel.chain[0].stereo);
-    assert(restoredParallel.chain[0].panA == -0.75f);
-    assert(restoredParallel.chain[0].panB == 0.5f);
-
-    Json parallelManifest = validManifest();
-    Json parallelManifestPreset = parallelManifest["preset"];
-    Json parallelChain = Json::array();
-    parallelChain.push(parallel.toJson());
-    parallelManifestPreset.set("chain", parallelChain);
-    parallelManifest.set("preset", parallelManifestPreset);
-    assert(CommunityPresetPackage::validate(parallelManifest, error));
+    Preset routed = Preset::fromJson(validManifest()["preset"]);
+    EffectSlot mixer; mixer.id = "mixer-1"; mixer.kind = "mixer"; mixer.name = "Mixer";
+    routed.chain.push_back(mixer);
+    Json routing = routed.routing;
+    routing.set("edges", Json::array({
+        Json::object({{"from", "input"}, {"to", "slot-1"}}),
+        Json::object({{"from", "slot-1"}, {"to", "mixer-1"}, {"levelDb", -6}}),
+        Json::object({{"from", "input"}, {"to", "mixer-1"}}),
+        Json::object({{"from", "mixer-1"}, {"to", "output"}})}));
+    routed.routing = routing;
+    std::vector<std::string> order;
+    assert(routingOrder(routed, routing, order, error));
+    assert(std::find(order.begin(), order.end(), "slot-1") < std::find(order.begin(), order.end(), "mixer-1"));
+    const auto roundtrip = Preset::fromJson(routed.toJson());
+    assert(roundtrip.routing.dump() == routing.dump());
+    assert(roundtrip.findSlot("mixer-1")->kind == "mixer");
+    const Json mix = Json::array({Json::object({{"from", "slot-1"}, {"to", "mixer-1"}, {"levelDb", -12}, {"solo", true}})});
+    assert(routingMixValid(routed, mix, error));
+    const Json mixed = routingWithMix(routing, mix);
+    assert(mixed["edges"].at(1)["levelDb"].asDouble() == -12);
+    assert(mixed["edges"].at(1)["solo"].asBool());
+    assert(!routingMixValid(routed, Json::array({Json::object({{"from", "slot-1"}, {"to", "output"}})}), error));
+    Snapshot graphSnapshot; graphSnapshot.routingMix = mix;
+    routed.snapshots.push_back(graphSnapshot);
+    Json reduced = routing;
+    reduced.set("edges", Json::array({Json::object({{"from", "input"}, {"to", "output"}})}));
+    routed.routing = reduced;
+    pruneRoutingSnapshots(routed);
+    assert(routed.snapshots[0].routingMix.size() == 0);
+    routed.routing = routing;
+    Json cyclic = routing, connections = routing["edges"];
+    connections.push(Json::object({{"from", "mixer-1"}, {"to", "slot-1"}}));
+    cyclic.set("edges", connections);
+    assert(!routingOrder(routed, cyclic, order, error));
+    connections = routing["edges"]; connections.push(connections.at(0)); cyclic.set("edges", connections);
+    assert(!routingOrder(routed, cyclic, order, error));
+    connections = Json::array({Json::object({{"from", "unknown"}, {"to", "output"}})}); cyclic.set("edges", connections);
+    assert(!routingOrder(routed, cyclic, order, error));
+    assert(Preset::fromJson(Json::object({{"name", "Old preset"}, {"chain", validManifest()["preset"]["chain"]}})).chain.empty());
 
     Json unsafeBindingManifest = validManifest();
     Json unsafeBindingPreset = unsafeBindingManifest["preset"];

@@ -26,9 +26,17 @@ std::string passwordHash(const std::string& password, const std::string& salt) {
 }
 
 bool sameOrigin(const HttpRequest& request) {
-    if (request.header("sec-fetch-site") == "cross-site") return false;
     const auto origin = request.header("origin");
-    return origin.empty() || origin == "http://" + request.header("host");
+    if (!origin.empty() && origin != "http://" + request.header("host")) return false;
+    if (request.header("sec-fetch-site") == "cross-site") {
+        // TONE3000 returns to the app through a top-level GET navigation.
+        // Only the app document may enter this way; API/access/WS requests
+        // still require a same-origin caller and remote sessions remain required.
+        return request.method == "GET" && request.path == "/"
+            && request.header("sec-fetch-mode") == "navigate"
+            && request.header("sec-fetch-dest") == "document";
+    }
+    return true;
 }
 
 const char* kLoginPage = R"HTML(<!doctype html>
@@ -138,7 +146,7 @@ bool AccessControl::handle(const HttpRequest& request, HttpResponse& response) {
     const bool accessRoute = request.path.rfind("/access/", 0) == 0;
     if (allowed && !trustedLocal(request) && (!accessRoute || request.path == "/access/status")) {
         response.extraHeaders.emplace_back("Set-Cookie", "pimfx_access=" + sessionToken(request)
-            + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + std::to_string(kCookieSeconds));
+            + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + std::to_string(kCookieSeconds));
     }
     if (!accessRoute && allowed) return false;
     response.extraHeaders.emplace_back("Cache-Control", "no-store");
@@ -163,7 +171,7 @@ bool AccessControl::handle(const HttpRequest& request, HttpResponse& response) {
             }
             sessions_ = std::move(next);
         }
-        response.extraHeaders.emplace_back("Set-Cookie", "pimfx_access=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+        response.extraHeaders.emplace_back("Set-Cookie", "pimfx_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
         response.json("{\"ok\":true}");
         return true;
     }
@@ -250,7 +258,7 @@ bool AccessControl::handle(const HttpRequest& request, HttpResponse& response) {
         }
         sessions_ = std::move(next);
         response.extraHeaders.emplace_back("Set-Cookie", "pimfx_access=" + token
-            + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + std::to_string(kCookieSeconds));
+            + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + std::to_string(kCookieSeconds));
         response.json("{\"ok\":true}");
         return true;
     }

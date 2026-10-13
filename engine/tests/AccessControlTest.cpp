@@ -92,6 +92,45 @@ int main() {
     assert(loggedIn.status == 200);
     const auto cookie = loginCookie(loggedIn);
     assert(!cookie.empty());
+    bool laxCookie = false;
+    for (const auto& header : loggedIn.extraHeaders) {
+        if (header.first == "Set-Cookie" && header.second.find("SameSite=Lax") != std::string::npos)
+            laxCookie = true;
+    }
+    assert(laxCookie);
+    // Hosted TONE3000 navigation returns to the app without locking the browser.
+    auto callback = request("/");
+    callback.headers["sec-fetch-site"] = "cross-site";
+    callback.headers["sec-fetch-mode"] = "navigate";
+    callback.headers["sec-fetch-dest"] = "document";
+    callback.query["code"] = "test-code";
+    callback.query["state"] = "test-state";
+    assert(call(access, callback).status == 401); // Remote access still needs a session.
+    callback.headers["cookie"] = cookie;
+    HttpResponse callbackResponse;
+    assert(!access.handle(callback, callbackResponse));
+    auto localCallback = callback;
+    localCallback.local = true;
+    localCallback.headers["host"] = "127.0.0.1:8080";
+    localCallback.headers.erase("cookie");
+    assert(access.authorized(localCallback));
+    for (const auto& path : {"/api/state", "/access/status", "/ws"}) {
+        auto blocked = callback;
+        blocked.path = path;
+        assert(call(access, blocked).status == 403);
+    }
+    auto blocked = callback;
+    blocked.method = "POST";
+    assert(call(access, blocked).status == 403);
+    blocked = callback;
+    blocked.headers["sec-fetch-dest"] = "iframe";
+    assert(call(access, blocked).status == 403);
+    blocked = callback;
+    blocked.headers["sec-fetch-mode"] = "cors";
+    assert(call(access, blocked).status == 403);
+    blocked = callback;
+    blocked.headers["origin"] = "http://attacker.example";
+    assert(call(access, blocked).status == 403);
     auto authenticated = request("/api/state");
     authenticated.headers["cookie"] = cookie;
     assert(access.authorized(authenticated));

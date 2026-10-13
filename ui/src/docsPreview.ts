@@ -62,7 +62,7 @@ const chain = [
     },
     {
         id: "slot-nam", name: "TooB NAM", enabled: true,
-        state: { input: -6, quality: 1, output: -3 },
+        state: { input: -6, quality: 1, output: -3, properties: { model: "TONE3000/Deluxe-Clean.nam" } },
         plugin: { uri: "http://two-play.com/plugins/toob-nam", name: "TooB Neural Amp Modeler", author: "TooB", category: "Simulator", ports: [
             { kind: "audio", input: true, symbol: "in", name: "Audio In" },
             { kind: "audio", input: false, symbol: "out", name: "Audio Out" },
@@ -127,6 +127,11 @@ const controls = [
     { id: "pot-4", label: "POT 4", kind: "pot", binding: { action: "setParameter" }, x: .91, y: .55, width: .075, height: .14 }
 ];
 
+const previewSlot = (slot: typeof chain[number]) => variant === "mix-two-nam" && slot.id === "slot-drive"
+    ? { ...chain.find(s => s.id === "slot-nam")!, id: slot.id, uri: "http://two-play.com/plugins/toob-nam",
+        state: { properties: { model: "Models/AC30-Edge.nam" } } }
+    : { ...slot, uri: slot.plugin.uri };
+
 const state: Body = {
     type: "state",
     version: "0.6.0-dev",
@@ -142,7 +147,26 @@ const state: Body = {
     bypassAll: false,
     tempo: 118,
     banks,
-    chain,
+    chain: chain.map(previewSlot),
+    chainLayout: [
+        ...chain.map(previewSlot),
+        { id: "slot-cab", uri: "http://two-play.com/plugins/toob-cab-ir", name: "TooB Cab IR", enabled: true,
+          state: { controls: { reverb_mix: -6, reverb_mix2: -9, reverb_mix3: -12 }, properties: {
+            "http://two-play.com/plugins/toob-cab-ir#impulseFile": "Cabinets/Greenback-212.wav",
+            "http://two-play.com/plugins/toob-cab-ir#impulseFile2": variant === "cab-one" ? "" : "Cabinets/Vintage-30.wav",
+            "http://two-play.com/plugins/toob-cab-ir#impulseFile3": ["cab-one", "cab-two"].includes(variant) ? "" : "Cabinets/Alnico-Blue.wav"
+          } } },
+        { id: "rig-mix", name: "Rig blend", kind: "mixer", enabled: true, state: {} }
+    ],
+    routing: { version: 1, positions: {
+        input: { x: 25, y: 110 }, "slot-nam": { x: 245, y: 30 }, "slot-cab": { x: 465, y: 30 },
+        "slot-drive": { x: 245, y: 210 }, "rig-mix": { x: 685, y: 110 }, output: { x: 905, y: 110 }
+    }, edges: [
+        { from: "input", to: "slot-nam" }, { from: "slot-nam", to: "slot-cab" },
+        { from: "slot-cab", to: "rig-mix", levelDb: -3, pan: 0 },
+        { from: "input", to: "slot-drive" }, { from: "slot-drive", to: "rig-mix", levelDb: -6, pan: 0 },
+        { from: "rig-mix", to: "output" }
+    ] },
     transportFeatureEnabled: true,
     backingTrackFeatureEnabled: true,
     recorderFeatureEnabled: true,

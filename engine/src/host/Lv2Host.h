@@ -6,6 +6,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pimfx {
@@ -129,9 +130,10 @@ public:
 
     struct Impl;
     Impl* impl() { return impl_.get(); }
+    std::shared_ptr<Impl> sharedImpl() { return impl_; }
 
 private:
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
     std::vector<PluginInfo> plugins_;
     UridMap urids_;
     std::string userBundleDirectory_;
@@ -146,17 +148,24 @@ class PluginInstance {
 public:
     ~PluginInstance();
 
+    /// Use the native plugin by default, including one TooB Cab IR instance
+    /// per tile with its original three cabinet slots. The separate-convolver
+    /// mixer is temporarily restricted to explicit comparison tests while
+    /// investigating freezes when a second cabinet branch becomes active.
     static std::unique_ptr<PluginInstance> create(Lv2Catalog& catalog,
                                                   const std::string& uri,
                                                   unsigned sampleRate,
                                                   unsigned maxFrames,
-                                                  std::string& error);
+                                                  std::string& error,
+                                                  bool splitCabinets = false);
 
     const PluginInfo& info() const { return info_; }
     const std::string& uri() const { return info_.uri; }
 
     /// Thread-safe: stores the value for the next `run()`.
     void setControl(uint32_t portIndex, float value);
+    /// Control-thread group update; audio uses a complete group or the previous values.
+    void setControls(const std::vector<std::pair<uint32_t, float>>& values);
     bool setControlDeferred(uint32_t portIndex, float value);
     float control(uint32_t portIndex) const;
 
@@ -188,6 +197,11 @@ public:
     void process(const float* const* inputs, unsigned inputCount,
                  float* const* outputs, unsigned outputCount,
                  unsigned frames, const TransportBlock* transport = nullptr);
+
+    /// Audio thread only. Rebind after a graph swap without running the plugin;
+    /// disconnected/bypassed processors must not retain retired graph buffers.
+    void connectAudioBuffers(const float* const* inputs, unsigned inputCount,
+                             float* const* outputs, unsigned outputCount);
 
     unsigned audioInputs() const { return info_.audioInputs; }
     unsigned audioOutputs() const { return info_.audioOutputs; }

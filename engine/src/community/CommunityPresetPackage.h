@@ -12,7 +12,7 @@ namespace pimfx {
 /// This class never installs, executes, or downloads package-supplied content.
 class CommunityPresetPackage {
 public:
-    static constexpr int kFormatVersion = 2;
+    static constexpr int kFormatVersion = 3;
 
     static bool validate(const Json& manifest, std::string& error);
     static Json create(const Preset& preset, const Paths& paths,

@@ -309,6 +309,7 @@ export class EngineClient {
                 snapshotMode: message.snapshotMode ?? this.snapshot.state.snapshotMode,
                 presetReloadCount: message.presetReloadCount ?? this.snapshot.state.presetReloadCount,
                 tempo: message.tempo ?? this.snapshot.state.tempo,
+                routing: message.routing ?? this.snapshot.state.routing,
                 controlPositions: message.controlPositions ?? this.snapshot.state.controlPositions,
                 activeVirtualControlId: message.activeVirtualControlId ?? this.snapshot.state.activeVirtualControlId,
                 virtualControlRevision: message.virtualControlRevision ?? this.snapshot.state.virtualControlRevision,
@@ -338,13 +339,6 @@ export class EngineClient {
             if (liveSlots.length > 0) {
                 const mergeLive = (slot: Json): Json => {
                     if (!isObj(slot)) return slot;
-                    if (str(slot.kind) === "parallel") {
-                        return {
-                            ...slot,
-                            laneA: arr(slot.laneA).map(mergeLive),
-                            laneB: arr(slot.laneB).map(mergeLive)
-                        };
-                    }
                     const live = liveSlots.find((item) => str(item.id) === str(slot.id));
                     return live
                         ? { ...slot, enabled: live.enabled ?? slot.enabled, state: live.state ?? slot.state }

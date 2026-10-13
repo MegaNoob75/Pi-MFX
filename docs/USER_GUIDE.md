@@ -132,10 +132,72 @@ show; the Community holding area is managed by the Community workflow.
 
 ![Preset Editor](images/editor.png)
 
-The signal chain runs from input to output in a serpentine path. Tap an effect
-to edit it, drag cards to reorder, use **+** between nodes to insert a plugin,
-and use the card menu to replace, bypass, or remove it. The picker lists LV2
-plugins already visible to the engine.
+Add plugins or mixers to the routing canvas. Drag their headings to arrange
+them, then tap **OUT** on a source and **IN** on a destination to connect audio.
+Placement does not change the sound. Connect one output to several blocks to
+split, or several outputs to one block to merge. There is no fixed path count;
+available processing power determines how many plugins you can run. Feedback
+connections are rejected. New plugins begin disconnected.
+
+The compact editor row keeps **CONNECTIONS**, **ACTIONS**, the preset selector,
+and Save/Reload visible. **CONNECTIONS** lists numbered wires with a remove
+button for each. **ACTIONS** contains preset tools, plugins, mixers, layout,
+zoom, and grid/wiring settings. Menus scroll to fit smaller screens and close
+when you tap outside them.
+
+Tap a block's body to open its controls. **ACTIONS → ARRANGE** spaces the graph by signal
+flow; zoom buttons and scrolling make larger rigs accessible on a touchscreen.
+Open **ACTIONS → GRID & WIRING** to choose grid spacing (10–100 pixels), turn snapping
+on or off, or **ALIGN TO GRID** to snap existing blocks. **ARRANGE** also
+aligns the signal-flow layout to the chosen grid. The dots follow the spacing
+and zoom, and cover the whole visible canvas. These editor preferences are
+remembered in the browser.
+
+Choose **Drag between connectors** to drag from OUT to IN, or from IN to OUT.
+A preview wire follows your finger or pointer and highlights the destination.
+Release over the opposite connector to connect; release elsewhere to cancel.
+The original tap-to-connect gesture remains available as an option.
+
+Select a block's heading and use **ACTIONS → REMOVE SELECTED BLOCK** to delete
+it and its connections.
+
+**ACTIONS → SHOW MIXERS** shows branch mixing on the left and cabinet mixing on the right.
+The Graphical/Sliders buttons sit beside each section title. Branch names follow
+upstream NAM models through effects; cabinet names show IR filenames without
+extensions. Choose a mixer or the final output, then adjust each incoming
+branch's volume, pan, mute, and solo. Volume sliders remain visible in both
+views. In Graphical view each branch has a colored pan dot on a Left–Center–Right
+track; Sliders view substitutes a conventional pan slider. Both views use the
+same pan setting, independently of volume. The common two-branch/three-cabinet
+layout fits an 800×480 screen; larger rigs can scroll. Back from mixers returns
+to the routing canvas; Back from the canvas leaves the editor.
+
+Choose any TooB Cab IR instance on the right. One loaded IR has a named volume
+slider and no blend graphic, because there is nothing to blend. Two cabinets
+get a blend strip, and three get a triangle. Both have a **Blend level** slider
+in Graphical view, plus visible individual cabinet volume sliders in either view.
+Blend level scales the cabinet volumes together, preserving the chosen
+balance. Its range follows the loaded cabinets' gain limits, with mute at
+the lowest endpoint. The blend dot holds this level as you move it, subject
+to the individual cabinets' maximum gains. Muting and raising Blend level
+again restores the chosen balance while this mixer remains open.
+Individual cabinet levels remain available for precise adjustment.
+
+Pi-MFX runs each loaded TooB cabinet through a separate processor and blends
+their outputs with smoothed gains. Moving the dot, sliders, or bound controls
+does not rebuild the IRs. The block keeps its usual three file slots and preset
+settings. Loading a different file still needs a loading transition. Multiple
+loaded cabinets use more DSP than TooB's combined-IR processing; check DSP
+load and XRuns on your device.
+
+This automatic cabinet panel supports TooB Cab IR. With another IR loader,
+place separate loader blocks on parallel branches and connect them to a Mixer
+to blend their outputs using the same routing tools.
+
+Use **SAVE** to keep changes or **RELOAD** to discard them. This development
+format replaces the old chain/parallel format: old presets open as blank
+input-to-output routing, preserving their names. Rebuild and save the tones
+you want to keep, or return to the v0.5.1 checkpoint.
 
 ![Preset controls](images/editor-controls.png)
 
@@ -153,7 +215,7 @@ Input/output pages hold per-preset gain and guitar-channel choices. Use the
 
 ![Snapshots](images/snapshots.png)
 
-A snapshot stores the current chain's bypass and parameter state without
+A snapshot stores the current routing mix, plugin bypass, and parameter state without
 overwriting the base preset. Recall, capture/update, rename, edit, or delete up
 to six slots. The Performance snapshot stage is arranged separately under
 **Settings → Layout → Snapshots**.

@@ -56,7 +56,7 @@ export type View =
     | "tuner"
     | "about";
 
-type EditSubpage = "chain" | "controls" | "parallel" | "io";
+type EditSubpage = "chain" | "mixers" | "controls" | "io";
 
 type MenuId = "performance" | "virtualControls" | "transport" | "backingTracks" | "looper" | "recorder"
     | "drums" | "community" | "tuner" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
@@ -444,7 +444,7 @@ export function App() {
             setSnapshotEditId(sharedSnapshotId);
         }
         const sharedSubpage = str(shared.editSubpage) as EditSubpage;
-        if (["chain", "controls", "parallel", "io"].includes(sharedSubpage) && sharedSubpage !== editSubpage) {
+        if (["chain", "mixers", "controls", "io"].includes(sharedSubpage) && sharedSubpage !== editSubpage) {
             setEditSubpage(sharedSubpage);
         }
         const sharedHistory = arr(shared.viewHistory)
@@ -944,11 +944,9 @@ export function App() {
             return "SNAPSHOTS";
         }
         if (view === "edit") {
+            if (editSubpage === "mixers") return "PRESET MIXERS";
             if (editSubpage === "controls") {
                 return `EFFECT — ${editEffectTitle ?? "SETTINGS"}`;
-            }
-            if (editSubpage === "parallel") {
-                return `PARALLEL — ${editEffectTitle ?? "MIXER"}`;
             }
             if (editSubpage === "io") {
                 return editEffectTitle ?? "INPUT / OUTPUT";
