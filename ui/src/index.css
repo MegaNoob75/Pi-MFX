@@ -1948,7 +1948,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     opacity: 0.72;
 }
 
-.routing-editor { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.routing-editor { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .routing-header { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 4px 8px; flex-shrink: 0; border-bottom: 1px solid var(--mfx-border); background: var(--mfx-panel); }
 .routing-header > .btn { min-height: 44px; white-space: nowrap; padding: 8px 10px; }
 .routing-header .routing-preset-selector { width: 100%; justify-self: stretch; min-height: 44px; padding: 4px 8px; }
@@ -1977,6 +1977,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .routing-toolbar, .routing-connections, .routing-view-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .routing-toolbar .btn, .routing-ports .btn, .routing-view-choice .btn { min-height: 44px; min-width: 44px; }
 .routing-hint { color: var(--mfx-muted); font-size: .8rem; }
+.routing-editor > .routing-hint { position: absolute; bottom: 16px; right: 16px; z-index: 4; max-width: calc(100% - 32px); border: 1px solid var(--mfx-border); border-radius: 6px; background: var(--mfx-panel); box-shadow: 0 2px 8px #0008; }
 .routing-viewport { overflow: auto; flex: 1; min-height: 160px; background: var(--mfx-bg); }
 .routing-canvas-frame { position: relative; overflow: hidden; }
 .routing-canvas { position: absolute; left: 0; top: 0; transform-origin: top left; background-image: radial-gradient(circle at 1px 1px, var(--mfx-border) 1px, transparent 1.5px); background-position: -1px -1px; }
@@ -2005,13 +2006,17 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     .routing-block.new-block { animation: none; box-shadow: 0 0 0 3px var(--mfx-cyan); }
 }
 .routing-block.disconnected { border-style: dashed; }
-.routing-block-heading { width: 100%; height: 44px; text-align: left; padding: 8px; background: var(--mfx-panel-2, var(--mfx-panel)); color: var(--mfx-purple-light); border: 0; touch-action: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.routing-block-body { width: 100%; height: 40px; padding: 5px 8px; background: transparent; border: 0; color: var(--mfx-text); display: grid; text-align: left; gap: 3px; }
+.routing-block-top { display: flex; height: 44px; border-bottom: 1px solid var(--mfx-border); }
+.routing-ports .routing-block-remove { font-size: 24px; cursor: pointer; }
+.routing-block-heading { flex: 1; min-width: 0; width: 100%; height: 44px; text-align: left; padding: 8px; background: var(--mfx-panel-2, var(--mfx-panel)); color: var(--mfx-purple-light); border: 0; touch-action: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.routing-block-body { width: 100%; height: 40px; padding: 5px 8px; background: transparent; border: 1px solid var(--mfx-border); border-radius: 4px; color: var(--mfx-text); display: grid; text-align: left; gap: 3px; }
 .routing-block-body span, .routing-block-body small { font-size: .65rem; }
 .routing-block-body small { color: var(--mfx-muted); }
-.routing-ports { display: flex; justify-content: space-between; padding: 4px; }
+.routing-ports { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; }
+.routing-ports > .btn { width: 100%; padding: 4px; }
 .routing-connections { max-height: 90px; overflow: auto; }
 .routing-mix-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; overflow: auto; }
+.routing-mix-panels.routing-mix-rig-only { grid-template-columns: minmax(0, 1fr); }
 .routing-mix-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 3px; overflow: auto; padding: 8px; }
 .routing-mix-panel > * { flex-shrink: 0; }
 .routing-mix-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 44px; }
@@ -2071,6 +2076,34 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .routing-two-cabs .axis-y { color: var(--mfx-cyan); max-width: 48%; }
 .routing-two-cabs .axis-x { color: var(--mfx-purple-light); max-width: 48%; bottom: auto; top: -20px; }
 @media (max-width: 600px) { .routing-mix-panels { grid-template-columns: minmax(0, 1fr); } .routing-mix-panel { min-height: 340px; overflow: visible; } }
+
+.rig-mix-controls { min-width: 0; display: grid; gap: 8px; }
+.rig-blend-line { padding: 8px 4px; }
+.rig-blend-names, .rig-blend-percent { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .75rem; }
+.rig-blend-names strong { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mfx-cyan); }
+.rig-blend-names strong:last-child { text-align: right; color: var(--mfx-purple-light); }
+.rig-blend-line input { width: 100%; min-height: 48px; margin: 0; accent-color: var(--mfx-cyan); }
+.rig-blend-line input[type=range] { appearance: none; -webkit-appearance: none; background: transparent; cursor: ew-resize; touch-action: none; }
+.rig-blend-line input[type=range]::-webkit-slider-runnable-track { height: 22px; border-radius: 12px; border: 1px solid var(--mfx-border); background: linear-gradient(90deg, var(--mfx-cyan), var(--mfx-purple-light)); }
+.rig-blend-line input[type=range]::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; height: 34px; width: 34px; margin-top: -7px; border: 2px solid var(--mfx-text); border-radius: 50%; background: var(--mfx-panel); box-shadow: 0 2px 8px #0008; }
+.rig-blend-line input[type=range]::-moz-range-track { height: 22px; border-radius: 12px; border: 1px solid var(--mfx-border); background: linear-gradient(90deg, var(--mfx-cyan), var(--mfx-purple-light)); }
+.rig-blend-line input[type=range]::-moz-range-thumb { height: 30px; width: 30px; border: 2px solid var(--mfx-text); border-radius: 50%; background: var(--mfx-panel); box-shadow: 0 2px 8px #0008; }
+.rig-blend-percent .btn, .rig-channel-buttons .btn, .rig-equal-blend { min-height: 44px; padding: 4px 8px; font-size: .7rem; }
+.rig-mix-controls .rig-blend-triangle { height: 110px; min-height: 110px; margin: 26px 18px; }
+.rig-mix-controls .routing-cab-number { font-size: .7rem; }
+.rig-equal-blend { justify-self: center; }
+.rig-mix-level { border-bottom: 1px solid var(--mfx-border); padding-bottom: 4px; }
+.rig-channels { display: grid; gap: 8px; }
+.rig-channel-buttons { display: flex; gap: 4px; }
+.rig-channel-buttons .btn { flex: 1; min-width: 0; }
+.rig-channels.rig-faders { display: flex; overflow-x: auto; gap: 10px; padding-bottom: 8px; scroll-snap-type: x proximity; }
+.rig-faders .routing-mix-channel { flex: 0 0 120px; min-width: 0; scroll-snap-align: start; }
+.rig-faders .rig-channel-level input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 48px; height: 145px; min-height: 145px; justify-self: center; touch-action: none; }
+.rig-faders .rig-channel-buttons { flex-wrap: wrap; }
+.rig-faders .rig-channel-buttons .btn { padding: 4px; }
+.rig-faders .routing-level > span { font-size: .7rem; }
+.rig-faders:has(> :only-child) .routing-mix-channel { flex-basis: 100%; }
+.rig-faders:has(> :only-child) .rig-channel-level input[type=range] { height: 170px; }
 
 .chain-trash {
     margin-top: 16px;
@@ -2262,6 +2295,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     background: var(--mfx-bg);
     color: var(--mfx-text);
 }
+.plugin-browser-overlay .plugin-compatibility-overlay { z-index: 30020; }
 
 .plugin-browser-back {
     position: fixed;
@@ -6070,3 +6104,8 @@ button.list-item {
 .waveform-loop-edge { stroke: var(--mfx-purple-light); stroke-width: 3; }
 .waveform-playhead { stroke: var(--mfx-danger, #ff4d4d); stroke-width: 4; }
 .waveform-empty { display: grid; place-items: center; padding: 10px; text-align: center; }
+
+.routing-connection-number { position: absolute; z-index: 2; transform: translate(-50%, -50%); width: 44px; height: 44px; padding: 0; border: 2px solid currentColor; border-radius: 6px; background: var(--mfx-panel); font-size: 22px; font-weight: 800; cursor: pointer; }
+.routing-connection-remove-hint { position: absolute; top: 1px; right: 3px; font-size: 12px; line-height: 12px; pointer-events: none; }
+.routing-connection-number:focus-visible, .routing-block-remove:focus-visible, .routing-block-body:focus-visible { outline: 2px solid var(--mfx-text); outline-offset: 2px; }
+.routing-wires .routing-label-leader { stroke-width: 1.5px; stroke-dasharray: 3 3; }

@@ -37,6 +37,7 @@ export function BanksView({
     const [dropBankId, setDropBankId] = useState("");
     const suppressPresetClickRef = useRef(false);
     const bankImportRef = useRef<HTMLInputElement>(null);
+    const presetImportRef = useRef<HTMLInputElement>(null);
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
@@ -123,6 +124,46 @@ export function BanksView({
             const result = await client.request("bank/export", { bankId });
             setSaveContents(JSON.stringify(obj(result.bank), null, 2));
             setPicker("save");
+        });
+    };
+
+    const downloadJson = (contents: JsonObject, name: string, kind: "bank" | "preset") => {
+        const filename = name.replace(/[<>:"\/\\|?*\u0000-\u001f]/g, "_").trim() || kind;
+        const url = URL.createObjectURL(new Blob([JSON.stringify(contents, null, 2)], { type: "application/json" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${filename}.${kind}.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
+    const exportBankFile = () => {
+        mutate(async () => {
+            const result = await client.request("bank/export", { bankId });
+            downloadJson(obj(result.bank), str(obj(result.bank).name, "bank"), "bank");
+        });
+    };
+    const exportPresetFile = () => {
+        mutate(async () => {
+            const result = await client.request("preset/export", { presetId: selectedPresetId });
+            downloadJson(obj(result.preset), str(obj(result.preset).name, "preset"), "preset");
+        });
+    };
+    const importPresetFile = (file: File) => {
+        mutate(async () => {
+            if (file.size > 64 * 1024 * 1024) throw new Error("This preset exceeds the 64 MB file upload limit.");
+            let parsed: Json;
+            try { parsed = JSON.parse(await file.text()) as Json; }
+            catch { throw new Error("Choose a valid Pi-MFX preset JSON file."); }
+            if (!isObj(parsed) || parsed.format !== "pimfx-preset" || parsed.formatVersion !== 2
+                || parsed.routingFormat !== 1 || !Array.isArray(parsed.chain) || !isObj(parsed.routing)) {
+                throw new Error("Choose a Pi-MFX preset exported in the current routing format.");
+            }
+            await client.request("preset/import", { preset: parsed, bankId });
+            setToast(`Imported “${str(parsed.name, file.name)}” into “${str(obj(activeBank).name)}”.`);
+            window.setTimeout(() => setToast(""), 5000);
         });
     };
 
@@ -289,6 +330,8 @@ export function BanksView({
                     <button type="button" className="btn" disabled={busy}
                         title="Import a bank JSON file from this device"
                         onClick={() => bankImportRef.current?.click()}>IMPORT BANK</button>
+                    <button type="button" className="btn" disabled={!activeBank || busy}
+                        title="Download this bank's saved presets as JSON" onClick={exportBankFile}>EXPORT BANK</button>
                     <input ref={bankImportRef} type="file" accept=".json,application/json" hidden
                         aria-label="Choose a Pi-MFX bank file" onChange={(event) => {
                             const file = event.currentTarget.files?.[0];
@@ -327,6 +370,18 @@ export function BanksView({
             <section className={`split-pane${focused === "presets" ? " is-nav-focused" : ""}`}
                 onPointerDown={() => focusPane("presets")}>
                 <div className="split-pane-title">PRESETS</div>
+                <div className="split-tools">
+                    <button type="button" className="btn" disabled={!activeBank || busy || obj(activeBank).communityHolding === true}
+                        title="Import a preset JSON file into this bank" onClick={() => presetImportRef.current?.click()}>IMPORT PRESET</button>
+                    <button type="button" className="btn" disabled={presetIndex < 0 || busy}
+                        title="Download the selected preset's saved settings as JSON" onClick={exportPresetFile}>EXPORT PRESET</button>
+                    <input ref={presetImportRef} type="file" accept=".json,application/json" hidden
+                        aria-label="Choose a Pi-MFX preset file" onChange={event => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (file) importPresetFile(file);
+                        }} />
+                </div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={!activePreset || busy} onClick={renamePreset}>RENAME</button>
                     <button type="button" className="btn" disabled={presetIndex <= 0 || busy} onClick={() => {

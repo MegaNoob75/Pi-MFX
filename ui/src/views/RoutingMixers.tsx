@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { controlValue, type EngineClient } from "../api";
-import { bool, num, obj, objects, str, type JsonObject } from "../json";
+import { num, obj, objects, str, type JsonObject } from "../json";
 import { blendLevels, blendRange } from "./cabinetBlend";
+import { RigMixControls } from "./RigMixControls";
 
 const CAB_URI = "http://two-play.com/plugins/toob-cab-ir";
 const symbols = ["reverb_mix", "reverb_mix2", "reverb_mix3"];
@@ -109,8 +110,11 @@ export function RoutingMixers({ blocks, routing, selected, onSelected, client, o
     };
     const localRouting = useRef(routing);
     useEffect(() => { localRouting.current = routing; }, [routing]);
-    const changeEdge = (index: number, patch: JsonObject) => {
-        const next = { ...localRouting.current, edges: objects(localRouting.current.edges).map((e, i) => i === index ? { ...e, ...patch } : e) };
+    const changeEdges = (patches: { index: number; patch: JsonObject }[]) => {
+        const next = { ...localRouting.current, edges: objects(localRouting.current.edges).map((e, i) => {
+            const update = patches.find(p => p.index === i);
+            return update ? { ...e, ...update.patch } : e;
+        }) };
         localRouting.current = next; onRouting(next);
     };
     const modelNames = (id: string, visited = new Set<string>()): string[] => {
@@ -129,41 +133,14 @@ export function RoutingMixers({ blocks, routing, selected, onSelected, client, o
         const impulses = Object.values(obj(obj(block?.state).properties)).map(v => str(v)).filter(v => /\.(wav|aiff?|flac)$/i.test(v));
         return impulses.length ? impulses.map(fileName).join(" / ") : str(block?.name, id === "input" ? "Input" : "Branch");
     };
-    const touchPan = (event: React.PointerEvent<HTMLDivElement>, index: number) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        const pan = Math.round((Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * 2 - 1) * 100) / 100;
-        changeEdge(index, { pan });
-    };
-    return <div className="routing-mix-panels">
+    return <div className={`routing-mix-panels ${cab ? "" : "routing-mix-rig-only"}`}>
         <section className={`panel routing-mix-panel ${rigGraphic ? "is-graphical" : "is-sliders"}`}><div className="routing-mix-heading"><h2>RIG MIX</h2><ViewChoice graph={rigGraphic} set={setRigGraphic} storage="pimfx-routing-mix-view" /></div>
             <select className="input" aria-label="Routing mixer" value={mixerId} onChange={e => onSelected(e.target.value)}>
                 {mixes.map(m => <option key={str(m.id)} value={str(m.id)}>{str(m.name)}</option>)}</select>
-            {!inputs.length && <p className="muted">Connect branches to this mixer to adjust their blend.</p>}
-            {inputs.map((e, i) => <div key={e.index} className={`routing-mix-channel mix-color-${i % 3}`}>
-                <strong title={label(str(e.from))}>{i + 1} · {label(str(e.from))}</strong>
-                <div className="routing-pan-caption"><span>Pan · {num(e.pan) === 0 ? "Center" : `${num(e.pan) < 0 ? "Left" : "Right"} ${Math.round(Math.abs(num(e.pan)) * 100)}%`}</span><span>Left · Center · Right</span></div>
-                {rigGraphic ? <div className="routing-pan-graphic">
-                    <div className="routing-pan-track" role="slider" tabIndex={0} aria-label={`Pan ${label(str(e.from))}`}
-                        aria-valuemin={-1} aria-valuemax={1} aria-valuenow={num(e.pan)} aria-valuetext={num(e.pan) === 0 ? "Center" : `${num(e.pan) < 0 ? "Left" : "Right"} ${Math.round(Math.abs(num(e.pan)) * 100)}%`}
-                        onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); touchPan(event, e.index); }}
-                        onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) touchPan(event, e.index); }}
-                        onKeyDown={event => {
-                            const current = num(objects(localRouting.current.edges)[e.index]?.pan);
-                            const pan = event.key === "Home" ? -1 : event.key === "End" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowDown" ? Math.max(-1, current - .01) : event.key === "ArrowRight" || event.key === "ArrowUp" ? Math.min(1, current + .01) : null;
-                            if (pan !== null) { event.preventDefault(); changeEdge(e.index, { pan: Math.round(pan * 100) / 100 }); }
-                        }}>
-                        <span className="routing-pan-center" /><span className="routing-pan-dot" style={{ left: `${(num(e.pan) + 1) * 50}%` }}>{i + 1}</span>
-                    </div>
-                </div> : <label className="routing-pan"><input type="range" aria-label={`Pan ${label(str(e.from))}`} min="-1" max="1" step="0.01" value={num(e.pan)} onChange={event => changeEdge(e.index, { pan: Number(event.target.value) })} /></label>}
-                <div className="routing-channel-controls">
-                    <Level displayLabel="Volume" label={`${label(str(e.from))} volume`} value={num(e.levelDb)} onChange={levelDb => changeEdge(e.index, { levelDb })} />
-                    <button className={`btn ${bool(e.mute) ? "btn-active" : ""}`} aria-pressed={bool(e.mute)} onClick={() => changeEdge(e.index, { mute: !bool(e.mute) })} aria-label={`Mute ${label(str(e.from))}`}>MUTE</button>
-                    <button className={`btn ${bool(e.solo) ? "btn-active" : ""}`} aria-pressed={bool(e.solo)} onClick={() => changeEdge(e.index, { solo: !bool(e.solo) })} aria-label={`Solo ${label(str(e.from))}`}>SOLO</button>
-                </div>
-            </div>)}
+            <RigMixControls inputs={inputs} graphical={rigGraphic} label={label} onChange={changeEdges} />
         </section>
-        <section className={`panel routing-mix-panel ${cabGraphic ? "is-graphical" : "is-sliders"}`}><div className="routing-mix-heading"><h2>CABINET MIX</h2><ViewChoice graph={cabGraphic} set={setCabGraphic} storage="pimfx-cab-mix-view" /></div>
-            {!cab ? <p className="muted">Add a TooB Cab IR block to blend its cabinets here.</p> : <>
+        {cab && <section className={`panel routing-mix-panel ${cabGraphic ? "is-graphical" : "is-sliders"}`}><div className="routing-mix-heading"><h2>CABINET MIX</h2><ViewChoice graph={cabGraphic} set={setCabGraphic} storage="pimfx-cab-mix-view" /></div>
+            <>
                 <div className="routing-cab-selector"><select className="input" aria-label="Cab IR instance" value={actualCabId} onChange={e => setCabId(e.target.value)}>
                     {cabinets.map((c, i) => <option key={str(c.id)} value={str(c.id)}>{i + 1} · {str(c.name, "Cab IR")}</option>)}</select><button className="btn" aria-label="Cabinet files and plugin controls" title="Files & plugin controls" onClick={() => onEdit(actualCabId)}>FILES</button></div>
                 {!loaded.length && <p className="muted">Load cabinets in this plugin’s controls to begin.</p>}
@@ -188,8 +165,8 @@ export function RoutingMixers({ blocks, routing, selected, onSelected, client, o
                 <div className={`routing-cab-levels ${loaded.length > 1 && cabGraphic ? "has-blend" : ""}`} style={cabGraphic && loaded.length > 1 ? { gridTemplateColumns: `repeat(${loaded.length}, minmax(0, 1fr))` } : undefined}>{loaded.map((c, i) => <div key={c.index} className={`routing-cab-level mix-color-${i}`} title={c.name}><Level label={`${c.name} volume${values[c.index] <= c.min ? " · muted" : ""}`}
                     value={values[c.index]} min={c.min} max={c.max} onChange={value => { const next = [...values]; next[c.index] = value; cabWrite(next); }} /></div>)}
                 </div>
-            </>}
+            </>
             {message && <div className="muted" role="status">{message}</div>}
-        </section>
+        </section>}
     </div>;
 }

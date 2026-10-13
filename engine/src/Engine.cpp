@@ -1279,6 +1279,29 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
         }
     }
 
+    // Disconnected/bypassed processors are normally skipped, but queued
+    // properties and LV2 worker responses still need run cycles to finish.
+    // Otherwise an unconnected newly added amp can permanently block graph
+    // edits in validateGraphEditChain(). Use its preallocated node buffers
+    // and discard the output; never run its processor twice in one callback.
+    const bool allBypassed = bypassAll_.load(std::memory_order_relaxed);
+    for (auto& node : chain->nodes) {
+        if (!node.slot || !node.slot->plugin) continue;
+        if (node.active && !allBypassed
+            && node.slot->enabled.load(std::memory_order_relaxed)) continue;
+        if (!node.slot->plugin->propertyTransitionPending()) continue;
+        for (unsigned c = 0; c < channels; ++c) {
+            std::fill(node.inputPointers[c], node.inputPointers[c] + frames, 0.0f);
+            std::fill(node.outputPointers[c], node.outputPointers[c] + frames, 0.0f);
+        }
+        node.slot->plugin->process(
+            reinterpret_cast<const float* const*>(node.inputPointers.data()),
+            std::min(node.slot->plugin->audioInputs(), channels),
+            node.outputPointers.data(),
+            std::min(node.slot->plugin->audioOutputs(), channels),
+            frames, nullptr);
+    }
+
     // Ramp ordinary output-level changes rather than stepping the fader. The
     // separate final master transition below handles preset/property muting.
     const float target = targetOutputGain_.load(std::memory_order_relaxed);
@@ -2613,6 +2636,7 @@ bool Engine::reorderBank(const std::string& bankId, int newIndex, std::string& e
 }
 
 Json Engine::exportBank(const std::string& bankId) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     for (const Bank& bank : banks_) {
         if (bank.id == bankId) {
             Json json = bank.toJson();
@@ -2648,6 +2672,48 @@ bool Engine::importBank(const Json& json, std::string& error) {
         return false;
     }
     banks_.push_back(std::move(bank));
+    notify();
+    return true;
+}
+
+Json Engine::exportPreset(const std::string& presetId) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    for (const Bank& bank : banks_) for (const Preset& preset : bank.presets) {
+        if (preset.id != presetId) continue;
+        Json json = preset.toJson();
+        json.set("format", "pimfx-preset");
+        json.set("formatVersion", 2);
+        return json;
+    }
+    return Json();
+}
+
+bool Engine::importPreset(const Json& json, const std::string& bankId, std::string& error) {
+    if (!json.isObject() || json["format"].asString() != "pimfx-preset"
+        || json["formatVersion"].asInt() != 2 || json["routingFormat"].asInt() != 1 || !json["chain"].isArray()
+        || !json["routing"].isObject()) {
+        error = "that file is not a Pi-MFX preset in the current routing format";
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Bank* bank = findBank(bankId);
+    if (!bank || bank->communityHolding) {
+        error = "choose a user bank for the imported preset";
+        return false;
+    }
+    Preset preset = Preset::fromJson(json);
+    std::vector<std::string> order;
+    if (!routingOrder(preset, preset.routing, order, error)) return false;
+    for (const auto& snapshot : preset.snapshots)
+        if (!routingMixValid(preset, snapshot.routingMix, error)) return false;
+    preset.id = newId("preset");
+    Bank updated = *bank;
+    updated.presets.push_back(std::move(preset));
+    if (!storage_.saveBank(updated)) {
+        error = "could not write the imported preset";
+        return false;
+    }
+    *bank = std::move(updated);
     notify();
     return true;
 }

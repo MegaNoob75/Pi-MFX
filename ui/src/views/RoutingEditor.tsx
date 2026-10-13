@@ -4,6 +4,7 @@ import type { EngineClient } from "../api";
 import { bool, num, obj, objects, str, type JsonObject } from "../json";
 import { PluginBrowser } from "./PluginBrowser";
 import { RoutingMixers } from "./RoutingMixers";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { routeCables } from "./routingCables";
 
 type Point = { x: number; y: number };
@@ -62,6 +63,7 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     const [graph, setGraph] = useState(routing);
     const [message, setMessage] = useState("");
     const [deleteId, setDeleteId] = useState("");
+    const [deleteEdge, setDeleteEdge] = useState<{ from: string; to: string } | null>(null);
     const [routingBusy, setRoutingBusy] = useState(false);
     const [newBlocks, setNewBlocks] = useState<Set<string>>(() => new Set());
     const [revealId, setRevealId] = useState("");
@@ -76,6 +78,8 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     const viewport = useRef<HTMLDivElement>(null);
     const canvas = useRef<HTMLDivElement>(null);
     const wireRef = useRef<typeof wire>(null);
+    const touchPort = useRef<{ pointerId: number; x: number; y: number; id: string; direction: "in" | "out" } | null>(null);
+    const suppressPortClickUntil = useRef(0);
     const positionsRef = useRef(positions);
     positionsRef.current = positions;
     useEffect(() => {
@@ -107,7 +111,7 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         graphRef.current = routing;
         setGraph(routing);
         setPositions(obj(routing.positions));
-        setSelected(""); setSource(""); setDeleteId("");
+        setSelected(""); setSource(""); setDeleteId(""); setDeleteEdge(null);
     }, [presetId]);
     const nodes = [{ id: "input", name: "INPUT" }, ...blocks, { id: "output", name: "OUTPUT" }];
     useEffect(() => {
@@ -130,8 +134,8 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     const cableTopology = JSON.stringify(edges.map(e => ({ from: str(e.from), to: str(e.to) })));
     const cableRoutes = useMemo(() => routeCables(JSON.parse(cableGeometry), JSON.parse(cableTopology)), [cableGeometry, cableTopology]);
     const cablePoints = cableRoutes.flatMap(route => route.points);
-    const width = Math.max(850, Math.ceil(viewportSize.width / zoom), ...nodes.map(n => point(str(n.id)).x + 200), ...cablePoints.map(p => p.x + 20));
-    const height = Math.max(420, Math.ceil(viewportSize.height / zoom), ...nodes.map(n => point(str(n.id)).y + 155), ...cablePoints.map(p => p.y + 20));
+    const width = Math.max(850, Math.ceil(viewportSize.width / zoom), ...nodes.map(n => point(str(n.id)).x + 200), ...cablePoints.map(p => p.x + 20), ...cableRoutes.map(r => r.label.x + 30));
+    const height = Math.max(420, Math.ceil(viewportSize.height / zoom), ...nodes.map(n => point(str(n.id)).y + 155), ...cablePoints.map(p => p.y + 20), ...cableRoutes.map(r => r.label.y + 30));
     const align = (value: number, enabled = snap) => Math.max(0, Math.min(enabled ? Math.floor(10000 / spacing) * spacing : 10000,
         enabled ? Math.round(value / spacing) * spacing : value));
     if (cablePalette.current.presetId !== presetId) cablePalette.current = { presetId, hues: savedCableHues(presetId) };
@@ -245,9 +249,23 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         const next = { ...active, point: { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom }, target };
         wireRef.current = next; setWire(next);
     };
+    const tapPort = (id: string, direction: "in" | "out") => {
+        if (locked || wireMode !== "tap") return;
+        if (direction === "in") connect(id);
+        else { setSource(source === id ? "" : id); setSelected(id); }
+    };
     const wireEvents = (id: string, direction: "in" | "out") => ({
         onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
-            if (wireMode !== "drag" || locked || event.button !== 0) return;
+            if (locked || (event.pointerType === "mouse" && event.button !== 0) || !event.isPrimary) return;
+            event.stopPropagation();
+            if (event.pointerType !== "mouse") suppressPortClickUntil.current = performance.now() + 800;
+            if (wireMode === "tap") {
+                if (event.pointerType === "mouse") return;
+                event.preventDefault();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                touchPort.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, id, direction };
+                return;
+            }
             event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
             const start = { id, direction };
             const next = { start, point: portPoint(start), target: null };
@@ -255,6 +273,16 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         },
         onPointerMove: moveWire,
         onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
+            event.stopPropagation();
+            if (event.pointerType !== "mouse") suppressPortClickUntil.current = performance.now() + 800;
+            const touch = touchPort.current;
+            if (touch && touch.pointerId === event.pointerId) {
+                touchPort.current = null;
+                suppressPortClickUntil.current = performance.now() + 800;
+                event.preventDefault();
+                if (Math.hypot(event.clientX - touch.x, event.clientY - touch.y) <= 16) tapPort(touch.id, touch.direction);
+                return;
+            }
             if (!wireRef.current) return;
             moveWire(event);
             const active = wireRef.current;
@@ -265,8 +293,13 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                 connect(to, from);
             }
         },
-        onPointerCancel: () => { wireRef.current = null; setWire(null); },
-        onLostPointerCapture: () => { wireRef.current = null; setWire(null); }
+        onPointerCancel: () => { touchPort.current = null; wireRef.current = null; setWire(null); },
+        onLostPointerCapture: () => { touchPort.current = null; wireRef.current = null; setWire(null); },
+        onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
+            event.stopPropagation();
+            if (event.detail !== 0 && performance.now() < suppressPortClickUntil.current) return;
+            tapPort(id, direction);
+        }
     });
     const alignAll = () => {
         const next: JsonObject = {};
@@ -332,13 +365,18 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
             </> : <div className="routing-menu-connections">
                 {!edges.length && <p className="muted">No audio connections. Use the connectors on the canvas to add one.</p>}
                 {edges.map((edge, i) => <div key={`${str(edge.from)}:${str(edge.to)}`} className="routing-menu-connection"><span><span className="routing-cable-swatch" style={{ backgroundColor: cableColors[i] }} aria-hidden="true" />{i + 1}: {str(nodes.find(n => n.id === edge.from)?.name)} → {str(nodes.find(n => n.id === edge.to)?.name)}</span>
-                    <button className="btn btn-danger" disabled={locked} aria-label={`Remove connection ${i + 1}`} onClick={() => commit({ ...graphRef.current, edges: objects(graphRef.current.edges).filter(e => !(e.from === edge.from && e.to === edge.to)) })}>×</button></div>)}
+                    <button className="btn btn-danger" disabled={locked} aria-label={`Remove connection ${i + 1}`} onClick={() => { setMenu(""); setDeleteEdge({ from: str(edge.from), to: str(edge.to) }); }}>×</button></div>)}
             </div>}
         </div>, document.body)}
         {message && <div role="status" className="muted">{message}</div>}
-        {deleteId && <div className="routing-toolbar"><strong>Remove this block and its connections?</strong>
-            <button className="btn btn-danger" disabled={locked || routingBusy} onClick={() => { if (locked || sending.current || pending.current) return; const id = deleteId; setDeleteId(""); void onRemove(id); }}>REMOVE</button>
-            <button className="btn" onClick={() => setDeleteId("")}>CANCEL</button></div>}
+        {deleteId && <ConfirmDialog title="REMOVE BLOCK?" body={`Remove ${str(nodes.find(n => n.id === deleteId)?.name, "this block")} and its connections?`} confirmLabel="REMOVE" danger
+            onCancel={() => setDeleteId("")} onConfirm={() => { if (locked || sending.current || pending.current) return; const id = deleteId; setDeleteId(""); void onRemove(id); }} />}
+        {deleteEdge && <ConfirmDialog title="REMOVE CONNECTION?" body={`${str(nodes.find(n => n.id === deleteEdge.from)?.name, deleteEdge.from)} → ${str(nodes.find(n => n.id === deleteEdge.to)?.name, deleteEdge.to)}`} confirmLabel="REMOVE" danger
+            onCancel={() => setDeleteEdge(null)} onConfirm={() => {
+                if (locked || sending.current || pending.current) return;
+                commit({ ...graphRef.current, edges: objects(graphRef.current.edges).filter(e => !(e.from === deleteEdge.from && e.to === deleteEdge.to)) });
+                setDeleteEdge(null);
+            }} />}
         {mix ? <RoutingMixers blocks={blocks} routing={graph} selected={selected} onSelected={setSelected}
             client={client} onEdit={onEdit} onRouting={commit} /> : <>
             {source && <div className="routing-hint">Tap an IN connector to finish. <button className="btn" onClick={() => setSource("")}>CANCEL CONNECTION</button></div>}
@@ -349,7 +387,7 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                             {edges.map((e, i) => {
                                 const route = cableRoutes[i];
                                 return <g key={`${str(e.from)}:${str(e.to)}`}><path style={{ stroke: cableColors[i] }} d={route.path} />
-                                    <text style={{ fill: cableColors[i] }} x={route.label.x} y={route.label.y}>{i + 1}</text></g>;
+                                    <line className="routing-label-leader" style={{ stroke: cableColors[i] }} x1={route.labelAnchor.x} y1={route.labelAnchor.y} x2={route.label.x} y2={route.label.y} /></g>;
                             })}
                             {wire && (() => {
                                 const start = portPoint(wire.start), end = wire.target ? portPoint(wire.target) : wire.point;
@@ -357,6 +395,10 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                                 return <path className={`routing-wire-preview ${wire.target ? "valid" : ""}`} d={`M ${a.x} ${a.y} C ${a.x + 40} ${a.y}, ${b.x - 40} ${b.y}, ${b.x} ${b.y}`} />;
                             })()}
                         </svg>
+                        {edges.map((edge, i) => <button key={`label:${str(edge.from)}:${str(edge.to)}`} className="routing-connection-number"
+                            style={{ left: cableRoutes[i].label.x, top: cableRoutes[i].label.y, color: cableColors[i] }}
+                            disabled={locked || routingBusy} aria-label={`Remove connection ${i + 1}: ${str(nodes.find(n => n.id === edge.from)?.name)} to ${str(nodes.find(n => n.id === edge.to)?.name)}`}
+                            onClick={() => setDeleteEdge({ from: str(edge.from), to: str(edge.to) })}>{i + 1}<span className="routing-connection-remove-hint" aria-hidden="true">−</span></button>)}
                         {nodes.map(node => {
                             const id = str(node.id), p = point(id), endpoint = id === "input" || id === "output";
                             const incoming = edges.some(e => str(e.to) === id), outgoing = edges.some(e => str(e.from) === id);
@@ -365,6 +407,7 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                             return <div key={id} className={`routing-block ${selected === id ? "selected" : ""} ${newBlocks.has(id) ? "new-block" : ""} ${!endpoint && !incoming && !outgoing ? "disconnected" : ""}`}
                                 onPointerDownCapture={() => acknowledge(id)} onClickCapture={() => acknowledge(id)}
                                 style={{ left: p.x, top: p.y }}>
+                                <div className="routing-block-top">
                                 <button className="routing-block-heading" title={str(node.name)} disabled={locked}
                                     onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); drag.current = { id, x: e.clientX, y: e.clientY, start: p }; setSelected(id); }}
                                     onPointerMove={e => { const d = drag.current; if (!d || d.id !== id) return;
@@ -373,15 +416,22 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                                     onPointerUp={() => { if (!drag.current) return; drag.current = null; commit({ ...graphRef.current, positions: positionsRef.current }); }}
                                     onPointerCancel={() => { drag.current = null; setPositions(obj(graphRef.current.positions)); }}>
                                     <span>⠿</span> {str(node.name, "Effect")}</button>
-                                <button className="routing-block-body" onClick={() => edit(id)}>
+                                </div>
+                                <button className="routing-block-body"
+                                    onPointerDown={() => { suppressPortClickUntil.current = 0; }}
+                                    onClick={event => {
+                                        if (event.detail !== 0 && performance.now() < suppressPortClickUntil.current) return;
+                                        edit(id);
+                                    }}>
                                     <span>{endpoint ? "LEVEL & SETTINGS" : str(node.kind) === "mixer" ? "GRAPHICAL / SLIDERS" : str(obj(node.plugin).category, "PLUGIN CONTROLS")}</span>
                                     {!endpoint && <small>{bool(node.missing) ? "PLUGIN MISSING" : !incoming && hasInput ? "NO AUDIO INPUT" : !hasOutput ? "INPUT MONITOR" : !outgoing ? "NO AUDIO OUTPUT" : "CONNECTED"}</small>}
                                 </button>
                                 <div className="routing-ports">
                                     {id !== "input" && hasInput ? <button className={`btn ${wire?.target?.id === id && wire.target.direction === "in" ? "routing-port-target" : ""}`} data-routing-port="in" data-block-id={id}
-                                        disabled={locked || (wireMode === "tap" && !source)} {...wireEvents(id, "in")} onClick={() => { if (wireMode === "tap") connect(id); }}>IN{portColors(id, "in")}</button> : <span />}
+                                        disabled={locked || (wireMode === "tap" && !source)} {...wireEvents(id, "in")}>IN{portColors(id, "in")}</button> : <span />}
+                                    {!endpoint ? <button className="btn routing-block-remove" disabled={locked || routingBusy} aria-label={`Remove ${str(node.name, "block")}`} onClick={() => setDeleteId(id)}>−</button> : <span />}
                                     {id !== "output" && hasOutput && <button className={`btn ${source === id ? "btn-active" : ""} ${wire?.target?.id === id && wire.target.direction === "out" ? "routing-port-target" : ""}`} data-routing-port="out" data-block-id={id}
-                                        disabled={locked} {...wireEvents(id, "out")} onClick={() => { if (wireMode === "tap") { setSource(source === id ? "" : id); setSelected(id); } }}>OUT{portColors(id, "out")}</button>}
+                                        disabled={locked} {...wireEvents(id, "out")}>OUT{portColors(id, "out")}</button>}
                                 </div>
                             </div>;
                         })}
@@ -389,7 +439,12 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                 </div>
             </div>
         </>}
-        <PluginBrowser sessionKey={`routing:${presetId}`} open={browser} catalog={catalog} title="ADD PLUGIN" actionLabel="ADD BLOCK" onCancel={() => setBrowser(false)}
+        <PluginBrowser sessionKey={`routing:${presetId}`} open={browser} catalog={catalog} title="ADD PLUGIN" actionLabel="ADD BLOCK" warnMixerCompatibility onCancel={() => setBrowser(false)}
+            onInstallToob={async () => {
+                if (locked || sending.current || pending.current) throw new Error("Wait for the current preset operation to finish, then try again.");
+                await client.request("plugins/github/install", { id: "toobamp" });
+                await client.request("plugins/rescan");
+            }}
             onChoose={uri => { setBrowser(false); if (locked || sending.current || pending.current) return; void runStructure(() => client.request("chain/add", { uri, layout: additionLayout() })); }} />
     </div>;
 }

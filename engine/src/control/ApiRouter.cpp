@@ -473,6 +473,21 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.reorderBank(payload["bankId"].asString(), payload["index"].asInt(0), error);
         return Json::object();
     }
+    if (command == "preset/export") {
+        const Json preset = engine_.exportPreset(payload["presetId"].asString());
+        if (preset.isNull()) {
+            ok = false;
+            error = "no such preset";
+            return Json::object();
+        }
+        Json result = Json::object();
+        result.set("preset", preset);
+        return result;
+    }
+    if (command == "preset/import") {
+        ok = engine_.importPreset(payload["preset"], payload["bankId"].asString(), error);
+        return Json::object();
+    }
     if (command == "bank/export") {
         const Json bank = engine_.exportBank(payload["bankId"].asString());
         if (bank.isNull()) {

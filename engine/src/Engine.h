@@ -127,6 +127,8 @@ public:
     bool reorderBank(const std::string& bankId, int newIndex, std::string& error);
     Json exportBank(const std::string& bankId) const;
     bool importBank(const Json& json, std::string& error);
+    Json exportPreset(const std::string& presetId) const;
+    bool importPreset(const Json& json, const std::string& bankId, std::string& error);
     bool exportPresetForCommunity(const std::string& bankId, const std::string& presetId,
                                   Preset& preset, std::string& error);
     bool importCommunityPreset(const Json& manifest, bool incomplete,
