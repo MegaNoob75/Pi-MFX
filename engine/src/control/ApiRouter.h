@@ -13,6 +13,9 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 
 namespace pimfx {
 
@@ -29,8 +32,17 @@ public:
 
     /// Wires the router into the server and starts pushing state to clients.
     void attach();
+    void stop();
 
 private:
+    bool queueWork(std::function<void()> work);
+    void workLoop();
+    void reapToneDownloads();
+    std::mutex workMutex_;
+    std::condition_variable workWake_;
+    std::deque<std::function<void()>> workQueue_;
+    std::thread workThread_;
+    bool stopping_ = false;
     bool handleRequest(const HttpRequest& request, HttpResponse& response);
     void handleSocketMessage(uint64_t clientId, const std::string& message);
     void handleSocketOpen(uint64_t clientId);
@@ -52,6 +64,8 @@ private:
     PluginStore& plugins_;
     CommunityCatalog& community_;
     HttpServer& server_;
+    std::mutex mediaMessagesMutex_;
+    std::unordered_map<std::string, std::string> lastMediaMessages_;
     std::atomic<uint64_t> uiNavClient_{0};
     std::mutex uiSessionMutex_;
     Json uiSession_ = Json::object();
@@ -69,10 +83,11 @@ private:
         std::vector<ToneDownloadFile> files;
         std::atomic<int> completed{0};
         std::atomic<bool> done{false};
+        uint64_t sequence = 0;
+        std::thread thread;
     };
     std::mutex toneDownloadJobsMutex_;
     std::unordered_map<std::string, std::shared_ptr<ToneDownloadJob>> toneDownloadJobs_;
-    std::vector<std::thread> toneDownloadThreads_;
     std::atomic<uint64_t> nextToneDownloadJob_{1};
 };
 

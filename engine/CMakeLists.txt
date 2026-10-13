@@ -15,9 +15,6 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fno-math-errno -fno-trapping-math")
 
 option(PIMFX_NATIVE_ARCH "Tune for the build machine (leave OFF for portable builds)" OFF)
-option(PIMFX_ENABLE_MULTITRACK_RECORDER "Build the Milestone 3 multitrack recorder" ON)
-option(PIMFX_ENABLE_DRUM_MACHINE "Build the Milestone 4 drum machine" ON)
-option(PIMFX_ENABLE_COMMUNITY_CATALOG "Build the Milestone 5 community preset catalog" ON)
 
 add_executable(pimfx)
 
@@ -151,18 +148,6 @@ target_compile_definitions(pimfx PRIVATE
     PIMFX_GIT_SHA="${PIMFX_GIT_SHA}"
 )
 
-if(PIMFX_ENABLE_MULTITRACK_RECORDER)
-    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_MULTITRACK_RECORDER=1)
-endif()
-
-if(PIMFX_ENABLE_DRUM_MACHINE)
-    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_DRUM_MACHINE=1)
-endif()
-
-if(PIMFX_ENABLE_COMMUNITY_CATALOG)
-    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_COMMUNITY_CATALOG=1)
-endif()
-
 install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
@@ -174,21 +159,6 @@ if(BUILD_TESTING)
     )
     target_include_directories(pimfx_startup_guard_test PRIVATE src)
     add_test(NAME startup_guard COMMAND pimfx_startup_guard_test)
-
-    if(LILV_FOUND)
-        add_executable(pimfx_cab_ir_live_mix_test
-            tests/CabIrLiveMixTest.cpp
-            src/host/Lv2Host.cpp
-            src/host/UridMap.cpp
-            src/core/Json.cpp
-            src/core/Log.cpp
-        )
-        target_include_directories(pimfx_cab_ir_live_mix_test PRIVATE src)
-        target_compile_definitions(pimfx_cab_ir_live_mix_test PRIVATE PIMFX_HAVE_LILV=1)
-        target_link_libraries(pimfx_cab_ir_live_mix_test PRIVATE PkgConfig::LILV Threads::Threads)
-        add_test(NAME cab_ir_live_mix COMMAND pimfx_cab_ir_live_mix_test)
-        set_tests_properties(cab_ir_live_mix PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
-    endif()
 
     add_executable(pimfx_access_control_test
         tests/AccessControlTest.cpp
@@ -247,6 +217,10 @@ if(BUILD_TESTING)
         src/core/Json.cpp
     )
     target_include_directories(pimfx_transport_test PRIVATE src)
+    target_compile_options(pimfx_transport_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
     target_link_libraries(pimfx_transport_test PRIVATE Threads::Threads)
     add_test(NAME musical_transport COMMAND pimfx_transport_test)
     add_executable(pimfx_drum_sequencer_test

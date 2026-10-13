@@ -297,6 +297,7 @@ struct MidiMessage {
 struct Lv2Catalog::Impl {
     LilvWorld* world = nullptr;
     const LilvPlugins* plugins = nullptr;
+    std::vector<PluginInfo> metadata;
 
     LilvNode* audioPort = nullptr;
     LilvNode* controlPort = nullptr;
@@ -402,9 +403,10 @@ void loadUserBundles(LilvWorld* world, const std::string& directory) {
 Lv2Catalog::Lv2Catalog() : impl_(std::make_shared<Impl>()) {}
 Lv2Catalog::~Lv2Catalog() = default;
 
-bool Lv2Catalog::available() const { return impl_ && impl_->world != nullptr; }
+bool Lv2Catalog::available() const { const auto world = sharedImpl(); return world && world->world != nullptr; }
 
 bool Lv2Catalog::rescan(std::string& error) {
+    std::lock_guard<std::mutex> lock(scanMutex_);
     // Loading into an existing world retains metadata for removed bundles.
     // Live instances keep their previous world until they are destroyed.
     auto next = std::make_shared<Impl>();
@@ -675,21 +677,11 @@ bool Lv2Catalog::rescan(std::string& error) {
     std::sort(discovered.begin(), discovered.end(),
               [](const PluginInfo& a, const PluginInfo& b) { return toLower(a.name) < toLower(b.name); });
 
-    impl_ = std::move(next);
-    plugins_ = std::move(discovered);
-    logInfo("lv2: " + std::to_string(plugins_.size()) + " plugins available");
+    next->metadata = std::move(discovered);
+    logInfo("lv2: " + std::to_string(next->metadata.size()) + " plugins available");
+    std::atomic_store(&impl_, std::move(next));
     error.clear();
     return true;
-}
-
-namespace {
-constexpr const char* kCabIrUri = "http://two-play.com/plugins/toob-cab-ir";
-constexpr std::array<const char*, 3> kCabFiles{{
-    "http://two-play.com/plugins/toob-cab-ir#impulseFile",
-    "http://two-play.com/plugins/toob-cab-ir#impulseFile2",
-    "http://two-play.com/plugins/toob-cab-ir#impulseFile3"
-}};
-constexpr std::array<const char*, 3> kCabLevels{{"reverb_mix", "reverb_mix2", "reverb_mix3"}};
 }
 
 struct PluginInstance::Impl {
@@ -717,21 +709,6 @@ struct PluginInstance::Impl {
     std::atomic<uint32_t> controlBatchRevision{0};
     std::vector<bool> isControlInput;
     std::vector<bool> isControlOutput;
-
-    // A Cab IR block presents its original three-file interface, but each
-    // file is convolved independently. Live gains never reach TooB's IR
-    // volume controls, which would rebuild and fade its combined kernel.
-    bool splitCabinets = false;
-    std::array<std::unique_ptr<PluginInstance>, 3> cabinets;
-    std::array<std::atomic<bool>, 3> cabinetLoaded{{false, false, false}};
-    std::array<std::vector<std::vector<float>>, 3> cabinetBuffers;
-    std::array<std::vector<float*>, 3> cabinetPointers;
-    std::array<uint32_t, 3> cabinetLevelPorts{};
-    std::array<float, 3> cabinetMinimums{};
-    std::array<float, 4> cabinetGains{};
-    int cabinetDirectPort = -1;
-    float cabinetDirectMinimum = -40.0f;
-    float cabinetSmoothing = 1.0f;
 
     std::vector<uint32_t> audioInputPorts;
     std::vector<uint32_t> audioOutputPorts;
@@ -816,9 +793,6 @@ struct PluginInstance::Impl {
 
     ~Impl() {
         stopWorker();
-        // Children retain pointers into cabinetBuffers from their last run.
-        // Stop/free them before automatic member destruction frees buffers.
-        for (auto& child : cabinets) child.reset();
         if (instance) {
             if (active) {
                 lilv_instance_deactivate(instance);
@@ -890,18 +864,18 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
                                                        const std::string& uri,
                                                        unsigned sampleRate,
                                                        unsigned maxFrames,
-                                                       std::string& error, bool splitCabinets) {
+                                                       std::string& error) {
     if (!catalog.available()) {
         error = "no LV2 support in this build";
         return nullptr;
     }
-    const PluginInfo* info = catalog.find(uri);
+    std::shared_ptr<Lv2Catalog::Impl> catalogWorld;
+    const auto info = catalog.find(uri, &catalogWorld);
     if (!info) {
         error = "plugin not installed: " + uri;
         return nullptr;
     }
 
-    auto catalogWorld = catalog.sharedImpl();
     Lv2Catalog::Impl& world = *catalogWorld;
     LilvNode* uriNode = lilv_new_uri(world.world, uri.c_str());
     const LilvPlugin* plugin = lilv_plugins_get_by_uri(world.plugins, uriNode);
@@ -934,53 +908,6 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     impl.sampleRateValue = static_cast<float>(sampleRate);
     impl.maxBlockLength = static_cast<int32_t>(maxFrames);
     impl.minBlockLength = impl.maxBlockLength;
-
-    if (splitCabinets && uri == kCabIrUri) {
-        impl.splitCabinets = true;
-        const uint32_t count = lilv_plugin_get_num_ports(plugin);
-        impl.staged = std::vector<std::atomic<float>>(count);
-        impl.live.assign(count, 0.0f);
-        impl.controlScratch.assign(count, 0.0f);
-        impl.isControlInput.assign(count, false);
-        impl.isControlOutput.assign(count, false);
-        for (const PortInfo& port : self->info_.ports) {
-            if (!port.control) continue;
-            impl.staged[port.index].store(port.defaultValue, std::memory_order_relaxed);
-            impl.live[port.index] = port.defaultValue;
-            impl.isControlInput[port.index] = port.input;
-            impl.isControlOutput[port.index] = !port.input;
-            if (port.symbol == "direct_mix") {
-                impl.cabinetDirectPort = static_cast<int>(port.index);
-                impl.cabinetDirectMinimum = port.minimum;
-            }
-        }
-        impl.cabinetSmoothing = 1.0f - std::exp(-1.0f / (.01f * sampleRate));
-        for (size_t i = 0; i < impl.cabinets.size(); ++i) {
-            const auto level = std::find_if(self->info_.ports.begin(), self->info_.ports.end(), [&](const PortInfo& port) {
-                return port.control && port.input && port.symbol == kCabLevels[i];
-            });
-            if (level == self->info_.ports.end()) { error = "Cab IR is missing its volume controls"; return nullptr; }
-            impl.cabinetLevelPorts[i] = level->index;
-            impl.cabinetMinimums[i] = level->minimum;
-            auto child = PluginInstance::create(catalog, uri, sampleRate, maxFrames, error, false);
-            if (!child) return nullptr;
-            for (const PortInfo& port : child->info().ports) {
-                if (!port.control || !port.input) continue;
-                if (port.symbol == kCabLevels[0]) child->setControl(port.index, 0.0f);
-                else if (port.symbol == kCabLevels[1] || port.symbol == kCabLevels[2] || port.symbol == "direct_mix") {
-                    child->setControl(port.index, port.minimum);
-                }
-            }
-            // Suppress any plugin-supplied default files. Each child uses only
-            // its primary IR; logical slots 2/3 map to primary IRs in children.
-            for (const char* property : kCabFiles) if (!child->setProperty(property, "", error)) return nullptr;
-            impl.cabinetBuffers[i].assign(info->audioOutputs, std::vector<float>(maxFrames, 0.0f));
-            for (auto& buffer : impl.cabinetBuffers[i]) impl.cabinetPointers[i].push_back(buffer.data());
-            impl.cabinets[i] = std::move(child);
-            impl.propertyValues.emplace_back(kCabFiles[i], "");
-        }
-        return self;
-    }
 
     UridMap& urids = catalog.urids();
     impl.urids.atomFloat = urids.map(LV2_ATOM__Float);
@@ -1188,10 +1115,7 @@ float PluginInstance::readOutput(uint32_t portIndex) const {
 }
 
 void PluginInstance::pushMidi(const uint8_t* data, uint32_t size, uint32_t frameOffset) {
-    if (impl_->splitCabinets) {
-        for (auto& child : impl_->cabinets) child->pushMidi(data, size, frameOffset);
-        return;
-    }
+
     if (size == 0 || size > sizeof(MidiMessage::data)) {
         return;
     }
@@ -1206,22 +1130,7 @@ bool PluginInstance::setProperty(const std::string& propertyUri,
                                  const std::string& value,
                                  std::string& error) {
     Impl& impl = *impl_;
-    if (impl.splitCabinets) {
-        const auto file = std::find(kCabFiles.begin(), kCabFiles.end(), propertyUri);
-        if (file != kCabFiles.end()) {
-            const size_t index = static_cast<size_t>(file - kCabFiles.begin());
-            if (!impl.cabinets[index]->setProperty(kCabFiles[0], value, error)) return false;
-            impl.cabinetLoaded[index].store(!value.empty(), std::memory_order_release);
-        } else {
-            for (auto& child : impl.cabinets) if (!child->setProperty(propertyUri, value, error)) return false;
-        }
-        std::lock_guard<std::mutex> lock(impl.propertyMutex);
-        for (auto& property : impl.propertyValues) {
-            if (property.first == propertyUri) { property.second = value; return true; }
-        }
-        impl.propertyValues.emplace_back(propertyUri, value);
-        return true;
-    }
+
     if (impl.atomInputPort < 0) {
         error = "this plugin has no atom input, so it cannot take a file";
         return false;
@@ -1268,22 +1177,16 @@ std::string PluginInstance::property(const std::string& propertyUri) const {
 }
 
 void PluginInstance::holdPropertyChanges() {
-    if (impl_->splitCabinets) for (auto& child : impl_->cabinets) child->holdPropertyChanges();
     impl_->propertyChangesHeld.store(true, std::memory_order_release);
 }
 
 void PluginInstance::releasePropertyChanges() {
-    if (impl_->splitCabinets) for (auto& child : impl_->cabinets) child->releasePropertyChanges();
     impl_->propertyChangesHeld.store(false, std::memory_order_release);
 }
 
 bool PluginInstance::propertyTransitionPending() const {
     const Impl& impl = *impl_;
-    if (impl.splitCabinets) {
-        if (impl.propertyChangesHeld.load(std::memory_order_acquire) || !impl.deferredControls.empty()) return true;
-        for (const auto& child : impl.cabinets) if (child->propertyTransitionPending()) return true;
-        return false;
-    }
+
     return impl.propertyChangesHeld.load(std::memory_order_acquire)
         || !impl.deferredControls.empty()
         || !impl.propertyQueue.empty()
@@ -1293,7 +1196,6 @@ bool PluginInstance::propertyTransitionPending() const {
 }
 
 void PluginInstance::beginDeferredStateChanges() {
-    if (impl_->splitCabinets) for (auto& child : impl_->cabinets) child->beginDeferredStateChanges();
     impl_->propertyChangesHeld.store(true, std::memory_order_release);
 }
 
@@ -1307,9 +1209,7 @@ bool PluginInstance::applyDeferredStateChanges() {
             changed = true;
         }
     }
-    if (impl.splitCabinets) {
-        for (auto& child : impl.cabinets) changed = child->applyDeferredStateChanges() || changed;
-    }
+
     const bool wasHeld = impl.propertyChangesHeld.exchange(false, std::memory_order_acq_rel);
     return changed || wasHeld;
 }
@@ -1329,11 +1229,7 @@ void PluginInstance::Impl::connectAudioBuffers(const float* const* inputs, unsig
 void PluginInstance::connectAudioBuffers(const float* const* inputs, unsigned inputCount,
                                         float* const* outputs, unsigned outputCount) {
     Impl& impl = *impl_;
-    if (impl.splitCabinets) {
-        for (size_t i = 0; i < impl.cabinets.size(); ++i)
-            impl.cabinets[i]->connectAudioBuffers(inputs, inputCount,
-                impl.cabinetPointers[i].data(), static_cast<unsigned>(impl.cabinetPointers[i].size()));
-    } else if (impl.instance) impl.connectAudioBuffers(inputs, inputCount, outputs, outputCount);
+    if (impl.instance) impl.connectAudioBuffers(inputs, inputCount, outputs, outputCount);
 }
 
 void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
@@ -1457,7 +1353,7 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
                              float* const* outputs, unsigned outputCount,
                              unsigned frames, const TransportBlock* transport) {
     Impl& impl = *impl_;
-    if (!impl.instance && !impl.splitCabinets) {
+    if (!impl.instance) {
         return;
     }
 
@@ -1481,58 +1377,6 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
             impl.live[port.index] = impl.staged[port.index].exchange(
                 port.defaultValue, std::memory_order_acq_rel);
         }
-    }
-
-    if (impl.splitCabinets) {
-        if (frames > impl.maxFrames) {
-            for (unsigned channel = 0; channel < outputCount; ++channel) std::fill_n(outputs[channel], frames, 0.0f);
-            return;
-        }
-        std::array<float, 4> targets{};
-        for (size_t i = 0; i < impl.cabinets.size(); ++i) {
-            auto& child = impl.cabinets[i];
-            // Other controls retain their original meaning. The child volume
-            // and direct mix controls remain fixed for its entire lifetime.
-            for (const PortInfo& port : info_.ports) {
-                if (!port.control || !port.input || port.symbol == "direct_mix"
-                    || std::find(kCabLevels.begin(), kCabLevels.end(), port.symbol) != kCabLevels.end()) continue;
-                child->setControl(port.index, impl.live[port.index]);
-            }
-            const bool loaded = impl.cabinetLoaded[i].load(std::memory_order_acquire);
-            if (loaded || child->propertyTransitionPending()) {
-                child->process(inputs, inputCount, impl.cabinetPointers[i].data(),
-                               static_cast<unsigned>(impl.cabinetPointers[i].size()), frames, transport);
-            } else {
-                for (auto& buffer : impl.cabinetBuffers[i]) std::fill_n(buffer.data(), frames, 0.0f);
-            }
-            const float db = impl.live[impl.cabinetLevelPorts[i]];
-            targets[i] = loaded && db > impl.cabinetMinimums[i] ? std::pow(10.0f, db / 20.0f) : 0.0f;
-        }
-        if (impl.cabinetDirectPort >= 0) {
-            const float db = impl.live[static_cast<size_t>(impl.cabinetDirectPort)];
-            targets[3] = db > impl.cabinetDirectMinimum ? std::pow(10.0f, db / 20.0f) : 0.0f;
-        }
-        for (unsigned frame = 0; frame < frames; ++frame) {
-            for (size_t i = 0; i < targets.size(); ++i) {
-                impl.cabinetGains[i] += impl.cabinetSmoothing * (targets[i] - impl.cabinetGains[i]);
-                if (targets[i] == 0.0f && impl.cabinetGains[i] < 1e-8f) impl.cabinetGains[i] = 0.0f;
-            }
-            for (unsigned channel = 0; channel < outputCount; ++channel) {
-                float sample = channel < inputCount ? inputs[channel][frame] * impl.cabinetGains[3] : 0.0f;
-                for (size_t i = 0; i < impl.cabinets.size(); ++i) {
-                    if (channel < impl.cabinetBuffers[i].size()) sample += impl.cabinetBuffers[i][channel][frame] * impl.cabinetGains[i];
-                }
-                outputs[channel][frame] = sample;
-            }
-        }
-        for (const PortInfo& port : info_.ports) {
-            if (!port.control || port.input) continue;
-            float value = 0.0f;
-            for (const auto& child : impl.cabinets) value = std::max(value, child->readOutput(port.index));
-            impl.live[port.index] = value;
-            impl.staged[port.index].store(value, std::memory_order_relaxed);
-        }
-        return;
     }
 
     impl.runCycle(inputs, inputCount, outputs, outputCount, frames, transport);
@@ -1613,7 +1457,7 @@ void PluginInstance::loadState(const Json& state, bool deferControls) {
 
 #else // no lilv: the control plane still runs, and the UI explains why
 
-struct Lv2Catalog::Impl {};
+struct Lv2Catalog::Impl { std::vector<PluginInfo> metadata; };
 
 Lv2Catalog::Lv2Catalog() : impl_(std::make_shared<Impl>()) {}
 Lv2Catalog::~Lv2Catalog() = default;
@@ -1621,7 +1465,6 @@ Lv2Catalog::~Lv2Catalog() = default;
 bool Lv2Catalog::available() const { return false; }
 
 bool Lv2Catalog::rescan(std::string& error) {
-    plugins_.clear();
     error = "this build has no LV2 support (lilv was not found at build time)";
     return false;
 }
@@ -1632,7 +1475,7 @@ PluginInstance::PluginInstance() : impl_(std::make_unique<Impl>()) {}
 PluginInstance::~PluginInstance() = default;
 
 std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog&, const std::string&,
-                                                       unsigned, unsigned, std::string& error, bool) {
+                                                       unsigned, unsigned, std::string& error) {
     error = "this build has no LV2 support";
     return nullptr;
 }
@@ -1662,13 +1505,21 @@ void PluginInstance::loadState(const Json&, bool) {}
 #endif
 
 void Lv2Catalog::setUserBundleDirectory(std::string directory) {
+    std::lock_guard<std::mutex> lock(scanMutex_);
     userBundleDirectory_ = std::move(directory);
 }
 
-const PluginInfo* Lv2Catalog::find(const std::string& uri) const {
-    for (const PluginInfo& info : plugins_) {
+size_t Lv2Catalog::pluginCount() const { return sharedImpl()->metadata.size(); }
+
+std::vector<PluginInfo> Lv2Catalog::plugins() const { return sharedImpl()->metadata; }
+
+std::shared_ptr<const PluginInfo> Lv2Catalog::find(const std::string& uri,
+    std::shared_ptr<Impl>* world) const {
+    auto snapshot = sharedImpl();
+    if (world) *world = snapshot;
+    for (const PluginInfo& info : snapshot->metadata) {
         if (info.uri == uri) {
-            return &info;
+            return std::shared_ptr<const PluginInfo>(snapshot, &info);
         }
     }
     return nullptr;
@@ -1676,7 +1527,8 @@ const PluginInfo* Lv2Catalog::find(const std::string& uri) const {
 
 std::vector<std::string> Lv2Catalog::categories() const {
     std::vector<std::string> out;
-    for (const PluginInfo& info : plugins_) {
+    const auto snapshot = sharedImpl();
+    for (const PluginInfo& info : snapshot->metadata) {
         if (std::find(out.begin(), out.end(), info.className) == out.end()) {
             out.push_back(info.className);
         }

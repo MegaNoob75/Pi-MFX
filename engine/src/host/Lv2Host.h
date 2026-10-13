@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -104,6 +105,7 @@ struct PluginInfo {
 /// demand when the user installs new plugins.
 class Lv2Catalog {
 public:
+    struct Impl;
     Lv2Catalog();
     ~Lv2Catalog();
 
@@ -120,21 +122,21 @@ public:
 
     bool available() const;
 
-    const std::vector<PluginInfo>& plugins() const { return plugins_; }
-    const PluginInfo* find(const std::string& uri) const;
+    std::vector<PluginInfo> plugins() const;
+    size_t pluginCount() const;
+    std::shared_ptr<const PluginInfo> find(const std::string& uri,
+        std::shared_ptr<Impl>* world = nullptr) const;
 
     /// Distinct plugin classes present, for the category rail in the picker.
     std::vector<std::string> categories() const;
 
     UridMap& urids() { return urids_; }
 
-    struct Impl;
-    Impl* impl() { return impl_.get(); }
-    std::shared_ptr<Impl> sharedImpl() { return impl_; }
+    std::shared_ptr<Impl> sharedImpl() const { return std::atomic_load(&impl_); }
 
 private:
     std::shared_ptr<Impl> impl_;
-    std::vector<PluginInfo> plugins_;
+    std::mutex scanMutex_;
     UridMap urids_;
     std::string userBundleDirectory_;
 };
@@ -148,16 +150,12 @@ class PluginInstance {
 public:
     ~PluginInstance();
 
-    /// Use the native plugin by default, including one TooB Cab IR instance
-    /// per tile with its original three cabinet slots. The separate-convolver
-    /// mixer is temporarily restricted to explicit comparison tests while
-    /// investigating freezes when a second cabinet branch becomes active.
+    /// Creates a native LV2 instance from one retained catalog snapshot.
     static std::unique_ptr<PluginInstance> create(Lv2Catalog& catalog,
                                                   const std::string& uri,
                                                   unsigned sampleRate,
                                                   unsigned maxFrames,
-                                                  std::string& error,
-                                                  bool splitCabinets = false);
+                                                  std::string& error);
 
     const PluginInfo& info() const { return info_; }
     const std::string& uri() const { return info_.uri; }

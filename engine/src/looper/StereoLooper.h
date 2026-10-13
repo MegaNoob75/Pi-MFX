@@ -42,7 +42,7 @@ public:
                  float* const* output, unsigned outputChannels, unsigned frames,
                  const TransportBlock* transport) noexcept;
 
-    Json state() const;
+    Json state(bool includeDetails = true) const;
     std::string savedPath() const;
     bool wantsTransport() const noexcept;
     bool wantsCountIn() const noexcept { return countIn_.load(std::memory_order_relaxed); }

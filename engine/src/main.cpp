@@ -148,6 +148,7 @@ int main(int argc, char** argv) {
 
     logInfo("shutting down");
     logInfo("shutdown: stopping web server");
+    router.stop();
     server.stop();
     logInfo("shutdown: web server stopped");
     logInfo("shutdown: stopping engine");

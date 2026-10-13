@@ -13,7 +13,9 @@ function mixerAlternative(plugin: JsonObject) {
     const uri = str(plugin.uri);
     if (uri === TOOB_NAM || uri === TOOB_IR) return null;
     const text = `${uri} ${str(plugin.name)} ${objects(plugin.properties).map(p => `${str(p.uri)} ${str(p.label)} ${arr(p.fileTypes).join(" ")}`).join(" ")}`;
-    if (bool(plugin.takesNamModel) || /\bnam\b|neural.?amp|nammodel/i.test(text))
+    // takesNamModel also includes generic model-file properties (e.g. TooB ML).
+    // Only NAM-specific metadata warrants suggesting TooB NAM as a replacement.
+    if (/\bnam\b|nammodel/i.test(text))
         return { uri: TOOB_NAM, name: "TooB NAM" };
     if (bool(plugin.takesImpulseResponse) || /\bir\b|impulse|convolution|cab.?ir|cabinet/i.test(text))
         return { uri: TOOB_IR, name: "TooB Cab IR" };

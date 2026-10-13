@@ -5,6 +5,7 @@
 #include "core/Log.h"
 
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -515,14 +516,12 @@ Engine::Engine(Paths paths)
       backing_(std::make_unique<BackingTrackPlayer>(storage_.paths().backingTracksDir)),
       looper_(std::make_unique<StereoLooper>(storage_.paths().loopsDir)) {
     for (auto& sample : tunerRing_) sample.store(0.0f, std::memory_order_relaxed);
-#ifdef PIMFX_ENABLE_MULTITRACK_RECORDER
     recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
     recorderEnabled_.store(true, std::memory_order_relaxed);
-#endif
-#ifdef PIMFX_ENABLE_DRUM_MACHINE
+
     drums_ = std::make_unique<DrumMachine>(storage_.paths().drumsDir);
     drumsEnabled_.store(true, std::memory_order_relaxed);
-#endif
+
 }
 
 Engine::~Engine() {
@@ -546,7 +545,7 @@ bool Engine::start(std::string& error, bool recoverStartup) {
         || tunerInstrument == "bass5" || tunerInstrument == "bass6" || tunerInstrument == "bass7",
         std::memory_order_relaxed);
     configureAudioSafety(settings_.audio);
-    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    backingEnabled_.store(backing_->available(), std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
     looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
                        settings_.looper.level, settings_.looper.feedback);
@@ -595,7 +594,7 @@ bool Engine::start(std::string& error, bool recoverStartup) {
         }
     }
 
-    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    transportEnabled_.store(true, std::memory_order_release);
     transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
     transport_.setCountInBars(settings_.transport.countInBars);
     transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
@@ -858,11 +857,10 @@ void Engine::previewAudioSettings(const Json& json) {
 
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    const bool wasTransportEnabled = transportEnabled_.load(std::memory_order_acquire);
     const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
-    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
-    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    transportEnabled_.store(true, std::memory_order_release);
+    backingEnabled_.store(backing_->available(), std::memory_order_release);
     if (recorder_) recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
         backingEnabled_.load(std::memory_order_acquire));
     if (backingEnabled_.load(std::memory_order_acquire) && !wasBackingEnabled) {
@@ -871,16 +869,6 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
         backing_->stopPlayback();
         backing_->stop();
     }
-    if (!settings_.system.sharedTransportEnabled) {
-        transport_.stop();
-    } else if (!wasTransportEnabled) {
-        transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
-        transport_.setCountInBars(settings_.transport.countInBars);
-        transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
-        transport_.setQuantizationEnabled(settings_.transport.quantizationEnabled);
-        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
-    }
-
     if (settings_.system.holdCpuLatency && !latencyGuard_) {
         latencyGuard_ = std::make_unique<rt::CpuLatencyGuard>();
     } else if (!settings_.system.holdCpuLatency) {
@@ -1443,8 +1431,8 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     for (const auto& edge : preset.routing["edges"].items()) {
         const auto* from = preset.findSlot(edge["from"].asString());
         const auto* to = preset.findSlot(edge["to"].asString());
-        const auto* fromInfo = from && from->kind == "effect" ? catalog_.find(from->uri) : nullptr;
-        const auto* toInfo = to && to->kind == "effect" ? catalog_.find(to->uri) : nullptr;
+        const auto fromInfo = from && from->kind == "effect" ? catalog_.find(from->uri) : nullptr;
+        const auto toInfo = to && to->kind == "effect" ? catalog_.find(to->uri) : nullptr;
         if ((fromInfo && fromInfo->audioOutputs == 0) || (toInfo && toInfo->audioInputs == 0)) {
             error = "Connect audio outputs to audio inputs"; return nullptr;
         }
@@ -2387,11 +2375,13 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
         return false;
     }
 
+    Bank updated = *bank;
+    updated.presets.erase(updated.presets.begin() + std::distance(bank->presets.begin(), found));
+    if (!storage_.saveBank(updated)) { error = "could not save the bank; preset was not deleted"; return false; }
     const Json removedCommunity = found->community;
     const bool wasActive = presetId == activePresetId_;
-    bank->presets.erase(found);
+    *bank = std::move(updated);
     clearSessionDraft(presetId);
-    storage_.saveBank(*bank);
 
     auto dependencyStillUsed = [&](const std::string& group, const std::string& name) {
         for (const Bank& candidateBank : banks_) {
@@ -2457,11 +2447,14 @@ bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::strin
         error = "no such preset";
         return false;
     }
-    Preset moved = *found;
-    bank->presets.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(bank->presets.size())));
-    bank->presets.insert(bank->presets.begin() + newIndex, std::move(moved));
-    storage_.saveBank(*bank);
+    Bank updated = *bank;
+    const size_t oldIndex = std::distance(bank->presets.begin(), found);
+    Preset moved = updated.presets[oldIndex];
+    updated.presets.erase(updated.presets.begin() + oldIndex);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(updated.presets.size())));
+    updated.presets.insert(updated.presets.begin() + newIndex, std::move(moved));
+    if (!storage_.saveBank(updated)) { error = "could not save the preset order"; return false; }
+    *bank = std::move(updated);
     notify();
     return true;
 }
@@ -2489,23 +2482,21 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         error = "no such bank";
         return false;
     }
-    if (source->id == target->id) {
-        Preset moved = *found;
-        source->presets.erase(found);
-        newIndex = std::max(0, std::min(newIndex, static_cast<int>(source->presets.size())));
-        source->presets.insert(source->presets.begin() + newIndex, std::move(moved));
-        storage_.saveBank(*source);
-        notify();
-        return true;
-    }
+    if (source->id == target->id) return reorderPreset(presetId, newIndex, error);
     if (source->presets.size() < 2 && !source->communityHolding) {
-        error = "a bank must keep at least one preset";
-        return false;
+        error = "a bank must keep at least one preset"; return false;
     }
-    Preset moved = *found;
-    source->presets.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(target->presets.size())));
-    target->presets.insert(target->presets.begin() + newIndex, std::move(moved));
+    Bank updatedSource = *source, updatedTarget = *target;
+    const size_t oldIndex = std::distance(source->presets.begin(), found);
+    Preset moved = updatedSource.presets[oldIndex];
+    updatedSource.presets.erase(updatedSource.presets.begin() + oldIndex);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(updatedTarget.presets.size())));
+    updatedTarget.presets.insert(updatedTarget.presets.begin() + newIndex, std::move(moved));
+    if (!storage_.saveBanks({updatedSource, updatedTarget})) {
+        error = "could not save the preset move"; return false;
+    }
+    *source = std::move(updatedSource);
+    *target = std::move(updatedTarget);
     ControllerConfig config = controller_.config();
     if (config.presetAssignments.has(source->id)) {
         const Json& current = config.presetAssignments[source->id];
@@ -2525,8 +2516,6 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         // Bank membership does not change the preset ID, graph or sound.
         // Keep the active processors instead of needlessly reloading them.
     }
-    storage_.saveBank(*source);
-    storage_.saveBank(*target);
     persistSettings();
     notify();
     return true;
@@ -2559,8 +2548,10 @@ bool Engine::renameBank(const std::string& bankId, const std::string& name, std:
         error = "no such bank";
         return false;
     }
-    bank->name = name;
-    storage_.saveBank(*bank);
+    Bank updated = *bank;
+    updated.name = name;
+    if (!storage_.saveBank(updated)) { error = "could not save the bank name"; return false; }
+    *bank = std::move(updated);
     notify();
     return true;
 }
@@ -2578,8 +2569,8 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         return false;
     }
 
+    if (!storage_.deleteBank(bankId)) { error = "could not delete the bank file"; return false; }
     for (const Preset& preset : found->presets) clearSessionDraft(preset.id);
-    storage_.deleteBank(bankId);
     const bool wasActive = bankId == activeBankId_;
     banks_.erase(found);
 
@@ -2623,14 +2614,15 @@ bool Engine::reorderBank(const std::string& bankId, int newIndex, std::string& e
         error = "no such bank";
         return false;
     }
-    Bank moved = *found;
-    banks_.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(banks_.size())));
-    banks_.insert(banks_.begin() + newIndex, std::move(moved));
-    for (size_t i = 0; i < banks_.size(); ++i) {
-        banks_[i].order = static_cast<int>(i);
-        storage_.saveBank(banks_[i]);
-    }
+    auto updated = banks_;
+    const size_t oldIndex = std::distance(banks_.begin(), found);
+    Bank moved = updated[oldIndex];
+    updated.erase(updated.begin() + oldIndex);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(updated.size())));
+    updated.insert(updated.begin() + newIndex, std::move(moved));
+    for (size_t i = 0; i < updated.size(); ++i) updated[i].order = static_cast<int>(i);
+    if (!storage_.saveBanks(updated)) { error = "could not save the bank order"; return false; }
+    banks_ = std::move(updated);
     notify();
     return true;
 }
@@ -2934,7 +2926,7 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
     Chain* retained = retainedGuard.get();
     if (!validateGraphEditChain(retained, error)) return false;
     Preset* preset = activeSessionDraft(true);
-    const PluginInfo* info = catalog_.find(uri);
+    const auto info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
         return false;
@@ -2992,7 +2984,7 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
     Chain* retained = retainedGuard.get();
     if (!validateGraphEditChain(retained, error)) return false;
     Preset* preset = activeSessionDraft(true);
-    const PluginInfo* info = catalog_.find(uri);
+    const auto info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
         return false;
@@ -4124,7 +4116,7 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
         }
         if (action == "setParameter") {
             const EffectSlot* slot = preset->findSlot(bind.slotId);
-            const PluginInfo* plugin = slot ? catalog_.find(slot->uri) : nullptr;
+            const auto plugin = slot ? catalog_.find(slot->uri) : nullptr;
             if (plugin) {
                 const auto port = std::find_if(plugin->ports.begin(), plugin->ports.end(),
                     [&](const PortInfo& item) {
@@ -5417,10 +5409,13 @@ bool Engine::deleteLibraryFile(const std::string& kind, const std::string& path,
             error = "could not delete that folder";
             return false;
         }
+        if (backing_) { backing_->fileDeleted(path); backing_->refreshPlaylist(); }
         notify();
         return true;
     }
     if (!removeFile(path)) {
+        std::error_code missingError;
+        if (!std::filesystem::exists(path, missingError) && !missingError) return true;
         error = "could not delete the file";
         return false;
     }
@@ -5521,6 +5516,16 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
     return true;
 }
 
+bool Engine::libraryPathInUse(const std::string& path) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const auto index = storage_.libraryFileIndex();
+    for (const auto& bank : banks_) for (const auto& preset : bank.presets)
+        if (storage_.referencesLibraryPath(preset.toJson(), path, index)) return true;
+    for (const auto& draft : sessionPresetDrafts_)
+        if (storage_.referencesLibraryPath(draft.second.toJson(), path, index)) return true;
+    return false;
+}
+
 bool Engine::libraryRename(const std::string& kind, const std::string& path,
                            const std::string& newName, std::string& error) {
     const std::string root = libraryRootForKind(storage_.paths(), kind);
@@ -5539,6 +5544,14 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
         return false;
     }
     const std::string dest = joinPath(parentPath(path), safe);
+    if (dest == path) return true;
+    if (libraryPathInUse(path)) {
+        error = "this file or folder is used by a preset; remove its preset references before renaming"; return false;
+    }
+    std::error_code collision;
+    if (std::filesystem::exists(dest, collision) || collision) {
+        error = "that name already exists; renaming never replaces library files"; return false;
+    }
     std::error_code typeEc;
     if (std::filesystem::is_regular_file(path, typeEc)
         && !libraryExtensionAllowed(kind, std::filesystem::path(dest))) {
@@ -5558,7 +5571,7 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
         return false;
     }
     std::error_code ec;
-    std::filesystem::rename(path, dest, ec);
+    renameFileNoReplace(path, dest, ec);
     if (ec) {
         error = "could not rename that";
         return false;
@@ -5571,6 +5584,9 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
 bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                          std::string& error) {
     if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
+    if (libraryPathInUse(path)) {
+        error = "this file or folder is used by a preset; remove its preset references before moving"; return false;
+    }
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -5595,7 +5611,7 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         return false;
     }
     std::error_code ec;
-    std::filesystem::rename(path, dest, ec);
+    renameFileNoReplace(path, dest, ec);
     if (ec) {
         error = "could not move that";
         return false;
@@ -5842,12 +5858,12 @@ void Engine::housekeepingThread() {
                 if (backingEnabled_.load(std::memory_order_acquire)) {
                     listener(backing_->state());
                 }
-                listener(looperState());
+                listener(looperState(ticks % 40 == 0));
                 if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
-                    listener(recorderState());
+                    listener(recorderState(ticks % 40 == 0));
                 }
                 if (drumsEnabled_.load(std::memory_order_acquire) && drums_) {
-                    listener(drumState());
+                    listener(drumState(ticks % 40 == 0));
                 }
             }
             if (transportEnabled_.load(std::memory_order_acquire)
@@ -5978,11 +5994,8 @@ Json Engine::fullState() const {
     if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
     json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
     if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
-#if defined(PIMFX_ENABLE_COMMUNITY_CATALOG)
     json.set("communityCatalogFeatureEnabled", true);
-#else
-    json.set("communityCatalogFeatureEnabled", false);
-#endif
+
     json.set("controller", describeControllerRuntime());
     json.set("virtualControls", effectiveVirtualControlsConfig().toJson());
     json.set("sharedVirtualControls", settings_.virtualControls.toJson());
@@ -6019,7 +6032,7 @@ Json Engine::fullState() const {
         json.set("controllerError", controllerError_);
     }
     json.set("lv2Available", catalog_.available());
-    json.set("pluginCount", static_cast<int>(catalog_.plugins().size()));
+    json.set("pluginCount", static_cast<int>(catalog_.pluginCount()));
 
     // Keep `chain` as the flat live-plugin list consumed by Performance,
     // snapshots, and control layout editors. `chainLayout` adds the flat
@@ -6213,8 +6226,8 @@ bool Engine::backingCommand(const std::string& command, const Json& payload, std
     return true;
 }
 
-Json Engine::looperState() const {
-    Json state = looper_->state();
+Json Engine::looperState(bool includeDetails) const {
+    Json state = looper_->state(includeDetails);
     const double bpm = transport_.bpm();
     const double beatSeconds = 60.0 / bpm * 4.0 / std::max(1, settings_.transport.beatUnit);
     const double beats = state["duration"].asDouble(0.0) / beatSeconds;
@@ -6307,14 +6320,14 @@ bool Engine::looperExport(const std::string& requestedName, std::string& content
     return true;
 }
 
-Json Engine::recorderState() const {
+Json Engine::recorderState(bool includeDetails) const {
     if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
         Json state = Json::object();
         state.set("type", "recorder");
         state.set("status", "disabled");
         return state;
     }
-    Json state = recorder_->state();
+    Json state = recorder_->state(includeDetails);
     if (backingEnabled_.load(std::memory_order_acquire) && backing_) {
         const Json backing = backing_->state();
         state.set("backingAvailable", backing["available"]);
@@ -6382,11 +6395,11 @@ bool Engine::recorderExport(const std::string& kind, const std::string& trackId,
     return recorder_->exportFile(kind, trackId, path, name, error);
 }
 
-Json Engine::drumState() const {
+Json Engine::drumState(bool includeDetails) const {
     if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
         Json state = Json::object(); state.set("type", "drums"); state.set("available", false); return state;
     }
-    return drums_->state();
+    return drums_->state(includeDetails);
 }
 
 bool Engine::drumImport(unsigned voice, const std::string& name,

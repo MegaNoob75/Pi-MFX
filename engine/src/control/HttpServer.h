@@ -16,6 +16,7 @@
 namespace pimfx {
 
 struct HttpRequest {
+    uint64_t clientId = 0;
     bool local = false; ///< Actual loopback peer, never a browser-supplied header.
     std::string method;
     std::string path;
@@ -28,6 +29,7 @@ struct HttpRequest {
 };
 
 struct HttpResponse {
+    bool deferred = false;
     int status = 200;
     std::string contentType = "application/json";
     std::string body;
@@ -72,6 +74,7 @@ public:
     /// non-realtime thread.
     void broadcast(const std::string& message);
     void sendTo(uint64_t clientId, const std::string& message);
+    void completeResponse(uint64_t clientId, HttpResponse response);
 
     size_t clientCount() const;
     uint16_t port() const { return port_; }
@@ -90,12 +93,15 @@ private:
         std::ifstream responseFile; ///< bounded streaming for large downloads
         int fragmentOpcode = 0;
         bool closing = false;
+        bool requestPending = false;
+        std::vector<std::pair<std::string, std::string>> pendingHeaders;
     };
 
     void run();
     void acceptClient();
     bool serviceClient(Client& client);
     bool handleHttp(Client& client);
+    bool sendHttpResponse(Client& client, HttpResponse response);
     bool handleWebSocketFrames(Client& client);
     void completeUpgrade(Client& client, const HttpRequest& request);
     void serveStatic(const HttpRequest& request, HttpResponse& response);
@@ -121,6 +127,7 @@ private:
     };
     std::deque<OutgoingMessage> pending_;
     std::mutex pendingMutex_;
+    std::deque<std::pair<uint64_t, HttpResponse>> completedResponses_;
 
     RequestHandler requestHandler_;
     AccessControl access_;

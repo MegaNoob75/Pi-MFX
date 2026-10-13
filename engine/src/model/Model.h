@@ -358,10 +358,6 @@ struct SystemSettings {
     int workerThreadPriority = 70;
     bool lockMemory = true;
     bool holdCpuLatency = true;
-    /// Retained in the settings schema for backward compatibility. Completed
-    /// workstation services are enabled automatically rather than by debug UI.
-    bool sharedTransportEnabled = true;
-    bool backingTracksEnabled = true;
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
 };

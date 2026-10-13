@@ -467,7 +467,7 @@ void StereoLooper::process(const float* const* input, unsigned inputChannels,
     canRedo_.store(redoAvailable_, std::memory_order_release);
 }
 
-Json StereoLooper::state() const {
+Json StereoLooper::state(bool includeDetails) const {
     Json out = Json::object();
     out.set("type", "looper");
     const Mode current = mode_.load(std::memory_order_acquire);
@@ -490,6 +490,7 @@ Json StereoLooper::state() const {
     out.set("level", levelMilli_.load() / 1000.0);
     out.set("feedback", feedbackMilli_.load() / 1000.0);
     out.set("maximumSeconds", capacityFrames_ / static_cast<double>(std::max(1u, rate)));
+    if (!includeDetails) { out.set("partial", true); return out; }
     Json peaks = Json::array();
     if (frames > 0 && current != Mode::Recording) {
         const size_t bucketFrames = std::max<size_t>(1, capacityFrames_ / waveform_.size());

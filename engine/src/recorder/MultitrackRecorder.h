@@ -30,7 +30,7 @@ public:
     void setSourceAvailable(Source source, bool available) noexcept;
 
     bool command(const std::string& command, const Json& payload, std::string& error);
-    Json state() const;
+    Json state(bool includeDetails = true) const;
     bool exportFile(const std::string& kind, const std::string& trackId,
                     std::string& path, std::string& name, std::string& error);
 

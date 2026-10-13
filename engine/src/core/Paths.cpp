@@ -11,6 +11,20 @@
 #include <filesystem>
 #include <fstream>
 #include <system_error>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <linux/fs.h>
+#include <cerrno>
+#endif
+#endif
 
 namespace fs = std::filesystem;
 
@@ -159,7 +173,7 @@ bool readFile(const std::string& path, std::string& out) {
     return true;
 }
 
-bool writeFileAtomic(const std::string& path, const std::string& contents) {
+bool writeFileAtomic(const std::string& path, const std::string& contents, bool durable) {
     const std::string directory = parentPath(path);
     if (!directory.empty() && !makeDirectories(directory)) {
         return false;
@@ -181,23 +195,67 @@ bool writeFileAtomic(const std::string& path, const std::string& contents) {
     }
 
     std::error_code ec;
-    fs::rename(temporary, path, ec);
-    if (ec) {
-        // Windows refuses to rename onto an existing file.
-        fs::remove(path, ec);
-        fs::rename(temporary, path, ec);
+#if defined(_WIN32)
+    if (!MoveFileExW(fs::path(temporary).c_str(), fs::path(path).c_str(),
+        MOVEFILE_REPLACE_EXISTING | (durable ? MOVEFILE_WRITE_THROUGH : 0)))
+        ec = std::error_code(GetLastError(), std::system_category());
+#else
+    if (durable) {
+        const int fd = ::open(temporary.c_str(), O_RDONLY | O_CLOEXEC);
+        const bool synced = fd >= 0 && ::fsync(fd) == 0;
+        if (fd >= 0) ::close(fd);
+        if (!synced) { fs::remove(temporary, ec); return false; }
     }
+    fs::rename(temporary, path, ec);
+#endif
     if (ec) {
         logWarn("cannot replace " + path + ": " + ec.message());
         fs::remove(temporary, ec);
         return false;
     }
+    if (durable) {
+#if !defined(_WIN32)
+        const int fd = ::open((directory.empty() ? "." : directory).c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        const bool synced = fd >= 0 && ::fsync(fd) == 0;
+        if (fd >= 0) ::close(fd);
+        if (!synced) return false;
+#endif
+    }
     return true;
 }
 
-bool removeFile(const std::string& path) {
+bool renameFileNoReplace(const std::string& source, const std::string& destination, std::error_code& error) {
+    error.clear();
+#if defined(__linux__)
+    // Reject collisions atomically, including a concurrent download creating
+    // the destination after the file manager checked it.
+    if (::syscall(SYS_renameat2, AT_FDCWD, source.c_str(), AT_FDCWD,
+        destination.c_str(), RENAME_NOREPLACE) != 0) error = std::error_code(errno, std::generic_category());
+#elif defined(_WIN32)
+    if (!MoveFileExW(fs::path(source).c_str(), fs::path(destination).c_str(), 0))
+        error = std::error_code(GetLastError(), std::system_category());
+#else
+    if (fs::exists(destination, error) && !error) error = std::make_error_code(std::errc::file_exists);
+    if (!error) fs::rename(source, destination, error);
+#endif
+    return !error;
+}
+
+bool removeFile(const std::string& path, bool durable) {
     std::error_code ec;
-    return fs::remove(path, ec);
+    if (!fs::remove(path, ec)) return false;
+#if !defined(_WIN32)
+    if (durable) {
+        const std::string directory = parentPath(path);
+        const int fd = ::open((directory.empty() ? "." : directory).c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        const bool synced = fd >= 0 && ::fsync(fd) == 0;
+        if (fd >= 0) ::close(fd);
+        return synced;
+    }
+#else
+    (void)durable;
+#endif
+    return true;
 }
 
 std::vector<std::string> listDirectory(const std::string& path, const std::string& suffix) {

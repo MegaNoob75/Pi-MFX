@@ -181,7 +181,7 @@ const state: Body = {
         ],
         muteOnChange: true, dcBlockerEnabled: true, limiterEnabled: true, limiterCeilingDb: -1, limiterLookaheadMs: .75, limiterReleaseMs: 80, dcBlockerHz: 7 },
     actualAudio: { device: "hw:USB", sampleRate: 48000, periodFrames: 32, periodCount: 4 },
-    system: { sharedTransportEnabled: true, backingTracksEnabled: true },
+    system: {},
     ui: {
         themeId: "Silverface",
         communityAuthor: "Pi-MFX Player",

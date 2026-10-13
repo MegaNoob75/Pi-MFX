@@ -845,7 +845,7 @@ void MultitrackRecorder::worker() {
     }
 }
 
-Json MultitrackRecorder::state() const {
+Json MultitrackRecorder::state(bool includeDetails) const {
     std::lock_guard<std::mutex> lock(stateMutex_);
     Json out = Json::object(); out.set("type", "recorder");
     out.set("status", recording() ? "recording" : finalizing_.load() ? "finalizing" : "stopped");
@@ -882,6 +882,7 @@ Json MultitrackRecorder::state() const {
         static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))));
     out.set("remainingSeconds", static_cast<int64_t>(std::min<uint64_t>(remainingSeconds,
         static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))));
+    if (!includeDetails) { out.set("partial", true); return out; }
     Json sources = Json::array(); const uint32_t available = availableMask_.load();
     for (unsigned i = 0; i < static_cast<unsigned>(Source::Count); ++i) {
         Json item = Json::object(); item.set("id", sourceName(static_cast<Source>(i)));

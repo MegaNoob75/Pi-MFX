@@ -35,7 +35,7 @@ public:
                 float* const* sourceTap, unsigned tapChannels, unsigned frames,
                 const TransportBlock& transport) noexcept;
 
-    Json state() const;
+    Json state(bool includeDetails = true) const;
     bool playing() const noexcept { return playing_.load(std::memory_order_acquire); }
 
 private:

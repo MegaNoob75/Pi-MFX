@@ -535,7 +535,9 @@ html[data-mfx-analog-style="minimal"] .mfx-hardware-button {
 .mfx-performance-switch-wrap[data-mfx-encoder-selected="true"]::after {
     content: "";
     position: absolute;
-    inset: 0;
+    /* Keep the 3px frame and its 2px shadow outside the tile's content
+       at every tile size, including compact HOLD/DBL labels. */
+    inset: -5px;
     z-index: 8;
     pointer-events: none;
     border: 3px solid var(--mfx-cyan);

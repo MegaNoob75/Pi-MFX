@@ -73,14 +73,15 @@ public:
     Json meterState() const;
     Json transportState() const;
     Json backingState() const;
-    Json looperState() const;
-    Json recorderState() const;
-    Json drumState() const;
+    Json looperState(bool includeDetails = true) const;
+    Json recorderState(bool includeDetails = true) const;
+    Json drumState(bool includeDetails = true) const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
     Json libraryState() const;
     Json diagnosticsState() const;
+    bool libraryPathInUse(const std::string& path) const;
     const Paths& storagePaths() const { return storage_.paths(); }
 
     // --- audio -----------------------------------------------------------

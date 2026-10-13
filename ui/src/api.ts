@@ -47,6 +47,7 @@ export class EngineClient {
     snapshot: EngineSnapshot = emptySnapshot();
 
     start(): void {
+        if (this.socket) return;
         this.closed = false;
         this.connect();
     }
@@ -57,8 +58,9 @@ export class EngineClient {
             window.clearTimeout(this.reconnectTimer);
             this.reconnectTimer = undefined;
         }
-        this.socket?.close();
+        const socket = this.socket;
         this.socket = undefined;
+        if (socket) { socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null; socket.close(); }
     }
 
     subscribe(listener: (snapshot: EngineSnapshot) => void): () => void {
@@ -194,15 +196,16 @@ export class EngineClient {
     }
 
     private connect(): void {
-        if (this.closed) {
-            return;
-        }
+        if (this.closed || this.socket) return;
+        this.reconnectTimer = undefined;
         const socket = new WebSocket(websocketUrl());
         this.socket = socket;
         socket.onopen = () => {
+            if (this.socket !== socket || this.closed) return;
             this.patch({ connected: true, lastError: "" });
         };
         socket.onmessage = (event) => {
+            if (this.socket !== socket || this.closed) return;
             try {
                 const parsed: unknown = JSON.parse(String(event.data));
                 if (isObj(parsed as Json)) {
@@ -213,9 +216,12 @@ export class EngineClient {
             }
         };
         socket.onerror = () => {
+            if (this.socket !== socket || this.closed) return;
             this.patch({ lastError: "lost contact with the engine" });
         };
         socket.onclose = () => {
+            if (this.socket !== socket) return;
+            this.socket = undefined;
             this.patch({ connected: false });
             if (!this.closed) {
                 // Password changes, logout, and session expiry return remote browsers to login.
@@ -268,15 +274,15 @@ export class EngineClient {
             return;
         }
         if (type === "looper") {
-            this.patch({ looper: message });
+            this.patch({ looper: bool(message.partial) ? { ...this.snapshot.looper, ...message } : message });
             return;
         }
         if (type === "recorder") {
-            this.patch({ recorder: message });
+            this.patch({ recorder: bool(message.partial) ? { ...this.snapshot.recorder, ...message } : message });
             return;
         }
         if (type === "drums") {
-            this.patch({ drums: message });
+            this.patch({ drums: bool(message.partial) ? { ...this.snapshot.drums, ...message } : message });
             return;
         }
         if (type === "uiNav") {
