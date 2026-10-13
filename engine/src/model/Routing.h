@@ -12,7 +12,7 @@ inline bool placeRoutingBlock(Preset& preset, const std::string& addedId,
                               const Json& layout, std::string& error) {
     double spacing = layout["spacing"].asDouble(20);
     if (!std::isfinite(spacing)) spacing = 20;
-    spacing = std::max(10.0, std::min(100.0, spacing));
+    spacing = std::max(20.0, std::min(100.0, spacing));
     const bool snap = layout["snap"].asBool(true);
     const auto aligned = [&](double value) {
         return snap ? std::round(value / spacing) * spacing : value;

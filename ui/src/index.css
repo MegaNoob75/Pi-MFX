@@ -1978,7 +1978,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .routing-toolbar .btn, .routing-ports .btn, .routing-view-choice .btn { min-height: 44px; min-width: 44px; }
 .routing-hint { color: var(--mfx-muted); font-size: .8rem; }
 .routing-editor > .routing-hint { position: absolute; bottom: 16px; right: 16px; z-index: 4; max-width: calc(100% - 32px); border: 1px solid var(--mfx-border); border-radius: 6px; background: var(--mfx-panel); box-shadow: 0 2px 8px #0008; }
-.routing-viewport { overflow: auto; flex: 1; min-height: 160px; background: var(--mfx-bg); }
+.routing-viewport { overflow: auto; flex: 1; min-height: 160px; background: var(--mfx-bg); touch-action: none; }
 .routing-canvas-frame { position: relative; overflow: hidden; }
 .routing-canvas { position: absolute; left: 0; top: 0; transform-origin: top left; background-image: radial-gradient(circle at 1px 1px, var(--mfx-border) 1px, transparent 1.5px); background-position: -1px -1px; }
 .routing-grid-settings { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -2020,6 +2020,8 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .routing-mix-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 3px; overflow: auto; padding: 8px; }
 .routing-mix-panel > * { flex-shrink: 0; }
 .routing-mix-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 44px; }
+.routing-mix-title { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.routing-mix-title .input { flex: 1; min-width: 0; padding: 4px; font-size: .75rem; }
 .routing-mix-heading h2 { margin: 0; font-size: .9rem; white-space: nowrap; letter-spacing: .02em; }
 .routing-mix-heading .routing-view-choice { flex-wrap: nowrap; gap: 3px; }
 .routing-mix-heading .btn { padding: 6px; font-size: .65rem; min-height: 44px; }
@@ -2051,9 +2053,6 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .routing-level-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; }
 .routing-level .btn { min-height: 44px; white-space: nowrap; padding: 4px 6px; font-size: .75rem; }
 .routing-level input[type=range], .routing-two-cabs input { width: 100%; min-height: 44px; margin: 0; }
-.routing-mix-panel.is-graphical > .routing-level { display: flex; align-items: center; gap: 6px; }
-.routing-mix-panel.is-graphical > .routing-level > span { flex: 1; }
-.routing-mix-panel.is-graphical > .routing-level > input { width: 32%; }
 .routing-cab-levels { display: grid; gap: 3px; }
 .routing-cab-level .routing-level { gap: 0; }
 .routing-cab-levels.has-blend { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2078,9 +2077,12 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 @media (max-width: 600px) { .routing-mix-panels { grid-template-columns: minmax(0, 1fr); } .routing-mix-panel { min-height: 340px; overflow: visible; } }
 
 .rig-mix-controls { min-width: 0; display: grid; gap: 8px; }
-.rig-blend-line { padding: 8px 4px; }
+.rig-blend-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; padding: 0 4px; }
 .rig-blend-names, .rig-blend-percent { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .75rem; }
-.rig-blend-names strong { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mfx-cyan); }
+.rig-blend-names { grid-column: 1 / -1; }
+.rig-blend-names strong { display: flex; gap: 4px; min-width: 0; max-width: 48%; white-space: nowrap; color: var(--mfx-cyan); }
+.rig-blend-names strong > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.rig-blend-names strong > span:last-child { flex-shrink: 0; }
 .rig-blend-names strong:last-child { text-align: right; color: var(--mfx-purple-light); }
 .rig-blend-line input { width: 100%; min-height: 48px; margin: 0; accent-color: var(--mfx-cyan); }
 .rig-blend-line input[type=range] { appearance: none; -webkit-appearance: none; background: transparent; cursor: ew-resize; touch-action: none; }
@@ -2104,6 +2106,29 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .rig-faders .routing-level > span { font-size: .7rem; }
 .rig-faders:has(> :only-child) .routing-mix-channel { flex-basis: 100%; }
 .rig-faders:has(> :only-child) .rig-channel-level input[type=range] { height: 170px; }
+
+/* Each mixer input owns a full-width strip, including its action buttons. */
+.routing-mix-panel .rig-mix-controls { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.routing-mix-panel .rig-blend-line { grid-template-columns: minmax(0, 1fr); padding: 0; }
+.routing-mix-panel .rig-blend-names { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; }
+.routing-mix-panel .rig-blend-names strong { max-width: 100%; }
+.routing-mix-panel .rig-blend-names strong:last-child { justify-content: flex-end; }
+.rig-blend-reset { min-height: 44px; padding: 4px 8px; font-size: .7rem; }
+.routing-mix-panel .rig-channels { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.routing-mix-panel .routing-mix-channel { padding: 8px; border: 1px solid var(--mfx-border); border-radius: 8px; background: var(--mfx-panel-2, var(--mfx-panel)); display: grid; gap: 4px; }
+.routing-mix-panel .rig-channel-heading { display: flex; align-items: flex-start; gap: 8px; white-space: normal; font-size: .8rem; line-height: 1.3; }
+.rig-channel-number { flex-shrink: 0; padding: 3px 6px; border: 1px solid currentColor; border-radius: 4px; font-size: .7rem; }
+.rig-channel-heading > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.routing-mix-panel .routing-level { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+.routing-mix-panel .routing-level > span { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .75rem; line-height: 20px; }
+.routing-mix-panel .routing-level input { width: 100%; min-width: 0; margin: 0; }
+.routing-mix-panel .routing-level input[type=range] { min-height: 44px; accent-color: var(--mix-color, var(--mfx-cyan)); }
+.routing-mix-panel .rig-channel-buttons { display: flex; gap: 6px; margin-top: 2px; }
+.routing-mix-panel .rig-channel-buttons .btn { flex: 1; padding: 6px; font-size: .7rem; }
+.routing-mix-panel .routing-cab-levels { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.routing-mix-panel .routing-cab-level { padding: 8px; border: 1px solid var(--mfx-border); border-radius: 8px; background: var(--mfx-panel-2, var(--mfx-panel)); }
+.routing-mix-panel .routing-level-name { white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
+.routing-mix-panel .routing-level > span > .btn { flex: 0 0 auto; min-width: 80px; }
 
 .chain-trash {
     margin-top: 16px;

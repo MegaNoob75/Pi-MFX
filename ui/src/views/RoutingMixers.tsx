@@ -134,9 +134,10 @@ export function RoutingMixers({ blocks, routing, selected, onSelected, client, o
         return impulses.length ? impulses.map(fileName).join(" / ") : str(block?.name, id === "input" ? "Input" : "Branch");
     };
     return <div className={`routing-mix-panels ${cab ? "" : "routing-mix-rig-only"}`}>
-        <section className={`panel routing-mix-panel ${rigGraphic ? "is-graphical" : "is-sliders"}`}><div className="routing-mix-heading"><h2>RIG MIX</h2><ViewChoice graph={rigGraphic} set={setRigGraphic} storage="pimfx-routing-mix-view" /></div>
+        <section className={`panel routing-mix-panel ${rigGraphic ? "is-graphical" : "is-sliders"}`}><div className="routing-mix-heading"><div className="routing-mix-title"><h2>RIG MIX</h2>
             <select className="input" aria-label="Routing mixer" value={mixerId} onChange={e => onSelected(e.target.value)}>
                 {mixes.map(m => <option key={str(m.id)} value={str(m.id)}>{str(m.name)}</option>)}</select>
+            </div><ViewChoice graph={rigGraphic} set={setRigGraphic} storage="pimfx-routing-mix-view" /></div>
             <RigMixControls inputs={inputs} graphical={rigGraphic} label={label} onChange={changeEdges} />
         </section>
         {cab && <section className={`panel routing-mix-panel ${cabGraphic ? "is-graphical" : "is-sliders"}`}><div className="routing-mix-heading"><h2>CABINET MIX</h2><ViewChoice graph={cabGraphic} set={setCabGraphic} storage="pimfx-cab-mix-view" /></div>
@@ -162,7 +163,7 @@ export function RoutingMixers({ blocks, routing, selected, onSelected, client, o
                     onChange={level => setBlend(blendRef.current?.id === actualCabId ? blendRef.current.weights : weights,
                         level <= blendMinimum + .001 ? 0 : 10 ** (level / 20))} />}
                 {loaded.length > 0 && <div className="routing-pan-caption">Cabinet volumes</div>}
-                <div className={`routing-cab-levels ${loaded.length > 1 && cabGraphic ? "has-blend" : ""}`} style={cabGraphic && loaded.length > 1 ? { gridTemplateColumns: `repeat(${loaded.length}, minmax(0, 1fr))` } : undefined}>{loaded.map((c, i) => <div key={c.index} className={`routing-cab-level mix-color-${i}`} title={c.name}><Level label={`${c.name} volume${values[c.index] <= c.min ? " · muted" : ""}`}
+                <div className="routing-cab-levels">{loaded.map((c, i) => <div key={c.index} className={`routing-cab-level mix-color-${i}`} title={c.name}><Level label={`${c.name} volume${values[c.index] <= c.min ? " · muted" : ""}`}
                     value={values[c.index]} min={c.min} max={c.max} onChange={value => { const next = [...values]; next[c.index] = value; cabWrite(next); }} /></div>)}
                 </div>
             </>

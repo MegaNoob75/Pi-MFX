@@ -43,13 +43,16 @@ export function RigMixControls({ inputs, graphical, label, onChange }: {
         setWeights([a, b, 1 - a - b]);
     };
     if (!inputs.length) return <p className="muted">Connect branches to this mixer to adjust their blend.</p>;
-    return <div className="rig-mix-controls">
+    return <div className="rig-mix-controls" data-graphical={graphical} data-input-count={inputs.length}>
         {graphical && inputs.length === 2 && <div className="rig-blend-line">
-            <div className="rig-blend-names"><strong title={name(0)}>{name(0)}</strong><strong title={name(1)}>{name(1)}</strong></div>
+            <div className="rig-blend-names">
+                <strong title={name(0)}><span>{name(0)}</span><span>{Math.round(weights[0] * 100)}%</span></strong>
+                <button className="btn rig-blend-reset" onClick={() => setWeights([.5, .5])}>50 / 50</button>
+                <strong title={name(1)}><span>{name(1)}</span><span>{Math.round(weights[1] * 100)}%</span></strong>
+            </div>
             <input type="range" min="0" max="100" step="0.1" value={weights[1] * 100}
                 aria-label="Blend between mixer inputs 1 and 2" aria-valuetext={`${Math.round(weights[0] * 100)}% input 1, ${Math.round(weights[1] * 100)}% input 2`}
                 onChange={e => { const b = Number(e.target.value) / 100; setWeights([1 - b, b]); }} />
-            <div className="rig-blend-percent"><span>{Math.round(weights[0] * 100)}%</span><button className="btn" onClick={() => setWeights([.5, .5])}>50 / 50</button><span>{Math.round(weights[1] * 100)}%</span></div>
         </div>}
         {graphical && inputs.length === 3 && <>
             <div className="routing-cab-triangle rig-blend-triangle" role="group" aria-label="Three path blend; use the channel blend sliders below for keyboard adjustment"
@@ -65,9 +68,9 @@ export function RigMixControls({ inputs, graphical, label, onChange }: {
         {inputs.length > 1 && <label className="routing-level rig-mix-level"><span>Mix level <span>{mixDb.toFixed(1)} dB</span></span>
             <input type="range" aria-label="Combined mix level" min={MIN} max={maximum} step="0.1" value={mixDb} onChange={e => setLevel(Number(e.target.value))} />
         </label>}
-        <div className={`rig-channels ${graphical && (inputs.length === 1 || inputs.length > 3) ? "rig-faders" : ""}`}>
-            {inputs.map((e, i) => <div key={`${str(e.from)}:${str(e.to)}`} className={`routing-mix-channel mix-color-${i % 3}`}>
-                <strong title={name(i)}>{name(i)}</strong>
+        <div className="rig-channels">
+            {inputs.map((e, i) => <div key={`${str(e.from)}:${str(e.to)}`} className={`routing-mix-channel mix-color-${i % 3}`} role="group" aria-label={name(i)}>
+                <strong className="rig-channel-heading" title={name(i)}><span className="rig-channel-number">INPUT {i + 1}</span><span>{label(str(e.from))}</span></strong>
                 <label className="routing-level rig-channel-level"><span>Volume <span>{levels[i].toFixed(1)} dB</span></span>
                     <input type="range" aria-label={`${name(i)} volume`} min={MIN} max={MAX} step="0.1" value={levels[i]}
                         onChange={event => change(e, { levelDb: Number(event.target.value) })} />

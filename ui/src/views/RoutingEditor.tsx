@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { EngineClient } from "../api";
 import { bool, num, obj, objects, str, type JsonObject } from "../json";
@@ -6,6 +6,7 @@ import { PluginBrowser } from "./PluginBrowser";
 import { RoutingMixers } from "./RoutingMixers";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { routeCables } from "./routingCables";
+import { freeRoutingPoint, separateRoutingBlocks } from "./routingLayout";
 
 type Point = { x: number; y: number };
 type WireEnd = { id: string; direction: "in" | "out" };
@@ -35,7 +36,13 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     const [source, setSource] = useState("");
     const [browser, setBrowser] = useState(false);
     const [zoom, setZoom] = useState(1);
-    const [menu, setMenu] = useState<"actions" | "connections" | "">("");
+    const [menu, setMenu] = useState<"actions" | "connections" | "add" | "">("");
+    const [contextPoint, setContextPoint] = useState<Point>({ x: 0, y: 0 });
+    const additionPoint = useRef<Point | null>(null);
+    const fingers = useRef(new Map<number, Point>());
+    const hold = useRef<{ timer: number; origin: Point; scroll: Point } | null>(null);
+    const pinch = useRef<{ distance: number; zoom: number; world: Point } | null>(null);
+    const zoomScroll = useRef<{ world: Point; screen: Point } | null>(null);
     const actionsButton = useRef<HTMLButtonElement>(null);
     const connectionsButton = useRef<HTMLButtonElement>(null);
     const popup = useRef<HTMLDivElement>(null);
@@ -53,7 +60,7 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         window.addEventListener("resize", close);
         return () => { document.removeEventListener("pointerdown", dismiss, true); document.removeEventListener("keydown", key); window.removeEventListener("resize", close); };
     }, [menu]);
-    const [spacing, setSpacing] = useState(() => Math.max(10, Math.min(100, Number(preference("pimfx-routing-grid", "20")) || 20)));
+    const [spacing, setSpacing] = useState(() => Math.max(20, Math.min(100, Number(preference("pimfx-routing-grid", "20")) || 20)));
     const [spacingText, setSpacingText] = useState(String(spacing));
     const [snap, setSnap] = useState(() => preference("pimfx-routing-snap", "on") !== "off");
     const [wireMode, setWireMode] = useState(() => preference("pimfx-routing-wire-mode", "tap") === "drag" ? "drag" : "tap");
@@ -77,6 +84,68 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     const mounted = useRef(true);
     const viewport = useRef<HTMLDivElement>(null);
     const canvas = useRef<HTMLDivElement>(null);
+    const cancelHold = () => { if (hold.current) window.clearTimeout(hold.current.timer); hold.current = null; };
+    useEffect(() => () => { if (hold.current) window.clearTimeout(hold.current.timer); }, []);
+    useEffect(() => { cancelHold(); fingers.current.clear(); pinch.current = null; setMenu(""); additionPoint.current = null; }, [presetId, mix]);
+    useLayoutEffect(() => {
+        const pendingZoom = zoomScroll.current, area = viewport.current;
+        if (!pendingZoom || !area) return;
+        area.scrollLeft = pendingZoom.world.x * zoom - pendingZoom.screen.x;
+        area.scrollTop = pendingZoom.world.y * zoom - pendingZoom.screen.y;
+        zoomScroll.current = null;
+    }, [zoom]);
+    const emptyGrid = (target: EventTarget | null) => target instanceof Element
+        && !target.closest(".routing-block, button, input, select, .routing-hint");
+    const openAddMenu = (screen: Point) => {
+        const area = viewport.current;
+        if (!area) return;
+        const bounds = area.getBoundingClientRect();
+        additionPoint.current = { x: (screen.x - bounds.left + area.scrollLeft) / zoom,
+            y: (screen.y - bounds.top + area.scrollTop) / zoom };
+        setContextPoint(screen); setMenu("add");
+    };
+    const gridDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!emptyGrid(event.target) || (!event.isPrimary && !fingers.current.size) || event.pointerType === "mouse") return;
+        const area = event.currentTarget, point = { x: event.clientX, y: event.clientY };
+        event.preventDefault(); area.setPointerCapture(event.pointerId);
+        fingers.current.set(event.pointerId, point);
+        if (fingers.current.size === 1) {
+            cancelHold();
+            hold.current = { origin: point, scroll: { x: area.scrollLeft, y: area.scrollTop },
+                timer: window.setTimeout(() => { if (hold.current && fingers.current.size === 1) { openAddMenu(point); cancelHold(); } }, 600) };
+        } else if (fingers.current.size === 2) {
+            cancelHold(); setMenu("");
+            const [a, b] = [...fingers.current.values()], rect = area.getBoundingClientRect();
+            const center = { x: (a.x + b.x) / 2 - rect.left, y: (a.y + b.y) / 2 - rect.top };
+            pinch.current = { distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), zoom,
+                world: { x: (center.x + area.scrollLeft) / zoom, y: (center.y + area.scrollTop) / zoom } };
+        }
+    };
+    const gridMove = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!fingers.current.has(event.pointerId)) return;
+        event.preventDefault();
+        fingers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        const area = event.currentTarget, activePinch = pinch.current;
+        if (activePinch && fingers.current.size === 2) {
+            const [a, b] = [...fingers.current.values()], rect = area.getBoundingClientRect();
+            zoomScroll.current = { world: activePinch.world,
+                screen: { x: (a.x + b.x) / 2 - rect.left, y: (a.y + b.y) / 2 - rect.top } };
+            const nextZoom = Math.max(.5, Math.min(1.5, activePinch.zoom * Math.hypot(a.x - b.x, a.y - b.y) / activePinch.distance));
+            if (nextZoom === zoom) {
+                area.scrollLeft = activePinch.world.x * zoom - zoomScroll.current.screen.x;
+                area.scrollTop = activePinch.world.y * zoom - zoomScroll.current.screen.y;
+                zoomScroll.current = null;
+            } else setZoom(nextZoom);
+        } else if (hold.current) {
+            const h = hold.current, dx = event.clientX - h.origin.x, dy = event.clientY - h.origin.y;
+            if (Math.hypot(dx, dy) > 10) window.clearTimeout(h.timer);
+            area.scrollLeft = h.scroll.x - dx; area.scrollTop = h.scroll.y - dy;
+        }
+    };
+    const gridEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!fingers.current.delete(event.pointerId)) return;
+        cancelHold(); pinch.current = null;
+    };
     const wireRef = useRef<typeof wire>(null);
     const touchPort = useRef<{ pointerId: number; x: number; y: number; id: string; direction: "in" | "out" } | null>(null);
     const suppressPortClickUntil = useRef(0);
@@ -120,7 +189,7 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         if (source && !exists(source)) setSource("");
         if (deleteId && !exists(deleteId)) setDeleteId("");
     }, [blocks, selected, source, deleteId]);
-    const point = (id: string): Point => {
+    const rawPoint = (id: string): Point => {
         const index = nodes.findIndex(n => str(n.id) === id);
         // A newly published block must use its saved position on the first
         // render, before the routing synchronization effect updates state.
@@ -129,6 +198,11 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         return { x: num(p.x, snap ? Math.round(fallbackX / spacing) * spacing : fallbackX),
             y: num(p.y, snap ? Math.round(fallbackY / spacing) * spacing : fallbackY) };
     };
+    const rawGeometry = JSON.stringify(nodes.map(n => ({ id: str(n.id), ...rawPoint(str(n.id)) })));
+    const spacedNodes = useMemo(() => separateRoutingBlocks(JSON.parse(rawGeometry), snap ? spacing : 0), [rawGeometry, snap, spacing]);
+    const point = (id: string): Point => spacedNodes.find(n => n.id === id) ?? rawPoint(id);
+    const visiblePositions: JsonObject = Object.fromEntries(spacedNodes.map(({ id, x, y }) => [id, { x, y }]));
+    positionsRef.current = visiblePositions;
     const edges = objects(graph.edges);
     const cableGeometry = JSON.stringify(nodes.map(n => ({ id: str(n.id), ...point(str(n.id)) })));
     const cableTopology = JSON.stringify(edges.map(e => ({ from: str(e.from), to: str(e.to) })));
@@ -190,8 +264,8 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         setRevealId("");
     }, [revealId, mix, positions, zoom]);
     const additionLayout = () => ({ spacing, snap,
-        x: (viewport.current?.scrollLeft ?? 0) / zoom + 16,
-        y: (viewport.current?.scrollTop ?? 0) / zoom + 16,
+        x: additionPoint.current?.x ?? (viewport.current?.scrollLeft ?? 0) / zoom + 16,
+        y: additionPoint.current?.y ?? (viewport.current?.scrollTop ?? 0) / zoom + 16,
         width: (viewport.current?.clientWidth ?? window.innerWidth) / zoom,
         height: (viewport.current?.clientHeight ?? Math.max(160, window.innerHeight - 160)) / zoom });
     const commit = (next: JsonObject) => {
@@ -304,7 +378,8 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     const alignAll = () => {
         const next: JsonObject = {};
         nodes.forEach(n => { const p = point(str(n.id)); next[str(n.id)] = { x: align(p.x, true), y: align(p.y, true) }; });
-        setPositions(next); commit({ ...graphRef.current, positions: next });
+        const spaced = Object.fromEntries(separateRoutingBlocks(nodes.map(n => ({ id: str(n.id), x: num(obj(next[str(n.id)]).x), y: num(obj(next[str(n.id)]).y) })), spacing).map(({ id, x, y }) => [id, { x, y }]));
+        setPositions(spaced); commit({ ...graphRef.current, positions: spaced });
     };
     const autoLayout = () => {
         const levels = new Map<string, number>(nodes.map(n => [str(n.id), 0]));
@@ -327,22 +402,23 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     };
     const anchor = (menu === "actions" ? actionsButton : connectionsButton).current?.getBoundingClientRect();
     const menuWidth = Math.min(menu === "connections" ? 480 : 400, window.innerWidth - 16);
-    const menuTop = Math.min((anchor?.bottom ?? 0) + 6, window.innerHeight - 64);
+    const menuTop = Math.max(8, Math.min(menu === "add" ? contextPoint.y : (anchor?.bottom ?? 0) + 6, window.innerHeight - (menu === "add" ? 132 : 64)));
     return <div className="routing-editor">
         <div className="routing-header">
             <button ref={connectionsButton} className="btn" aria-expanded={menu === "connections"} aria-controls="routing-menu" onClick={() => setMenu(menu === "connections" ? "" : "connections")}>CONNECTIONS ▾</button>
-            <button ref={actionsButton} className="btn" aria-expanded={menu === "actions"} aria-controls="routing-menu" onClick={() => setMenu(menu === "actions" ? "" : "actions")}>ACTIONS ▾</button>
+            <button ref={actionsButton} className="btn" aria-expanded={menu === "actions"} aria-controls="routing-menu" onClick={() => setMenu(menu === "actions" ? "" : "actions")}>OPTIONS ▾</button>
             {toolbarContent}
         </div>
-        {menu && createPortal(<div ref={popup} id="routing-menu" className="routing-menu" role="dialog" aria-label={menu === "actions" ? "Editor actions" : "Audio connections"}
-            style={{ top: menuTop, left: Math.max(8, Math.min(anchor?.left ?? 8, window.innerWidth - menuWidth - 8)), width: menuWidth, maxHeight: window.innerHeight - menuTop - 8 }}>
-            <div className="routing-menu-title"><strong>{menu === "actions" ? "EDITOR ACTIONS" : `CONNECTIONS (${edges.length})`}</strong><button className="btn" aria-label="Close editor menu" onClick={() => setMenu("")}>×</button></div>
-            {menu === "actions" ? <>
-            <div className="routing-menu-actions" onClick={() => setMenu("")}>{presetActions}</div>
+        {menu && createPortal(<div ref={popup} id="routing-menu" className="routing-menu" role="dialog" aria-label={menu === "add" ? "Add a block" : menu === "actions" ? "Editor options" : "Audio connections"}
+            style={{ top: menuTop, left: Math.max(8, Math.min(menu === "add" ? contextPoint.x : anchor?.left ?? 8, window.innerWidth - menuWidth - 8)), width: menuWidth, maxHeight: window.innerHeight - menuTop - 8 }}>
+            <div className="routing-menu-title"><strong>{menu === "add" ? "ADD BLOCK" : menu === "actions" ? "EDITOR OPTIONS" : `CONNECTIONS (${edges.length})`}</strong><button className="btn" aria-label="Close editor menu" onClick={() => setMenu("")}>×</button></div>
+            {menu === "add" ?
             <div className="routing-menu-actions">
                 <button className="btn" disabled={locked || routingBusy} onClick={() => { setMenu(""); setBrowser(true); }}>ADD PLUGIN</button>
                 <button className="btn" disabled={locked || routingBusy} onClick={() => { setMenu(""); void runStructure(() => client.request("routing/edit", { addMixer: true, presetId, layout: additionLayout() })); }}>ADD MIXER</button>
             </div>
+            : menu === "actions" ? <>
+            <div className="routing-menu-actions" onClick={() => setMenu("")}>{presetActions}</div>
             <div className="routing-menu-actions" onClick={() => setMenu("")}>{presetManagementActions}</div>
             <div className="routing-menu-actions">
                 <button className="btn" onClick={() => { setMenu(""); onMixChange(!mix); }}>{mix ? "SHOW ROUTING" : "SHOW MIXERS"}</button>
@@ -353,15 +429,15 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
             <strong>GRID & WIRING</strong>
             <div className="routing-grid-settings">
             <button className={`btn ${snap ? "btn-active" : ""}`} aria-pressed={snap} onClick={() => setSnap(!snap)}>SNAP {snap ? "ON" : "OFF"}</button>
-            <label>Grid spacing <input className="input" type="number" aria-label="Grid spacing" min="10" max="100" step="1" value={spacingText}
-                onChange={event => { setSpacingText(event.target.value); const value = Number(event.target.value); if (Number.isFinite(value) && value >= 10 && value <= 100) setSpacing(Math.round(value)); }}
-                onBlur={event => { const value = Math.max(10, Math.min(100, Math.round(Number(event.currentTarget.value) || spacing))); setSpacing(value); setSpacingText(String(value)); }} /> px</label>
+            <label>Grid spacing <input className="input" type="number" aria-label="Grid spacing" min="20" max="100" step="1" value={spacingText}
+                onChange={event => { setSpacingText(event.target.value); const value = Number(event.target.value); if (Number.isFinite(value) && value >= 20 && value <= 100) setSpacing(Math.round(value)); }}
+                onBlur={event => { const value = Math.max(20, Math.min(100, Math.round(Number(event.currentTarget.value) || spacing))); setSpacing(value); setSpacingText(String(value)); }} /> px</label>
             <button className="btn" disabled={locked} onClick={alignAll}>ALIGN TO GRID</button>
             <label>Connections <select className="input" aria-label="Connection gesture" value={wireMode} onChange={event => { setSource(""); setWire(null); wireRef.current = null; setWireMode(event.target.value); }}>
                 <option value="tap">Tap OUT, then IN</option><option value="drag">Drag between connectors</option>
             </select></label>
             </div>
-            <p className="muted">Drag headings to move blocks. {wireMode === "drag" ? "Drag between OUT and IN to connect." : "Tap OUT, then IN to connect."}</p>
+            <p className="muted">Drag headings to move blocks. Hold empty grid space to add a block; pinch to zoom. {wireMode === "drag" ? "Drag between OUT and IN to connect." : "Tap OUT, then IN to connect."}</p>
             </> : <div className="routing-menu-connections">
                 {!edges.length && <p className="muted">No audio connections. Use the connectors on the canvas to add one.</p>}
                 {edges.map((edge, i) => <div key={`${str(edge.from)}:${str(edge.to)}`} className="routing-menu-connection"><span><span className="routing-cable-swatch" style={{ backgroundColor: cableColors[i] }} aria-hidden="true" />{i + 1}: {str(nodes.find(n => n.id === edge.from)?.name)} → {str(nodes.find(n => n.id === edge.to)?.name)}</span>
@@ -380,7 +456,9 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         {mix ? <RoutingMixers blocks={blocks} routing={graph} selected={selected} onSelected={setSelected}
             client={client} onEdit={onEdit} onRouting={commit} /> : <>
             {source && <div className="routing-hint">Tap an IN connector to finish. <button className="btn" onClick={() => setSource("")}>CANCEL CONNECTION</button></div>}
-            <div className="routing-viewport" ref={viewport}>
+            <div className="routing-viewport" ref={viewport}
+                onPointerDown={gridDown} onPointerMove={gridMove} onPointerUp={gridEnd} onPointerCancel={gridEnd} onLostPointerCapture={gridEnd}
+                onContextMenu={event => { if (!emptyGrid(event.target)) return; event.preventDefault(); cancelHold(); openAddMenu({ x: event.clientX, y: event.clientY }); }}>
                 <div className="routing-canvas-frame" style={{ width: width * zoom, height: height * zoom }}>
                     <div ref={canvas} className="routing-canvas" style={{ width, height, transform: `scale(${zoom})`, backgroundSize: `${spacing}px ${spacing}px` }}>
                         <svg className="routing-wires" width={width} height={height} aria-label="Audio connections">
@@ -411,7 +489,9 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                                 <button className="routing-block-heading" title={str(node.name)} disabled={locked}
                                     onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); drag.current = { id, x: e.clientX, y: e.clientY, start: p }; setSelected(id); }}
                                     onPointerMove={e => { const d = drag.current; if (!d || d.id !== id) return;
-                                        const next = { ...positionsRef.current, [id]: { x: align(d.start.x + (e.clientX - d.x) / zoom), y: align(d.start.y + (e.clientY - d.y) / zoom) } };
+                                        const wanted = { x: align(d.start.x + (e.clientX - d.x) / zoom), y: align(d.start.y + (e.clientY - d.y) / zoom) };
+                                        const safe = freeRoutingPoint(wanted, spacedNodes.filter(n => n.id !== id), snap ? spacing : 0);
+                                        const next = { ...positionsRef.current, [id]: safe };
                                         positionsRef.current = next; setPositions(next); }}
                                     onPointerUp={() => { if (!drag.current) return; drag.current = null; commit({ ...graphRef.current, positions: positionsRef.current }); }}
                                     onPointerCancel={() => { drag.current = null; setPositions(obj(graphRef.current.positions)); }}>
