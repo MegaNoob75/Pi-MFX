@@ -231,7 +231,7 @@ struct ControllerConfig {
     bool enabled = false;
     std::string name = "My Controller";
 
-    /// Always freeform. Older controller.json may still say "grid"; the UI
+    /// Always freeform. Older controller settings may still say "grid"; the UI
     /// ignores that and packs with rects.
     std::string layoutMode = "freeform";
     int gridRows = 2;

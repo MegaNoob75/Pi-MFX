@@ -88,7 +88,9 @@ void BackingTrackPlayer::stop() {
 }
 
 void BackingTrackPlayer::prepare(unsigned outputSampleRate) {
-    outputSampleRate_.store(std::max(1u, outputSampleRate), std::memory_order_release);
+    const unsigned next = std::max(1u, outputSampleRate);
+    if (outputSampleRate_.exchange(next, std::memory_order_acq_rel) != next)
+        enqueue(Command{CommandType::Seek, {}, fromMilli(positionMillis_.load(std::memory_order_acquire))});
 }
 
 void BackingTrackPlayer::enqueue(Command command) {

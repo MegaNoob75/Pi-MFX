@@ -37,9 +37,11 @@ http://pimfx.local:8080
 http://<pi-address>:8080
 ```
 
-Anyone on that LAN or hotspot can control the Pi (no login).
+Set a Pi-MFX password before remote use. Remote browsers sign in; the attached
+loopback touchscreen stays unlocked. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
 
-5. **Settings → Audio**: pick the card, start at **48000 / 64 / 3**, play and watch xruns.
+5. **Settings → System → Audio**: pick the card, start conservatively (for
+   example **48000 / 128 / 3**), play and watch XRuns before reducing buffers.
 
 Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS is not available.
 
@@ -122,6 +124,12 @@ sudo bash ./scripts/pimfx.sh update --branch dev
 
 Open `http://pimfx.local:8080` (phone, tablet, or this PC). Hard-refresh the page (**Ctrl+Shift+R**) so the browser does not keep an old UI.
 
+For 1.0 stabilization, use [V1_READINESS.md](V1_READINESS.md). Record the exact
+running commit, audio settings, plugins/models, duration, and results. All
+native compilation and runtime testing for this workflow are done by the
+maintainer on the Pi 5; CMake is not installed on this Windows workstation.
+Static review and documentation edits do not count as completed device tests.
+
 Quick check on the Pi:
 
 ```bash
@@ -133,8 +141,10 @@ journalctl -u pimfx -n 40 --no-pager
 
 ## Branch flow
 
-Milestone branches were temporary development branches and Milestones 0-5 are
-now complete in `dev`. Continue current work from `dev`, using a short-lived
+All current features belong to `dev`. Separate branches were used to test
+individual features during development; they are not product release stages.
+Freeze new feature work while preparing 1.0; use the readiness report
+to prioritize fixes. Continue current work from `dev`, using a short-lived
 feature branch when isolation is useful. Move `main` only when intentionally
 promoting a tested release. To make a Pi track `main` instead:
 
@@ -164,6 +174,7 @@ npm run dev
 
 Open `http://127.0.0.1:5173/docs.html?view=performance`. Neither workflow tests
 Pi audio, LV2 loading, physical controls, latency, or XRuns.
+The screenshot assets are excluded from this review and were not regenerated.
 
 ---
 

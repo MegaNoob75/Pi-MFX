@@ -129,7 +129,6 @@ Paths Paths::resolve(const std::string& overrideRoot) {
 
 std::string Paths::settingsFile() const { return joinPath(dataRoot, "settings.json"); }
 std::string Paths::banksDir() const { return joinPath(dataRoot, "banks"); }
-std::string Paths::controllerFile() const { return joinPath(dataRoot, "controller.json"); }
 std::string Paths::themesDir() const { return joinPath(dataRoot, "themes"); }
 std::string Paths::credentialsFile() const { return joinPath(dataRoot, "credentials.json"); }
 std::string Paths::pluginsFile() const { return joinPath(dataRoot, "plugins.json"); }

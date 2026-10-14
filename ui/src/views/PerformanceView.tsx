@@ -325,13 +325,12 @@ export function PerformanceView({
         if (!bankId) {
             return Promise.resolve();
         }
-        return client.request("controller/config", {
-            ...controller,
-            presetAssignments: {
-                ...obj(controller.presetAssignments),
-                [bankId]: nextMap
-            }
-        });
+        const previous = bankMap();
+        const changes: JsonObject = {};
+        for (const id of new Set([...Object.keys(previous), ...Object.keys(nextMap)])) {
+            if (previous[id] !== nextMap[id]) changes[id] = nextMap[id] ?? null;
+        }
+        return client.request("controller/assignments", { bankId, changes });
     };
 
     const fireControl = (id: string, fire: "tap" | "hold" | "double") => {
@@ -527,7 +526,8 @@ export function PerformanceView({
             delete next[sourceId];
         }
         next[targetId] = sourcePreset;
-        void run(() => saveAssignments(next)).then(() => {
+        void run(async () => {
+            await saveAssignments(next);
             showToast(targetPreset ? "Preset assignments swapped" : "Preset moved to empty switch");
         });
     };
@@ -535,7 +535,7 @@ export function PerformanceView({
     const clearAssignment = (controlId: string) => {
         const next = bankMap();
         delete next[controlId];
-        void run(() => saveAssignments(next)).then(() => showToast("Assignment cleared — preset kept"));
+        void run(async () => { await saveAssignments(next); showToast("Assignment cleared — preset kept"); });
     };
 
     const beginPresetDrag = (event: ReactPointerEvent<HTMLButtonElement>, controlId: string, slotIndex: number, name: string) => {
@@ -695,10 +695,12 @@ export function PerformanceView({
                         return;
                     }
                     const clearing = activeSnapshot === widget.slot;
-                    void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
-                        .then(() => showToast(clearing
+                    void run(async () => {
+                        await client.request("snapshot/select", { snapshotId: str(snapshot.id) });
+                        showToast(clearing
                             ? "SNAPSHOT INACTIVE"
-                            : `${str(snapshot.name, `SNAPSHOT ${widget.slot + 1}`)} ACTIVE`));
+                            : `${str(snapshot.name, `SNAPSHOT ${widget.slot + 1}`)} ACTIVE`);
+                    });
                 },
                 onLongPress: () => {
                     if (empty) {
@@ -1089,8 +1091,10 @@ export function PerformanceView({
 
     const assignPreset = (presetId: string, controlId: string) => {
         closeMenu();
-        void run(() => saveAssignments({ ...bankMap(), [controlId]: presetId }))
-            .then(() => showToast("Preset assigned to switch"));
+        void run(async () => {
+            await saveAssignments({ ...bankMap(), [controlId]: presetId });
+            showToast("Preset assigned to switch");
+        });
     };
 
     const selectedPreset = menu?.kind === "preset"
@@ -1556,10 +1560,10 @@ export function PerformanceView({
                                 void askText("Snapshot name", str(obj(current).name, `Snap ${menu.index + 1}`)).then((name) => {
                                     if (name?.trim()) {
                                         closeMenu();
-                                        void run(() => client.request("snapshot/rename", {
+                                        void run(async () => { await client.request("snapshot/rename", {
                                             snapshotId: menu.snapshotId,
                                             name: name.trim()
-                                        })).then(() => showToast("SNAPSHOT RENAMED"));
+                                        }); showToast("SNAPSHOT RENAMED"); });
                                     }
                                 });
                             }}
@@ -1608,14 +1612,17 @@ export function PerformanceView({
                 confirmLabel="DELETE" danger onCancel={() => setPendingSnapshotDelete(null)} onConfirm={() => {
                     const pending = pendingSnapshotDelete;
                     setPendingSnapshotDelete(null);
-                    void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
-                        .then(() => showToast(`SNAPSHOT ${pending.index + 1} DELETED`));
+                    void run(async () => {
+                        await client.request("snapshot/delete", { snapshotId: pending.id });
+                        showToast(`SNAPSHOT ${pending.index + 1} DELETED`);
+                    });
                 }} />}
             {confirmOverwrite && <ConfirmDialog title="OVERWRITE SAVED PRESET?"
                 body={`Replace “${str(obj(preset).name, "this preset")}” with the current effect settings?`}
                 confirmLabel="OVERWRITE" danger onCancel={() => setConfirmOverwrite(false)} onConfirm={() => {
                     setConfirmOverwrite(false);
-                    void run(() => client.request("preset/save")).then(() => {
+                    void run(async () => {
+                        await client.request("preset/save");
                         rememberPresetBaseline(str(state.activePresetId), signatureForChain(chain), true);
                     });
                 }} />}

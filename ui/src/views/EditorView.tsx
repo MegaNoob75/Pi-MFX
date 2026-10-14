@@ -91,18 +91,18 @@ export function EditorView({
     const sessionPresetId = str(obj(preset).id, str(state.activePresetId));
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
 
-    const waitForChainGeneration = (generation: number) => new Promise<void>((resolve) => {
+    const waitForChainGeneration = (generation: number) => new Promise<void>((resolve, reject) => {
         let finished = false;
         let unsubscribe: () => void = () => undefined;
         let timer = 0;
-        const finish = () => {
+        const finish = (error?: Error) => {
             if (finished) return;
             finished = true;
             window.clearTimeout(timer);
             unsubscribe();
-            resolve();
+            if (error) reject(error); else resolve();
         };
-        timer = window.setTimeout(finish, 30000);
+        timer = window.setTimeout(() => finish(new Error("Effect chain preparation timed out. Reload the saved preset or choose another preset.")), 30000);
         unsubscribe = client.subscribe((snapshot) => {
             if (num(snapshot.state.chainGeneration) > generation) finish();
         });
@@ -111,19 +111,18 @@ export function EditorView({
         if (finished) unsubscribe();
     });
 
-    const runStructureChange = async (work: () => Promise<unknown>) => {
+    const runStructureChange = async (work: () => Promise<unknown>, afterPublication?: () => void) => {
         if (structureBusyRef.current) return;
         structureBusyRef.current = true;
         setStructureBusy(true);
         setSessionStatus("PREPARING EFFECT CHAIN…");
         const generation = num(client.snapshot.state.chainGeneration);
-        let accepted = false;
         try {
             await run(async () => {
                 await work();
-                accepted = true;
+                await waitForChainGeneration(generation);
+                afterPublication?.();
             });
-            if (accepted) await waitForChainGeneration(generation);
         } finally {
             structureBusyRef.current = false;
             setStructureBusy(false);
@@ -190,11 +189,11 @@ export function EditorView({
             setBindTarget(null);
             return;
         }
-        void run(() => client.request("preset/bind", {
+        void run(async () => { await client.request("preset/bind", {
             ...payload,
             ownerBankId: str(obj(bank).id),
             ownerPresetId: sessionPresetId
-        })).then(() => {
+        });
             if (close) setBindTarget(null);
         });
     };
@@ -404,7 +403,7 @@ export function EditorView({
                         } else {
                             await client.request("chain/add", { uri, index: target.index });
                         }
-                    }).then(() => {
+                    }, () => {
                         // The replacement ID is absent from the old live chain.
                         // Open it only after the prepared chain has been swapped
                         // and published, or selection fallback can show another effect.
@@ -480,10 +479,10 @@ export function EditorView({
                                                 type="button"
                                                 className="editor-picker-select"
                                                 onClick={() => {
-                                                    void run(() => client.request("preset/select", {
+                                                    void run(async () => { await client.request("preset/select", {
                                                         bankId: str(item.id),
                                                         presetId: str(row.id)
-                                                    })).then(() => setPickerOpen(false));
+                                                    }); setPickerOpen(false); });
                                                 }}
                                             >
                                                 <MarqueeText text={str(row.name, "Preset")} align="left" fontWeight={800} />
@@ -516,7 +515,7 @@ export function EditorView({
                 confirmLabel="REMOVE" danger onCancel={() => setPendingTrashId("")} onConfirm={() => {
                     const slotId = pendingTrashId;
                     setPendingTrashId("");
-                    void runStructureChange(() => client.request("chain/remove", { slotId })).then(() => {
+                    void runStructureChange(() => client.request("chain/remove", { slotId }), () => {
                         {
                             setPage("chain");
                             client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
@@ -731,12 +730,12 @@ function PathPropertyPicker({
         highlightedRef.current = path;
         setHighlighted(path);
         lastSent.current = path;
-        void run(() => client.request("chain/property", {
+        void run(async () => { await client.request("chain/property", {
             slotId,
             property: propertyUri,
             path,
             persist: true
-        })).then(() => {
+        });
             setOpen(false);
             syncPathBrowser({ open: false, highlightedPath: path });
         });
@@ -745,12 +744,12 @@ function PathPropertyPicker({
     const cancel = () => {
         const path = original.current;
         lastSent.current = path;
-        void run(() => client.request("chain/property", {
+        void run(async () => { await client.request("chain/property", {
             slotId,
             property: propertyUri,
             path,
             persist: false
-        })).then(() => {
+        });
             setOpen(false);
             syncPathBrowser({ open: false, highlightedPath: path });
         });

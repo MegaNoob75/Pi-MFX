@@ -35,7 +35,6 @@ struct Paths {
 
     std::string settingsFile() const;
     std::string banksDir() const;
-    std::string controllerFile() const;
     std::string themesDir() const;
     std::string credentialsFile() const;
     std::string pluginsFile() const;

@@ -54,7 +54,8 @@ export function SnapshotEditView({
             } else {
                 await engine.client.request("preset/restoreLive");
             }
-        }).finally(onComplete);
+            onComplete();
+        });
     };
 
     const save = () => {
@@ -63,7 +64,8 @@ export function SnapshotEditView({
                 await engine.client.request("snapshot/rename", { snapshotId, name: name.trim() });
             }
             await engine.client.request("snapshot/update", { snapshotId });
-        }).then(onComplete);
+            onComplete();
+        });
     };
 
     useEffect(() => {

@@ -1,5 +1,8 @@
 # Installing Pi-MFX
 
+These instructions describe the current development feature set. The planned
+1.0.0 release still needs the sign-off in [V1_READINESS.md](V1_READINESS.md).
+
 ## What you need
 
 - Raspberry Pi 5 (4 GB or more), dedicated to Pi-MFX
@@ -88,15 +91,20 @@ http://<pi-address>:8080
 adapts to the screen. A 7" **1024×600** kiosk is the size the screenshots and
 layout editor assume.
 
-Anyone on the same LAN or hotspot can open that URL and control the Pi.
-There is no login on the HTTP or WebSocket APIs.
+On first use, set and confirm a Pi-MFX password on your trusted LAN or hotspot.
+The first person to finish setup sets the password. Remote HTTP and WebSocket
+access, including uploads/downloads, then requires a remembered login. The
+attached touchscreen remains unlocked at the loopback address. This password
+is separate from SSH, Wi-Fi, and TONE3000. HTTP is unencrypted; do not expose
+the port to the internet. Recovery steps: [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
 
 ## 5. Set up audio
 
 **Settings → System → Audio**
 
 1. Pick your interface or HAT. Duplex devices are listed first.
-2. Set sample rate, period size, and period count. Start at 48000 / 64 / 3.
+2. Set sample rate, period size, and period count. Start at 48000 / 128 / 3,
+   then lower buffers only after your actual rig is stable.
 3. Reset the xrun counter and play hard for two minutes.
 4. Zero xruns? Step down. Any xruns? Step back up.
 
@@ -104,14 +112,21 @@ The round-trip figure is measured from the driver, not calculated.
 
 ## 6. Build a chain
 
-Open **Preset Editor** from the PI-MFX menu, then add effects with the **+**
-buttons between the input and output nodes. If the picker is empty, install LV2 plugins from
-**Plugins**, then Rescan.
+Open **Preset Editor** from the PI-MFX menu. Use **ACTIONS** to add a plugin or
+mixer. New blocks start disconnected: connect **Input OUT → plugin IN**, then
+**plugin OUT → Output IN**. Chain more effects, split branches, or merge them
+through mixers. Placement alone does not connect audio. If the picker is empty,
+install LV2 plugins from **Plugins**, then Rescan. See [USER_GUIDE.md](USER_GUIDE.md).
 
 For amp captures and cabs you need a NAM-capable LV2 plugin and a convolution
 plugin. Once installed, effects that take a `.nam` file or an impulse response
 show a file button that opens the Pi-MFX library, including anything you
 downloaded from TONE3000.
+
+Use **SAVE** to write the preset; **RELOAD** discards its live draft. Before
+upgrading an older development installation, back up the Pi data root: presets
+without `routingFormat: 1` retain their names but their old chains are not
+migrated. Bank/preset JSON exports reference assets rather than embedding them.
 
 Use **Banks / Presets** to create and organize sounds, **Snapshots** inside the
 Preset Editor to capture variations, and **Settings → Layout** to arrange the
@@ -133,7 +148,7 @@ sudo bash ./scripts/pimfx.sh display
 ```
 
 That installs Labwc and Chromium, enables console auto-login for the account
-you used with sudo, and opens `http://127.0.0.1:8080` fullscreen after reboot.
+you used with sudo, and opens `http://127.0.0.1:8080/?kiosk=1` fullscreen after reboot.
 It does not use Chromium's strict kiosk mode. A tablet or phone on the LAN is
 still a complete control surface if you skip this.
 
@@ -218,6 +233,12 @@ Your banks, settings, models, and IRs live in `/var/lib/pimfx` and are not
 touched by an update or a reinstall. Run install again only if you need new
 system packages or want to re-apply tuning.
 
+Keep a separate copy of that data before release upgrades. The in-app
+configuration backup does not include banks, models, IRs, recordings, loops,
+backing tracks, drum assets, plugins, or credentials. For a consistent complete
+copy, stop Pi-MFX cleanly before copying its data root and preserve ownership
+and permissions. See [TECHNICAL.md](TECHNICAL.md).
+
 ## Removing
 
 From the menu pick **Remove Pi-MFX**, or:
@@ -256,10 +277,7 @@ That throws away the copied files and matches GitHub. Banks stay in
 
 **Xruns.** See [LOW_LATENCY.md](LOW_LATENCY.md).
 
-**Developing off the Pi.** The engine builds on Windows and macOS with a mock
-audio backend, so the API and UI can be worked on without hardware:
-
-```bash
-cmake -S engine -B engine/build && cmake --build engine/build
-cd ui && npm install && npm run dev
-```
+**Developing on Windows.** Edit here and copy/rebuild on the Pi with the
+workflow in [DEV_FLOW.md](DEV_FLOW.md). This workstation has no CMake; native
+compilation and testing are performed on the Pi 5. The read-only UI fixture
+can support documentation work without proving audio or hardware behavior.

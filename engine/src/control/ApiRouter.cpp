@@ -39,6 +39,13 @@ Json envelope(bool ok, const std::string& error, const Json& payload) {
 
 bool slowApiCommand(const std::string& command) {
     return command == "catalog" || command == "library" || command.rfind("plugins/", 0) == 0 || command.rfind("community/", 0) == 0
+        || command.rfind("library/", 0) == 0 || command == "backing/import"
+        || command == "drums/library/import" || command == "drums/library/audio" || command == "drums/sample/import"
+        || command == "looper/load" || command == "looper/save" || command == "looper/export"
+        || command == "looper/rename" || command == "looper/delete"
+        || (command.rfind("recorder/", 0) == 0 && command != "recorder/record/stop"
+            && command != "recorder/playback/stop" && command != "recorder/playback/pause")
+        || command == "audio/settings" || command == "system/settings"
         || (command.rfind("tone3000/", 0) == 0 && command != "tone3000/download-job/status");
 }
 
@@ -92,10 +99,12 @@ ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plug
 
 ApiRouter::~ApiRouter() { stop(); }
 
-bool ApiRouter::queueWork(std::function<void()> work) {
+bool ApiRouter::queueWork(std::function<void()> work, size_t bytes) {
     std::lock_guard<std::mutex> lock(workMutex_);
-    if (stopping_ || workQueue_.size() >= 16) return false;
-    workQueue_.push_back(std::move(work));
+    constexpr size_t maximumBytes = 128 * 1024 * 1024;
+    if (stopping_ || workQueue_.size() >= 16 || bytes > maximumBytes - queuedWorkBytes_) return false;
+    queuedWorkBytes_ += bytes;
+    workQueue_.emplace_back(std::move(work), bytes);
     workWake_.notify_one();
     return true;
 }
@@ -107,7 +116,9 @@ void ApiRouter::workLoop() {
             std::unique_lock<std::mutex> lock(workMutex_);
             workWake_.wait(lock, [&] { return stopping_ || !workQueue_.empty(); });
             if (workQueue_.empty()) return;
-            work = std::move(workQueue_.front()); workQueue_.pop_front();
+            work = std::move(workQueue_.front().first);
+            queuedWorkBytes_ -= workQueue_.front().second;
+            workQueue_.pop_front();
         }
         try { work(); }
         catch (const std::exception& exception) { logWarn(std::string("background operation: ") + exception.what()); }
@@ -176,6 +187,35 @@ void ApiRouter::attach() {
 }
 
 bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response) {
+    if (request.path.rfind("/api/", 0) != 0) return false;
+    const auto command = request.path.substr(5);
+    static const std::set<std::string> readable = {
+        "state", "catalog", "audio/devices", "midi/ports", "library", "diagnostics", "meters",
+        "transport/state", "backing/state", "looper/state", "recorder/state", "drums/state",
+        "library/list", "library/tree", "library/read", "looper/export", "recorder/export",
+        "drums/library/audio", "system/update/status", "plugins/status", "tone3000/status"
+    };
+    if (request.method != "POST" && !(request.method == "GET" && readable.count(command))) {
+        response.extraHeaders.emplace_back("Allow", readable.count(command) ? "GET, POST" : "POST");
+        response.error(405, "use POST for state-changing API commands");
+        return true;
+    }
+    // Move binary handlers as well as JSON commands off the socket thread.
+    // Count queued bodies so a few large uploads cannot exhaust Pi memory.
+    if (slowApiCommand(command)) {
+        if (!queueWork([this, request] {
+            HttpResponse reply;
+            try { handleRequestNow(request, reply); }
+            catch (const std::exception& exception) { reply.error(500, exception.what()); }
+            server_.completeResponse(request.clientId, std::move(reply));
+        }, request.body.size())) response.error(503, "another operation is still finishing; please try again");
+        else response.deferred = true;
+        return true;
+    }
+    return handleRequestNow(request, response);
+}
+
+bool ApiRouter::handleRequestNow(const HttpRequest& request, HttpResponse& response) {
     if (request.path.rfind("/api/", 0) != 0) {
         return false; // static files
     }
@@ -254,7 +294,7 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
     }
 
     Json payload;
-    if (request.method == "GET" || request.method == "DELETE") {
+    if (request.method == "GET") {
         payload = queryToJson(request);
     } else if (!request.body.empty()) {
         std::string parseError;
@@ -269,20 +309,6 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
 
     bool ok = true;
     std::string error;
-    if (slowApiCommand(command)) {
-        const uint64_t clientId = request.clientId;
-        if (!queueWork([this, clientId, command, payload] {
-            HttpResponse reply;
-            try {
-                bool success = true; std::string message;
-                const Json result = dispatch(command, payload, success, message);
-                reply.json(envelope(success, message, result).dump(), success ? 200 : 400);
-            } catch (const std::exception& exception) { reply.error(500, exception.what()); }
-            server_.completeResponse(clientId, std::move(reply));
-        })) response.error(503, "another operation is still finishing; please try again");
-        else response.deferred = true;
-        return true;
-    }
     const Json result = dispatch(command, payload, ok, error);
 
     if (!ok && error == "unknown command") {
@@ -357,7 +383,7 @@ void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& messag
             Json reply = envelope(ok, error, result);
             reply.set("type", "result"); reply.set("id", id); reply.set("command", command);
             server_.sendTo(clientId, reply.dump());
-        })) return;
+        }, message.size())) return;
         Json reply = envelope(false, "another operation is still finishing; please try again", Json::object());
         reply.set("type", "result"); reply.set("id", id); reply.set("command", command);
         server_.sendTo(clientId, reply.dump()); return;
@@ -664,6 +690,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- controller --------------------------------------------------------
+    if (command == "controller/assignments") {
+        ok = engine_.applyPresetAssignments(payload, error);
+        return Json::object();
+    }
     if (command == "controller/config") {
         ok = engine_.applyControllerConfig(payload, error);
         return Json::object();
@@ -872,7 +902,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "recorder/state") return engine_.recorderState();
     if (command.rfind("recorder/", 0) == 0) {
         ok = engine_.recorderCommand(command.substr(9), payload, error);
-        return engine_.recorderState();
+        const bool immediate = command == "recorder/record/stop" || command.rfind("recorder/playback/", 0) == 0;
+        return engine_.recorderState(!immediate);
     }
     if (command == "drums/state") return engine_.drumState();
     if (command.rfind("drums/", 0) == 0) {

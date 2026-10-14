@@ -668,14 +668,10 @@ bool Engine::start(std::string& error, bool recoverStartup) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
+    logInfo("shutdown: stopping MIDI");
+    midi_.stop();
     logInfo("shutdown: stopping chain preparation");
     stopChainPreparationThread();
-    logInfo("shutdown: stopping backing tracks");
-    if (backing_) backing_->stop();
-    logInfo("shutdown: stopping looper");
-    if (looper_) looper_->stop();
-    logInfo("shutdown: stopping recorder");
-    if (recorder_) recorder_->stop();
     logInfo("shutdown: joining control workers");
     if (tunerThread_.joinable()) {
         tunerThread_.join();
@@ -683,19 +679,18 @@ void Engine::stop() {
     if (housekeepingThread_.joinable()) {
         housekeepingThread_.join();
     }
+    // Finish the callback's last capture before draining/finalizing writers.
+    logInfo("shutdown: stopping audio and draining media workers");
+    if (backend_) backend_->stop();
+    if (backing_) backing_->stop();
+    if (looper_) looper_->stop();
+    if (recorder_) recorder_->stop();
 
     logInfo("shutdown: saving active preset");
     {
         std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         persistActiveBankUnlocked();
         flushPendingPersistence(true);
-    }
-
-    logInfo("shutdown: stopping MIDI");
-    midi_.stop();
-    logInfo("shutdown: stopping audio");
-    if (backend_) {
-        backend_->stop();
     }
 
     Chain* chain = activeChain_.exchange(nullptr);
@@ -717,12 +712,25 @@ void Engine::stop() {
 // ---------------------------------------------------------------------------
 
 bool Engine::restartAudio(std::string& error) {
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     if (!backend_) {
         error = "no audio backend";
         return false;
     }
 
+    if (!canRestartAudio(settings_.audio.sampleRate, error)) return false;
+    // Reopen the device using the audible working state. Explicit Reload is
+    // the only preset operation here that intentionally discards its draft.
+    std::optional<Preset> livePreset;
+    if (const Preset* preset = effectiveActivePreset()) {
+        livePreset = *preset;
+        livePreset->activeSnapshot = -1;
+        captureChainIntoPreset(*livePreset);
+    }
     backend_->stop();
+    if (looper_) looper_->stop();
+    if (recorder_) recorder_->stop();
 
     // A chain's scratch buffers are sized for the old period. With audio
     // stopped it is safe to dispose of every published/retired chain before
@@ -749,7 +757,10 @@ bool Engine::restartAudio(std::string& error) {
 
     backend_->configureRealtime(settings_.system.audioThreadPriority);
 
-    if (!backend_->start(settings_.audio, this, &metrics_, error)) {
+    const bool started = backend_->start(settings_.audio, this, &metrics_, error);
+    if (looper_) looper_->start();
+    if (recorder_) recorder_->start();
+    if (!started) {
         return false;
     }
 
@@ -778,9 +789,9 @@ bool Engine::restartAudio(std::string& error) {
     }
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
-    if (const Preset* preset = activePreset()) {
+    if (livePreset) {
         std::string chainError;
-        if (std::unique_ptr<Chain> chain = buildChain(*preset, chainError)) {
+        if (std::unique_ptr<Chain> chain = buildChain(*livePreset, chainError)) {
             publishChain(std::move(chain));
         } else if (!chainError.empty()) {
             logWarn("chain: " + chainError);
@@ -791,11 +802,23 @@ bool Engine::restartAudio(std::string& error) {
     return true;
 }
 
+bool Engine::canRestartAudio(unsigned rate, std::string& error) const {
+    if (looper_ && looper_->fileOperationPending()) {
+        error = "finish the loop file operation before changing audio settings";
+        return false;
+    }
+    return !recorder_ || recorder_->canReconfigure(rate, error);
+}
+
 bool Engine::applyAudioSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
 
     const AudioSettings previous = settings_.audio;
-    settings_.audio = audioSettingsFromJson(json, settings_.audio);
+    const auto requested = audioSettingsFromJson(json, settings_.audio);
+    if (requested != previous && !canRestartAudio(requested.sampleRate, error)) return false;
+    settings_.audio = requested;
     configureAudioSafety(settings_.audio);
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
@@ -836,7 +859,7 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
         }
     }
 
-    persistSettings();
+    if (!persistSettings()) { error = "audio settings are live but could not be saved"; return false; }
     notify();
     return true;
 }
@@ -857,6 +880,9 @@ void Engine::previewAudioSettings(const Json& json) {
 
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
+    if (!canRestartAudio(settings_.audio.sampleRate, error)) return false;
     const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
     transportEnabled_.store(true, std::memory_order_release);
@@ -881,7 +907,7 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     if (!restartAudio(restartError)) {
         error = restartError;
     }
-    persistSettings();
+    if (!persistSettings()) error = "system settings are live but could not be saved";
     notify();
     return error.empty();
 }
@@ -906,7 +932,7 @@ bool Engine::applyTransportSettings(const Json& json, std::string& error) {
             applyTempoLinksUnlocked(*draft);
         }
     }
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     notifyPerformance();
     return true;
 }
@@ -1496,6 +1522,7 @@ void Engine::publishChain(std::unique_ptr<Chain> chain) {
     std::unique_lock<std::mutex> preparationLock(chainPreparationMutex_);
     const uint64_t requestGeneration =
         chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    chainPreparationTimedOut_.store(false, std::memory_order_release);
     chainAwaitingPreparation_.reset();
     if (chainNeedsPreparation(*chain) && chainPreparationWorker_.joinable()
         && !chainPreparationStopping_.load(std::memory_order_acquire)) {
@@ -1540,7 +1567,10 @@ bool Engine::prepareChainForPublication(Chain& chain, uint64_t requestGeneration
             return false;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
-            logWarn("chain: preparation timed out; using the muted transition fallback");
+            std::lock_guard<std::mutex> preparationLock(chainPreparationMutex_);
+            if (chainPreparationRequestGeneration_.load(std::memory_order_acquire) != requestGeneration) return false;
+            chainPreparationTimedOut_.store(true, std::memory_order_release);
+            logWarn("chain: model loading timed out; reload the saved preset or select another preset");
             return true;
         }
 
@@ -1973,11 +2003,13 @@ void Engine::flushPendingPersistence(bool force) {
         Bank* bank = findBank(bankId);
         if (!bank || storage_.saveBank(*bank)) pendingBankPersistIds_.erase(bankId);
     }
+    const auto previousError = persistenceError_;
     if (settingsPersistPending_ && persistSettings()) settingsPersistPending_ = false;
 
     const bool pending = !pendingBankPersistIds_.empty() || settingsPersistPending_;
     bankPersistPending_.store(pending, std::memory_order_relaxed);
     if (pending) bankPersistDueMs_.store(now + 1000, std::memory_order_relaxed);
+    if (previousError != persistenceError_) notifyPerformance();
 }
 
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
@@ -2273,6 +2305,11 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         error = "nothing to save";
         return false;
     }
+    if (!activeChainReadyForPreset(*source) || activeChainTransitionPending()) {
+        error = "wait for the effect chain to finish preparing before Save As";
+        return false;
+    }
+    if (source->activeSnapshot >= 0) { error = "return to the base preset before Save As"; return false; }
 
     Preset copy = activeSessionDraft() ? *activeSessionDraft() : *source;
     captureChainIntoPreset(copy);
@@ -2285,6 +2322,9 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
     copy.activeSnapshot = -1;
     copy.id = newId("preset");
     copy.name = name.empty() ? source->name + " copy" : name;
+    ActiveChainReadGuard chainGuard(*this);
+    auto nextChain = buildChain(copy, error, chainGuard.get());
+    if (!nextChain) return false;
     const std::string previousPresetId = activePresetId_;
     bank->presets.push_back(copy);
     activePresetId_ = copy.id;
@@ -2296,7 +2336,8 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         return false;
     }
     settings_.activePresetId = activePresetId_;
-    persistSettings();
+    publishChain(std::move(nextChain));
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -2329,7 +2370,7 @@ bool Engine::createPreset(const std::string& name, const std::string& bankId, st
     std::string chainError;
     publishChain(buildChain(bank->presets.back(), chainError));
     settings_.activePresetId = activePresetId_;
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -2343,11 +2384,13 @@ bool Engine::renamePreset(const std::string& presetId, const std::string& name, 
     }
     for (Preset& preset : bank->presets) {
         if (preset.id == presetId) {
-            preset.name = name;
+            Bank updated = *bank;
+            for (auto& item : updated.presets) if (item.id == presetId) item.name = name;
+            if (!storage_.saveBank(updated)) { error = "could not save the preset name"; return false; }
+            *bank = std::move(updated);
             if (auto draft = sessionPresetDrafts_.find(presetId); draft != sessionPresetDrafts_.end()) {
                 draft->second.name = name;
             }
-            storage_.saveBank(*bank);
             notify();
             return true;
         }
@@ -2428,7 +2471,7 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
         }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
-        persistSettings();
+        if (!persistSettings(&error)) { notify(); return false; }
     }
     notify();
     return true;
@@ -2516,7 +2559,7 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         // Bank membership does not change the preset ID, graph or sound.
         // Keep the active processors instead of needlessly reloading them.
     }
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -2585,7 +2628,6 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         config.presetAssignments = next;
         controller_.setConfig(config);
         settings_.controller = config;
-        persistSettings();
     }
 
     if (wasActive) {
@@ -2600,8 +2642,8 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
-        persistSettings();
     }
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -2814,7 +2856,11 @@ bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed
             placeholder.id = newId("preset");
             placeholder.name = "Preset 1";
             bank->presets.push_back(std::move(placeholder));
-            storage_.saveBank(*bank);
+            if (!storage_.saveBank(*bank)) {
+                bank->presets.pop_back();
+                error = "could not prepare the bank for removing its last community preset";
+                return false;
+            }
         }
         if (!deletePreset(presetId, error)) return false;
         ++removed;
@@ -3736,7 +3782,7 @@ bool Engine::captureSnapshot(const std::string& name, int slot, std::string& sna
     rememberSnapshot(*preset, targetSlot, true);
 
     if (Bank* bank = activeBank()) {
-        storage_.saveBank(*bank);
+        if (!storage_.saveBank(*bank)) { requestBankPersist(bank->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
     }
     notify();
     return true;
@@ -3789,7 +3835,7 @@ bool Engine::updateSnapshot(const std::string& snapshotId, std::string& error) {
         snapshot.slots = captured.slots;
         snapshot.routingMix = captured.routingMix;
         if (Bank* bank = activeBank()) {
-            storage_.saveBank(*bank);
+            if (!storage_.saveBank(*bank)) { requestBankPersist(bank->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
         }
         notify();
         return true;
@@ -3810,7 +3856,7 @@ bool Engine::renameSnapshot(const std::string& snapshotId, const std::string& na
             continue;
         }
         snapshot.name = name.empty() ? snapshot.name : name;
-        storage_.saveBank(*activeBank());
+        if (!storage_.saveBank(*activeBank())) { requestBankPersist(activeBank()->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
         notify();
         return true;
     }
@@ -3830,7 +3876,7 @@ bool Engine::colorSnapshot(const std::string& snapshotId, const std::string& col
             continue;
         }
         snapshot.color = color;
-        storage_.saveBank(*activeBank());
+        if (!storage_.saveBank(*activeBank())) { requestBankPersist(activeBank()->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
         notify();
         return true;
     }
@@ -3900,7 +3946,7 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
     }
     preset->snapshots.erase(found);
     if (Bank* bank = activeBank()) {
-        storage_.saveBank(*bank);
+        if (!storage_.saveBank(*bank)) { requestBankPersist(bank->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
     }
     notify();
     return true;
@@ -3925,7 +3971,7 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
             std::string midiError;
             if (!midi_.start(settings_.controller.midiPort, midiError)) {
                 controllerError_ = midiError;
-                persistSettings();
+                if (!persistSettings(&error)) { notify(); return false; }
                 refreshLeds();
                 notify();
                 error = midiError;
@@ -3940,11 +3986,44 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
         midi_.stop();
     }
 
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     armAnalogCatchUnlocked();
     refreshLeds();
     notify();
     error.clear();
+    return true;
+}
+
+bool Engine::applyPresetAssignments(const Json& json, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const auto bankId = json["bankId"].asString();
+    const auto* bank = findBank(bankId);
+    if (!bank || !json["changes"].isObject()) { error = "choose a valid bank and assignment changes"; return false; }
+    const auto previous = controller_.config();
+    auto next = previous;
+    Json assignments = next.presetAssignments[bankId];
+    if (!assignments.isObject()) assignments = Json::object();
+    for (const auto& change : json["changes"].members()) {
+        if (change.second.isNull()) assignments.remove(change.first);
+        else {
+            const auto presetId = change.second.asString();
+            const bool exists = std::any_of(bank->presets.begin(), bank->presets.end(),
+                [&](const Preset& preset) { return preset.id == presetId; });
+            if (!change.second.isString() || !exists) { error = "assignment refers to a missing preset"; return false; }
+            assignments.set(change.first, presetId);
+        }
+    }
+    next.presetAssignments.set(bankId, std::move(assignments));
+    controller_.setConfig(next);
+    settings_.controller = next;
+    if (!persistSettings(&error)) {
+        controller_.setConfig(previous);
+        settings_.controller = previous;
+        notify();
+        return false;
+    }
+    refreshLeds();
+    notify();
     return true;
 }
 
@@ -3959,7 +4038,7 @@ bool Engine::connectController(const std::string& port, std::string& error) {
     settings_.controller.midiPort = midi_.activePort();
     controller_.setConfig(settings_.controller);
     controllerError_.clear();
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
 
     midi_.send(ControllerRuntime::encodeIdentityRequest());
     refreshLeds();
@@ -5900,14 +5979,20 @@ void Engine::housekeepingThread() {
 // State reporting
 // ---------------------------------------------------------------------------
 
-bool Engine::persistSettings() {
+bool Engine::persistSettings(std::string* error) {
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
     ControllerConfig config = controller_.config();
     config.enabled = settings_.controller.enabled;
     config.midiPort = midi_.isRunning() ? midi_.activePort() : settings_.controller.midiPort;
     settings_.controller = std::move(config);
-    return storage_.saveSettings(settings_);
+    const bool saved = storage_.saveSettings(settings_);
+    persistenceError_ = saved ? "" : "could not save settings; check free space and storage permissions";
+    if (!saved) {
+        requestSettingsPersist();
+        if (error) *error = persistenceError_;
+    }
+    return saved;
 }
 
 void Engine::notify() {
@@ -5966,6 +6051,11 @@ Json Engine::fullState() const {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Json json = Json::object();
     json.set("type", "state");
+    json.set("persistenceError", persistenceError_);
+    json.set("stateEpoch", stateEpoch_);
+    json.set("revision", static_cast<int64_t>(++stateRevision_));
+    json.set("chainPreparationError", chainPreparationTimedOut_.load(std::memory_order_acquire)
+        ? "Model loading timed out. Reload the saved preset or select another preset." : "");
     json.set("version", PIMFX_VERSION);
 #ifdef PIMFX_GIT_SHA
     json.set("gitSha", PIMFX_GIT_SHA);
@@ -5991,7 +6081,9 @@ Json Engine::fullState() const {
     if (backingEnabled_.load(std::memory_order_acquire)) json.set("backing", backing_->state());
     json.set("looper", looperState());
     json.set("recorderFeatureEnabled", recorderEnabled_.load(std::memory_order_acquire));
-    if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
+    // Frequent engine publications carry nonblocking recorder status; detailed
+    // project/waveform data has its own worker request and periodic publication.
+    if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState(false));
     json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
     if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
     json.set("communityCatalogFeatureEnabled", true);
@@ -6126,6 +6218,9 @@ Json Engine::performanceState() const {
     std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "performance");
+    json.set("persistenceError", persistenceError_);
+    json.set("stateEpoch", stateEpoch_);
+    json.set("revision", static_cast<int64_t>(++stateRevision_));
     json.set("activeBankId", activeBankId_);
     json.set("activePresetId", activePresetId_);
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
@@ -6250,6 +6345,8 @@ bool Engine::applyLooperSettings(const Json& json, std::string& error) {
 }
 
 bool Engine::looperCommand(const std::string& command, const Json& payload, std::string& error) {
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     std::string resolved = command;
     if (resolved == "toggle") {
         const Json current = looper_->state();
@@ -6339,6 +6436,8 @@ Json Engine::recorderState(bool includeDetails) const {
 }
 
 bool Engine::recorderCommand(const std::string& command, const Json& payload, std::string& error) {
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
         error = "multitrack recorder is disabled";
         return false;
@@ -6444,6 +6543,8 @@ Json Engine::meterState() const {
     std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "meters");
+    json.set("chainPreparationError", chainPreparationTimedOut_.load(std::memory_order_acquire)
+        ? "Model loading timed out. Reload the saved preset or select another preset." : "");
     json.set("xruns", static_cast<int64_t>(metrics_.xruns.load(std::memory_order_relaxed)));
     json.set("captureXruns", static_cast<int64_t>(
         metrics_.captureXruns.load(std::memory_order_relaxed)));

@@ -1,6 +1,6 @@
 # Screenshots
 
-These are the current Pi-MFX React views at **1024×600**, the target size for a
+This gallery records Pi-MFX React views at **1024×600**, the target size for a
 7-inch kiosk display. They use the read-only documentation fixture in
 `ui/docs.html`, so the captures show representative banks, effects, tracks,
 projects, patterns, and catalog entries without changing a Pi or user data.
@@ -8,6 +8,13 @@ projects, patterns, and catalog entries without changing a Pi or user data.
 Open `http://pimfx.local:8080` on a Pi for live audio, hardware, storage, and
 network state. The fixture is visual documentation, not Raspberry Pi audio or
 XRun validation.
+
+For the 2026-10-14 documentation review, `docs/images/` was excluded by the
+repository rules. Images were neither inspected nor regenerated. Captions
+and fixture captures may lag the latest graph/mixer/access changes; use
+[USER_GUIDE.md](USER_GUIDE.md) for current behavior and
+[V1_READINESS.md](V1_READINESS.md) for the pending visual/device sign-off.
+Regeneration below is a maintainer workflow, not work performed by this review.
 
 ## Shell and performance
 

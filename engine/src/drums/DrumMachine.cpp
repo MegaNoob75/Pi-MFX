@@ -86,6 +86,7 @@ DrumMachine::~DrumMachine() {
     while (kitCommands_.pop(pending)) delete pending.kit;
     collectRetired();
     delete activeKit_;
+    delete deferredRetiredKit_;
 }
 
 void DrumMachine::prepare(unsigned sampleRate) {
@@ -630,11 +631,15 @@ void DrumMachine::render(float* const* master, unsigned masterChannels,
             std::fill(sourceTap[channel], sourceTap[channel] + frames, 0.0f);
     }
     KitCommand command;
-    while (kitCommands_.pop(command)) {
+    if (deferredRetiredKit_ && retiredKits_.push(deferredRetiredKit_)) deferredRetiredKit_ = nullptr;
+    while (!deferredRetiredKit_ && kitCommands_.pop(command)) {
         Kit* previous = activeKit_;
         activeKit_ = command.kit;
         for (Playback& voice : playback_) voice = Playback{};
-        if (previous && !retiredKits_.push(previous)) droppedKitChanges_.fetch_add(1, std::memory_order_relaxed);
+        if (previous && !retiredKits_.push(previous)) {
+            deferredRetiredKit_ = previous;
+            droppedKitChanges_.fetch_add(1, std::memory_order_relaxed);
+        }
         kitGeneration_.fetch_add(1, std::memory_order_relaxed);
     }
     if (!activeKit_ || !master || masterChannels == 0) { sequencer_.consumePendingProgram(); return; }

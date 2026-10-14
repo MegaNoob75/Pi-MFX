@@ -36,7 +36,7 @@ Settings Storage::loadSettings() {
 }
 
 bool Storage::saveSettings(const Settings& settings) {
-    return writeFileAtomic(paths_.settingsFile(), settings.toJson().dump(2));
+    return writeFileAtomic(paths_.settingsFile(), settings.toJson().dump(2), true);
 }
 
 std::string Storage::bankFileStem(const std::string& bankId) const {
@@ -152,7 +152,7 @@ bool Storage::recoverBankTransaction() {
 }
 
 bool Storage::saveBank(const Bank& bank) {
-    return recoverBankTransaction() && saveBankFile(bank);
+    return recoverBankTransaction() && saveBankFile(bank, true);
 }
 
 bool Storage::saveBanks(const std::vector<Bank>& banks) {

@@ -8,6 +8,9 @@ firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino
 
 Flash the sketch in this repository so the engine can identify the board and
 drive RGB LEDs. Protocol details: [CONTROLLER_PROTOCOL.md](CONTROLLER_PROTOCOL.md).
+The checked-in firmware reports **1.1**. Firmware protocol/version is separate
+from the planned Pi-MFX application release **1.0.0**; this documentation
+review did not flash or validate a controller.
 
 ## What you need
 
@@ -61,3 +64,13 @@ Edit `Pins.h` if your enclosure uses different GPIOs, then flash again.
 4. Assign an encoder’s turn to **Navigate menus** and its click to **Select**
    to scroll lists (menus, banks, presets, themes) and confirm the highlight.
 5. Assign presets by holding a Performance tile — not from Hardware Setup.
+
+## Release validation
+
+On the candidate Pi build, verify all eight switch press/releases, four pots
+including endpoints/catch behavior, both encoder directions, encoder push,
+hold/double actions, and every RGB LED. Unplug/reconnect the controller and
+restart the engine, then confirm mappings and LED states recover. Test the
+touchscreen and floorboard together. Record results in
+[V1_READINESS.md](V1_READINESS.md). Review the exact installed library notices
+before distributing compiled firmware; see [THIRD_PARTY.md](THIRD_PARTY.md).

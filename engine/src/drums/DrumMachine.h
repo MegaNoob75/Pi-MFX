@@ -114,6 +114,7 @@ private:
     SpscQueue<KitCommand> kitCommands_{16};
     mutable SpscQueue<Kit*> retiredKits_{16};
     Kit* activeKit_ = nullptr; // audio thread only
+    Kit* deferredRetiredKit_ = nullptr; // preserves ownership if retirement is full
     std::array<Playback, DrumSequencer::kVoiceCount> playback_{};
     std::atomic<uint32_t> levelPermille_{800};
     std::atomic<bool> playing_{false};

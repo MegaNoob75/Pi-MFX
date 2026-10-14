@@ -1,8 +1,13 @@
 # User guide
 
 Open `http://pimfx.local:8080` (or the Pi's IP on port 8080) from the optional
-touchscreen or any phone, tablet, or computer on the same network. There is no
-LAN login, so use a trusted network or the dedicated PI-MFX hotspot.
+touchscreen or any phone, tablet, or computer on the same network. Remote
+browsers require a Pi-MFX password; first setup creates it. The attached
+loopback touchscreen stays unlocked. Use a trusted network or the dedicated
+PI-MFX hotspot because HTTP is unencrypted. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
+
+This guide describes the current `dev` implementation. Release validation and
+known issues are tracked in [V1_READINESS.md](V1_READINESS.md).
 
 The header title names the current page. The short bar above it is cyan when the
 engine is connected and audio is running. Use the back arrow on the right for
@@ -25,11 +30,12 @@ controls do what Hardware Setup or the current preset assigns to them.
 
 - Tap a switch for its normal action. Momentary controls may also have hold and
   double-tap actions.
-- Turn or drag an analog control for a live preview; releasing it commits the
-  value to the active preset or snapshot.
+- Turn or drag an analog control to change the live sound. Releasing a base
+  preset control does not save the preset to disk; use **SAVE** explicitly.
 - Use the bank and preset widgets to browse without leaving Performance.
-- A modified preset is kept live until you reload, save, change preset, or
-  choose how to handle it.
+- Base-preset drafts are held by the engine during the current session,
+  including when switching away and back. **SAVE** keeps the changes;
+  **RELOAD** discards them. Unsaved drafts do not survive an engine restart.
 
 Snapshot mode replaces the normal switch stage with snapshot tiles while
 keeping the configured status widgets:
@@ -74,6 +80,12 @@ renames, or deletes saved loops:
 
 ![Saved loops](images/looper-library.png)
 
+Saved-loop loading currently requires the WAV sample rate to match the audio
+device rate. Save before changing audio settings: reopening the audio stream
+clears the in-memory loop. Audio reconfiguration is rejected while a loop file
+operation or recording/finalization is active. Finish those operations before
+applying Audio, Realtime, backup, or setup-profile changes.
+
 ## Recorder
 
 ![Recorder](images/recorder.png)
@@ -89,6 +101,13 @@ drums, or the stereo master. The Recorder has four working areas:
 **Record with Backing** requires a loaded backing track; it rewinds and records
 processed guitar and backing as synchronized stems. Watch remaining storage and
 write warnings during long sessions.
+
+Projects retain their recording sample rate. Set the device to that rate
+before opening a project. To change device rate while a project contains
+audio, first choose a new empty project; existing takes are not silently
+reinterpreted at the new rate. A storage error stops recording and retains
+recovery data. Restore storage access, restart Pi-MFX, and reopen the project
+to recover the available audio before making another take.
 
 ## Drum Machine
 
@@ -165,12 +184,14 @@ it and its connections.
 The Graphical/Sliders buttons sit beside each section title. Branch names follow
 upstream NAM models through effects; cabinet names show IR filenames without
 extensions. Choose a mixer or the final output, then adjust each incoming
-branch's volume, pan, mute, and solo. Volume sliders remain visible in both
-views. In Graphical view each branch has a colored pan dot on a Left–Center–Right
-track; Sliders view substitutes a conventional pan slider. Both views use the
-same pan setting, independently of volume. The common two-branch/three-cabinet
-layout fits an 800×480 screen; larger rigs can scroll. Back from mixers returns
-to the routing canvas; Back from the canvas leaves the editor.
+branch's volume, pan, mute, and solo. Volume and pan sliders remain available
+in either view. Graphical view adds a two-input blend strip or a three-input
+triangle; three-input blend sliders also allow keyboard adjustment. **Mix
+level** changes the combined gain while preserving the chosen proportions,
+subject to each connection's gain limits. Blend and pan are separate controls.
+Larger rigs can scroll. Verify fit and touch targets on your actual display;
+Back from mixers returns to the routing canvas, and Back from the canvas
+leaves the editor.
 
 Choose any TooB Cab IR instance on the right. One loaded IR has a named volume
 slider and no blend graphic, because there is nothing to blend. Two cabinets
@@ -183,28 +204,29 @@ to the individual cabinets' maximum gains. Muting and raising Blend level
 again restores the chosen balance while this mixer remains open.
 Individual cabinet levels remain available for precise adjustment.
 
-Pi-MFX runs each loaded TooB cabinet through a separate processor and blends
-their outputs with smoothed gains. Moving the dot, sliders, or bound controls
-does not rebuild the IRs. The block keeps its usual three file slots and preset
-settings. Loading a different file still needs a loading transition. Multiple
-loaded cabinets use more DSP than TooB's combined-IR processing; check DSP
-load and XRuns on your device.
+The current engine uses one native TooB Cab IR instance per block, with that
+plugin's three cabinet slots. Its volume controls are updated together by the
+mixer. Native cabinet-gain changes may rebuild the plugin's combined IR;
+loading a different file also requires a loading transition. Check loading
+behavior, tone continuity, DSP load, and XRuns with the installed plugin build.
 
 This automatic cabinet panel supports TooB Cab IR. With another IR loader,
 place separate loader blocks on parallel branches and connect them to a Mixer
 to blend their outputs using the same routing tools.
 
-Use **SAVE** to keep changes or **RELOAD** to discard them. This development
-format replaces the old chain/parallel format: old presets open as blank
-input-to-output routing, preserving their names. Rebuild and save the tones
-you want to keep, or return to the v0.5.1 checkpoint.
+Use **SAVE** to keep base-preset changes or **RELOAD** to discard them. This
+development format replaces the old chain/parallel format: presets without
+`routingFormat: 1` keep their names but their old chains are not migrated.
+Back up the data root before upgrading an older installation; rebuild the
+tones you want to retain without overwriting your only old-format copy.
 
 ![Preset controls](images/editor-controls.png)
 
 The control page renders generic LV2 metadata: toggles, enumerations, stepped or
 continuous values, logarithmic ranges, units, trigger ports, and plugin file
 properties. **BIND** assigns a physical control. Highlighting a supported model
-file previews it live; **Use** persists it and Cancel restores the original.
+file previews it live; **Use** accepts it into the live draft and Cancel
+restores the original. **SAVE** then writes the base preset to disk.
 
 ![Preset input and output](images/editor-io.png)
 
@@ -321,6 +343,13 @@ interface preferences. **Backup** exports or restores Pi-MFX configuration:
 
 ![Backup](images/backup.png)
 
+This is a configuration backup: UI, controller, Virtual Controls, system,
+keyboard, and theme preferences. It excludes banks, models, IRs, plugins,
+backing tracks, loops, recordings, drum assets, and credentials. Export banks
+separately and keep a complete copy of `/var/lib/pimfx` for device recovery.
+Setup profiles are separate and can also change audio, transport, and looper
+settings. Stop recording and finish file operations before restoring either.
+
 ### Model Library account
 
 ![TONE3000 settings](images/model-library-settings.png)
@@ -333,15 +362,17 @@ in banks or preset exports.
 
 ![System hub](images/system.png)
 
-System contains Audio, Wi-Fi/Hotspot, Updates, Realtime, and guarded reboot and
-shutdown actions.
+System contains Audio, Wi-Fi/Hotspot, Updates, Realtime, Remote Access Password,
+and guarded reboot and shutdown actions. Changing the remote password forgets
+all remote browsers; **LOCK THIS BROWSER** forgets only the current remote
+browser. The touchscreen can recover a forgotten password.
 
 ### Audio
 
 ![Audio](images/audio.png)
 
 Pick the capture/playback device and guitar input channel, then set sample rate,
-period size, and period count. Start conservatively (for example 48000 / 64 / 4),
+period size, and period count. Start conservatively (for example 48000 / 128 / 3),
 reset XRuns, play hard, and lower the buffer only after the target Pi is stable.
 The displayed latency comes from the negotiated driver settings. See
 [LOW_LATENCY.md](LOW_LATENCY.md).

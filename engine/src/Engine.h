@@ -48,8 +48,9 @@ struct TunerReading {
 ///
 /// Engine owns the audio device, the plugin chain, the preset library, and the
 /// controller link, and is the only thing the control API talks to. Everything
-/// that must not block the audio thread happens here on the control thread;
-/// the audio thread only reads what has already been published.
+/// that must not block audio runs on API, MIDI, housekeeping, preparation, or
+/// media workers. State mutations use stateMutex_; audio consumes published
+/// buffers/atomics and never takes those locks.
 class Engine : public AudioProcessor {
 public:
     explicit Engine(Paths paths);
@@ -168,6 +169,7 @@ public:
 
     // --- controller ------------------------------------------------------
     bool applyControllerConfig(const Json& json, std::string& error);
+    bool applyPresetAssignments(const Json& json, std::string& error);
     bool connectController(const std::string& port, std::string& error);
     void disconnectController();
     void beginControlLearn(const std::string& controlId);
@@ -316,6 +318,7 @@ private:
     };
 
     bool restartAudio(std::string& error);
+    bool canRestartAudio(unsigned sampleRate, std::string& error) const;
     void publishChain(std::unique_ptr<Chain> chain);
     void publishPreparedChain(std::unique_ptr<Chain> chain);
     bool chainNeedsPreparation(const Chain& chain) const noexcept;
@@ -371,7 +374,7 @@ private:
     void requestBankPersist(const std::string& bankId);
     void requestSettingsPersist();
     void flushPendingPersistence(bool force = false);
-    bool persistSettings();
+    bool persistSettings(std::string* error = nullptr);
     void notify();
     void notifyPerformance();
     void notifyUiNav(int delta, bool select, const std::string& virtualControlAction = "");
@@ -427,6 +430,7 @@ private:
     mutable std::atomic<uint32_t> chainReaders_{0};
     std::atomic<uint64_t> chainPublicationGeneration_{0};
     std::atomic<bool> chainStateDirty_{false};
+    std::atomic<bool> chainPreparationTimedOut_{false};
     mutable std::mutex chainMutex_;
 
     std::thread chainPreparationWorker_;
@@ -455,6 +459,7 @@ private:
     MidiInput midi_;
     ControllerRuntime controller_;
     std::string audioError_;
+    std::string persistenceError_; // stateMutex_; failed settings are retried by housekeeping
     std::string controllerError_;
     std::string controllerFirmwareVersion_;
     bool controllerFirmwareUpdateRequired_ = false;
@@ -534,6 +539,11 @@ private:
     StateListener listener_;
     mutable std::mutex listenerMutex_;
     mutable std::recursive_mutex stateMutex_;
+    // Lock order: state -> media -> service state; no media operation may
+    // acquire engine state. Workers never take the engine media lock.
+    mutable std::recursive_mutex mediaMutex_;
+    const std::string stateEpoch_ = newId("engine");
+    mutable uint64_t stateRevision_ = 0; // stateMutex_, shared by full/performance snapshots
 };
 
 } // namespace pimfx

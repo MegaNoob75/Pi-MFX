@@ -16,11 +16,14 @@ Changing a remote browser URL to `?kiosk=1` does not bypass authentication.
 Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (600,000 iterations)
 in `/var/lib/pimfx/access.json`, with owner-only file permissions. They are not
 put into engine settings, shared browser state, or exported setup profiles.
-Browser sessions use an HttpOnly, SameSite=Strict cookie and have no Pi-MFX time
+Browser sessions use an HttpOnly, SameSite=Lax cookie and have no Pi-MFX time
 expiry, including across Pi restarts. Only token hashes are saved on the Pi.
 Cookies are refreshed on use; browser cookie retention limits can still require
 another login after prolonged inactivity. **Lock This Browser** forgets that browser;
 changing the password logs out and forgets all remote browsers.
+The server stores at most 32 remembered browser tokens. If that limit is
+reached, lock an existing browser or change the password to forget all tokens;
+clearing cookies alone does not remove their saved hashes from the Pi.
 Use the same hostname (for example `pimfx.local`) each time: browser cookies
 are specific to the hostname or IP used. Clearing cookies, using private
 browsing, or switching browsers requires signing in again.
@@ -59,3 +62,6 @@ that threat. Do not forward the HTTP port to the internet.
 
 The installer installs `libssl-dev`; the updater installs it if missing.
 No build or runtime validation was performed on Windows.
+Track results for the exact release candidate in
+[V1_READINESS.md](V1_READINESS.md); the checklist above remains pending until
+run on that Pi build.

@@ -1,9 +1,9 @@
 # Third-party components and originality policy
 
 This document explains what Pi-MFX depends on, how it depends on it, and the
-rules contributors must follow. `[../NOTICE.md](../NOTICE.md)` is the short
+rules contributors must follow. [../NOTICE.md](../NOTICE.md) is the short
 credit list; this is the reasoning behind it. Verbatim license texts are in
-`[../licenses/](../licenses/)`.
+[../licenses/](../licenses/).
 
 ## 1. Originality rules
 
@@ -50,13 +50,23 @@ reimplement them. Linked dynamically from the distribution packages
 
 The audio and MIDI path. Pi-MFX opens `hw:` devices directly, configures rate,
 period size, and period count from user settings, and prefers mmap access.
-Dynamically linked against the unmodified system library, so the LGPL's
-relinking requirement is satisfied without further obligation.
+Dynamically linked against the system library. Release packaging must retain
+the applicable notices and meet the exact library version's license terms.
 
 ### libsndfile (LGPL-2.1-or-later), libsamplerate (BSD-2-Clause)
 
-Reading impulse-response files and, when an IR's rate does not match the engine,
-converting it. Both dynamically linked, unmodified.
+Backing-track decoding/metadata and conversion to the engine sample rate.
+Both are optional build dependencies used together by the backing player.
+Cabinet convolution belongs to the installed LV2 plugin, not an internal
+Pi-MFX IR engine.
+
+### OpenSSL Crypto
+
+Required by the engine for remote-access password hashing, random credentials,
+and constant-time comparison. OpenSSL 3.x uses Apache-2.0; older OpenSSL releases
+use different terms. Record the version actually linked and retain its notices.
+See [OpenSSL license notes](../licenses/OpenSSL.md) and the
+[official licensing page](https://openssl-library.org/source/license/index.html).
 
 ### libcurl (curl license, MIT/X-derivative)
 
@@ -67,7 +77,9 @@ not.
 ### React, Vite, TypeScript (MIT, MIT, Apache-2.0)
 
 The browser UI. Standard tooling, consumed through npm, listed in
-`ui/package.json`. Transitive npm licenses are recorded by `npm ls --json` at
+`ui/package.json`. `npm ls --json` inventories installed packages; it does not
+by itself collect their license texts or establish distribution compliance.
+Review the exact resolved dependency tree and retain the required notices at
 release time.
 
 ### ESP-IDF / Arduino-ESP32 (Apache-2.0) and Control Surface (GPL-3.0)
@@ -75,6 +87,11 @@ release time.
 The optional controller firmware toolchain. USB MIDI uses the Control Surface
 library. Pi-MFX distributes firmware **source** only; Arduino IDE supplies the
 ESP32 core and libraries.
+The sketch also includes Adafruit NeoPixel for RGB LEDs. Its upstream
+[COPYING](https://github.com/adafruit/Adafruit_NeoPixel/blob/master/COPYING)
+contains the LGPL-3.0 text. Collect the exact installed firmware-library
+notices before distributing compiled firmware; the current local license
+folder does not contain a complete Control Surface/NeoPixel notice bundle.
 
 ## 3. Services, formats, and hardware named in Pi-MFX
 
@@ -110,7 +127,7 @@ implies no endorsement.
 Plugins are independent works, frequently GPL-licensed, that the user installs.
 Pi-MFX loads them at runtime through the LV2 ABI, exactly as any LV2 host does.
 It does not include, modify, statically link, or relicense them, and it ships no
-plugin binaries. See `[PLUGIN_LICENSES.md](PLUGIN_LICENSES.md)`.
+plugin binaries. See [PLUGIN_LICENSES.md](PLUGIN_LICENSES.md).
 
 ## 5. Release checklist
 
@@ -118,9 +135,13 @@ Before tagging a release:
 
 - [ ] `licenses/` covers every linked dependency, including new ones.
 - [ ] `NOTICE.md` matches `licenses/`.
-- [ ] `npm ls --json` reviewed for a license that MIT distribution cannot carry.
-- [ ] No plugin binaries, NAM models, IR files, or third-party presets in the
-  ```
-  tree or in the release artifact.
-  ```
+- [ ] Actual linked OpenSSL version and firmware library notices recorded.
+- [ ] Resolved npm dependency inventory and required license texts reviewed.
+- [ ] No unintended plugin binaries, NAM models, IR files, or third-party
+  presets in the release artifact; any deliberate redistribution has a
+  separate license/source review.
 - [ ] No file in the tree originates from another project's repository.
+
+This inventory was refreshed on 2026-10-14 from the build file, package
+manifest, firmware includes, and linked upstream notice pages. Release
+artifact/dependency auditing remains pending in [V1_READINESS.md](V1_READINESS.md).

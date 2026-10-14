@@ -3,6 +3,9 @@
 Latency is the product requirement, not a tuning exercise afterwards. This page
 explains the choices Pi-MFX makes, exactly what `scripts/install.sh` changes on
 your system, and how to find the lowest setting your hardware will hold.
+Current release criteria and open lifecycle defects are in
+[V1_READINESS.md](V1_READINESS.md). No new Pi measurements were taken for this
+documentation review.
 
 ## The signal path
 
@@ -22,13 +25,15 @@ period_frames x period_count / sample_rate   (each direction)
 + whatever the plugins add internally
 ```
 
-At 48 kHz, 64 frames × 3 periods is 4 ms of buffering each way. The engine
-reports the real figure from the driver rather than this arithmetic, because
-the arithmetic ignores what the hardware adds.
+At 48 kHz, 64 frames × 3 periods is a theoretical 4 ms buffer per direction.
+The driver-delay estimate is reported separately from this arithmetic. The
+displayed total adds the master limiter's lookahead when enabled; it does not
+measure converter delay or all latency inside plugins. Use an external
+loopback measurement when establishing the complete physical round trip.
 
 ## Settings you control
 
-Settings → Audio, applied live:
+Settings → System → Audio:
 
 | Setting | Effect |
 | --- | --- |
@@ -38,6 +43,14 @@ Settings → Audio, applied live:
 | mmap access | Skips a copy per period. On when the driver supports it |
 | Start immediately | Begins playback after one period rather than a full buffer |
 | Input / output channel offset | Which hardware channel the guitar is on |
+| Master output protection | DC blocker, limiter ceiling/release, and lookahead; lookahead adds latency |
+
+Gain and safety controls can update while audio runs. Device, sample-rate,
+period, channel-count, and access-mode changes reopen the stream. Save the
+loop first. Recording/finalization and loop file operations block unsafe
+reconfiguration; the engine stops and joins the relevant workers before
+replacing buffers. This implementation still needs the Pi stress checks in
+the release checklist.
 
 Some combinations your card will simply refuse; the picker greys those out from
 the card's own capability list rather than letting you find out by failing.
@@ -46,11 +59,14 @@ the card's own capability list rather than letting you find out by failing.
 
 The Performance and Settings screens show:
 
-- **Round trip** — measured from `snd_pcm_delay` on both streams. This is the
-  number that matters.
+- **Round trip** — driver-delay estimate from both streams plus enabled
+  limiter lookahead. Treat it as an engine estimate, not a physical loopback
+  measurement or a complete plugin-latency report.
 - **Buffer** — the theoretical figure, for comparison.
 - **DSP load** — fraction of a period spent processing. Above roughly 0.7 you
-  are close to the edge; the peak reading is the honest one.
+  have less deadline margin; use the peak as well as the current reading.
+- **Engine CPU** — process CPU across logical processors. It includes work
+  outside the callback and is a different quantity from DSP deadline load.
 - **Xruns** — dropouts since the last reset. **Zero is the only acceptable
   number.** A setting that produces one xrun per minute will fail on stage.
 
@@ -60,12 +76,15 @@ appear. Then go back one step.
 
 ## What the installer changes
 
-Every item is reverted by `scripts/uninstall.sh`.
+`scripts/uninstall.sh` removes Pi-MFX tuning files/services and reverses the
+listed masks/kernel option. It does not record every previous OS setting;
+do not assume it recreates an arbitrarily customized pre-install system.
 
 ### Realtime limits — `/etc/security/limits.d/95-pimfx-audio.conf`
 
 `rtprio 95`, `memlock unlimited`, `nice -19` for the `audio` group. The audio
-thread runs `SCHED_FIFO` at priority 80 and calls `mlockall`. A realtime thread
+thread requests `SCHED_FIFO` at the configured priority (normally 80), and
+memory locking is requested by the engine. A realtime thread
 that can be preempted or paged out is the most common source of clicks on
 Linux.
 
@@ -77,9 +96,9 @@ is already late.
 
 ### `/dev/cpu_dma_latency`
 
-The engine holds this open at 0 µs for its whole life, which keeps the CPU out
-of deep idle states. Exit latency from a deep C-state alone can exceed a whole
-period.
+When the CPU-latency guard is enabled and permission allows it, the engine
+holds this open at 0 µs to request a low-latency idle policy. Verify the actual
+diagnostic state rather than assuming the request succeeded.
 
 ### Sound servers masked
 
@@ -103,34 +122,29 @@ for swap, and a page fault in the audio thread is an audible dropout.
 Disabled on `wlan0`. Its wake-up stalls are measured in milliseconds and show
 up as a stuttering UI, and on some boards as USB latency.
 
-## Why there is no `isolcpus` or audio-thread pin
+## Default scheduling policy
 
-Isolating cores is the usual advice, and for Pi-MFX it is the wrong advice.
+The normal installation does not add `isolcpus`. Plugin file-loading workers
+and any plugin-owned DSP threads need CPU time as well as the audio callback.
+Affinity or isolation can help or hurt depending on the complete setup;
+compare the actual chain and worker load on the Pi before changing policy.
+Pi-MFX normally:
 
-Neural Amp Modeler, convolution reverbs, and other heavy plugins spawn worker
-threads through the LV2 worker extension and expect them to run on other cores.
-`isolcpus` removes those cores from the scheduler's general pool, so the workers
-end up competing for the one core the audio thread is already on. Pinning the
-audio thread to a single core has the same shape of problem: it takes a core
-away from those workers. The result is worse than not isolating at all.
-
-Pi-MFX instead:
-
-- runs the audio thread at `SCHED_FIFO` 80, above everything else,
+- requests the configured audio-thread `SCHED_FIFO` priority,
 - leaves all cores available to plugin workers,
-- runs plugin workers below the audio thread so a slow load can never delay a
-  period.
+- keeps hosted file-loading workers off the realtime callback. That does not
+  guarantee that a heavy load cannot cause resource contention or an XRun.
 
-If you have a specific chain that measurably benefits from isolation, you can
-add `isolcpus` by hand, with the warning above attached. It is not the default
-because for most NAM chains it makes things worse.
+Record actual scheduling/affinity and repeat a load/transition stress test if
+you change them. A lower average CPU reading does not establish a safe audio
+deadline.
 
 ## Hardware notes
 
 - **The Pi 5 has no analog audio.** You need a USB interface or an I2S HAT.
-- **I2S HATs** generally reach lower and steadier latency than USB, because
-  there is no USB frame scheduling in the path. Enable the vendor's overlay in
-  `/boot/firmware/config.txt` and reboot; the card then appears in the picker.
+- **I2S HATs** need the vendor's overlay in `/boot/firmware/config.txt` and a
+  reboot. Compare measured latency and XRuns with the actual board/interface;
+  connection type alone is not a latency guarantee.
 - **USB interfaces** should be plugged directly into the Pi. Hubs add
   scheduling jitter. Class-compliant devices need no driver.
 - **Power matters.** An underpowered supply causes throttling, and throttling

@@ -7,11 +7,13 @@
 #include "library/Tone3000.h"
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <condition_variable>
 #include <deque>
@@ -35,15 +37,17 @@ public:
     void stop();
 
 private:
-    bool queueWork(std::function<void()> work);
+    bool queueWork(std::function<void()> work, size_t bytes = 0);
     void workLoop();
     void reapToneDownloads();
     std::mutex workMutex_;
     std::condition_variable workWake_;
-    std::deque<std::function<void()>> workQueue_;
+    std::deque<std::pair<std::function<void()>, size_t>> workQueue_;
+    size_t queuedWorkBytes_ = 0;
     std::thread workThread_;
     bool stopping_ = false;
     bool handleRequest(const HttpRequest& request, HttpResponse& response);
+    bool handleRequestNow(const HttpRequest& request, HttpResponse& response);
     void handleSocketMessage(uint64_t clientId, const std::string& message);
     void handleSocketOpen(uint64_t clientId);
     void handleSocketClose(uint64_t clientId);

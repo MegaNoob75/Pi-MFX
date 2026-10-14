@@ -888,14 +888,17 @@ export function LibraryBrowser({
         }
     };
 
-    const refreshTree = async () => {
+    const refreshGeneration = useRef(0);
+    const refreshTree = async (generation = refreshGeneration.current) => {
         const result = await engine.client.request("library/tree", { kind });
+        if (generation !== refreshGeneration.current) return;
         const parsed = parseTree(obj(obj(result).root));
         setTree(baseDirectory ? findTreeNode(parsed, baseDirectory) : parsed);
     };
 
-    const refreshPane = async (dir: string, pane: "left" | "right") => {
+    const refreshPane = async (dir: string, pane: "left" | "right", generation = refreshGeneration.current) => {
         const result = await engine.client.request("library/list", { kind, directory: dir });
+        if (generation !== refreshGeneration.current) return;
         const listed = obj(result);
         const folders = objects(listed.folders).sort((a, b) => str(a.name).localeCompare(str(b.name)));
         const files = objects(listed.files)
@@ -913,18 +916,22 @@ export function LibraryBrowser({
     };
 
     const refresh = async () => {
+        const generation = ++refreshGeneration.current;
         setBusy(true);
+        setLeftFolders([]); setLeftFiles([]); setRightFolders([]); setRightFiles([]);
+        setSelected(null); setCheckedPaths([]); setMenu(null);
         try {
-            await refreshTree();
-            await refreshPane(directory, "left");
+            await refreshTree(generation);
+            if (generation !== refreshGeneration.current) return;
+            await refreshPane(directory, "left", generation);
             if (dual && !picker) {
-                await refreshPane(rightDir, "right");
+                await refreshPane(rightDir, "right", generation);
             }
-            setError("");
+            if (generation === refreshGeneration.current) setError("");
         } catch (caught: unknown) {
-            setError(caught instanceof Error ? caught.message : String(caught));
+            if (generation === refreshGeneration.current) setError(caught instanceof Error ? caught.message : String(caught));
         } finally {
-            setBusy(false);
+            if (generation === refreshGeneration.current) setBusy(false);
         }
     };
 
@@ -936,6 +943,7 @@ export function LibraryBrowser({
 
     useEffect(() => {
         void refresh();
+        return () => { ++refreshGeneration.current; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [engine.client, kind, directory, rightDir, dual, picker, filePicker, allowedPathSet, baseDirectory, refreshToken]);
 

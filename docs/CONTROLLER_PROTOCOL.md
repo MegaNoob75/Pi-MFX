@@ -5,6 +5,12 @@ USB-MIDI between the Pi engine and a DIY floorboard. Manufacturer byte `0x7D`
 same bus are ignored. Identity and RGB LEDs require the Pi-MFX firmware in this
 repository.
 
+The current sketch advertises firmware **1.1**, 14 controls (8 switches,
+4 pots, encoder turn and push), 8 LEDs, and RGB support. These are the stock
+`Pins.h`/`Protocol.h` values, not negotiated requirements for a custom board.
+Application 1.0.0 and firmware 1.1 are independent version numbers. Device
+validation is pending in [V1_READINESS.md](V1_READINESS.md).
+
 ## SysEx wrapper
 
 ```
@@ -75,5 +81,7 @@ encoder in software if it is wired or turning the wrong way.
 
 ## Device name
 
-USB product string should contain `Pi-MFX`, `pimfx`, or `esp32` so the engine
-can pick the port automatically when Hardware Setup leaves the port blank.
+Use a recognizable USB-MIDI name such as `Pi-MFX`, `pimfx`, or `esp32`.
+Enumeration and selection also depend on the available MIDI ports and saved
+configuration. Confirm the selected port under Settings → Controller rather
+than treating its product name as proof that the controller is connected.

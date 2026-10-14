@@ -70,7 +70,7 @@ private:
     std::vector<std::string> brokenBankFiles_;
 };
 
-/// The bank a fresh install starts with: one clean preset, no plugins assumed
+/// The bank a fresh install starts with: four named presets, no plugins assumed
 /// to be installed, so it loads on any machine.
 Bank makeStarterBank();
 

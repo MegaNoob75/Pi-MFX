@@ -16,14 +16,14 @@ licenses,
 exactly as if you had typed the command yourself. Skip that and Pi-MFX still
 runs; the chain simply starts empty.
 
-## Why hosting a GPL plugin is fine
+## Hosting and redistribution
 
 Pi-MFX loads plugins at runtime through the LV2 ABI: `dlopen`, read the
 descriptor, call `instantiate()` and `run()`. Plugin code is never compiled into
-Pi-MFX and Pi-MFX code is never compiled into a plugin. This is the same
-arrangement every LV2 host uses, and it is why an MIT-licensed host can load a
-GPL-licensed plugin. What Pi-MFX must not do — and does not do — is copy plugin
-source into the engine or redistribute plugin binaries as part of itself.
+Pi-MFX and Pi-MFX code is never compiled into a plugin. This describes the
+implementation boundary; it does not replace a review of the particular
+plugin's license and the files distributed in a release. Pi-MFX does not copy
+plugin source into the engine or bundle plugin binaries as part of itself.
 
 If you build a distribution image that bundles GPL plugins alongside Pi-MFX,
 that is your redistribution: you must then honour those plugins' licenses,
@@ -87,11 +87,20 @@ sharing a preset bundle that embeds IR files rather than referencing them.
 
 ## Presets
 
-Pi-MFX presets are plain JSON: a plugin URI, port values, and **paths** to model
-and IR files. Sharing a preset shares your settings, not the models. If you
-export a bundle with the "include referenced files" option, you are
-redistributing those files and are responsible for having the right to do so —
-the export dialog says so before it writes the archive.
+Pi-MFX presets are JSON: plugin URIs, controls/file properties, routing,
+snapshots, and assignments. Current preset/bank exports do not embed models,
+IRs, or plugin binaries; there is no current "include referenced files"
+archive-export option. Copy referenced assets separately when moving a rig.
+
+Community manifests use source identifiers/checksums and reviewed dependency
+plans; they do not contain the assets. Pi-MFX currently restricts Community
+NAM and IR dependencies to the supported TooB plugins. If you manually share
+models, IRs, samples, or media alongside a preset, check the rights for those
+files separately. See [COMMUNITY_PRESETS.md](COMMUNITY_PRESETS.md).
+
+The 1.0 packaging checklist is in [V1_READINESS.md](V1_READINESS.md). The plugin
+table above is an orientation aid; exact-version license review remains a
+release task and was not completed by this static source review.
 
 ## Reporting a licensing problem
 

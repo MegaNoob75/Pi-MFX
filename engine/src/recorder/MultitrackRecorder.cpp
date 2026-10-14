@@ -70,9 +70,10 @@ std::string MultitrackRecorder::uniqueId(const char* prefix) {
 void MultitrackRecorder::start() {
     if (worker_.joinable()) return;
     makeDirectories(root_);
-    recoverInterruptedProjects();
     {
         std::lock_guard<std::mutex> lock(stateMutex_);
+        recoveredFiles_.clear();
+        recoverInterruptedProjects();
         refreshProjectsUnlocked();
     }
     stopping_.store(false, std::memory_order_release);
@@ -80,7 +81,7 @@ void MultitrackRecorder::start() {
 }
 
 void MultitrackRecorder::stop() {
-    recording_.store(false, std::memory_order_release);
+    recording_.store(false, std::memory_order_seq_cst);
     finalizing_.store(true, std::memory_order_release);
     stopping_.store(true, std::memory_order_release);
     wake_.notify_all();
@@ -90,7 +91,13 @@ void MultitrackRecorder::stop() {
 }
 
 void MultitrackRecorder::prepare(unsigned sampleRate, unsigned maximumFrames) {
+    // Both callback and worker must be stopped before ring storage changes.
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    const auto resumeFrame = playbackPositionFrame_.load(std::memory_order_acquire);
     sampleRate_.store(std::max(1u, sampleRate), std::memory_order_release);
+    bool hasAudio = false;
+    for (const auto& track : tracks_) hasAudio |= !track.clips.empty();
+    if (!hasAudio) projectSampleRate_ = sampleRate_.load();
     maxFrames_ = std::max(1u, maximumFrames);
     ring_.clear();
     ring_.resize(kRingBlocks);
@@ -101,7 +108,26 @@ void MultitrackRecorder::prepare(unsigned sampleRate, unsigned maximumFrames) {
     playbackRing_.clear();
     playbackRing_.resize(kPlaybackRingBlocks);
     for (RingBlock& block : playbackRing_) block.samples.assign(2 * playbackBlockFrames_, 0.0f);
-    requestPlaybackReset(0);
+    requestPlaybackReset(resumeFrame);
+    currentBlock_ = nullptr;
+    captureInProgress_.store(false, std::memory_order_seq_cst);
+    if (projectSampleRate_ != sampleRate) playbackPlaying_.store(false, std::memory_order_release);
+}
+
+bool MultitrackRecorder::canReconfigure(unsigned sampleRate, std::string& error) const {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (recording() || finalizing_.load(std::memory_order_acquire)) {
+        error = "finish recording and file finalization before changing audio settings";
+        return false;
+    }
+    if (sampleRate != projectSampleRate_) {
+        for (const auto& track : tracks_) if (!track.clips.empty()) {
+            error = "the recording project uses " + std::to_string(projectSampleRate_)
+                + " Hz; open a new empty project before changing sample rate";
+            return false;
+        }
+    }
+    return true;
 }
 
 void MultitrackRecorder::setSourceAvailable(Source source, bool available) noexcept {
@@ -111,13 +137,23 @@ void MultitrackRecorder::setSourceAvailable(Source source, bool available) noexc
 }
 
 bool MultitrackRecorder::beginCapture(unsigned frames, int64_t timelineFrame) noexcept {
+    // Seq-cst pairs admission with stopRecording; finalization also rechecks
+    // the ring after observing this flag clear, preserving the last block.
+    captureInProgress_.store(true, std::memory_order_seq_cst);
     currentBlock_ = nullptr;
     currentMask_ = 0;
-    if (!recording_.load(std::memory_order_acquire) || ring_.empty() || frames > maxFrames_) return false;
+    if (!recording_.load(std::memory_order_seq_cst) || ring_.empty() || frames > maxFrames_) {
+        captureInProgress_.store(false, std::memory_order_seq_cst);
+        return false;
+    }
+    // Start publishes this mask before recording=true. Stop leaves it intact
+    // until the admitted block and writer have both drained.
+    currentArmedMask_ = armedMask_.load(std::memory_order_acquire);
     const size_t write = writeBlock_.load(std::memory_order_relaxed);
     const size_t next = (write + 1) % ring_.size();
     if (next == readBlock_.load(std::memory_order_acquire)) {
         droppedBlocks_.fetch_add(1, std::memory_order_relaxed);
+        captureInProgress_.store(false, std::memory_order_seq_cst);
         return false;
     }
     currentBlock_ = &ring_[write];
@@ -130,7 +166,7 @@ bool MultitrackRecorder::beginCapture(unsigned frames, int64_t timelineFrame) no
 void MultitrackRecorder::captureSource(Source source, const float* const* input,
                                        unsigned channels, unsigned frames) noexcept {
     const uint32_t bit = sourceBit(source);
-    if (!currentBlock_ || !(armedMask_.load(std::memory_order_relaxed) & bit)
+    if (!currentBlock_ || !(currentArmedMask_ & bit)
         || !input || channels == 0 || frames != currentBlock_->frames) return;
     const size_t base = static_cast<size_t>(source) * 2 * maxFrames_;
     for (unsigned frame = 0; frame < frames; ++frame) {
@@ -146,6 +182,7 @@ void MultitrackRecorder::finishCapture() noexcept {
     const size_t write = writeBlock_.load(std::memory_order_relaxed);
     writeBlock_.store((write + 1) % ring_.size(), std::memory_order_release);
     currentBlock_ = nullptr;
+    captureInProgress_.store(false, std::memory_order_seq_cst);
 }
 
 void MultitrackRecorder::requestPlaybackReset(int64_t frame) noexcept {
@@ -229,6 +266,8 @@ bool MultitrackRecorder::createProject(const std::string& requested, std::string
     requestPlaybackReset(0);
     std::lock_guard<std::mutex> lock(stateMutex_);
     projectId_ = id; projectName_ = name; tracks_.clear(); lastError_.clear(); warning_.clear();
+    projectSampleRate_ = sampleRate_.load();
+    writeFailed_ = false;
     Track input;
     input.id = uniqueId("track");
     input.name = "Processed Input";
@@ -236,7 +275,8 @@ bool MultitrackRecorder::createProject(const std::string& requested, std::string
     input.armed = true;
     tracks_.push_back(std::move(input));
     makeDirectories(joinPath(joinPath(joinPath(joinPath(root_, id), "tracks"), tracks_.back().id), "takes"));
-    saveProjectUnlocked(); refreshProjectsUnlocked();
+    if (!saveProjectUnlocked()) { error = lastError_; return false; }
+    refreshProjectsUnlocked();
     return true;
 }
 
@@ -252,6 +292,10 @@ bool MultitrackRecorder::openProject(const std::string& id, std::string& error) 
     const Json json = Json::parse(contents, &parseError);
     if (!parseError.empty() || json["format"].asString() != "pimfx-recording-project") {
         error = "recording project is invalid"; return false;
+    }
+    if (json["sampleRate"].asInt() != static_cast<int>(sampleRate_.load(std::memory_order_acquire))) {
+        error = "set the audio device to this project's sample rate before opening it";
+        return false;
     }
     std::vector<Track> loaded;
     for (const Json& item : json["tracks"].items()) {
@@ -282,6 +326,9 @@ bool MultitrackRecorder::openProject(const std::string& id, std::string& error) 
             for (const Json& item : recovered["files"].items()) {
                 const std::string trackId = item["trackId"].asString();
                 for (Track& track : loaded) if (track.id == trackId) {
+                    if (std::any_of(track.clips.begin(), track.clips.end(), [&](const Clip& clip) {
+                        return clip.file == sanitizeFileName(item["file"].asString());
+                    })) continue;
                     Clip clip; clip.id = uniqueId("recovered");
                     clip.file = sanitizeFileName(item["file"].asString());
                     clip.start = std::max<int64_t>(0, item["start"].asInt64());
@@ -296,14 +343,16 @@ bool MultitrackRecorder::openProject(const std::string& id, std::string& error) 
     requestPlaybackReset(0);
     std::lock_guard<std::mutex> lock(stateMutex_);
     projectId_ = safe; projectName_ = json["name"].asString(safe); tracks_ = std::move(loaded);
+    projectSampleRate_ = static_cast<unsigned>(json["sampleRate"].asInt());
     lastError_.clear(); warning_.clear();
     rebuildWaveformsUnlocked();
     if (importedRecovery) {
-        saveProjectUnlocked();
+        if (!saveProjectUnlocked()) { error = lastError_; return false; }
         removeFile(recoveredPath);
         recoveredFiles_.erase(std::remove_if(recoveredFiles_.begin(), recoveredFiles_.end(),
             [&](const std::string& item) { return item.rfind(safe + "/", 0) == 0; }), recoveredFiles_.end());
     }
+    writeFailed_ = false;
     return true;
 }
 
@@ -336,7 +385,8 @@ bool MultitrackRecorder::addTrack(const Json& payload, std::string& error) {
         error = "could not create the recorder track folder";
         return false;
     }
-    tracks_.push_back(std::move(track)); saveProjectUnlocked();
+    tracks_.push_back(std::move(track));
+    if (!saveProjectUnlocked()) { tracks_.pop_back(); error = lastError_; return false; }
     return true;
 }
 
@@ -355,7 +405,7 @@ bool MultitrackRecorder::updateTrack(const Json& payload, std::string& error) {
     if (payload.has("solo")) track->solo = payload["solo"].asBool();
     if (payload.has("level")) track->level = std::max(0.0f, std::min(1.5f, payload["level"].asFloat(1.0f)));
     if (payload.has("pan")) track->pan = std::max(-1.0f, std::min(1.0f, payload["pan"].asFloat()));
-    saveProjectUnlocked();
+    if (!saveProjectUnlocked()) { error = lastError_; return false; }
     return true;
 }
 
@@ -372,7 +422,8 @@ bool MultitrackRecorder::deleteTrack(const Json& payload, std::string& error) {
     std::error_code removeError;
     fs::remove_all(trackFolder, removeError);
     if (removeError) { error = "could not delete the recorder track files"; return false; }
-    tracks_.erase(found); saveProjectUnlocked();
+    tracks_.erase(found);
+    if (!saveProjectUnlocked()) { error = lastError_; return false; }
     requestPlaybackReset(playbackPositionFrame_.load(std::memory_order_relaxed));
     return true;
 }
@@ -422,7 +473,7 @@ bool MultitrackRecorder::editClip(const std::string& operation, const Json& payl
         owner->clips.push_back(std::move(right));
     } else { error = "unknown clip edit"; return false; }
     rebuildWaveformsUnlocked();
-    saveProjectUnlocked();
+    if (!saveProjectUnlocked()) { error = lastError_; return false; }
     requestPlaybackReset(playbackPositionFrame_.load(std::memory_order_relaxed));
     return true;
 }
@@ -431,6 +482,18 @@ bool MultitrackRecorder::startRecording(const Json& payload, std::string& error)
     if (recording() || finalizing_.load()) { error = "recorder is already active"; return false; }
     if (ring_.empty()) { error = "recorder audio buffers are not ready"; return false; }
     std::lock_guard<std::mutex> lock(stateMutex_);
+    if (projectSampleRate_ != sampleRate_.load()) {
+        for (const auto& track : tracks_) if (!track.clips.empty()) {
+            error = "the recording project sample rate does not match the audio device";
+            return false;
+        }
+        projectSampleRate_ = sampleRate_.load();
+    }
+    if (writeFailed_ || fileExists(joinPath(joinPath(root_, projectId_), "recovered.json"))) {
+        error = "recording recovery data is pending; restart Pi-MFX to recover the failed take before recording again";
+        return false;
+    }
+    lastError_.clear();
     if (projectId_.empty()) { error = "create a recording project first"; return false; }
     if (payload["playBacking"].asBool()) {
         if (!(availableMask_.load(std::memory_order_acquire) & sourceBit(Source::Backing))) {
@@ -464,7 +527,7 @@ bool MultitrackRecorder::startRecording(const Json& payload, std::string& error)
         } else {
             backingTrack->armed = true;
         }
-        saveProjectUnlocked();
+        if (!saveProjectUnlocked()) { error = lastError_; return false; }
     }
     uint32_t mask = 0;
     for (const Track& track : tracks_) if (track.armed) mask |= sourceBit(track.source);
@@ -492,15 +555,19 @@ bool MultitrackRecorder::startRecording(const Json& payload, std::string& error)
     writtenFrames_.store(0); droppedBlocks_.store(0); writeKbps_.store(0); queuePermille_.store(0);
     armedMask_.store(mask, std::memory_order_release);
     finalizing_.store(false, std::memory_order_release);
-    saveRecoveryUnlocked();
+    if (!saveRecoveryUnlocked()) {
+        activeFiles_.clear();
+        armedMask_.store(0, std::memory_order_release);
+        error = lastError_;
+        return false;
+    }
     recording_.store(true, std::memory_order_release);
     return true;
 }
 
 bool MultitrackRecorder::stopRecording(std::string& error) {
     if (!recording()) { error = "recorder is not recording"; return false; }
-    recording_.store(false, std::memory_order_release);
-    armedMask_.store(0, std::memory_order_release);
+    recording_.store(false, std::memory_order_seq_cst);
     finalizing_.store(true, std::memory_order_release);
     wake_.notify_one(); return true;
 }
@@ -544,12 +611,21 @@ int64_t MultitrackRecorder::timelineFramesUnlocked() const {
 }
 
 bool MultitrackRecorder::playbackCommand(const std::string& command, const Json& payload, std::string& error) {
-    if (playbackRing_.empty()) { error = "recorder playback buffers are not ready"; return false; }
-    int64_t total = 0;
-    {
-        std::lock_guard<std::mutex> lock(stateMutex_);
-        total = timelineFramesUnlocked();
+    // Stop and Pause must remain available while the writer finalizes files.
+    if (command == "pause" || command == "stop") {
+        playbackPlaying_.store(false, std::memory_order_release);
+        playbackPaused_.store(command == "pause", std::memory_order_release);
+        if (command == "stop") requestPlaybackReset(0);
+        wake_.notify_one();
+        return true;
     }
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (command == "play" && projectSampleRate_ != sampleRate_.load()) {
+        error = "the recording project sample rate does not match the audio device";
+        return false;
+    }
+    if (playbackRing_.empty()) { error = "recorder playback buffers are not ready"; return false; }
+    const int64_t total = timelineFramesUnlocked();
     if (total <= 0) { error = "there is no recorded audio to play"; return false; }
     if (command == "play") {
         int64_t frame = playbackPositionFrame_.load(std::memory_order_relaxed);
@@ -558,13 +634,6 @@ bool MultitrackRecorder::playbackCommand(const std::string& command, const Json&
         playbackUnderruns_.store(0, std::memory_order_relaxed);
         requestPlaybackReset(frame);
         playbackPlaying_.store(true, std::memory_order_release);
-    } else if (command == "pause") {
-        playbackPlaying_.store(false, std::memory_order_release);
-        playbackPaused_.store(true, std::memory_order_release);
-    } else if (command == "stop") {
-        playbackPlaying_.store(false, std::memory_order_release);
-        playbackPaused_.store(false, std::memory_order_release);
-        requestPlaybackReset(0);
     } else if (command == "seek") {
         int64_t frame = payload.has("frame") ? payload["frame"].asInt64()
             : static_cast<int64_t>(payload["seconds"].asDouble() * sampleRate_.load());
@@ -633,10 +702,10 @@ unsigned MultitrackRecorder::renderTimelineBlock(int64_t start, unsigned frames,
     return count;
 }
 
-void MultitrackRecorder::saveProjectUnlocked() {
-    if (projectId_.empty()) return;
+bool MultitrackRecorder::saveProjectUnlocked() {
+    if (projectId_.empty()) return true;
     Json root = Json::object(); root.set("format", "pimfx-recording-project"); root.set("version", 1);
-    root.set("id", projectId_); root.set("name", projectName_); root.set("sampleRate", sampleRate_.load());
+    root.set("id", projectId_); root.set("name", projectName_); root.set("sampleRate", projectSampleRate_);
     Json tracks = Json::array();
     for (const Track& track : tracks_) {
         Json item = Json::object(); item.set("id", track.id); item.set("name", track.name);
@@ -652,7 +721,9 @@ void MultitrackRecorder::saveProjectUnlocked() {
         item.set("clips", std::move(clips)); tracks.push(std::move(item));
     }
     root.set("tracks", std::move(tracks));
-    writeFileAtomic(joinPath(joinPath(root_, projectId_), "project.json"), root.dump(2));
+    if (writeFileAtomic(joinPath(joinPath(root_, projectId_), "project.json"), root.dump(2), true)) return true;
+    lastError_ = "could not save the recording project; recovery data was retained";
+    return false;
 }
 
 void MultitrackRecorder::rebuildWaveformsUnlocked() {
@@ -691,10 +762,10 @@ void MultitrackRecorder::rebuildWaveformsUnlocked() {
     }
 }
 
-void MultitrackRecorder::saveRecoveryUnlocked() {
-    if (projectId_.empty() || activeFiles_.empty()) return;
+bool MultitrackRecorder::saveRecoveryUnlocked() {
+    if (projectId_.empty() || activeFiles_.empty()) return true;
     Json root = Json::object(); root.set("format", "pimfx-recorder-recovery"); root.set("version", 1);
-    root.set("sampleRate", sampleRate_.load()); Json files = Json::array();
+    root.set("sampleRate", projectSampleRate_); Json files = Json::array();
     for (const ActiveFile& file : activeFiles_) {
         Json item = Json::object(); item.set("file", file.relative);
         item.set("trackId", tracks_[file.track].id); item.set("start", recordStartFrame_);
@@ -702,7 +773,9 @@ void MultitrackRecorder::saveRecoveryUnlocked() {
         files.push(std::move(item));
     }
     root.set("files", std::move(files));
-    writeFileAtomic(joinPath(joinPath(root_, projectId_), "recovery.json"), root.dump(2));
+    if (writeFileAtomic(joinPath(joinPath(root_, projectId_), "recovery.json"), root.dump(2), true)) return true;
+    lastError_ = "could not write recording recovery data; recording stopped";
+    return false;
 }
 
 void MultitrackRecorder::refreshProjectsUnlocked() {
@@ -727,38 +800,70 @@ void MultitrackRecorder::recoverInterruptedProjects() {
         if (!parseError.empty() || json["format"].asString() != "pimfx-recorder-recovery") continue;
         const unsigned rate = std::max(1, json["sampleRate"].asInt(48000));
         bool repaired = true;
+        Json files = Json::array();
         for (const Json& item : json["files"].items()) {
             const std::string name = sanitizeFileName(item["file"].asString());
             const std::string trackId = sanitizeFileName(item["trackId"].asString());
-            repaired = patchWaveHeader(joinPath(joinPath(joinPath(joinPath(entry.path().string(), "tracks"), trackId), "takes"), name), rate,
-                                       static_cast<uint64_t>(std::max<int64_t>(0, item["frames"].asInt64()))) && repaired;
+            const auto path = joinPath(joinPath(joinPath(joinPath(entry.path().string(), "tracks"), trackId), "takes"), name);
+            std::error_code sizeError;
+            const auto bytes = fs::file_size(path, sizeError);
+            const uint64_t frames = sizeError || bytes < 44 ? 0 : (bytes - 44) / 4;
+            repaired = !sizeError && patchWaveHeader(path, rate, frames) && repaired;
+            Json record = item;
+            record.set("frames", static_cast<int64_t>(frames));
+            files.push(std::move(record));
         }
+        Json recovered = json;
+        recovered.set("files", std::move(files));
+        repaired = repaired && writeFileAtomic(retained, recovered.dump(2), true);
         if (repaired) {
             for (const Json& item : json["files"].items()) {
                 recoveredFiles_.push_back(entry.path().filename().string() + "/"
                     + sanitizeFileName(item["file"].asString()));
             }
             if (interrupted) {
-                std::error_code renameError;
-                fs::rename(recovery, retained, renameError);
-                if (renameError) removeFile(recovery);
+                removeFile(recovery, true);
             }
         }
     }
 }
 
 void MultitrackRecorder::finalizeRecordingUnlocked() {
+    const auto previousTracks = tracks_;
+    bool complete = !writeFailed_;
     for (ActiveFile& file : activeFiles_) {
-        file.stream.flush(); file.stream.close();
-        if (!patchWaveHeader(file.path, sampleRate_.load(), file.frames)) {
-            lastError_ = "could not finalize a recorder WAV header"; continue;
+        file.stream.flush();
+        const bool flushed = static_cast<bool>(file.stream);
+        file.stream.close();
+        if (!flushed || file.stream.fail()) {
+            lastError_ = "could not flush the recording audio; recovery data was retained";
+            complete = false;
+        }
+        // Never advertise samples past the bytes present in the file, even
+        // after a short/failed write. Keep the journal on any failure.
+        std::error_code sizeError;
+        const auto bytes = fs::file_size(file.path, sizeError);
+        const uint64_t frames = sizeError || bytes < 44 ? 0 : std::min<uint64_t>(file.frames, (bytes - 44) / 4);
+        if (frames != file.frames) complete = false;
+        if (!patchWaveHeader(file.path, projectSampleRate_, frames)) {
+            lastError_ = "could not finalize a recorder WAV header; recovery data was retained";
+            complete = false;
+            continue;
         }
         Track& track = tracks_[file.track]; Clip clip; clip.id = uniqueId("clip"); clip.file = file.relative;
-        clip.start = recordStartFrame_; clip.length = static_cast<int64_t>(file.frames);
+        clip.start = recordStartFrame_; clip.length = static_cast<int64_t>(frames);
         track.clips.push_back(std::move(clip));
     }
-    activeFiles_.clear(); rebuildWaveformsUnlocked(); saveProjectUnlocked();
-    removeFile(joinPath(joinPath(root_, projectId_), "recovery.json"));
+    if (!complete) tracks_ = previousTracks;
+    rebuildWaveformsUnlocked();
+    const bool saved = complete && saveProjectUnlocked();
+    if (!saved) tracks_ = previousTracks;
+    // Failed takes remain journal-owned. Do not also commit partial clips and
+    // import them a second time on recovery.
+    if (complete && saved) removeFile(joinPath(joinPath(root_, projectId_), "recovery.json"));
+    else writeFailed_ = true;
+    activeFiles_.clear();
+    armedMask_.store(0, std::memory_order_release);
     finalizing_.store(false, std::memory_order_release);
     if (playbackPlaying_.load(std::memory_order_acquire)) {
         requestPlaybackReset(playbackPositionFrame_.load(std::memory_order_relaxed));
@@ -771,10 +876,13 @@ void MultitrackRecorder::worker() {
         size_t read = readBlock_.load(std::memory_order_relaxed);
         const size_t write = writeBlock_.load(std::memory_order_acquire);
         if (read == write) {
-            if (finalizing_.load(std::memory_order_acquire)) {
+            if (finalizing_.load(std::memory_order_acquire)
+                && !captureInProgress_.load(std::memory_order_seq_cst)
+                && readBlock_.load(std::memory_order_acquire) == writeBlock_.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> lock(stateMutex_); finalizeRecordingUnlocked();
             }
-            if (stopping_.load(std::memory_order_acquire)) break;
+            if (stopping_.load(std::memory_order_acquire) && !captureInProgress_.load(std::memory_order_seq_cst)
+                && readBlock_.load(std::memory_order_acquire) == writeBlock_.load(std::memory_order_acquire)) break;
             const uint32_t generation = playbackGeneration_.load(std::memory_order_acquire);
             if (generation != workerPlaybackGeneration_) {
                 workerPlaybackGeneration_ = generation;
@@ -809,9 +917,11 @@ void MultitrackRecorder::worker() {
             continue;
         }
         RingBlock& block = ring_[read];
+        bool wroteBlock = true;
         {
             std::lock_guard<std::mutex> lock(stateMutex_);
             for (ActiveFile& file : activeFiles_) {
+                if (writeFailed_) { wroteBlock = false; break; }
                 const Source source = tracks_[file.track].source; const uint32_t bit = sourceBit(source);
                 if (!(block.mask & bit)) continue;
                 const size_t base = static_cast<size_t>(source) * 2 * maxFrames_;
@@ -822,6 +932,15 @@ void MultitrackRecorder::worker() {
                     putU16(file.stream, static_cast<uint16_t>(static_cast<int16_t>(std::lround(clampSample(right) * 32767.0f))));
                     file.peak = std::max(file.peak, std::max(std::abs(left), std::abs(right)));
                 }
+                file.stream.flush();
+                if (!file.stream) {
+                    lastError_ = "recording audio write failed; check free space and storage permissions";
+                    writeFailed_ = true;
+                    wroteBlock = false;
+                    recording_.store(false, std::memory_order_seq_cst);
+                    finalizing_.store(true, std::memory_order_release);
+                    continue;
+                }
                 file.frames += block.frames; speedBytes += block.frames * 4;
                 const size_t bucket = static_cast<size_t>(file.frames / std::max(1u, sampleRate_.load() / 2));
                 Track& track = tracks_[file.track];
@@ -830,9 +949,13 @@ void MultitrackRecorder::worker() {
                     track.waveformCount = std::max(track.waveformCount, bucket + 1); file.peak = 0.0f;
                 }
             }
-            if (++journalBlocks % 128 == 0) saveRecoveryUnlocked();
+            if (++journalBlocks % 128 == 0 && !saveRecoveryUnlocked()) {
+                writeFailed_ = true;
+                recording_.store(false, std::memory_order_seq_cst);
+                finalizing_.store(true, std::memory_order_release);
+            }
         }
-        writtenFrames_.fetch_add(block.frames, std::memory_order_relaxed);
+        if (wroteBlock) writtenFrames_.fetch_add(block.frames, std::memory_order_relaxed);
         readBlock_.store((read + 1) % ring_.size(), std::memory_order_release);
         const size_t queued = (write + ring_.size() - read) % ring_.size();
         queuePermille_.store(static_cast<uint32_t>(queued * 1000 / ring_.size()), std::memory_order_relaxed);
@@ -846,14 +969,12 @@ void MultitrackRecorder::worker() {
 }
 
 Json MultitrackRecorder::state(bool includeDetails) const {
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    std::unique_lock<std::mutex> lock(stateMutex_, std::defer_lock);
+    if (includeDetails) lock.lock(); else lock.try_lock();
     Json out = Json::object(); out.set("type", "recorder");
     out.set("status", recording() ? "recording" : finalizing_.load() ? "finalizing" : "stopped");
-    out.set("projectId", projectId_); out.set("projectName", projectName_);
-    out.set("sampleRate", sampleRate_.load()); out.set("recordedFrames", static_cast<int64_t>(writtenFrames_.load()));
-    const int64_t timelineFrames = timelineFramesUnlocked();
-    out.set("timelineFrames", timelineFrames);
-    out.set("duration", timelineFrames / static_cast<double>(std::max(1u, sampleRate_.load())));
+    out.set("sampleRate", sampleRate_.load());
+    out.set("recordedFrames", static_cast<int64_t>(writtenFrames_.load()));
     out.set("playbackFrame", playbackPositionFrame_.load(std::memory_order_relaxed));
     out.set("position", playbackPositionFrame_.load(std::memory_order_relaxed)
         / static_cast<double>(std::max(1u, sampleRate_.load())));
@@ -862,6 +983,18 @@ Json MultitrackRecorder::state(bool includeDetails) const {
     out.set("playbackUnderruns", static_cast<int64_t>(playbackUnderruns_.load(std::memory_order_relaxed)));
     out.set("droppedBlocks", static_cast<int64_t>(droppedBlocks_.load()));
     out.set("queueLevel", queuePermille_.load() / 1000.0); out.set("writeKbps", static_cast<int>(writeKbps_.load()));
+    // Finalization may scan long takes. Send atomic status immediately and let
+    // the next details publication carry metadata instead of blocking polling.
+    if (!lock.owns_lock()) { out.set("partial", true); return out; }
+    out.set("projectId", projectId_); out.set("projectName", projectName_);
+    out.set("projectSampleRate", projectSampleRate_);
+    const int64_t timelineFrames = timelineFramesUnlocked();
+    out.set("timelineFrames", timelineFrames);
+    out.set("duration", timelineFrames / static_cast<double>(std::max(1u, projectSampleRate_)));
+    if (!includeDetails) {
+        out.set("error", lastError_); out.set("warning", warning_);
+        out.set("partial", true); return out;
+    }
     std::error_code ec; const fs::space_info space = fs::space(root_, ec);
     const uint64_t freeBytes = ec ? 0 : static_cast<uint64_t>(space.available);
     size_t armedTracks = 0;
@@ -882,7 +1015,6 @@ Json MultitrackRecorder::state(bool includeDetails) const {
         static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))));
     out.set("remainingSeconds", static_cast<int64_t>(std::min<uint64_t>(remainingSeconds,
         static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))));
-    if (!includeDetails) { out.set("partial", true); return out; }
     Json sources = Json::array(); const uint32_t available = availableMask_.load();
     for (unsigned i = 0; i < static_cast<unsigned>(Source::Count); ++i) {
         Json item = Json::object(); item.set("id", sourceName(static_cast<Source>(i)));
@@ -910,35 +1042,41 @@ Json MultitrackRecorder::state(bool includeDetails) const {
 
 bool MultitrackRecorder::writeExport(const std::string& kind, const std::string& trackId,
                                      std::string& path, std::string& name, std::string& error) {
+    std::unique_lock<std::mutex> lock(stateMutex_);
     if (recording() || finalizing_.load()) { error = "stop recording before exporting"; return false; }
-    std::lock_guard<std::mutex> lock(stateMutex_);
+    if (projectSampleRate_ != sampleRate_.load()) { error = "the recording project sample rate does not match the audio device"; return false; }
     if (projectId_.empty()) { error = "open a recording project first"; return false; }
+    const auto exportTracks = tracks_;
+    const auto exportProjectId = projectId_;
+    const auto exportProjectName = projectName_;
+    const auto exportRate = projectSampleRate_;
+    lock.unlock(); // Mixing files must not block state/meter readers.
     const Track* stem = nullptr; if (kind == "stem") {
-        for (const Track& track : tracks_) if (track.id == trackId) stem = &track;
+        for (const Track& track : exportTracks) if (track.id == trackId) stem = &track;
         if (!stem) { error = "recorder track was not found"; return false; }
     }
     bool anySolo = false; int64_t totalFrames = 0;
-    for (const Track& track : tracks_) { anySolo = anySolo || track.solo; for (const Clip& clip : track.clips) totalFrames = std::max(totalFrames, clip.start + clip.length); }
+    for (const Track& track : exportTracks) { anySolo = anySolo || track.solo; for (const Clip& clip : track.clips) totalFrames = std::max(totalFrames, clip.start + clip.length); }
     if (totalFrames <= 0) { error = "there is no recorded audio to export"; return false; }
-    name = sanitizeFileName(kind == "stem" ? stem->name : projectName_) + (kind == "stem" ? "-stem.wav" : "-mix.wav");
+    name = sanitizeFileName(kind == "stem" ? stem->name : exportProjectName) + (kind == "stem" ? "-stem.wav" : "-mix.wav");
     const std::string exportRoot = stem
-        ? joinPath(joinPath(joinPath(root_, projectId_), "exports"), "stems")
-        : joinPath(joinPath(root_, projectId_), "exports");
+        ? joinPath(joinPath(joinPath(root_, exportProjectId), "exports"), "stems")
+        : joinPath(joinPath(root_, exportProjectId), "exports");
     makeDirectories(exportRoot);
     path = joinPath(exportRoot, name); std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) { error = "could not create recorder export"; return false; }
-    writeWaveHeader(out, sampleRate_.load(), static_cast<uint32_t>(std::min<int64_t>(totalFrames, (std::numeric_limits<uint32_t>::max() - 36u) / 4u)));
+    writeWaveHeader(out, exportRate, static_cast<uint32_t>(std::min<int64_t>(totalFrames, (std::numeric_limits<uint32_t>::max() - 36u) / 4u)));
     constexpr int64_t kChunk = 2048; std::vector<float> left(kChunk), right(kChunk);
     for (int64_t baseFrame = 0; baseFrame < totalFrames; baseFrame += kChunk) {
         const int64_t count = std::min(kChunk, totalFrames - baseFrame); std::fill(left.begin(), left.end(), 0.0f); std::fill(right.begin(), right.end(), 0.0f);
-        for (const Track& track : tracks_) {
+        for (const Track& track : exportTracks) {
             if ((stem && &track != stem) || track.muted || (!stem && anySolo && !track.solo)) continue;
             const float leftGain = track.level * (track.pan > 0 ? 1.0f - track.pan : 1.0f);
             const float rightGain = track.level * (track.pan < 0 ? 1.0f + track.pan : 1.0f);
             for (const Clip& clip : track.clips) {
                 const int64_t begin = std::max(baseFrame, clip.start), end = std::min(baseFrame + count, clip.start + clip.length);
                 if (begin >= end) continue;
-                std::ifstream in(joinPath(joinPath(joinPath(joinPath(joinPath(root_, projectId_), "tracks"), track.id), "takes"), clip.file), std::ios::binary);
+                std::ifstream in(joinPath(joinPath(joinPath(joinPath(joinPath(root_, exportProjectId), "tracks"), track.id), "takes"), clip.file), std::ios::binary);
                 if (!in) continue;
                 const int64_t source = clip.offset + begin - clip.start; in.seekg(44 + source * 4);
                 for (int64_t frame = begin; frame < end; ++frame) {

@@ -47,8 +47,7 @@ export function SnapshotManagerView({
         void askText("Rename Snapshot", currentName).then((value) => {
             const name = value?.trim();
             if (name) {
-                void run(() => client.request("snapshot/rename", { snapshotId, name }))
-                    .then(() => show("SNAPSHOT RENAMED"));
+                void run(async () => { await client.request("snapshot/rename", { snapshotId, name }); show("SNAPSHOT RENAMED"); });
             }
         });
     };
@@ -104,10 +103,11 @@ export function SnapshotManagerView({
                                                 type="color"
                                                 value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#22C55E"}
                                                 onChange={(event) => {
-                                                    void run(() => client.request("snapshot/color", {
+                                                    const nextColor = event.target.value;
+                                                    void run(async () => { await client.request("snapshot/color", {
                                                         snapshotId: str(snapshot.id),
-                                                        color: event.target.value
-                                                    })).then(() => show("SNAPSHOT COLOR SAVED"));
+                                                        color: nextColor
+                                                    }); show("SNAPSHOT COLOR SAVED"); });
                                                 }}
                                             />
                                             <span style={{ background: color }} />
@@ -116,14 +116,18 @@ export function SnapshotManagerView({
                                     </div>
                                     <div className="snapshot-card-actions">
                                         <button type="button" className="btn btn-accent" onClick={() => {
-                                            void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
-                                                .then(() => show(selected
+                                            void run(async () => {
+                                                await client.request("snapshot/select", { snapshotId: str(snapshot.id) });
+                                                show(selected
                                                     ? "SNAPSHOT INACTIVE"
-                                                    : `${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} ACTIVE`));
+                                                    : `${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} ACTIVE`);
+                                            });
                                         }}>RECALL</button>
                                         <button type="button" className="btn" onClick={() => {
-                                            void run(() => client.request("snapshot/update", { snapshotId: str(snapshot.id) }))
-                                                .then(() => show(`${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} UPDATED`));
+                                            void run(async () => {
+                                                await client.request("snapshot/update", { snapshotId: str(snapshot.id) });
+                                                show(`${str(snapshot.name, `SNAPSHOT ${slot + 1}`)} UPDATED`);
+                                            });
                                         }}>UPDATE</button>
                                         <button type="button" className="btn" onClick={() => renameSnapshot(
                                             str(snapshot.id), str(snapshot.name, `Snapshot ${slot + 1}`)
@@ -156,7 +160,8 @@ export function SnapshotManagerView({
                                                         color: fallback
                                                     });
                                                 }
-                                            }).then(() => show(`SNAPSHOT ${slot + 1} CREATED`));
+                                                show(`SNAPSHOT ${slot + 1} CREATED`);
+                                            });
                                         }}>CREATE SNAPSHOT</button>
                                     </div>
                                 </>
@@ -169,8 +174,10 @@ export function SnapshotManagerView({
                 confirmLabel="DELETE" danger onCancel={() => setPendingDelete(null)} onConfirm={() => {
                     const pending = pendingDelete;
                     setPendingDelete(null);
-                    void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
-                        .then(() => show(`SNAPSHOT ${pending.slot + 1} DELETED`));
+                    void run(async () => {
+                        await client.request("snapshot/delete", { snapshotId: pending.id });
+                        show(`SNAPSHOT ${pending.slot + 1} DELETED`);
+                    });
                 }} />}
         </div>
     );
