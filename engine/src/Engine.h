@@ -8,6 +8,7 @@
 #include "core/SpscQueue.h"
 #include "host/Lv2Host.h"
 #include "midi/Mapping.h"
+#include "midi/ControllerHardware.h"
 #include "midi/MidiInput.h"
 #include "model/Storage.h"
 #include "transport/MusicalTransport.h"
@@ -179,7 +180,8 @@ public:
     bool applyPresetAssignments(const Json& json, std::string& error);
     bool connectController(const std::string& port, std::string& error);
     void disconnectController();
-    void beginControlLearn(const std::string& controlId);
+    bool beginControlLearn(const std::string& controlId, std::string& error);
+    bool controllerHardwareCommand(const std::string& action, const Json& payload, std::string& error);
     void cancelControlLearn();
     /// Presses a control from the browser. This is what makes a tablet a
     /// complete control surface with no hardware attached.
@@ -416,6 +418,9 @@ private:
     Settings settings_;
     std::vector<Bank> banks_;
     std::string activeBankId_;
+    // Browsing banks must not change the owner of the sounding preset.
+    std::string browseBankId_;
+    std::string browseBankId() const;
     std::string activePresetId_;
     /// Unsaved, engine-owned working copies. These deliberately never enter
     /// bank serialization; Save promotes one copy and Reload discards it.
@@ -472,6 +477,9 @@ private:
 
     MidiInput midi_;
     ControllerRuntime controller_;
+    ControllerHardware controllerHardware_;
+    bool controllerHardwareCapable_ = false;
+    bool controllerConnecting_ = false; // stateMutex_; MIDI stop/join runs outside it
     std::string audioError_;
     std::string persistenceError_; // stateMutex_; failed settings are retried by housekeeping
     std::string controllerError_;

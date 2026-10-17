@@ -61,6 +61,8 @@ void ControllerRuntime::setConfig(ControllerConfig config) {
     config_ = std::move(config);
     held_.clear();
     encoders_.clear();
+    pendingTaps_.clear();
+    swallowRelease_.clear();
 }
 
 void ControllerRuntime::setFeel(int encoderStepsPerDetent, int analogDeadband, int switchDebounceMs) {

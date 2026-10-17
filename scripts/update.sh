@@ -20,6 +20,11 @@ die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run this with sudo:  sudo ./scripts/update.sh"
 
+# Keep source replacement/builds separate from the pending firmware worker.
+install -d /run/pimfx
+exec 9>/run/pimfx/update-build.lock
+flock -x 9
+
 cd "$REPO_DIR"
 export GIT_TERMINAL_PROMPT=0
 log "Starting update in $REPO_DIR"
@@ -214,6 +219,12 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         [[ -f "$CMDLINE.pimfx-backup" ]] || cp "$CMDLINE" "$CMDLINE.pimfx-backup"
         sed -i '1 s/$/ usbcore.autosuspend=-1/' "$CMDLINE"
     fi
+    log "Building and updating newer controller firmware (or leaving it pending until connected)"
+    if ! python3 "$PREFIX/libexec/pimfx/controller_firmware.py" --arm \
+        --repo "$REPO_DIR" --data "$DATA_ROOT" --user "$PIMFX_USER"; then
+        warn "Pi-MFX was installed, but controller firmware needs attention. Open Settings > Updates to retry."
+        CONTROLLER_UPDATE_FAILED=1
+    fi
     log "Restarting pimfx"
     systemctl restart pimfx.service
     sleep 2
@@ -244,3 +255,6 @@ if [[ "${PIMFX_UPDATE_FROM_HELPER:-0}" == "1" ]] && command -v systemd-run >/dev
         /bin/systemctl restart pimfx-plugin-helper.service \
         || warn "could not schedule the plugin helper refresh"
 fi
+
+# Do not report the combined update as successful after a firmware failure.
+[[ "${CONTROLLER_UPDATE_FAILED:-0}" != "1" ]]

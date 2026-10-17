@@ -1683,6 +1683,11 @@ Json PluginStore::updateInstall(const Json& payload, std::string& error) {
     return helperCall("update-install", args, error, 15);
 }
 
+Json PluginStore::controllerFirmware(bool install, std::string& error) {
+    return helperCall(install ? "controller-firmware-install" : "controller-firmware-status",
+                      Json::object(), error, 15);
+}
+
 Json PluginStore::systemPower(const std::string& action, std::string& error) {
     if (action != "reboot" && action != "shutdown") {
         error = "unknown power action";

@@ -520,6 +520,10 @@ void MidiInput::stop() {
     }
     running_.store(false, std::memory_order_release);
 
+    // The input worker must finish before taking the send lock: its final
+    // identity/configuration callback may still need to send a reply. Protect
+    // the native handles while closing against concurrent LED/setup writes.
+    std::lock_guard<std::mutex> sendLock(sendMutex_);
     if (input_) {
         snd_rawmidi_close(static_cast<snd_rawmidi_t*>(input_));
         input_ = nullptr;
@@ -569,7 +573,7 @@ bool MidiInput::send(const std::vector<uint8_t>& bytes) {
                 break;
             }
         }
-        snd_seq_drain_output(static_cast<snd_seq_t*>(seq_));
+        if (snd_seq_drain_output(static_cast<snd_seq_t*>(seq_)) < 0) ok = false;
         snd_midi_event_free(coder);
         return ok;
     }
@@ -578,7 +582,7 @@ bool MidiInput::send(const std::vector<uint8_t>& bytes) {
     }
     const ssize_t written = snd_rawmidi_write(static_cast<snd_rawmidi_t*>(output_),
                                               bytes.data(), bytes.size());
-    if (written < 0) {
+    if (written < 0 || static_cast<size_t>(written) != bytes.size()) {
         return false;
     }
     snd_rawmidi_drain(static_cast<snd_rawmidi_t*>(output_));

@@ -46,6 +46,7 @@ bool slowApiCommand(const std::string& command) {
         || (command.rfind("recorder/", 0) == 0 && command != "recorder/record/stop"
             && command != "recorder/playback/stop" && command != "recorder/playback/pause")
         || command == "audio/settings" || command == "system/settings"
+        || command.rfind("controller/firmware/", 0) == 0
         || (command.rfind("tone3000/", 0) == 0 && command != "tone3000/download-job/status");
 }
 
@@ -527,6 +528,11 @@ Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
+    if (command == "controller/firmware/status" || command == "controller/firmware/install") {
+        const Json result = plugins_.controllerFirmware(command == "controller/firmware/install", error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "system/update/install") {
         const Json result = plugins_.updateInstall(payload, error);
         ok = error.empty();
@@ -793,7 +799,11 @@ Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "controller/learn") {
-        engine_.beginControlLearn(payload["controlId"].asString());
+        ok = engine_.beginControlLearn(payload["controlId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "controller/hardware") {
+        ok = engine_.controllerHardwareCommand(payload["action"].asString(), payload, error);
         return Json::object();
     }
     if (command == "controller/cancelLearn") {

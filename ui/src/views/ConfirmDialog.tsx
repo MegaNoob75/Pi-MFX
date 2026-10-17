@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 export function ConfirmDialog({
     title,
     body,
+    children,
     confirmLabel = "OK",
     danger = false,
     showCancel = true,
@@ -11,6 +12,7 @@ export function ConfirmDialog({
 }: {
     title: string;
     body?: string;
+    children?: ReactNode;
     confirmLabel?: string;
     danger?: boolean;
     showCancel?: boolean;
@@ -53,6 +55,7 @@ export function ConfirmDialog({
             <div ref={card} className="mfx-overlay-card" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={body ? bodyId : undefined}>
                 <div id={titleId} className={`mfx-overlay-title${danger ? " danger" : ""}`}>{title}</div>
                 {body && <p id={bodyId} className="muted" style={{ margin: 0 }}>{body}</p>}
+                {children && <div style={{ maxHeight: "42vh", overflow: "auto" }}>{children}</div>}
                 <div className="row" style={{ justifyContent: "flex-end" }}>
                     {showCancel && <button type="button" className="btn" onClick={onCancel}>CANCEL</button>}
                     <button

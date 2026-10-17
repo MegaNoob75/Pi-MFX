@@ -6156,3 +6156,12 @@ button.list-item {
 .routing-connection-remove-hint { position: absolute; top: 1px; right: 3px; font-size: 12px; line-height: 12px; pointer-events: none; }
 .routing-connection-number:focus-visible, .routing-block-remove:focus-visible, .routing-block-body:focus-visible { outline: 2px solid var(--mfx-text); outline-offset: 2px; }
 .routing-wires .routing-label-leader { stroke-width: 1.5px; stroke-dasharray: 3 3; }
+/* Physical wiring setup remains collapsed during the normal control workflow. */
+.controller-board-setup { padding: 8px 10px; border-bottom: 1px solid var(--mfx-border); flex: 0 0 auto; }
+.controller-board-setup > .row { flex-wrap: wrap; }
+.controller-board-advanced { max-height: 38vh; overflow-y: auto; padding-right: 4px; }
+.controller-board-setup fieldset { margin: 0; padding: 10px; min-width: 0; }
+.controller-board-setup p { margin: 4px 0; }
+.controller-wiring-summary { overflow-x: auto; }
+.controller-wiring-summary table { width: 100%; border-collapse: collapse; }
+.controller-wiring-summary th, .controller-wiring-summary td { text-align: left; padding: 6px; }

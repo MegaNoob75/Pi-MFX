@@ -182,6 +182,8 @@ struct ControllerControl {
     /// Where the firmware reads it. `module` names an expander board when the
     /// user has more controls than the ESP32 has pins.
     std::string module;
+    /// Verified physical wiring, including board identity and firmware slot.
+    Json hardware;
     int channel = -1;       ///< MIDI CC or note number assigned by Learn
     int midiChannel = 0;
     bool useNoteMessages = false;
@@ -252,6 +254,8 @@ struct ControllerConfig {
 
     std::vector<ControllerControl> controls;
     std::vector<ControllerLed> leds;
+    /// Last explicitly saved/adopted board wiring, retained by profiles/backups.
+    Json boardHardware;
 
     /// Freeform status widgets, unplaced ids, and layout defaults. Opaque JSON
     /// so the UI can grow without a protocol bump.

@@ -20,9 +20,9 @@ namespace {
 constexpr size_t kTunerRingSize = 16384;
 constexpr float kTunerMinFrequency = 20.0f;   // covers low-F# extended-range bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
-constexpr int kRequiredControllerFirmwareMajor = 1;
-constexpr int kRequiredControllerFirmwareMinor = 1;
-constexpr const char* kRequiredControllerFirmwareVersion = "1.1";
+constexpr int kRequiredControllerFirmwareMajor = 2;
+constexpr int kRequiredControllerFirmwareMinor = 0;
+constexpr const char* kRequiredControllerFirmwareVersion = "2.0";
 static_assert(std::atomic<float>::is_always_lock_free,
               "tuner handoff requires lock-free float atomics");
 
@@ -680,6 +680,7 @@ bool Engine::start(std::string& error, bool recoverStartup) {
             settings_.controller.midiPort = midi_.activePort();
             persistSettings();
         }
+        if (midi_.isRunning()) midi_.send(ControllerRuntime::encodeIdentityRequest());
     }
 
     armAnalogCatchUnlocked();
@@ -2137,7 +2138,7 @@ void Engine::flushPendingPersistence(bool force) {
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
 
-    Bank* bank = findBank(bankId.empty() ? activeBankId_ : bankId);
+    Bank* bank = findBank(bankId.empty() ? browseBankId() : bankId);
     if (!bank) {
         error = "no such bank";
         return false;
@@ -2169,6 +2170,7 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
 
     activeBankId_ = bank->id;
+    browseBankId_ = bank->id;
     activePresetId_ = target->id;
     bank->lastPresetId = target->id;
     // Build the remembered snapshot directly into the unpublished chain. Once
@@ -2218,12 +2220,13 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 }
 
 bool Engine::stepPreset(int delta, std::string& error) {
-    const Bank* bank = activeBank();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const Bank* bank = findBank(browseBankId());
     if (!bank || bank->presets.empty()) {
         error = "no presets in this bank";
         return false;
     }
-    int index = 0;
+    int index = delta >= 0 ? -1 : 0;
     for (size_t i = 0; i < bank->presets.size(); ++i) {
         if (bank->presets[i].id == activePresetId_) {
             index = static_cast<int>(i);
@@ -2235,55 +2238,29 @@ bool Engine::stepPreset(int delta, std::string& error) {
     return selectPreset(bank->id, bank->presets[static_cast<size_t>(index)].id, error);
 }
 
+std::string Engine::browseBankId() const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    for (const Bank& bank : banks_) {
+        if (bank.id == browseBankId_) return bank.id;
+    }
+    return activeBankId_;
+}
+
 bool Engine::selectBank(const std::string& bankId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Bank* current = activeBank();
-    int slot = 0;
-    if (current) {
-        for (size_t i = 0; i < current->presets.size(); ++i) {
-            if (current->presets[i].id == activePresetId_) {
-                slot = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-    Bank* next = findBank(bankId);
-    if (!next) {
+    if (!findBank(bankId)) {
         error = "no such bank";
         return false;
     }
-    if (next->presets.empty()) {
-        if (current && activeSessionDraft()) captureActiveSessionDraft();
-        if (current && current->id != next->id) {
-            current->lastPresetId = activePresetId_;
-            requestBankPersist(current->id);
-        }
-        activeBankId_ = next->id;
-        activePresetId_.clear();
-        publishEmptyChain();
-        if (!persistSettings(&error)) { notify(); return false; }
-        armAnalogCatchUnlocked();
-        refreshLeds();
-        notify();
-        return true;
-    }
-    std::string presetId;
-    if (!next->lastPresetId.empty()) {
-        for (const Preset& preset : next->presets) {
-            if (preset.id == next->lastPresetId) {
-                presetId = preset.id;
-                break;
-            }
-        }
-    }
-    if (presetId.empty()) {
-        const int index = std::min(slot, static_cast<int>(next->presets.size()) - 1);
-        presetId = next->presets[static_cast<size_t>(std::max(0, index))].id;
-    }
-    return selectPreset(next->id, presetId, error);
+    if (browseBankId() != bankId) sessionPresets_.clear();
+    browseBankId_ = bankId;
+    refreshLeds();
+    notify();
+    return true;
 }
 
 bool Engine::stepBank(int delta, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     std::vector<const Bank*> playable;
     for (const Bank& bank : banks_) {
         if (!bank.communityHolding && !bank.presets.empty()) playable.push_back(&bank);
@@ -2294,7 +2271,7 @@ bool Engine::stepBank(int delta, std::string& error) {
     }
     int index = 0;
     for (size_t i = 0; i < playable.size(); ++i) {
-        if (playable[i]->id == activeBankId_) {
+        if (playable[i]->id == browseBankId()) {
             index = static_cast<int>(i);
             break;
         }
@@ -4145,7 +4122,18 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
 // ---------------------------------------------------------------------------
 
 bool Engine::applyControllerConfig(const Json& json, std::string& error) {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_) { error = "The controller connection is changing. Wait and retry."; return false; }
+    if (controllerHardware_.busy()) { error = "Finish or cancel hardware setup before editing controls."; return false; }
+    const auto nextController = ControllerConfig::fromJson(json);
+    if (controllerHardwareCapable_ && !json["profileLoad"].asBool()) for (const auto& control : settings_.controller.controls) {
+        if (!control.hardware.isObject()) continue;
+        const auto next = std::find_if(nextController.controls.begin(), nextController.controls.end(),
+            [&](const ControllerControl& c) { return c.id == control.id; });
+        if (next == nextController.controls.end()) {
+            error = "Remove this control from Hardware Setup so its saved ESP32 wiring is also removed."; return false;
+        }
+    }
     const std::string previousPort = settings_.controller.midiPort;
     const bool wasEnabled = settings_.controller.enabled;
     settings_.controller = ControllerConfig::fromJson(json);
@@ -4153,11 +4141,24 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
     controller_.setConfig(settings_.controller);
 
     const bool portChanged = settings_.controller.midiPort != previousPort;
+    if (portChanged || !settings_.controller.enabled || !wasEnabled) {
+        controller_.cancelLearn();
+        controllerHardware_.reset();
+        controllerHardwareCapable_ = false;
+        controllerFirmwareVersion_.clear();
+    }
 
     if (settings_.controller.enabled) {
         if (!midi_.isRunning() || portChanged || !wasEnabled) {
             std::string midiError;
-            if (!midi_.start(settings_.controller.midiPort, midiError)) {
+            const std::string port = settings_.controller.midiPort;
+            controllerHardware_.reset(); controllerHardwareCapable_ = false; controllerFirmwareVersion_.clear();
+            controllerConnecting_ = true;
+            lock.unlock();
+            const bool started = midi_.start(port, midiError);
+            lock.lock();
+            controllerConnecting_ = false;
+            if (!started) {
                 controllerError_ = midiError;
                 if (!persistSettings(&error)) { notify(); return false; }
                 refreshLeds();
@@ -4171,7 +4172,11 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
             midi_.send(ControllerRuntime::encodeIdentityRequest());
         }
     } else if (midi_.isRunning()) {
+        controllerConnecting_ = true;
+        lock.unlock();
         midi_.stop();
+        lock.lock();
+        controllerConnecting_ = false;
     }
 
     if (!persistSettings(&error)) { notify(); return false; }
@@ -4223,8 +4228,24 @@ bool Engine::applyPresetAssignments(const Json& json, std::string& error) {
 }
 
 bool Engine::connectController(const std::string& port, std::string& error) {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    if (!midi_.start(port, error)) {
+    std::unique_lock<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_) { error = "The controller connection is changing. Wait and retry."; return false; }
+    if (controllerHardware_.phase() == "saving") { error = "Wait for the controller save to finish."; return false; }
+    if (controllerHardware_.busy()) {
+        auto config = controller_.config();
+        controllerHardware_.command("cancel", Json::object(), config,
+            [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+    }
+    controller_.cancelLearn();
+    controllerHardware_.reset();
+    controllerHardwareCapable_ = false;
+    controllerFirmwareVersion_.clear();
+    controllerConnecting_ = true;
+    lock.unlock();
+    const bool started = midi_.start(port, error);
+    lock.lock();
+    controllerConnecting_ = false;
+    if (!started) {
         controllerError_ = error;
         notify();
         return false;
@@ -4242,19 +4263,65 @@ bool Engine::connectController(const std::string& port, std::string& error) {
 }
 
 void Engine::disconnectController() {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_ || controllerHardware_.phase() == "saving") return;
+    if (controllerHardware_.busy()) {
+        auto config = controller_.config(); std::string error;
+        controllerHardware_.command("cancel", Json::object(), config,
+            [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+    }
+    controller_.cancelLearn();
+    controller_.setConfig(controller_.config());
+    controllerHardware_.reset();
+    controllerHardwareCapable_ = false;
+    controllerFirmwareVersion_.clear();
+    controllerConnecting_ = true;
+    lock.unlock();
     midi_.stop();
+    lock.lock();
+    controllerConnecting_ = false;
     settings_.controller.enabled = false;
     persistSettings();
     notify();
 }
 
-void Engine::beginControlLearn(const std::string& controlId) {
-    controller_.beginLearn(controlId);
+bool Engine::controllerHardwareCommand(const std::string& action, const Json& payload, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_ || !midi_.isRunning() || !controllerHardwareCapable_) {
+        error = "Select a Pi-MFX universal firmware 2.0 controller first."; return false;
+    }
+    controller_.cancelLearn();
+    auto config = controller_.config();
+    controller_.setConfig(config); // discard outstanding performance holds/taps
+    const bool ok = controllerHardware_.command(action, payload, config,
+        [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+    if (ok && action == "adopt") {
+        controller_.setConfig(config); settings_.controller = config;
+        if (!persistSettings(&error)) { notify(); return false; }
+    }
+    refreshLeds();
     notify();
+    return ok;
+}
+
+bool Engine::beginControlLearn(const std::string& controlId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controllerHardwareCapable_) {
+        return controllerHardwareCommand("learn", Json::object({{"controlId", controlId}}), error);
+    }
+    if (!midi_.isRunning()) { error = "Connect a MIDI controller before learning."; return false; }
+    controller_.beginLearn(controlId);
+    if (!controller_.learning()) { error = "Select an existing control."; return false; }
+    notify();
+    return true;
 }
 
 void Engine::cancelControlLearn() {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controllerHardwareCapable_) {
+        std::string error;
+        controllerHardwareCommand("cancel", Json::object(), error);
+    }
     controller_.cancelLearn();
     notify();
 }
@@ -4889,12 +4956,19 @@ bool Engine::turnVirtualEncoder(const std::string& controlId, int delta, std::st
 
 void Engine::handleMidiMessage(const MidiMessage& message) {
     if (backupPreparing()) return;
+    std::unique_lock<std::recursive_mutex> stateLock(stateMutex_);
+    if (controllerConnecting_) return;
+    if (controllerHardware_.busy()) return;
+    if (controllerHardwareCapable_ && !controllerHardware_.accepts(message, controller_.config())) return;
+    const auto actions = controller_.handleMessage(message);
+    stateLock.unlock();
     bool encoderUi = false;
-    for (const ActionRequest& request : controller_.handleMessage(message)) {
+    for (const ActionRequest& request : actions) {
         if (request.kind == ControlKind::Encoder || request.kind == ControlKind::EncoderPush) {
             encoderUi = true;
         }
         if (request.action == "learned") {
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             // Learning changed the runtime copy of the config; persist it so a
             // reboot does not lose the assignment.
             settings_.controller = controller_.config();
@@ -4911,6 +4985,18 @@ void Engine::handleMidiMessage(const MidiMessage& message) {
 
 void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
     if (backupPreparing()) return;
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    if (controllerConnecting_) return;
+    bool configChanged = false;
+    auto config = controller_.config();
+    if (controllerHardwareCapable_ && controllerHardware_.receive(sysex, config,
+            [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, configChanged)) {
+        if (configChanged) {
+            controller_.setConfig(config); settings_.controller = config;
+            persistSettings();
+        }
+        refreshLeds(); notify(); return;
+    }
     ControllerRuntime::Identity identity;
     if (!ControllerRuntime::parseIdentity(sysex, identity)) {
         return;
@@ -4924,6 +5010,12 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
         controllerFirmwareUpdateRequired_ = identity.firmwareMajor < kRequiredControllerFirmwareMajor
             || (identity.firmwareMajor == kRequiredControllerFirmwareMajor
                 && identity.firmwareMinor < kRequiredControllerFirmwareMinor);
+        controllerHardwareCapable_ = identity.firmwareMajor == 2;
+        if (controllerHardwareCapable_ && !controllerHardware_.ready() && controllerHardware_.phase() == "idle") {
+            std::string error;
+            controllerHardware_.command("read", Json::object(), config,
+                [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+        }
     }
     refreshLeds();
     notify();
@@ -5153,7 +5245,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         stepBank(encoderDelta != 0 ? -encoderDelta : -1, error);
     } else if (request.action == "selectPreset") {
         const ControllerConfig config = controller_.config();
-        std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
+        std::string bankId = binding.bankId.empty() ? browseBankId() : binding.bankId;
         std::string presetId = binding.presetId;
         sessionPresetForControl(request.controlId, bankId, presetId);
         if (presetId.empty()) {
@@ -5190,7 +5282,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         }
     } else if (request.action == "reloadPreset") {
         const ControllerConfig config = controller_.config();
-        std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
+        std::string bankId = binding.bankId.empty() ? browseBankId() : binding.bankId;
         std::string presetId = binding.presetId;
         if (presetId.empty()) {
             presetId = assignedPresetForControl(config, bankId, request.controlId);
@@ -5347,6 +5439,7 @@ void Engine::runAction(const ActionRequest& incoming) {
 
 void Engine::refreshLeds() {
     std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    if (controllerConnecting_ || controllerHardware_.busy()) return;
     const ControllerConfig config = controller_.config();
     if (!config.enabled || !config.syncLedColours || config.leds.empty()) {
         return;
@@ -5404,12 +5497,11 @@ void Engine::refreshLeds() {
                     && preset->activeSnapshot == control.binding.snapshotSlot;
                 colourRole = "snapshot";
             } else if (control.binding.action == "selectPreset") {
-                std::string bankId = activeBankId_;
+                std::string bankId = control.binding.bankId.empty() ? browseBankId() : control.binding.bankId;
                 std::string presetId = control.binding.presetId;
                 sessionPresetForControl(control.id, bankId, presetId);
                 if (presetId.empty()) {
-                    presetId = assignedPresetForControl(config, activeBankId_, control.id);
-                    bankId = activeBankId_;
+                    presetId = assignedPresetForControl(config, bankId, control.id);
                 }
                 state.on = !presetId.empty() && presetId == activePresetId_
                     && (bankId.empty() || bankId == activeBankId_);
@@ -5502,7 +5594,18 @@ void Engine::refreshLeds() {
         states.push_back(std::move(state));
     }
 
-    midi_.send(controller_.encodeLedMessage(states, config.ledBrightness));
+    const auto frame = controller_.encodeLedMessage(states, config.ledBrightness);
+    if (controllerHardwareCapable_) {
+        // Complete small SysEx packets fit the firmware/library receive buffer.
+        for (size_t offset=0; offset<states.size(); offset+=24) {
+            const size_t count=std::min<size_t>(24,states.size()-offset);
+            const uint8_t flags=(offset==0 ? 1 : 0) | (offset+count==states.size() ? 2 : 0);
+            std::vector<uint8_t> part={0xF0,0x7D,0x4D,0x46,pimfxhw::LedFrame,frame[5],flags,uint8_t(count)};
+            part.insert(part.end(),frame.begin()+8+offset*4,frame.begin()+8+(offset+count)*4);
+            part.push_back(0xF7);
+            if (!midi_.send(part)) break;
+        }
+    } else midi_.send(frame);
 }
 
 // ---------------------------------------------------------------------------
@@ -6011,6 +6114,8 @@ void Engine::tunerThread() {
 
 void Engine::housekeepingThread() {
     int ticks = 0;
+    unsigned firmwarePollTicks = 0;
+    std::string firmwareReconnectId;
     int audioRetryLog = 0;
     uint64_t reportedXruns = metrics_.xruns.load(std::memory_order_relaxed);
     const unsigned logicalProcessors = std::max(1u, std::thread::hardware_concurrency());
@@ -6020,6 +6125,41 @@ void Engine::housekeepingThread() {
     bool engineCpuReady = false;
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
+
+        // USB re-enumeration changes ALSA client IDs. Reconnect only the
+        // controller that was selected before the verified firmware update;
+        // never replace a different MIDI device selected by the user.
+        if (++firmwarePollTicks >= 40) {
+            firmwarePollTicks = 0;
+            std::string contents, parseError;
+            if (readFile(joinPath(storage_.paths().dataRoot, "controller-firmware-reconnect.json"), contents)) {
+                const Json request = Json::parse(contents, &parseError);
+                const std::string id = request["id"].asString();
+                if (parseError.empty() && !id.empty() && id != firmwareReconnectId) {
+                    bool reconnect = false;
+                    std::string port = request["port"].asString();
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                        const auto& selected = settings_.controller.midiPort;
+                        const bool raw = !request["previousRawPort"].asString().empty()
+                            && selected == request["previousRawPort"].asString();
+                        if (raw) port = request["rawPort"].asString();
+                        const double age = std::chrono::duration<double>(
+                            std::chrono::system_clock::now().time_since_epoch()).count()
+                            - request["createdAt"].asDouble();
+                        reconnect = settings_.controller.enabled && !controllerConnecting_
+                            && !controllerHardware_.busy() && age >= 0 && age < 300 && !port.empty()
+                            && (raw || selected == request["previousPort"].asString());
+                    }
+                    if (reconnect) {
+                        std::string error;
+                        if (!connectController(port, error))
+                            logWarn("controller firmware reconnect: " + error);
+                    }
+                    firmwareReconnectId = id;
+                }
+            }
+        }
 
         AudioRealtimeStatus realtimeStatus;
         if (backend_ && backend_->takeRealtimeStatus(realtimeStatus)) {
@@ -6076,9 +6216,13 @@ void Engine::housekeepingThread() {
                 + (errorCode != 0 ? ", error=" + std::string(std::strerror(errorCode)) : ""));
         }
 
-        for (const ActionRequest& request : controller_.pollHolds()) {
-            runAction(request);
+        std::vector<ActionRequest> heldActions;
+        {
+            std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+            if (controllerHardware_.tick([this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); })) notify();
+            if (!controllerHardware_.busy()) heldActions = controller_.pollHolds();
         }
+        for (const ActionRequest& request : heldActions) runAction(request);
         collectRetiredChains();
         if (chainStateDirty_.exchange(false, std::memory_order_acq_rel)) {
             refreshLeds();
@@ -6322,6 +6466,7 @@ Json Engine::fullState() const {
     }
     json.set("banks", bankArray);
     json.set("activeBankId", activeBankId_);
+    json.set("browseBankId", browseBankId());
     json.set("activePresetId", activePresetId_);
 
     Json editorBindings = Json::array();
@@ -6484,6 +6629,7 @@ Json Engine::performanceState() const {
     json.set("stateEpoch", stateEpoch_);
     json.set("revision", static_cast<int64_t>(++stateRevision_));
     json.set("activeBankId", activeBankId_);
+    json.set("browseBankId", browseBankId());
     json.set("activePresetId", activePresetId_);
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
@@ -7006,6 +7152,12 @@ Json Engine::describeControllerRuntime() const {
     json.set("activePort", midi_.activePort());
     json.set("learning", controller_.learning());
     json.set("learningControlId", controller_.learningControlId());
+    json.set("universalFirmware", controllerHardwareCapable_);
+    json.set("boardSetup", controllerHardware_.state());
+    if (controllerHardware_.busy()) {
+        json.set("learning", true);
+        json.set("learningControlId", controllerHardware_.target());
+    }
     if (!controllerFirmwareVersion_.empty()) {
         json.set("firmwareVersion", controllerFirmwareVersion_);
         json.set("requiredFirmwareVersion", kRequiredControllerFirmwareVersion);

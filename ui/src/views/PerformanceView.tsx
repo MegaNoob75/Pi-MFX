@@ -103,7 +103,7 @@ export function PerformanceView({
     onEditSnapshot?: (snapshotId: string) => void;
 }) {
     const { client, state } = engine;
-    const bank = findBank(state);
+    const bank = findBank(state, str(state.browseBankId, str(state.activeBankId)));
     const preset = findPreset(state);
     const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const ui = obj(state.ui);
@@ -173,7 +173,7 @@ export function PerformanceView({
         if (bool(obj(bank).communityHolding) && playableBankId) {
             void run(() => client.request("bank/select", { bankId: playableBankId }));
         }
-    }, [state.activeBankId, playableBankId, client, run]);
+    }, [state.browseBankId, state.activeBankId, playableBankId, client, run]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
         [state.activePresetId, chainSignature]
@@ -760,7 +760,7 @@ export function PerformanceView({
                     ? str(presetBind?.slotId)
                     : (action === "toggleEffect" ? str(binding.slotId) : "");
                 const active = (!!displayPresetId && displayPresetId === str(state.activePresetId)
-                    && (!sessionEntry || displayBankId === str(state.activeBankId)))
+                    && displayBankId === str(state.activeBankId))
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
                     || (action === "tapTempo" && bool(engine.transport.beatPulse))
@@ -1110,7 +1110,7 @@ export function PerformanceView({
             : "BASE PRESET";
 
     const widgetValues = {
-        bank: str(obj(bank).name, "—"),
+        bank: `${str(obj(bank).name, "—")}${str(obj(bank).id) !== str(state.activeBankId) ? " · BROWSING" : ""}`,
         preset: str(obj(preset).name, "—"),
         bypass: bypassAll ? "ON" : "OFF",
         snaps: snapshotStatus
@@ -1119,11 +1119,6 @@ export function PerformanceView({
     const selectBankId = (id: string) => {
         setBankMenuOpen(false);
         client.updateUiSession({ performancePicker: "" });
-        const item = banks.find((entry) => str(entry.id) === id);
-        if (!objects(obj(item).presets).length) {
-            showToast(`“${str(obj(item).name, "This bank")}” has no presets`);
-            return;
-        }
         void run(() => client.request("bank/select", { bankId: id }));
     };
 
@@ -1143,7 +1138,7 @@ export function PerformanceView({
     const bankPicker = (
         <NamePicker
             variant={useFreeform ? "freeform" : "grid-bank"}
-            label="CURRENT BANK"
+            label={str(obj(bank).id) !== str(state.activeBankId) ? "BROWSING BANK" : "CURRENT BANK"}
             preview={!bankMenuOpen && previewNav}
             value={`${!bankMenuOpen && previewNav && pending
                 ? pending.bankName
@@ -1223,8 +1218,12 @@ export function PerformanceView({
         if ((encoderDrivingRef.current && encoderMode === "live") || catalog.length === 0) {
             return;
         }
-        setBrowseIndex(catalogIndexOf(catalog, str(state.activeBankId), str(state.activePresetId)));
-    }, [state.activeBankId, state.activePresetId, catalogSig, encoderMode]);
+        const bankId = str(state.browseBankId, str(state.activeBankId));
+        const firstInBank = catalog.findIndex((entry) => entry.bankId === bankId);
+        setBrowseIndex(bankId === str(state.activeBankId)
+            ? catalogIndexOf(catalog, bankId, str(state.activePresetId))
+            : Math.max(0, firstInBank));
+    }, [state.browseBankId, state.activeBankId, state.activePresetId, catalogSig, encoderMode]);
 
     useEffect(() => {
         const markDriving = () => {

@@ -38,6 +38,7 @@ target_sources(pimfx PRIVATE
     src/control/AccessControl.cpp
     src/control/ApiRouter.cpp
     src/midi/Mapping.cpp
+    src/midi/ControllerHardware.cpp
     src/midi/MidiInput.cpp
     src/transport/MusicalTransport.cpp
     src/backing/BackingTrackPlayer.cpp
@@ -167,6 +168,18 @@ if(BUILD_TESTING)
         target_link_libraries(pimfx_bank_storage_test PRIVATE ws2_32)
     endif()
     add_test(NAME bank_storage COMMAND pimfx_bank_storage_test)
+
+    add_executable(pimfx_controller_hardware_test
+        tests/ControllerHardwareTest.cpp
+        src/midi/ControllerHardware.cpp
+        src/midi/Mapping.cpp
+        src/model/Model.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(pimfx_controller_hardware_test PRIVATE src)
+    target_link_libraries(pimfx_controller_hardware_test PRIVATE Threads::Threads)
+    add_test(NAME controller_hardware COMMAND pimfx_controller_hardware_test)
 
     add_executable(pimfx_startup_guard_test
         tests/StartupGuardTest.cpp

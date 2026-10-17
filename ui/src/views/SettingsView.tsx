@@ -15,6 +15,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { GainMeter } from "./GainMeter";
 import { SetupProfilesView } from "./SetupProfilesView";
 import { AccessSettings } from "./AccessSettings";
+import { ControllerBoardSetup } from "./ControllerBoardSetup";
 
 export type SettingsPage =
     | "audio"
@@ -1079,7 +1080,7 @@ function ControllerHub({
                     <div className="list-item"><span>Firmware</span><strong>{str(controller.firmwareVersion, "UNKNOWN")}</strong></div>
                     {connected && bool(controller.firmwareUpdateRequired) && (
                         <div className="danger">
-                            New controller firmware {str(controller.requiredFirmwareVersion)} is available. Flash it manually for the controller to function properly.
+                            New controller firmware {str(controller.requiredFirmwareVersion)} is required. Open Settings → Updates for controller update and first-install instructions.
                         </div>
                     )}
                     <div className="list-item"><span>Switches & pots</span><strong>{objects(controller.controls).length}</strong></div>
@@ -1103,7 +1104,7 @@ function ControllerHub({
                 </div>
                 {connected && bool(controller.firmwareUpdateRequired) && (
                     <div className="danger" style={{ marginTop: 10 }}>
-                        Controller firmware {str(controller.firmwareVersion)} is outdated. Flash version {str(controller.requiredFirmwareVersion)} manually for the controller to function properly.
+                        Controller firmware {str(controller.firmwareVersion)} is outdated. Flash version {str(controller.requiredFirmwareVersion)} using the first-install instructions in Settings → Updates.
                     </div>
                 )}
             </div>
@@ -1209,6 +1210,11 @@ function ControllerSettings({
             return;
         }
         const id = str(target.id);
+        const pairedTarget = controlsRef.current.find((item) => str(item.id) === str(target.pairId));
+        if (bool(controllerRef.current.universalFirmware) && (obj(target.hardware).device || obj(pairedTarget?.hardware).device)) {
+            void run(() => client.request("controller/hardware", { action: "delete", controlId: id }));
+            return;
+        }
         const pairId = str(target.pairId);
         const next = groupedControls(controlsRef.current.filter((item) => {
             const itemId = str(item.id);
@@ -1256,14 +1262,14 @@ function ControllerSettings({
     const snapshotSlots = snapshotLayoutSlots(obj(controller.performanceLayout));
     const profileContents = () => {
         const hardware = { ...controller };
-        for (const key of ["connected", "activePort", "learning", "learningControlId", "firmwareVersion",
+        for (const key of ["connected", "activePort", "learning", "learningControlId", "firmwareVersion", "boardSetup", "universalFirmware",
             "requiredFirmwareVersion", "firmwareUpdateRequired", "performanceLayout", "layoutDefaults"]) {
             delete hardware[key];
         }
         const ui = obj(state.ui);
         return JSON.stringify({
             format: "pimfx-controller-profile",
-            version: 1,
+            version: 2,
             hardware,
             feel: {
                 encoderStepsPerDetent: num(ui.encoderStepsPerDetent, 1),
@@ -1273,7 +1279,7 @@ function ControllerSettings({
         }, null, 2);
     };
     const loadProfile = (profile: JsonObject) => {
-        if (str(profile.format) !== "pimfx-controller-profile" || num(profile.version) !== 1) {
+        if (str(profile.format) !== "pimfx-controller-profile" || ![1, 2].includes(num(profile.version))) {
             setProfileNotice("That is not a Pi-MFX controller profile.");
             return;
         }
@@ -1288,6 +1294,7 @@ function ControllerSettings({
         void run(async () => {
             await client.request("controller/config", {
                 ...hardware,
+                profileLoad: true,
                 performanceLayout: obj(controllerRef.current.performanceLayout),
                 layoutDefaults: obj(controllerRef.current.layoutDefaults)
             });
@@ -1376,6 +1383,7 @@ function ControllerSettings({
                 </button>
             </div>
             {str(state.controllerError) && <div className="danger" style={{ padding: "0 10px" }}>{str(state.controllerError)}</div>}
+            {bool(controller.universalFirmware) && <ControllerBoardSetup controller={controller} selected={selected} client={client} run={run} />}
             <div className="split-panes">
                 <section className="split-pane">
                     <div className="split-pane-title">CONTROLS</div>
@@ -1494,6 +1502,11 @@ function ControllerSettings({
                                     const next = groupedControls(current
                                         .filter((item) => str(item.id) !== pairId)
                                         .map((item) => str(item.id) === encoderId ? { ...item, pairId: "" } : item));
+                                    const pairedControl = current.find((item) => str(item.id) === pairId);
+                                    if (bool(controller.universalFirmware) && obj(pairedControl?.hardware).device) {
+                                        void run(() => client.request("controller/hardware", { action: "delete", controlId: pairId }));
+                                        return;
+                                    }
                                     controlsRef.current = next;
                                     save({ ...controller, controls: next });
                                 }}
@@ -1527,7 +1540,7 @@ function ControllerSettings({
             />}
             {pendingProfile && <ConfirmDialog
                 title="LOAD CONTROLLER PROFILE?"
-                body="This replaces the physical controls, MIDI assignments, LEDs and floorboard feel. The current theme and Performance layout stay in place."
+                body="This replaces Pi-MFX control mappings, LEDs and floorboard feel. Board wiring is not changed. For a universal controller, use Review Saved Wiring afterwards to apply the profile’s connections. The current theme and Performance layout stay in place."
                 confirmLabel="LOAD PROFILE"
                 onCancel={() => setPendingProfile(null)}
                 onConfirm={applyProfile}
@@ -1627,7 +1640,7 @@ function HardwareControlDetail({
                 </label>
                 <label className="field">
                     <span>Type</span>
-                    <select value={kind} onChange={(event) => {
+                    <select value={kind} disabled={bool(controller.universalFirmware) && Boolean(obj(control.hardware).device)} onChange={(event) => {
                         const nextKind = event.target.value;
                         const others = objects(controller.controls).filter((item) => str(item.id) !== str(control.id));
                         const label = isDefaultControlLabel(kind, str(control.label))
@@ -1755,6 +1768,7 @@ function HardwareControlDetail({
                         type="number"
                         min={-1}
                         max={127}
+                        disabled={bool(controller.universalFirmware)}
                         value={num(control.channel, -1)}
                         onChange={(event) => onPatch({ ...control, channel: Number(event.target.value) })}
                     />
@@ -1770,7 +1784,8 @@ function HardwareControlDetail({
                             : "Bind pots and effect toggles from the editor: hold a parameter name, or hold an effect LED."}
             </div>
             <div className="row">
-                <button type="button" className="btn" onClick={onLearn}>
+                <button type="button" className="btn" disabled={bool(controller.universalFirmware) &&
+                    (!bool(obj(controller.boardSetup).ready) || ["reading", "searching", "proposing", "review", "saving"].includes(str(obj(controller.boardSetup).phase)))} onClick={onLearn}>
                     {learningThis
                         ? "LISTENING…"
                         : encoder ? "LEARN ROTATION" : encoderPush ? "LEARN BUTTON" : "LEARN"}

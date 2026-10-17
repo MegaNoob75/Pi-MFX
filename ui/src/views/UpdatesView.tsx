@@ -28,6 +28,7 @@ export function UpdatesView({
     const [confirmInstall, setConfirmInstall] = useState(false);
     const [confirmPluginInstall, setConfirmPluginInstall] = useState(false);
     const [message, setMessage] = useState("");
+    const [firmware, setFirmware] = useState(obj({}));
     const [pluginStatus, setPluginStatus] = useState(obj({}));
     const [pluginInstalling, setPluginInstalling] = useState(false);
     const [pluginLog, setPluginLog] = useState<string[]>([]);
@@ -173,6 +174,28 @@ export function UpdatesView({
         });
     };
 
+    useEffect(() => {
+        let stopped = false;
+        const poll = async () => {
+            try {
+                const next = obj(await engine.client.request("controller/firmware/status"));
+                if (!stopped) setFirmware(next);
+            } catch (error) {
+                if (!stopped) setFirmware({ state: "unavailable", message: error instanceof Error ? error.message : String(error) });
+            }
+        };
+        void poll();
+        const timer = window.setInterval(() => void poll(), POLL_MS);
+        return () => { stopped = true; window.clearInterval(timer); };
+    }, [engine.client]);
+    const firmwareBusy = ["preparing", "building", "flashing", "verifying"].includes(str(firmware.state));
+    const retryFirmware = () => {
+        void run(async () => {
+            const next = obj(await engine.client.request("controller/firmware/install"));
+            setFirmware(next);
+        });
+    };
+
     const refreshPluginUpdates = useCallback(async (force = false) => {
         const next = obj(await engine.client.request("plugins/updates/status", {
             refresh: true,
@@ -236,7 +259,7 @@ export function UpdatesView({
             }
         });
     };
-    const progressLines = [...logLines, ...pluginLog];
+    const progressLines = [...logLines, ...str(firmware.log).split(/\r?\n/).filter(Boolean), ...pluginLog];
     const progressText = progressLines.join("\n");
 
     useEffect(() => {
@@ -311,7 +334,7 @@ export function UpdatesView({
                         <button
                             type="button"
                             className="btn btn-accent updates-install-action"
-                            disabled={checking || installing || fetching}
+                            disabled={checking || installing || fetching || firmwareBusy}
                             onClick={() => showInstallConfirmation(true)}
                         >
                             {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || effectiveBranch.toUpperCase()}`}
@@ -364,6 +387,19 @@ export function UpdatesView({
                         </button>
                     </div>
                 </section>
+                <section className="panel stack updates-card" style={{ gridColumn: "1 / -1" }}>
+                    <h2>CONTROLLER FIRMWARE</h2>
+                    <div className="muted">Newer firmware builds and installs automatically with Pi-MFX updates. Keep the controller connected until verified.</div>
+                    <div className="updates-version-grid">
+                        <span>Installed</span><strong>{str(firmware.installedVersion, str(obj(engine.state.controller).firmwareVersion, "Unknown"))}</strong>
+                        <span>Bundled</span><strong>{str(firmware.targetVersion, "Checked during update")}</strong>
+                    </div>
+                    <div className="updates-status" role="status">{str(firmware.message, "Checking controller updater…")}</div>
+                    {str(firmware.state) === "flashing" && <progress max={100} value={num(firmware.progress)} aria-label="Controller firmware transfer" />}
+                    {str(firmware.state) === "bootstrap" && <div className="muted">Older firmware needs one Arduino upload to enable MIDI updates. Use an OTA partition scheme; saved wiring is kept when NVS is retained.</div>}
+                    <button type="button" className="btn" disabled={installing || firmwareBusy || str(firmware.state) === "unavailable"}
+                        onClick={retryFirmware}>{firmwareBusy ? "UPDATING CONTROLLER…" : "CHECK / RETRY CONTROLLER UPDATE"}</button>
+                </section>
                 </div>
                 {progressLines.length > 0 && (
                     <pre ref={progressRef} className="updates-progress" aria-live="polite"
@@ -378,7 +414,7 @@ export function UpdatesView({
             {confirmInstall && (
                 <ConfirmDialog
                     title={`UPDATE ${effectiveBranch.toUpperCase()}?`}
-                    body={`The update takes several minutes. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes.${unsavedPresetCount > 0 ? ` ${unsavedPresetCount} preset${unsavedPresetCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.` : ""}`}
+                    body={`The update takes several minutes. Newer controller firmware is also built and flashed automatically; leave the controller connected and powered. If disconnected, its update waits until connection. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes.${unsavedPresetCount > 0 ? ` ${unsavedPresetCount} preset${unsavedPresetCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.` : ""}`}
                     confirmLabel="UPDATE"
                     danger
                     onCancel={() => showInstallConfirmation(false)}

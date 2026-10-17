@@ -357,6 +357,7 @@ export class EngineClient {
                 stateEpoch: message.stateEpoch ?? this.snapshot.state.stateEpoch,
                 revision: message.revision ?? this.snapshot.state.revision,
                 persistenceError: message.persistenceError ?? this.snapshot.state.persistenceError,
+                browseBankId: message.browseBankId ?? this.snapshot.state.browseBankId,
                 activeBankId: message.activeBankId ?? this.snapshot.state.activeBankId,
                 activePresetId: message.activePresetId ?? this.snapshot.state.activePresetId,
                 bypassAll: message.bypassAll ?? this.snapshot.state.bypassAll,

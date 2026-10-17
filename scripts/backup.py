@@ -66,7 +66,9 @@ FILE_CATEGORIES = {"settings.json": "settings", "plugins.json": "plugins",
                    "credentials.json": "connections", "access.json": "connections", "hotspot.json": "connections",
                    "backup-session.json": "banks", "tone3000-assets.json": "models"}
 SKIP = {"engine-running", "source-repo", "banks-transaction.json", "backup-session.pending.json",
-        "patchstorage-cache.json", "tone3000-cache.json", "lv2-update-status.json"}
+        "patchstorage-cache.json", "tone3000-cache.json", "lv2-update-status.json",
+        "controller-firmware-status.json", "controller-firmware-policy.json",
+        "controller-firmware-reconnect.json", "controller-firmware.lock"}
 # Only these root-owned configuration files can ever be written by a restore.
 SYSTEM_FILES = {
     "wifi": "/etc/NetworkManager/system-connections/pimfx-wifi.nmconnection",
@@ -156,7 +158,7 @@ def category(relative):
 
 def excluded(relative):
     p = PurePosixPath(relative)
-    return (p.parts[0] in {"downloads", "backups", ".backup-upload"} or relative in SKIP
+    return (p.parts[0] in {"downloads", "backups", ".backup-upload", "controller-build"} or relative in SKIP
             or any(s.endswith((".tmp", ".part", ".log")) or s == "__pycache__" for s in p.parts))
 
 

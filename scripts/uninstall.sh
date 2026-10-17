@@ -99,6 +99,7 @@ rm -f /etc/sysctl.d/95-pimfx-audio.conf
 rm -f /etc/modprobe.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
 rm -f "$PREFIX/libexec/pimfx/plugin-helper.py"
+rm -f "$PREFIX/libexec/pimfx/controller_firmware.py"
 rm -f "$PREFIX/libexec/pimfx/backup.py"
 rm -f "$PREFIX/libexec/pimfx/hotspot.py"
 rm -f "$PREFIX/libexec/pimfx/mdns.py"

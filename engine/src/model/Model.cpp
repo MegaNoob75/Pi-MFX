@@ -349,6 +349,7 @@ Json ControllerControl::toJson() const {
     json.set("label", label);
     json.set("kind", controlKindToString(kind));
     json.set("module", module);
+    json.set("hardware", hardware);
     json.set("channel", channel);
     json.set("midiChannel", midiChannel);
     json.set("useNoteMessages", useNoteMessages);
@@ -372,6 +373,7 @@ ControllerControl ControllerControl::fromJson(const Json& json) {
     control.label = json["label"].asString();
     control.kind = controlKindFromString(json["kind"].asString("momentary"));
     control.module = json["module"].asString();
+    control.hardware = json["hardware"];
     control.channel = json["channel"].asInt(-1);
     control.midiChannel = json["midiChannel"].asInt(0);
     control.useNoteMessages = json["useNoteMessages"].asBool(false);
@@ -436,6 +438,7 @@ Json ControllerConfig::toJson() const {
         ledJson.push(led.toJson());
     }
     json.set("leds", ledJson);
+    json.set("boardHardware", boardHardware);
     json.set("performanceLayout", performanceLayout.isObject() ? performanceLayout : Json::object());
     json.set("layoutDefaults", layoutDefaults.isObject() ? layoutDefaults : Json::object());
     json.set("presetAssignments", presetAssignments.isObject() ? presetAssignments : Json::object());
@@ -453,6 +456,7 @@ ControllerConfig ControllerConfig::fromJson(const Json& json) {
     config.mirrorLayoutOnScreen = json["mirrorLayoutOnScreen"].asBool(true);
     config.syncLedColours = json["syncLedColours"].asBool(true);
     config.ledBrightness = json["ledBrightness"].asFloat(0.7f);
+    config.boardHardware = json["boardHardware"];
 
     const Json& controlJson = json["controls"];
     for (size_t i = 0; i < controlJson.size(); ++i) {

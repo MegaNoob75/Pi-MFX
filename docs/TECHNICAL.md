@@ -169,7 +169,7 @@ and restarts `pimfx.service`. Data under `/var/lib/pimfx`, including banks and
 upgrades; retain a backup before crossing a format break.
 
 The engine currently declares version `0.6.0`, the UI package `0.1.0`, and the
-controller firmware `1.1`. About uses the engine's version and build commit.
+controller firmware `2.0`. About uses the engine's version and build commit.
 Align application release metadata intentionally when the 1.0 candidate is
 approved; controller and data-format versions can remain independent.
 

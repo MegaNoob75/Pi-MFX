@@ -738,19 +738,23 @@ looper, recorder, and drums.
 Pi-MFX does not impose a stock count of switches, pots, sliders, expression pedals,
 or encoders. Add as many logical controls as your hardware and unique MIDI
 addresses support. The stock board's eight switches, four pots, and one encoder
-are a wiring example, not an application limit. Pi-MFX learns the MIDI message,
-not the microcontroller's GPIO pin, control type, or electrical wiring.
+are a wiring example, not an application limit. Generic MIDI controllers use
+MIDI Learn. With universal ESP32-S3 firmware 2.0, Learn discovers the physical
+GPIO connection for the control type you selected.
 
-1. Wire the controls and configure the microcontroller firmware to emit distinct
-   messages. For the supplied ESP32-S3 firmware, add rows to `kSwitches`, `kPots`,
-   and `kEncoders` in `Pins.h`, then flash the board. Multiple encoders have
-   independent A/B pins, optional push pins, CCs, and detent settings.
+1. Wire the controls and flash universal firmware 2.0 onto a supported ESP32-S3
+   DevKitC-1 once. Configure subsequent wiring changes in Hardware Setup. A fresh
+   board starts empty. Other MIDI controllers need firmware that already emits
+   distinct messages for their controls.
 2. Select the actual USB-MIDI input under Hardware Setup and enable the controller.
 3. Choose Add Momentary, Latching, Pot, Slider, Expression, or Encoder. Set a useful
    label and the correct kind; Learn does not infer it automatically.
-4. Select the new control, press Learn (Learn Turn for an encoder), and operate
-   only that physical control. The captured CC/note and MIDI channel appear in
-   its detail. For a noisy pot, move it deliberately while keeping other pots still.
+4. Select the new control, press Learn (Learn Rotation for an encoder), wait one
+   second, and operate only that physical control. Hold a switch for half a second;
+   turn an encoder clockwise at least four clicks and stop; slowly sweep an analog
+   control through its full range and back, then stop. Review the detected wiring
+   and Save on Controller. MIDI addresses are allocated automatically. Generic
+   MIDI Learn captures the device's existing CC/note and channel as before.
 5. For an encoder with a push switch, enable its paired button and use Learn Button
    separately. Disable the paired button for an encoder without one.
 6. Choose the action, range/direction, and any hold/double action/timing. For an
@@ -759,19 +763,31 @@ not the microcontroller's GPIO pin, control type, or electrical wiring.
 8. Bind preset parameters from Preset Editor, then exercise the full range and
    switch to another preset to verify the intended per-preset behavior.
 
-Each learned address consists of message type (CC or note), MIDI channel, and
+Under Wiring & Recovery you can select pins manually when Learn
+is ambiguous, adjust encoder transitions per click, debounce and analog endpoints,
+configure/test a NeoPixel strip, read the board or recover its controls. The
+current universal image supports direct-wired inputs and one NeoPixel strip;
+expansion modules require additional drivers. USB, memory and boot-sensitive pins
+are excluded. Firmware and Pi-MFX both validate assignments before applying them.
+
+Each learned MIDI address consists of message type (CC or note), MIDI channel, and
 number. CC 30 on channel 1 differs from CC 30 on channel 2. Each MIDI channel has
 128 CC numbers and 128 note numbers; there are 16 channels on the selected MIDI
-port. The supplied firmware sends channel-1 CCs, so give every switch, pot, encoder
-turn, and encoder push its own number from 0–127. More addresses require firmware
-that uses additional channels/message types. The board's pins, ADC inputs, CPU,
+port. Universal firmware supports CCs on all 16 channels and Pi-MFX allocates
+addresses for you. Its current limit is 32 input records; encoder rotation and
+push use separate records. The board's pins, ADC inputs, CPU,
 USB/MIDI bandwidth, and any expanders/multiplexers remain physical limits.
 
 Learning an address already owned by another control transfers it to the selected
 control and unlearns the previous owner. It does not make two logical controls
 independent if the firmware emits the same address for both. Save a controller
-profile after learning. Hardware profiles retain mappings/feel; they do not flash
-firmware or replace the separately saved Performance layout.
+profile after learning. Version-2 profiles retain mappings, feel and verified
+wiring; version-1 profiles still load. They do not flash firmware or replace the
+separately saved Performance layout. Loading a profile never writes board GPIO
+settings automatically: select Review Saved Wiring, check the changes and confirm.
+Use Board Controls reads an existing board into Pi-MFX. Board identity and verified
+wiring prevent another enclosure's stale mappings from running until reconciled.
+The ESP32's saved configuration survives a power cycle.
 
 The stock firmware sends relative encoder values 63/65, and also supports the
 runtime's small-step 1/127 convention from other controllers. An absolute knob

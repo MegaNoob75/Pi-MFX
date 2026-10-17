@@ -22,7 +22,7 @@ export function BanksView({
 }) {
     const { client, state } = engine;
     const banks = objects(state.banks);
-    const activeBank = findBank(state);
+    const activeBank = findBank(state, str(state.browseBankId, str(state.activeBankId)));
     const activePreset = findPreset(state);
     const presets = objects(obj(activeBank).presets);
     const [focused, setFocused] = useState<"banks" | "presets">("presets");
@@ -42,7 +42,8 @@ export function BanksView({
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
     const selectedPresetId = presets.some((preset) => str(preset.id) === cursorPreset)
-        ? cursorPreset : presetId || str(presets[0]?.id);
+        ? cursorPreset : presets.some((preset) => str(preset.id) === presetId)
+            ? presetId : str(presets[0]?.id);
     const bankIndex = banks.findIndex((bank) => str(bank.id) === bankId);
     const presetIndex = presets.findIndex((preset) => str(preset.id) === selectedPresetId);
     const dirtyPresetIds = new Set(arr(state.sessionPresetDirtyIds).map((value) => str(value)));
