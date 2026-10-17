@@ -39,7 +39,8 @@ Never feed 5 V into an ESP32 input. Check the actual board's schematic before
 wiring; software cannot make an electrically incompatible circuit safe.
 
 1. Select the actual ESP32 USB-MIDI device in Hardware Setup and enable it.
-   The board should report firmware 2.3 or newer and READY after configuration readback.
+   The board should report current firmware 1.1 and READY after configuration readback.
+   This renumbered image retains guided calibration and reports its capabilities explicitly.
 2. Add Momentary, Latching, Pot, Slider, Expression or Encoder. Choose the correct
    type first; Learn discovers its connection rather than guessing the type.
 3. Select the control and press Learn. Keep everything still for one second.

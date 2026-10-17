@@ -566,6 +566,12 @@ bool ControllerRuntime::parseIdentity(const std::vector<uint8_t>& sysex, Identit
     identity.controlCount = sysex[7] | (sysex[8] << 7);
     identity.ledCount = sysex[9] | (sysex.size() > 10 ? (sysex[10] << 7) : 0);
     identity.rgbLeds = sysex.size() > 11 && sysex[11] != 0;
+    // Extended identity advertises features independently of release numbering.
+    // Keep recognizing the earlier 2.x images without the capability byte.
+    const bool extended = sysex.size() >= 14;
+    identity.hardwareSetup = extended ? (sysex[12] & 1) != 0 : identity.firmwareMajor == 2;
+    identity.guidedAnalog = extended ? (sysex[12] & 2) != 0
+        : identity.firmwareMajor == 2 && identity.firmwareMinor >= 3;
     return true;
 }
 

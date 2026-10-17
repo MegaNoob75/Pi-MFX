@@ -479,6 +479,7 @@ private:
     ControllerRuntime controller_;
     ControllerHardware controllerHardware_;
     bool controllerHardwareCapable_ = false;
+    bool controllerGuidedAnalogCapable_ = false;
     bool controllerConnecting_ = false; // stateMutex_; MIDI stop/join runs outside it
     std::string audioError_;
     std::string persistenceError_; // stateMutex_; failed settings are retried by housekeeping

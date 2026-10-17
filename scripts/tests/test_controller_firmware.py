@@ -4,6 +4,7 @@ Run: python3 -B -m unittest discover -s scripts/tests -p test_controller_firmwar
 import importlib.util
 import contextlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,6 +25,80 @@ class FirmwareTests(unittest.TestCase):
         self.image = self.root / "app.bin"
         self.image.write_bytes(bytes([0xE9]) + bytes(range(256)))
         self.info = {"capacity": 2048, "busy": False}
+
+    def github_recipe(self):
+        return {"arduinoCli": "1.3.1", "cliSha256": {}, "index": "index", "core": "esp32",
+                "fqbn": "esp32s3", "libraries": [], "protocol": 1, "board": 1}
+
+    def test_latest_reads_version_and_recipe_from_same_github_commit(self):
+        commit = "a" * 40
+        header = b"constexpr uint8_t kFirmwareMajor = 1;\nconstexpr uint8_t kFirmwareMinor = 1;\n"
+        with patch.object(fw, "github_download", side_effect=[json.dumps({"sha": commit}).encode(), header,
+                          json.dumps(self.github_recipe()).encode()]) as download:
+            latest = fw.github_latest("dev")
+        self.assertEqual(latest["latestVersion"], "1.1")
+        self.assertEqual(latest["latestCommit"], commit)
+        self.assertIn(commit, download.call_args_list[1].args[0])
+        self.assertIn(commit, download.call_args_list[2].args[0])
+
+    def test_invalid_github_branch_never_makes_network_request(self):
+        with patch.object(fw, "github_download") as download:
+            with self.assertRaises(ValueError): fw.github_latest("../../other")
+        download.assert_not_called()
+
+    def test_github_source_downloads_only_firmware_and_reuses_commit_cache(self):
+        commit = "b" * 40
+        files = {"firmware/controller-build.json": json.dumps(self.github_recipe()).encode(),
+                 "firmware/esp32s3/PiMFX_Controller/Protocol.h": b"constexpr uint8_t kFirmwareMajor = 1;\nconstexpr uint8_t kFirmwareMinor = 1;\n",
+                 "firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino": b"void setup() {}",
+                 "scripts/controller_firmware.py": b"must not be downloaded"}
+        def download(path, **options):
+            if path.startswith("/git/trees/"):
+                return json.dumps({"tree": [{"path": name, "type": "blob", "mode": "100644"} for name in files]}).encode()
+            return files[path.removeprefix(f"/{commit}/")]
+        with patch.object(fw, "github_download", side_effect=download):
+            source = fw.github_source(commit, self.root)
+        self.assertEqual(fw.target_version(source), (1, 1))
+        self.assertFalse((source / "scripts").exists())
+        with patch.object(fw, "github_download") as network:
+            self.assertEqual(fw.github_source(commit, self.root), source)
+        network.assert_not_called()
+
+    def test_github_install_pins_commit_without_replacing_app_source(self):
+        commit = "c" * 40
+        manager = fw.Manager(lambda: "app-checkout", self.root, "pimfx", busy=lambda: False)
+        manager.github_checks["dev"] = {"latestVersion": "1.1", "latestCommit": commit, "attemptedAt": fw.time.time()}
+        with patch.object(fw, "update_locked", return_value=False), patch.object(fw.subprocess, "Popen") as launch:
+            manager.start(arm=True, github=True, branch="dev")
+        command = launch.call_args.args[0]
+        self.assertEqual(command[command.index("--github-ref") + 1], commit)
+        policy = fw.read_json(self.root / "controller-firmware-policy.json")
+        self.assertEqual(policy["githubRef"], commit)
+        self.assertEqual(policy["sourceRepo"], "app-checkout")
+
+    def test_offline_github_check_cannot_start_flash_from_stale_cache(self):
+        manager = fw.Manager(lambda: "app-checkout", self.root, "pimfx", busy=lambda: False)
+        manager.github_checks["dev"] = {"latestVersion": "1.1", "latestCommit": "d" * 40,
+                                       "latestError": "GitHub unavailable", "attemptedAt": fw.time.time()}
+        with patch.object(fw, "update_locked", return_value=False), patch.object(fw.subprocess, "Popen") as launch:
+            result = manager.start(arm=True, github=True, branch="dev")
+        self.assertIn("unavailable", result["message"])
+        launch.assert_not_called()
+
+    def test_background_github_check_does_not_authorize_automatic_install(self):
+        manager = fw.Manager(lambda: "app-checkout", self.root, "pimfx", busy=lambda: False)
+        done = threading.Event()
+        save = fw.atomic_json
+        def saved(path, value):
+            save(path, value)
+            done.set()
+        latest = {"latestVersion": "1.1", "latestCommit": "e" * 40, "checkedAt": fw.time.time()}
+        with patch.object(fw, "github_latest", return_value=latest), patch.object(fw, "atomic_json", side_effect=saved), \
+             patch.object(fw.subprocess, "Popen") as launch:
+            manager.github_status("dev")
+            self.assertTrue(done.wait(2))
+        self.assertFalse((self.root / "controller-firmware-policy.json").exists())
+        launch.assert_not_called()
 
     def test_binary_roundtrip_and_usb_packet_limit(self):
         original = bytes(range(256))

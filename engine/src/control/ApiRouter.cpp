@@ -529,7 +529,7 @@ Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
         return result.isObject() ? result : Json::object();
     }
     if (command == "controller/firmware/status" || command == "controller/firmware/install") {
-        const Json result = plugins_.controllerFirmware(command == "controller/firmware/install", error);
+        const Json result = plugins_.controllerFirmware(command == "controller/firmware/install", payload, error);
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }

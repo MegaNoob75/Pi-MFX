@@ -1683,9 +1683,12 @@ Json PluginStore::updateInstall(const Json& payload, std::string& error) {
     return helperCall("update-install", args, error, 15);
 }
 
-Json PluginStore::controllerFirmware(bool install, std::string& error) {
+Json PluginStore::controllerFirmware(bool install, const Json& payload, std::string& error) {
+    Json args = Json::object();
+    args.set("branch", payload["branch"].asString("dev"));
+    args.set("refresh", payload["refresh"].asBool(false));
     return helperCall(install ? "controller-firmware-install" : "controller-firmware-status",
-                      Json::object(), error, 15);
+                      args, error, 15);
 }
 
 Json PluginStore::systemPower(const std::string& action, std::string& error) {

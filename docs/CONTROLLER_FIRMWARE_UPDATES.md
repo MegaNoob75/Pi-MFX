@@ -5,16 +5,35 @@ on Windows. Validate the complete path below before relying on automatic updates
 
 ## User workflow
 
-Settings → Updates includes Controller Firmware. Updating Pi-MFX also checks the
-bundled source version against the supported USB-MIDI controller. Only a newer
-version is built and flashed. Arduino IDE is not needed for subsequent updates.
+Firmware numbering restarted at **1.0**; the current image is **1.1**, retaining
+the features developed in the earlier 2.x images. Its extended identity advertises wiring and guided analog
+capabilities independently of release numbers. Install the updated Pi-MFX host
+alongside it. Existing 2.x controllers are not automatically downgraded to 1.0;
+use one manual Arduino upload to move to this numbering sequence.
+
+Settings → Updates shows **Installed** and **Latest** for Controller Firmware.
+Latest is checked against GitHub using the app's selected Main or Dev channel;
+it is not inferred from the firmware source already on the Pi. Opening the page
+starts a background check (cached for ten minutes); **Check GitHub** refreshes it
+immediately. An offline/error result is displayed and cannot authorize installing
+a stale cached version. Only a newer version is built and flashed. Arduino IDE
+is not needed for subsequent updates.
 The controller temporarily stops sending input while its firmware is written.
 Keep the USB connection and power connected until the version is verified.
 
-**Update Controller Firmware** also starts this process on its own, without a
-Pi-MFX application rebuild or update. Checking is shown separately from writing
-firmware. Bundled reads the selected source version, rather than the target saved
-by a previous attempt.
+**Update Controller To…** downloads the firmware files from the exact GitHub
+commit used by the latest-version check, then builds, transfers and verifies them
+without rebuilding Pi-MFX. The app checkout and its installed version do not
+change. GitHub checks alone do not enable installation; the button authorizes an
+update. Pending reconnects retry that same checked commit, even if a newer one is
+published meanwhile. A subsequent check can offer the newer version afterward.
+Downloaded sources are cached under `/var/lib/pimfx/controller-github/<commit>`
+and excluded from backups. The worker never downloads/replaces updater code from
+GitHub; it uses the installed updater and validates the firmware recipe's board
+and protocol. Checking and writing firmware have distinct progress states.
+
+Combined Pi-MFX updates continue to install newer firmware from their bundled
+source, and the Windows/Pi local-source menu remains available for development.
 
 If Pi-MFX uses the controller's exclusive raw-MIDI address, the updater moves
 that same device to its shared ALSA sequencer connection before probing. Other
@@ -31,8 +50,8 @@ confirmed that the physical connection receives the 2.1 receiver reply and OTA
 capacity. This does not validate firmware compilation, transfer or reboot.
 
 When disconnected, the update remains pending. The helper checks for connection
-every 30 seconds after the first combined update or Check / Retry action enables
-automatic updates. Failures stop automatic retries; use Check / Retry after
+every 30 seconds after a combined update or explicit firmware update enables
+pending retries. Failures stop automatic retries; use Update Controller after
 resolving the problem. Firmware failures do not roll back the installed Pi-MFX
 application and are shown separately. A newer installed controller is not
 downgraded when switching Pi-MFX branches.
@@ -60,12 +79,12 @@ update can finish when the controller connects. A later combined Pi-MFX update
 selects the app checkout's bundled firmware again. First-time Arduino setup below
 is still required. The Pi must already have Pi-MFX and its helper installed.
 
-Firmware 2.0 and earlier cannot receive firmware over MIDI. Upload the current
+Legacy images without the MIDI update receiver need a manual upload. Upload the current
 sketch once in Arduino IDE, with all sketch-folder files present, including
 FirmwareUpdate.h. Select ESP32S3 Dev Module, USB-OTG (TinyUSB), CDC on Boot
 disabled, and **Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)** on a board with
 at least 4MB flash. Keep Erase All Flash disabled to retain NVS wiring. Confirm
-the controller reports 2.1 or newer and Hardware Setup reads its saved wiring.
+the controller reports the current version and Hardware Setup reads its saved wiring.
 A device without a second OTA application partition needs this manual setup.
 
 ## Maintaining firmware source
@@ -124,8 +143,14 @@ then restore the bundled target version before running the combined update.
     updates to 2.2, verifies readback and retains wiring. Repeat with Hardware
     Setup active and with a different selected MIDI device: neither may be changed.
 13. Seed an old attempt status with target 1.1 while the source is 2.2. Bundled
-    must show 2.2. Confirm checks say Checking Controller and a standalone firmware
+    is no longer displayed: Latest must come from GitHub. Confirm checks say Checking Controller and a standalone firmware
     update never starts an application build.
+14. Publish a higher firmware version on Dev with the Pi checkout unchanged.
+    Check GitHub must show that version; updating must use its checked commit,
+    leave the app version/source unchanged, and verify controller readback.
+15. Change Main/Dev channels, disconnect internet, and simulate an absent recipe
+    or incompatible board/protocol. No stale/unsupported source may be installed.
+    A background check without pressing Update must never start a flash.
 
 The transfer is local USB-MIDI. Its checksum detects corruption; it is not a
 firmware signature or an authentication mechanism. Only use trusted Pi-MFX source.

@@ -219,7 +219,7 @@ void pollProbe() {
 void sendIdentityReply() {
     unsigned count = 0; for (const auto& e : active.controls) if (e.kind) ++count;
     const uint8_t b[] = {0xF0,0x7D,0x4D,0x46,0x10,pimfx::kFirmwareMajor,pimfx::kFirmwareMinor,
-        uint8_t(count),0,active.ledCount,0,1,0xF7};
+        uint8_t(count),0,active.ledCount,0,1,3,0xF7}; // Capabilities: wiring setup + guided analog.
     midi.sendSysEx(b); lastIdentityAt = millis();
 }
 void applyLedMessage(const uint8_t* p, size_t n) {

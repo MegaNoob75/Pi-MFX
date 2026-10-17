@@ -24,7 +24,7 @@ pixels, subject to available pins. Expansion modules, arbitrary displays, plain
 LED outputs and other ESP32 families require additional drivers/images.
 
 Pi-MFX updates build newer bundled controller source on the Pi and transfer
-it over USB-MIDI. Firmware 2.0 and earlier need one manual upload of the current
+it over USB-MIDI. Legacy images without a MIDI update receiver need one manual upload of the current
 sketch with an OTA partition scheme to enable this. See
 [firmware updates](../docs/CONTROLLER_FIRMWARE_UPDATES.md) for setup and recovery.
 This implementation has not

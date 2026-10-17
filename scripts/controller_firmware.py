@@ -24,11 +24,15 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 PREFIX = (0x7D, 0x4D, 0x46)
 BEGIN, DATA, FINISH, ACK, QUERY, INFO, ABORT = range(0x40, 0x47)
 ACTIVE = {"preparing", "building", "flashing", "verifying"}
+GITHUB_API = "https://api.github.com/repos/MegaNoob75/Pi-MFX"
+GITHUB_RAW = "https://raw.githubusercontent.com/MegaNoob75/Pi-MFX"
+GITHUB_BRANCHES = {"main", "dev", "workstation"}
 
 
 def read_json(path):
@@ -51,11 +55,99 @@ def atomic_json(path, value):
 
 def target_version(repo):
     text = (Path(repo) / "firmware/esp32s3/PiMFX_Controller/Protocol.h").read_text()
-    version = tuple(int(re.search(r"kFirmware" + part + r"\s*=\s*(\d+)", text)[1])
-                    for part in ("Major", "Minor"))
+    return version_from_text(text)
+
+
+def version_from_text(text):
+    fields = [re.search(r"^\s*constexpr\s+uint8_t\s+kFirmware" + part + r"\s*=\s*(\d+)\s*;", text, re.MULTILINE)
+              for part in ("Major", "Minor")]
+    if not all(fields):
+        raise ValueError("Controller firmware version is missing or invalid")
+    version = tuple(int(field[1]) for field in fields)
     if any(value > 127 for value in version):
         raise ValueError("Firmware version fields must fit in MIDI's seven-bit format")
     return version
+
+
+def github_download(path, raw=False, limit=2 * 1024 * 1024):
+    request = urllib.request.Request((GITHUB_RAW if raw else GITHUB_API) + path,
+        headers={"User-Agent": "Pi-MFX-controller-updater", "Accept": "application/vnd.github+json" if not raw else "text/plain"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("GitHub firmware response exceeds the size limit")
+    return data
+
+
+def github_latest(branch):
+    if branch not in GITHUB_BRANCHES:
+        raise ValueError("Choose main, dev or workstation for firmware updates")
+    commit = json.loads(github_download(f"/commits/{branch}"))["sha"]
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("GitHub returned an invalid firmware commit")
+    header = github_download(f"/{commit}/firmware/esp32s3/PiMFX_Controller/Protocol.h", raw=True).decode()
+    recipe = json.loads(github_download(f"/{commit}/firmware/controller-build.json", raw=True))
+    if not isinstance(recipe, dict) or (recipe.get("protocol"), recipe.get("board")) != (1, 1):
+        raise RuntimeError("This GitHub branch does not contain compatible controller firmware")
+    if not {"arduinoCli", "cliSha256", "index", "core", "fqbn", "libraries"}.issubset(recipe):
+        raise RuntimeError("GitHub controller build configuration is incomplete")
+    return {"latestVersion": ".".join(map(str, version_from_text(header))), "latestCommit": commit,
+            "latestBranch": branch, "checkedAt": time.time()}
+
+
+def github_source(commit, root):
+    """Download only firmware files from the checked commit, never remote updater code."""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Invalid GitHub firmware commit")
+    cache = Path(root) / "controller-github"
+    cache.mkdir(exist_ok=True)
+    source = cache / commit
+    if cache.is_symlink() or source.is_symlink():
+        raise RuntimeError("Invalid firmware source cache path")
+    if (source / ".complete").is_file():
+        build_recipe(source)
+        target_version(source)
+        return source
+    if source.exists():
+        if source.is_symlink() or source.resolve().parent != cache.resolve():
+            raise RuntimeError("Invalid firmware source cache path")
+        shutil.rmtree(source)  # Incomplete download of this validated commit only.
+    tree = json.loads(github_download(f"/git/trees/{commit}?recursive=1", limit=8 * 1024 * 1024))
+    if tree.get("truncated"):
+        raise RuntimeError("GitHub returned an incomplete source listing")
+    with tempfile.TemporaryDirectory(prefix="pimfx-github-") as temporary:
+        stage = Path(temporary)
+        count = total = 0
+        for entry in tree.get("tree", []):
+            path = entry["path"]
+            if not path.startswith("firmware/") or entry.get("type") != "blob":
+                continue
+            if path != "firmware/controller-build.json" and not (path.startswith("firmware/esp32s3/PiMFX_Controller/")
+                    and Path(path).suffix in {".h", ".hpp", ".cpp", ".ino"}):
+                continue
+            if ".." in Path(path).parts or entry.get("mode") == "120000":
+                raise RuntimeError("Invalid firmware source path on GitHub")
+            data = github_download(f"/{commit}/{urllib.parse.quote(path, safe='/')}", raw=True)
+            count += 1; total += len(data)
+            if count > 128 or total > 16 * 1024 * 1024:
+                raise RuntimeError("GitHub firmware source exceeds the size limit")
+            target = stage / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        build_recipe(stage)
+        target_version(stage)
+        if not (stage / "firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino").is_file():
+            raise RuntimeError("GitHub branch has no controller sketch")
+        # Write only into a new commit directory; an interrupted download is not cached.
+        source.mkdir()
+        try:
+            shutil.copytree(stage / "firmware", source / "firmware")
+            (source / ".complete").write_text(commit)
+        except Exception:
+            if source.resolve().parent == cache.resolve() and not source.is_symlink():
+                shutil.rmtree(source)
+            raise
+    return source
 
 
 def number(value):
@@ -468,7 +560,7 @@ def perform(repo, root, user):
             finally:
                 link.close()
         if not found:
-            report("bootstrap" if legacy else "pending", "Upload firmware 2.1 or newer once with Arduino IDE and an OTA partition scheme."
+            report("bootstrap" if legacy else "pending", "Upload the current controller firmware once with Arduino IDE and an OTA partition scheme."
                    if legacy else "The controller MIDI port is present, but its firmware updater did not reply. Finish Hardware Setup or reconnect the controller and retry."
                    if names else "Controller update pending. Connect a supported Pi-MFX USB-MIDI controller.")
             return
@@ -541,8 +633,31 @@ class Manager:
         self.repo, self.root, self.user, self.busy = repo, Path(root), user, busy
         self.lock = threading.Lock()
         self.process = None
+        self.github_lock = threading.Lock()
+        self.github_checks = read_json(self.root / "controller-firmware-github.json")
 
-    def status(self):
+    def github_status(self, branch, refresh=False):
+        if branch not in GITHUB_BRANCHES:
+            return {"latestError": "Choose main, dev or workstation", "latestBranch": branch}
+        with self.github_lock:
+            entry = self.github_checks.setdefault(branch, {})
+            ttl = 60 if entry.get("latestError") else 600
+            if not entry.get("latestChecking") and (refresh or time.time()-entry.get("attemptedAt", 0) > ttl):
+                entry["latestChecking"] = True
+                def check():
+                    try:
+                        result = {**github_latest(branch), "latestError": ""}
+                    except Exception as exc:
+                        result = {"latestError": f"Could not check GitHub: {exc}"}
+                    with self.github_lock:
+                        self.github_checks[branch].update(result, latestChecking=False, attemptedAt=time.time())
+                        saved = {key: {k: v for k, v in value.items() if k != "latestChecking"}
+                                 for key, value in self.github_checks.items()}
+                        atomic_json(self.root / "controller-firmware-github.json", saved)
+                threading.Thread(target=check, daemon=True, name="controller-github-check").start()
+            return {**entry, "latestBranch": branch}
+
+    def status(self, branch=None, refresh=False):
         value = read_json(self.root / "controller-firmware-status.json")
         if value.get("state") in ACTIVE and time.time() - value.get("updatedAt", 0) > 15:
             import fcntl
@@ -567,9 +682,11 @@ class Manager:
             value["log"] = (self.root / "controller-firmware.log").read_text()[-24000:]
         except OSError:
             pass
+        if branch is not None:
+            value.update(self.github_status(branch, refresh))
         return value
 
-    def start(self, arm=False):
+    def start(self, arm=False, github=False, branch="dev"):
         with self.lock:
             if self.process and self.process.poll() is None:
                 return self.status()
@@ -577,14 +694,27 @@ class Manager:
                 return {**self.status(), "message": "Wait for the Pi-MFX update to finish"}
             policy = read_json(self.root / "controller-firmware-policy.json")
             repo = policy.get("sourceRepo") or self.repo()
-            if not repo:
+            github_ref = policy.get("githubRef", "")
+            github_branch = policy.get("githubBranch", "")
+            if github:
+                latest = self.github_status(branch)
+                if latest.get("latestChecking") or latest.get("latestError") or not latest.get("latestCommit"):
+                    return {**self.status(), **latest, "message": latest.get("latestError") or "Checking GitHub for controller firmware…"}
+                github_ref, github_branch = latest["latestCommit"], branch
+            if not repo and not github_ref:
                 return {"state": "failed", "message": "Pi-MFX source folder is unavailable"}
             if arm:
-                atomic_json(self.root / "controller-firmware-policy.json", {"enabled": True, "sourceRepo": repo})
+                policy = {"enabled": True, "sourceRepo": repo}
+                if github_ref:
+                    policy.update(githubRef=github_ref, githubBranch=github_branch)
+                atomic_json(self.root / "controller-firmware-policy.json", policy)
             atomic_json(self.root / "controller-firmware-status.json",
                         {"state": "preparing", "message": "Checking controller firmware", "updatedAt": time.time()})
-            self.process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
-                "--run", "--repo", repo, "--data", str(self.root), "--user", self.user],
+            command = [sys.executable, str(Path(__file__).resolve()),
+                "--run", "--repo", repo or "", "--data", str(self.root), "--user", self.user]
+            if github_ref:
+                command += ["--github-ref", github_ref]
+            self.process = subprocess.Popen(command,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return self.status()
 
@@ -622,6 +752,7 @@ def main():
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--arm", action="store_true")
+    parser.add_argument("--github-ref", default="")
     args = parser.parse_args()
     if args.build:
         build(args.repo, args.data)
@@ -646,7 +777,19 @@ def main():
             return
         if args.arm:
             atomic_json(root / "controller-firmware-policy.json", {"enabled": True, "sourceRepo": args.repo})
-        perform(args.repo, root, args.user)
+        repo = args.repo
+        if args.github_ref:
+            (root / "controller-firmware.log").write_text("Downloading controller firmware source from GitHub\n")
+            atomic_json(root / "controller-firmware-status.json", {"state": "preparing",
+                "message": "Downloading controller firmware source from GitHub", "updatedAt": time.time()})
+            try:
+                repo = github_source(args.github_ref, root)
+            except Exception as exc:
+                with (root / "controller-firmware.log").open("a") as log:
+                    log.write(str(exc) + "\n")
+                atomic_json(root / "controller-firmware-status.json", {"state": "failed", "message": str(exc), "updatedAt": time.time()})
+                raise
+        perform(repo, root, args.user)
 
 
 if __name__ == "__main__":

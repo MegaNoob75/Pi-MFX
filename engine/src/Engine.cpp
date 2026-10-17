@@ -9,7 +9,6 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <ctime>
 #include <cstdlib>
 #include <cstring>
@@ -21,9 +20,7 @@ namespace {
 constexpr size_t kTunerRingSize = 16384;
 constexpr float kTunerMinFrequency = 20.0f;   // covers low-F# extended-range bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
-constexpr int kRequiredControllerFirmwareMajor = 2;
-constexpr int kRequiredControllerFirmwareMinor = 0;
-constexpr const char* kRequiredControllerFirmwareVersion = "2.0";
+constexpr const char* kRequiredControllerFirmwareVersion = "1.0";
 static_assert(std::atomic<float>::is_always_lock_free,
               "tuner handoff requires lock-free float atomics");
 
@@ -4297,16 +4294,15 @@ void Engine::disconnectController() {
 bool Engine::controllerHardwareCommand(const std::string& action, const Json& payload, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (controllerConnecting_ || !midi_.isRunning() || !controllerHardwareCapable_) {
-        error = "Select a Pi-MFX universal firmware 2.0 controller first."; return false;
+        error = "Select a supported Pi-MFX controller first."; return false;
     }
     auto config = controller_.config();
     if (action == "learn") {
         const auto target=std::find_if(config.controls.begin(),config.controls.end(),
             [&](const ControllerControl& c) { return c.id == payload["controlId"].asString(); });
         if (target!=config.controls.end() && (target->kind==ControlKind::Pot || target->kind==ControlKind::Slider || target->kind==ControlKind::Expression)) {
-            int major=0, minor=0;
-            if (std::sscanf(controllerFirmwareVersion_.c_str(),"%d.%d",&major,&minor)!=2 || major<2 || (major==2 && minor<3)) {
-                error="Guided pot calibration needs controller firmware 2.3 or newer. Update Controller Firmware in Settings > Updates first.";
+            if (!controllerGuidedAnalogCapable_) {
+                error="This controller needs the current firmware for guided pot calibration. Update Controller Firmware in Settings > Updates first.";
                 return false;
             }
         }
@@ -5027,10 +5023,9 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
     {
         std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         controllerFirmwareVersion_ = identity.firmwareVersion;
-        controllerFirmwareUpdateRequired_ = identity.firmwareMajor < kRequiredControllerFirmwareMajor
-            || (identity.firmwareMajor == kRequiredControllerFirmwareMajor
-                && identity.firmwareMinor < kRequiredControllerFirmwareMinor);
-        controllerHardwareCapable_ = identity.firmwareMajor == 2;
+        controllerFirmwareUpdateRequired_ = !identity.hardwareSetup;
+        controllerHardwareCapable_ = identity.hardwareSetup;
+        controllerGuidedAnalogCapable_ = identity.guidedAnalog;
         if (controllerHardwareCapable_ && !controllerHardware_.ready() && controllerHardware_.phase() == "idle") {
             std::string error;
             controllerHardware_.command("read", Json::object(), config,

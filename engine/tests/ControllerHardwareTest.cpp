@@ -57,6 +57,16 @@ static hw::Control input(int pin, int cc=0, int kind=hw::Switch) {
     hw::Control c; c.kind=kind; c.pinA=pin; c.cc=cc; return c;
 }
 static void validation() {
+    ControllerRuntime::Identity identity;
+    const std::vector<uint8_t> current={0xF0,0x7D,0x4D,0x46,0x10,1,0,0,0,0,0,1,3,0xF7};
+    require(ControllerRuntime::parseIdentity(current,identity) && identity.firmwareVersion=="1.0"
+        && identity.hardwareSetup && identity.guidedAnalog,"renumbered firmware lost advertised capabilities");
+    auto legacy=current; legacy.erase(legacy.end()-2); legacy[5]=1; legacy[6]=1;
+    require(ControllerRuntime::parseIdentity(legacy,identity) && !identity.hardwareSetup && !identity.guidedAnalog,"legacy 1.1 mistaken for renumbered firmware");
+    legacy[5]=2; legacy[6]=2;
+    require(ControllerRuntime::parseIdentity(legacy,identity) && identity.hardwareSetup && !identity.guidedAnalog,"2.2 compatibility lost");
+    legacy[6]=3;
+    require(ControllerRuntime::parseIdentity(legacy,identity) && identity.hardwareSetup && identity.guidedAnalog,"2.3 compatibility lost");
     hw::Config c;
     require(hw::validate(c)==hw::Ok,"empty board must be valid");
     for(int p : {0,3,19,20,22,26,32,35,36,37,43,44,45,46,48,127}) {

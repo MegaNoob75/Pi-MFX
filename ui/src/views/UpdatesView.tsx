@@ -12,6 +12,12 @@ function normalizeBranch(value: string) {
     return value === "main" ? "main" : "dev";
 }
 
+function firmwareVersionNumber(value: string): number | undefined {
+    const match = /^(\d+)\.(\d+)$/.exec(value);
+    if (!match || Number(match[1]) > 127 || Number(match[2]) > 127) return undefined;
+    return Number(match[1]) * 128 + Number(match[2]);
+}
+
 export function UpdatesView({
     engine,
     run
@@ -179,7 +185,7 @@ export function UpdatesView({
         let stopped = false;
         const poll = async () => {
             try {
-                const next = obj(await engine.client.request("controller/firmware/status"));
+                const next = obj(await engine.client.request("controller/firmware/status", { branch: effectiveBranch }));
                 if (!stopped) setFirmware(next);
             } catch (error) {
                 if (!stopped) setFirmware({ state: "unavailable", message: error instanceof Error ? error.message : String(error) });
@@ -188,11 +194,22 @@ export function UpdatesView({
         void poll();
         const timer = window.setInterval(() => void poll(), POLL_MS);
         return () => { stopped = true; window.clearInterval(timer); };
-    }, [engine.client]);
+    }, [engine.client, effectiveBranch]);
     const firmwareBusy = ["preparing", "building", "flashing", "verifying"].includes(str(firmware.state));
+    const installedFirmware = str(obj(engine.state.controller).firmwareVersion, str(firmware.installedVersion, "Unknown"));
+    const latestFirmware = str(firmware.latestVersion);
+    const installedFirmwareNumber = firmwareVersionNumber(installedFirmware);
+    const latestFirmwareNumber = firmwareVersionNumber(latestFirmware);
+    const firmwareUpToDate = installedFirmwareNumber !== undefined && latestFirmwareNumber !== undefined
+        && installedFirmwareNumber >= latestFirmwareNumber;
+    const latestReady = str(firmware.latestBranch) === effectiveBranch && Boolean(str(firmware.latestCommit))
+        && !str(firmware.latestError) && !bool(firmware.latestChecking);
+    const checkFirmware = () => void run(async () => {
+        setFirmware(obj(await engine.client.request("controller/firmware/status", { branch: effectiveBranch, refresh: true })));
+    });
     const retryFirmware = () => {
         void run(async () => {
-            const next = obj(await engine.client.request("controller/firmware/install"));
+            const next = obj(await engine.client.request("controller/firmware/install", { branch: effectiveBranch }));
             setFirmware(next);
         });
     };
@@ -433,17 +450,26 @@ export function UpdatesView({
                 </section>
                 <section className="panel stack updates-card" style={{ gridColumn: "1 / -1" }}>
                     <h2>CONTROLLER FIRMWARE</h2>
-                    <div className="muted">Update controller firmware here without updating Pi-MFX. Newer firmware is also checked with Pi-MFX updates. Keep the controller connected until verified.</div>
+                    <div className="muted">Latest firmware is checked on GitHub ({effectiveBranch}). Update the controller here without updating Pi-MFX. Keep it connected until verified.</div>
                     <div className="updates-version-grid">
-                        <span>Installed</span><strong>{str(firmware.installedVersion, str(obj(engine.state.controller).firmwareVersion, "Unknown"))}</strong>
-                        <span>Bundled</span><strong>{str(firmware.bundledVersion, str(firmware.targetVersion, "Unknown"))}</strong>
+                        <span>Installed</span><strong>{installedFirmware}</strong>
+                        <span>Latest</span><strong>{str(firmware.latestBranch) !== effectiveBranch ? "Checking GitHub…"
+                            : latestFirmware || (bool(firmware.latestChecking) ? "Checking GitHub…" : "Unavailable")}</strong>
                     </div>
-                    <div className="updates-status" role="status">{str(firmware.message, "Checking controller updater…")}</div>
+                    {str(firmware.latestError) && <div className="danger" role="status">{str(firmware.latestError)}{latestFirmware ? ` Last checked version: ${latestFirmware}.` : ""}</div>}
+                    <div className="updates-status" role="status">{firmwareBusy || ["failed", "pending", "bootstrap", "unavailable"].includes(str(firmware.state))
+                        ? str(firmware.message) : bool(firmware.latestChecking) ? "Checking GitHub for controller firmware…"
+                        : !latestReady ? "Check GitHub to find the latest installable firmware."
+                        : firmwareUpToDate ? "Controller firmware is up to date."
+                        : `Controller firmware ${latestFirmware} is available from GitHub.`}</div>
                     {str(firmware.state) === "flashing" && <progress max={100} value={num(firmware.progress)} aria-label="Controller firmware transfer" />}
                     {str(firmware.state) === "bootstrap" && <div className="muted">Older firmware needs one Arduino upload to enable MIDI updates. Use an OTA partition scheme; saved wiring is kept when NVS is retained.</div>}
-                    <button type="button" className="btn" disabled={installing || firmwareBusy || str(firmware.state) === "unavailable"}
+                    <div className="row updates-actions">
+                    <button type="button" className="btn" disabled={installing || firmwareBusy || bool(firmware.latestChecking)} onClick={checkFirmware}>CHECK GITHUB</button>
+                    <button type="button" className="btn btn-accent" disabled={installing || firmwareBusy || !latestReady || firmwareUpToDate || str(firmware.state) === "unavailable"}
                         onClick={retryFirmware}>{str(firmware.state) === "preparing" ? "CHECKING CONTROLLER…"
-                            : firmwareBusy ? "UPDATING CONTROLLER…" : "UPDATE CONTROLLER FIRMWARE"}</button>
+                            : firmwareBusy ? "UPDATING CONTROLLER…" : latestReady && !firmwareUpToDate ? `UPDATE CONTROLLER TO ${latestFirmware}` : "UPDATE CONTROLLER FIRMWARE"}</button>
+                    </div>
                 </section>
                 </div>
                 {progressLines.length > 0 && (

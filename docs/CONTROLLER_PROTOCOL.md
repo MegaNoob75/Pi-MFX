@@ -6,6 +6,13 @@ Learn and persistent wiring setup. Application and firmware versions are separat
 The authoritative shared wire definitions and validation rules are in
 `firmware/esp32s3/PiMFX_Controller/HardwareProtocol.h`.
 
+Firmware numbering restarted at **1.0**; the current release is **1.1**, with the full earlier 2.x feature set.
+Extended identity appends a capabilities byte before F7: bit 0 means wiring setup,
+bit 1 means guided analog calibration. Earlier 2.x identities without this byte
+retain their historical version-based compatibility. A legacy 1.x identity with
+no capability byte is not treated as the renumbered image. Version references
+below describe when features were first introduced before this renumbering.
+
 ## Legacy identity and LED commands
 
 Wrapper: `F0 7D 4D 46 <command> <payload> F7`. MIDI data bytes are seven-bit.

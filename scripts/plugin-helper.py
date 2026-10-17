@@ -602,9 +602,9 @@ def install_apt_lv2_updates(timeout: int) -> dict:
 def handle(request: dict) -> dict:
     op = request.get("op") or ""
     if op == "controller-firmware-status":
-        return {"ok": True, **FIRMWARE.status()}
+        return {"ok": True, **FIRMWARE.status(branch=request.get("branch") or "dev", refresh=bool(request.get("refresh")))}
     if op == "controller-firmware-install":
-        return {"ok": True, **FIRMWARE.start(arm=True)}
+        return {"ok": True, **FIRMWARE.start(arm=True, github=True, branch=request.get("branch") or "dev")}
     if op.startswith("backup-"):
         return recovery.handle(request)
     if op in HEAVY_OPS and recovery.recovery_busy():
