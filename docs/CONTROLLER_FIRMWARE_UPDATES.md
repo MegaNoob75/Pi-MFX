@@ -20,6 +20,22 @@ downgraded when switching Pi-MFX branches.
 
 ## One-time receiver installation
 
+### Firmware-only menus
+
+Run `pimfx.cmd` and choose **5** to download firmware from GitHub (Main,
+Dev or Workstation), or **6** to copy firmware from this PC, including local
+edits. Both build on the Pi and use the same version check, MIDI transfer and
+verification as the combined updater. They do not rebuild the Pi-MFX application.
+On the Pi, `sudo bash ./scripts/pimfx.sh` uses the same **5** and **6**
+choices; option 6 uses the source checkout already on that Pi.
+Only newer firmware is flashed; increment the firmware version for local changes.
+Older branches without the updater show an error without flashing.
+
+The selected source is retained in `/var/lib/pimfx/controller-source` so a pending
+update can finish when the controller connects. A later combined Pi-MFX update
+selects the app checkout's bundled firmware again. First-time Arduino setup below
+is still required. The Pi must already have Pi-MFX and its helper installed.
+
 Firmware 2.0 and earlier cannot receive firmware over MIDI. Upload the current
 sketch once in Arduino IDE, with all sketch-folder files present, including
 FirmwareUpdate.h. Select ESP32S3 Dev Module, USB-OTG (TinyUSB), CDC on Boot

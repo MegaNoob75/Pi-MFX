@@ -48,6 +48,8 @@ Actions:
   install          First-time setup: packages, engine, UI, service
   update           Pull, rebuild, restart
   rebuild          Rebuild from files already on the Pi (no git pull)
+  firmware-update  Controller firmware from GitHub (--branch, default dev)
+  firmware-local   Controller firmware from this Pi's source checkout
   display          Fullscreen touchscreen (Labwc + Chromium)
   display-refresh  Re-apply Chromium flags, hide the pointer, hide the system keyboard, hard-refresh
   kiosk-reload     Hard-refresh the attached Chromium kiosk (no Chromium restart)
@@ -66,7 +68,7 @@ Actions:
 Options:
   --no-tuning            Install the service but leave the OS alone
   --branch main|dev|workstation
-                         Update from that GitHub branch (update only)
+                         App or controller firmware source branch
   --port <n>             Web UI port (default 8080)
   --display-user USER    Account that auto-logs in on the screen
   --purge                Also delete /var/lib/pimfx (remove only)
@@ -131,7 +133,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|complete|install|update|rebuild|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|restore|reboot|remove) ;;
+        menu|complete|install|update|rebuild|firmware-update|firmware-local|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|restore|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -511,7 +513,7 @@ MENU
 }
 
 update_branch_menu() {
-    local choice branch
+    local choice branch mode="${1:-app}"
     draw_banner
     cat <<'MENU'
   Update from GitHub
@@ -530,7 +532,11 @@ MENU
         4) return 0 ;;
         *) warn "pick a number from 1 to 4"; return 0 ;;
     esac
-    UPDATE_BRANCH="$branch" do_update
+    if [[ "$mode" == controller ]]; then
+        run_script controller-update.sh github "$branch"
+    else
+        UPDATE_BRANCH="$branch" do_update
+    fi
 }
 
 do_reboot() {
@@ -545,45 +551,59 @@ show_menu() {
     while true; do
         draw_banner
         cat <<'MENU'
+  Install and update Pi-MFX
   1) Complete setup  (install + touchscreen)
   2) Install / first-time setup
   3) Update from GitHub  (choose main, dev or workstation)
   4) Rebuild local files  (no git pull)
-  5) Set up touchscreen display
-  6) Remove touchscreen display
-  7) Boot screen  (PI-MFX logo, hide boot text)
-  8) Faster boot  (skip network wait, unused services)
-  9) Wi-Fi hotspot support
-  10) Status
-  11) Remove Pi-MFX
-  12) Reboot now
-  13) Exit
-  14) Restore an exported backup
+
+  Controller firmware only
+  5) Update firmware from GitHub  (choose branch)
+  6) Update firmware from this Pi's source checkout
+
+  Display and system setup
+  7) Set up touchscreen display
+  8) Refresh touchscreen display
+  9) Remove touchscreen display
+  10) Boot screen  (PI-MFX logo, hide boot text)
+  11) Faster boot  (network wait, unused services)
+  12) Wi-Fi hotspot support
+
+  Maintenance and recovery
+  13) Status
+  14) Reboot now
+  15) Restore an exported backup
+  16) Remove Pi-MFX
+
+  0) Exit
 MENU
         echo
-        read -r -p "Choose [1-14]: " choice
+        read -r -p "Choose [0-16]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
             3) update_branch_menu || warn "update did not finish" ;;
             4) do_rebuild || warn "rebuild did not finish" ;;
-            5) configure_touchscreen || warn "touchscreen setup did not finish" ;;
-            6) remove_touchscreen || warn "touchscreen remove did not finish" ;;
-            7) boot_screen_menu || warn "boot screen change did not finish" ;;
-            8) faster_boot_menu || warn "boot-speed change did not finish" ;;
-            9) do_hotspot || warn "hotspot install did not finish" ;;
-            10) do_status || warn "status failed" ;;
-            11)
+            5) update_branch_menu controller || warn "controller update did not finish" ;;
+            6) run_script controller-update.sh local "$REPO_DIR" || warn "controller update did not finish" ;;
+            7) configure_touchscreen || warn "touchscreen setup did not finish" ;;
+            8) refresh_touchscreen_session || warn "touchscreen refresh did not finish" ;;
+            9) remove_touchscreen || warn "touchscreen remove did not finish" ;;
+            10) boot_screen_menu || warn "boot screen change did not finish" ;;
+            11) faster_boot_menu || warn "boot-speed change did not finish" ;;
+            12) do_hotspot || warn "hotspot install did not finish" ;;
+            13) do_status || warn "status failed" ;;
+            16)
                 PURGE="no"
                 if confirm "Also delete /var/lib/pimfx (banks, models, IRs)?"; then
                     PURGE="yes"
                 fi
                 do_remove confirmed || warn "remove did not finish"
                 ;;
-            12) do_reboot ;;
-            13|q|Q) return 0 ;;
-            14) do_restore_backup || warn "restore did not finish" ;;
-            *) warn "pick a number from 1 to 14"; pause_for_menu; continue ;;
+            14) do_reboot ;;
+            0|q|Q) return 0 ;;
+            15) do_restore_backup || warn "restore did not finish" ;;
+            *) warn "pick a number from 0 to 16"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -604,6 +624,8 @@ main() {
         install) do_install ;;
         update) do_update ;;
         rebuild) do_rebuild ;;
+        firmware-update) run_script controller-update.sh github "${UPDATE_BRANCH:-dev}" ;;
+        firmware-local) run_script controller-update.sh local "$REPO_DIR" ;;
         display) configure_touchscreen ;;
         display-refresh) refresh_touchscreen_session ;;
         kiosk-reload)

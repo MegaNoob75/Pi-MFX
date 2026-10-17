@@ -419,11 +419,12 @@ class Manager:
                 return self.status()
             if self.busy() or update_locked():
                 return {**self.status(), "message": "Wait for the Pi-MFX update to finish"}
-            repo = self.repo()
+            policy = read_json(self.root / "controller-firmware-policy.json")
+            repo = policy.get("sourceRepo") or self.repo()
             if not repo:
                 return {"state": "failed", "message": "Pi-MFX source folder is unavailable"}
             if arm:
-                atomic_json(self.root / "controller-firmware-policy.json", {"enabled": True})
+                atomic_json(self.root / "controller-firmware-policy.json", {"enabled": True, "sourceRepo": repo})
             atomic_json(self.root / "controller-firmware-status.json",
                         {"state": "preparing", "message": "Checking controller firmware", "updatedAt": time.time()})
             self.process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
@@ -488,7 +489,7 @@ def main():
         except BlockingIOError:
             return
         if args.arm:
-            atomic_json(root / "controller-firmware-policy.json", {"enabled": True})
+            atomic_json(root / "controller-firmware-policy.json", {"enabled": True, "sourceRepo": args.repo})
         perform(args.repo, root, args.user)
 
 

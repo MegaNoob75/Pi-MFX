@@ -158,7 +158,7 @@ def category(relative):
 
 def excluded(relative):
     p = PurePosixPath(relative)
-    return (p.parts[0] in {"downloads", "backups", ".backup-upload", "controller-build"} or relative in SKIP
+    return (p.parts[0] in {"downloads", "backups", ".backup-upload", "controller-build", "controller-source"} or relative in SKIP
             or any(s.endswith((".tmp", ".part", ".log")) or s == "__pycache__" for s in p.parts))
 
 

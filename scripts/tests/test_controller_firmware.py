@@ -75,6 +75,18 @@ class FirmwareTests(unittest.TestCase):
         self.assertEqual(fw.read_json(self.root / "controller-firmware-status.json")["state"], "pending")
         run.assert_not_called()
 
+    def test_pending_retry_keeps_selected_firmware_source(self):
+        selected = str(self.root / "controller-source")
+        fw.atomic_json(self.root / "controller-firmware-policy.json",
+                       {"enabled": True, "sourceRepo": selected})
+        manager = fw.Manager(lambda: "app-checkout", self.root, "pimfx", busy=lambda: False)
+        with patch.object(fw, "update_locked", return_value=False), \
+             patch.object(fw.subprocess, "Popen") as launch:
+            manager.start(arm=True)
+        command = launch.call_args.args[0]
+        self.assertEqual(command[command.index("--repo") + 1], selected)
+        self.assertEqual(fw.read_json(self.root / "controller-firmware-policy.json")["sourceRepo"], selected)
+
     def test_newer_installed_version_is_never_downgraded(self):
         link = Mock()
         link.info.return_value = {"version": (3, 0)}

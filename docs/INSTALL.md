@@ -141,7 +141,7 @@ Performance screen gives you on-screen switches.
 
 ## Optional: touchscreen on the Pi
 
-From the setup menu pick **5) Set up touchscreen display**, or:
+From the setup menu pick **7) Set up touchscreen display**, or:
 
 ```bash
 sudo bash ./scripts/pimfx.sh display
@@ -174,7 +174,7 @@ To undo just the screen session: menu item **6**, or
 
 The attached screen can show only the **PI-MFX** logo while the Pi boots and
 shuts down, with kernel and systemd text kept in the journal. This is original
-Pi-MFX artwork. From the setup menu pick **7) Boot screen**,
+Pi-MFX artwork. From the setup menu pick **10) Boot screen**,
 or:
 
 ```bash
@@ -186,7 +186,7 @@ kernel options without removing `threadirqs` or USB autosuspend. Encrypted-root
 cards are skipped so an unlock prompt cannot be hidden. Reboot after it
 finishes. Undo from the same menu, or `sudo bash ./scripts/pimfx.sh splash-remove`.
 
-**8) Faster boot** is separate:
+**11) Faster boot** is separate:
 
 - skip waiting for a network connection at boot (often several seconds)
 - optionally disable unused printer, modem, VNC, and file-share services
@@ -236,7 +236,7 @@ system packages or want to re-apply tuning.
 Export a recovery archive before release upgrades using **Settings → Backup &
 Restore**. Full archives contain the complete Pi-MFX rig and require a backup
 password. After installing a fresh OS and Pi-MFX, restore the exported file from
-that screen or choose **14) Restore an exported backup** in the installer menu.
+that screen or choose **15) Restore an exported backup** in the installer menu.
 See [BACKUP_RESTORE.md](BACKUP_RESTORE.md) for required free space, compatibility,
 selective restore, rollback and pending Pi validation.
 
