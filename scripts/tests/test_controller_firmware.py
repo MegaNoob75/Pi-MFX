@@ -95,6 +95,35 @@ class FirmwareTests(unittest.TestCase):
                 self.assertNotIn("previous status", console.getvalue())
                 self.assertIn(expected, log_path.read_text())
 
+    def test_build_source_snapshot_is_independent_of_private_checkout(self):
+        repo = self.root / "private-checkout"
+        sketch = repo / "firmware/esp32s3/PiMFX_Controller"
+        sketch.mkdir(parents=True)
+        recipe = {"arduinoCli": "1.3.1", "cliSha256": {}, "index": "index", "core": "esp32",
+                  "fqbn": "esp32s3", "libraries": []}
+        fw.atomic_json(repo / "firmware/controller-build.json", recipe)
+        (sketch / "PiMFX_Controller.ino").write_text("void setup() {}")
+        (sketch / "build").mkdir()
+        (sketch / "build/app.bin").write_bytes(b"ignored")
+        original_mode = repo.stat().st_mode
+        with fw.readable_build_source(repo) as source:
+            self.assertNotEqual(source, repo)
+            self.assertEqual(fw.build_recipe(source), recipe)
+            self.assertEqual((source / "firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino").read_text(), "void setup() {}")
+            self.assertFalse((source / "firmware/esp32s3/PiMFX_Controller/build").exists())
+            self.assertEqual(repo.stat().st_mode, original_mode)
+        self.assertFalse(source.exists())
+
+    def test_unreadable_recipe_reports_permission_error_not_missing_key(self):
+        with patch.object(fw.Path, "read_text", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(RuntimeError, "Cannot read controller build configuration.*denied"):
+                fw.build_recipe(self.root)
+
+    def test_incomplete_recipe_is_reported_before_build(self):
+        fw.atomic_json(self.root / "firmware/controller-build.json", {})
+        with self.assertRaisesRegex(RuntimeError, "configuration is incomplete"):
+            fw.build_recipe(self.root)
+
     def test_bad_image_or_capacity_never_starts_flash(self):
         link = Mock()
         for blob, capacity in [(b"not firmware", 2048), (b"", 2048), (b"\xe9" * 100, 99)]:
@@ -215,6 +244,7 @@ class FirmwareTests(unittest.TestCase):
              patch.object(fw, "Link", return_value=link), \
              patch.object(pwd, "getpwnam", return_value=Mock(pw_uid=1000, pw_gid=1000)), \
              patch.object(fw.os, "chown"), \
+             patch.object(fw, "readable_build_source", return_value=contextlib.nullcontext(Path("unused"))), \
              patch.object(fw.subprocess, "run", side_effect=RuntimeError("compile failed")), \
              patch.object(fw, "transfer") as transfer:
             with self.assertRaisesRegex(RuntimeError, "compile failed"):

@@ -16,9 +16,11 @@ import platform
 import queue
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -261,11 +263,41 @@ def share_controller_port(root, names, report):
         raise
 
 
+def build_recipe(repo):
+    path = Path(repo) / "firmware/controller-build.json"
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot read controller build configuration: {path}: {exc}") from exc
+    required = {"arduinoCli", "cliSha256", "index", "core", "fqbn", "libraries"}
+    if not isinstance(config, dict) or not required.issubset(config):
+        raise RuntimeError(f"Controller build configuration is incomplete: {path}")
+    return config
+
+
+@contextlib.contextmanager
+def readable_build_source(repo):
+    # The source checkout may be under a private login home. Copy only firmware
+    # into a fresh root-owned temp directory; never relax the home permissions
+    # or copy as root into the service user's writable build cache.
+    build_recipe(repo)
+    with tempfile.TemporaryDirectory(prefix="pimfx-firmware-source-") as directory:
+        source = Path(directory)
+        shutil.copytree(Path(repo) / "firmware", source / "firmware",
+                        ignore=shutil.ignore_patterns("build", "bin", "dist", "out", "obj", "__pycache__", "*.pyc", "*.o", "*.bin"))
+        source.chmod(0o755)
+        for folder, directories, files in os.walk(source):
+            Path(folder).chmod(0o755)
+            for name in files:
+                (Path(folder) / name).chmod(0o644)
+        yield source
+
+
 def build(repo, cache):
     """Runs as the service user, never root. All dependency versions are pinned."""
     if os.geteuid() == 0:
         raise RuntimeError("Firmware builds must run as the unprivileged Pi-MFX user")
-    config = read_json(Path(repo) / "firmware/controller-build.json")
+    config = build_recipe(repo)
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     cli = cache / ("arduino-cli-" + config["arduinoCli"])
@@ -461,8 +493,9 @@ def perform(repo, root, user):
         cache = root / "controller-build"
         cache.mkdir(exist_ok=True)
         os.chown(cache, account.pw_uid, account.pw_gid)
-        run_logged_build(["runuser", "-u", user, "--", sys.executable, "-u", str(Path(__file__).resolve()),
-                          "--build", "--repo", str(repo), "--data", str(cache)], log_path)
+        with readable_build_source(repo) as build_source:
+            run_logged_build(["runuser", "-u", user, "--", sys.executable, "-u", str(Path(__file__).resolve()),
+                              "--build", "--repo", str(build_source), "--data", str(cache)], log_path)
         # Re-query after the long build. Never use a stale card/port identity.
         link = Link(mido, name)
         try:

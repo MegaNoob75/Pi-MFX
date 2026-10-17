@@ -218,6 +218,11 @@ function Copy-LocalTree([string]$Mode) {
 #!/bin/bash
 set -euo pipefail
 DEST="$RemotePath"
+if [[ "`$DEST" == "~" ]]; then
+  DEST="`$HOME"
+elif [[ "`$DEST" == "~/"* ]]; then
+  DEST="`$HOME/`${DEST:2}"
+fi
 mkdir -p "`$DEST"
 tar -xzf /tmp/pimfx-sync.tgz -C "`$DEST"
 rm -f /tmp/pimfx-sync.tgz
