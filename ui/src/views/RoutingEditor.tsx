@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { EngineClient } from "../api";
+import { useMeters, peakDb, type EngineClient } from "../api";
 import { bool, num, obj, objects, str, type JsonObject } from "../json";
 import { PluginBrowser } from "./PluginBrowser";
 import { RoutingMixers } from "./RoutingMixers";
@@ -22,7 +22,7 @@ function savedCableHues(presetId: string): Record<string, number> {
         return hues;
     } catch { return {}; }
 }
-export function RoutingEditor({ client, catalog, blocks, routing, presetId, locked, mix, onMixChange, onEdit, onIo, onRemove, run, runStructure, toolbarContent, presetActions, presetManagementActions }: {
+export function RoutingEditor({ client, catalog, blocks, routing, presetId, locked, mix, onMixChange, onEdit, onIo, onRemove, run, runStructure, toolbarContent, presetActions, presetManagementActions, undoCount, redoCount }: {
     client: EngineClient; catalog: JsonObject; blocks: JsonObject[]; routing: JsonObject;
     presetId: string; locked: boolean; onEdit: (id: string) => void;
     mix: boolean; onMixChange: (mix: boolean) => void;
@@ -31,7 +31,10 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
     run: (work: () => Promise<unknown>) => Promise<void>;
     runStructure: (work: () => Promise<unknown>) => Promise<void>;
     toolbarContent: ReactNode; presetActions: ReactNode; presetManagementActions: ReactNode;
+    undoCount: number; redoCount: number;
 }) {
+    const meters = useMeters(client);
+    const history = (redo: boolean) => { setMenu(""); void runStructure(() => client.request(redo ? "preset/redo" : "preset/undo")); };
     const [selected, setSelected] = useState("");
     const [source, setSource] = useState("");
     const [browser, setBrowser] = useState(false);
@@ -411,7 +414,12 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
         </div>
         {menu && createPortal(<div ref={popup} id="routing-menu" className="routing-menu" role="dialog" aria-label={menu === "add" ? "Add a block" : menu === "actions" ? "Editor options" : "Audio connections"}
             style={{ top: menuTop, left: Math.max(8, Math.min(menu === "add" ? contextPoint.x : anchor?.left ?? 8, window.innerWidth - menuWidth - 8)), width: menuWidth, maxHeight: window.innerHeight - menuTop - 8 }}>
-            <div className="routing-menu-title"><strong>{menu === "add" ? "ADD BLOCK" : menu === "actions" ? "EDITOR OPTIONS" : `CONNECTIONS (${edges.length})`}</strong><button className="btn" aria-label="Close editor menu" onClick={() => setMenu("")}>×</button></div>
+            <div className="routing-menu-title"><strong>{menu === "add" ? "" : menu === "actions" ? "EDITOR OPTIONS" : `CONNECTIONS (${edges.length})`}</strong>
+                {(menu === "add" || menu === "actions") && <>
+                    <button className="btn routing-menu-icon" title={`Undo (${undoCount})`} aria-label="Undo last preset edit" disabled={locked || routingBusy || !undoCount} onClick={() => history(false)}>↶</button>
+                    <button className="btn routing-menu-icon" title={`Redo (${redoCount})`} aria-label="Redo preset edit" disabled={locked || routingBusy || !redoCount} onClick={() => history(true)}>↷</button>
+                </>}
+                <button className="btn routing-menu-icon" aria-label="Close editor menu" onClick={() => setMenu("")}>×</button></div>
             {menu === "add" ?
             <div className="routing-menu-actions">
                 <button className="btn" disabled={locked || routingBusy} onClick={() => { setMenu(""); setBrowser(true); }}>ADD PLUGIN</button>
@@ -495,7 +503,14 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                                         positionsRef.current = next; setPositions(next); }}
                                     onPointerUp={() => { if (!drag.current) return; drag.current = null; commit({ ...graphRef.current, positions: positionsRef.current }); }}
                                     onPointerCancel={() => { drag.current = null; setPositions(obj(graphRef.current.positions)); }}>
-                                    <span>⠿</span> {str(node.name, "Effect")}</button>
+                                    <span>⠿</span> <span className="routing-block-name">{str(node.name, "Effect")}</span>
+                                    {endpoint && <SignalLight peak={num(meters[id === "input" ? "inputPeak" : "outputPeak"])} />}</button>
+                                {!endpoint && <button className="routing-bypass" aria-label={`${bool(node.enabled, true) ? "Bypass" : "Enable"} ${str(node.name, "block")}`}
+                                        title={bool(node.enabled, true) ? "Active — tap to bypass" : "Bypassed — tap to enable"}
+                                        aria-pressed={bool(node.enabled, true)} disabled={locked || routingBusy}
+                                        onClick={() => void (str(node.kind) === "mixer" ? runStructure : run)(() => client.request("chain/enable", { slotId: id, enabled: !bool(node.enabled, true) }))}>
+                                        <span className={`routing-led${bool(node.enabled, true) ? " on" : " bypassed"}`} />
+                                    </button>}
                                 </div>
                                 <button className="routing-block-body"
                                     onPointerDown={() => { suppressPortClickUntil.current = 0; }}
@@ -509,7 +524,8 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                                 <div className="routing-ports">
                                     {id !== "input" && hasInput ? <button className={`btn ${wire?.target?.id === id && wire.target.direction === "in" ? "routing-port-target" : ""}`} data-routing-port="in" data-block-id={id}
                                         disabled={locked || (wireMode === "tap" && !source)} {...wireEvents(id, "in")}>IN{portColors(id, "in")}</button> : <span />}
-                                    {!endpoint ? <button className="btn routing-block-remove" disabled={locked || routingBusy} aria-label={`Remove ${str(node.name, "block")}`} onClick={() => setDeleteId(id)}>−</button> : <span />}
+                                    {!endpoint ? <button className="btn routing-block-remove" disabled={locked || routingBusy} aria-label={`Remove ${str(node.name, "block")}`} onClick={() => setDeleteId(id)}>−</button>
+                                        : id === "output" ? <OutputLoad meters={meters} connected={client.snapshot.connected} /> : <span />}
                                     {id !== "output" && hasOutput && <button className={`btn ${source === id ? "btn-active" : ""} ${wire?.target?.id === id && wire.target.direction === "out" ? "routing-port-target" : ""}`} data-routing-port="out" data-block-id={id}
                                         disabled={locked} {...wireEvents(id, "out")}>OUT{portColors(id, "out")}</button>}
                                 </div>
@@ -526,5 +542,29 @@ export function RoutingEditor({ client, catalog, blocks, routing, presetId, lock
                 await client.request("plugins/rescan");
             }}
             onChoose={uri => { setBrowser(false); if (locked || sending.current || pending.current) return; void runStructure(() => client.request("chain/add", { uri, layout: additionLayout() })); }} />
+    </div>;
+}
+
+function SignalLight({ peak }: { peak: number }) {
+    const level = Number.isFinite(peak) ? Math.max(0, peak) : 0;
+    const tone = level <= 0.00001 ? "" : level >= 1 ? " clip" : level >= 0.25 ? " hot" : " on";
+    return <span className="routing-signal" aria-label={`Signal level ${peakDb(level)}`}>
+        <span className={`routing-led${tone}`} aria-hidden="true" /><small>{peakDb(level)}</small>
+    </span>;
+}
+
+function OutputLoad({ meters, connected }: { meters: JsonObject; connected: boolean }) {
+    const audio = connected && bool(meters.running) && typeof meters.dspLoad === "number" && Number.isFinite(meters.dspLoad)
+        ? Math.max(0, meters.dspLoad) : null;
+    const cpu = connected && bool(meters.engineCpuLoadAvailable) && typeof meters.engineCpuLoad === "number" && Number.isFinite(meters.engineCpuLoad)
+        ? Math.max(0, meters.engineCpuLoad) : null;
+    const percentage = (value: number | null) => value === null ? "—" : `${Math.round(value * 100)}%`;
+    const tone = audio === null ? "" : audio >= .9 ? " critical" : audio >= .7 ? " warning" : " normal";
+    return <div className={`routing-output-load${tone}`}
+        title="AUDIO: share of the audio buffer deadline used. CPU: Pi-MFX engine usage across all cores, not total Pi usage. High AUDIO can cause dropouts even with low CPU."
+        aria-label={`Audio deadline load ${percentage(audio)}; engine CPU ${percentage(cpu)}`}>
+        <span className="routing-output-audio">AUDIO <strong>{percentage(audio)}</strong></span>
+        <span className="routing-output-cpu">CPU <strong>{percentage(cpu)}</strong></span>
+        <span className="routing-output-load-track" aria-hidden="true"><span style={{ width: `${audio === null ? 0 : Math.min(100, audio * 100)}%` }} /></span>
     </div>;
 }

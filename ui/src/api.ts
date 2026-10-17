@@ -39,6 +39,7 @@ function websocketUrl(): string {
 export class EngineClient {
     private socket: WebSocket | undefined;
     private reconnectTimer: number | undefined;
+    private recoveryReturn: JsonObject | undefined;
     private closed = false;
     private stateEpoch = "";
     private fullStateRevision = 0;
@@ -227,6 +228,7 @@ export class EngineClient {
         };
         socket.onclose = () => {
             if (this.socket !== socket) return;
+            if (this.snapshot.uiSession.view === "backup") this.recoveryReturn = { ...this.snapshot.uiSession };
             this.socket = undefined;
             this.patch({ connected: false });
             if (!this.closed) {
@@ -337,6 +339,15 @@ export class EngineClient {
             return;
         }
         if (type === "uiSession") {
+            // The recovery helper deliberately restarts the engine. Its fresh
+            // default page must not navigate away from the running job/report.
+            if (this.recoveryReturn && message.view === "performance") {
+                const session = this.recoveryReturn;
+                this.recoveryReturn = undefined;
+                this.updateUiSession(session);
+                return;
+            }
+            this.recoveryReturn = undefined;
             this.patch({ uiSession: message });
             return;
         }
@@ -359,6 +370,8 @@ export class EngineClient {
                 virtualControlFine: message.virtualControlFine ?? this.snapshot.state.virtualControlFine,
                 sessionPresetDirty: message.sessionPresetDirty ?? this.snapshot.state.sessionPresetDirty,
                 sessionPresetDirtyCount: message.sessionPresetDirtyCount ?? this.snapshot.state.sessionPresetDirtyCount,
+                editorUndoCount: message.editorUndoCount ?? this.snapshot.state.editorUndoCount,
+                editorRedoCount: message.editorRedoCount ?? this.snapshot.state.editorRedoCount,
                 sessionPresetDirtyIds: message.sessionPresetDirtyIds ?? this.snapshot.state.sessionPresetDirtyIds
             };
             if (typeof message.activeSnapshot === "number") {

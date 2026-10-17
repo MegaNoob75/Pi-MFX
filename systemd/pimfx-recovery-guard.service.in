@@ -1,0 +1,14 @@
+[Unit]
+Description=Recover interrupted Pi-MFX restores before opening the rig
+After=local-fs.target
+Before=pimfx.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=PIMFX_DATA_ROOT=@DATA_ROOT@
+Environment=PIMFX_PREFIX=@PREFIX@
+Environment=PIMFX_USER=@USER@
+ExecStart=/usr/bin/python3 @PREFIX@/libexec/pimfx/backup.py recover
+RemainAfterExit=yes
+UMask=0077

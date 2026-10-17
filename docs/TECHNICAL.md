@@ -29,7 +29,7 @@ reinstalls leave it alone unless you `--purge`.
 | `controller-profiles/`, `setup-profiles/` | Controller-only profiles and broader setup profiles |
 | `lv2/` | User-installed LV2 bundles (PatchStorage) |
 | `models/`, `aidax/`, `irs/` | NAM / AIDA-X / IR files |
-| `backups/`, `themes/`, `bank-exports/` | Configuration backup JSON, custom themes, and preset/bank JSON exports |
+| `backups/`, `themes/`, `bank-exports/` | Legacy configuration JSON, custom themes, and preset/bank JSON exports |
 | `backing-tracks/` | Imported backing-track audio, metadata, and set lists |
 | `loops/` | Saved stereo-looper WAV files |
 | `recordings/` | Multitrack projects, takes, recovery data, and exports |
@@ -129,11 +129,20 @@ requires choosing an empty project first. Buffer-only changes preserve the
 recording playback position. Explicit preset Reload discards the draft;
 audio-device reopen preserves the audible working preset/snapshot state.
 
-Configuration backups contain preferences, not a complete data-root archive.
-Stop the service cleanly before taking a full recovery copy, preserve file
-permissions, and protect the copy because it includes credentials. Browser
-cookies/local preferences and system-installed LV2 packages are outside the
-data root; reinstall required plugins separately on a replacement Pi.
+`scripts/backup.py` implements versioned ZIP64 recovery archives (DEFLATE level
+6) with file checksums, optional password encryption, exact plugin inventory,
+selective restore and a durable root-directory replacement journal. Smaller
+archives record repository package URLs/sizes/SHA-256 for verified downloads
+before restore; self-contained archives include the installers. Manual plugins
+and packages without reproducible download records remain bundled. Format 2
+supports these records and the reader retains format-1 compatibility.
+The privileged helper launches independent systemd jobs; the engine prepares
+unsaved drafts/current loops and pauses for the consistent copy or restore.
+Kiosk keyboard/behavior preferences migrate into `ui.browserPreferences`.
+The root recovery workspace is beside the data root, and a boot guard resolves
+unfinished restores before the engine starts. Data rollback does not undo apt
+or OS-setup changes. See [BACKUP_RESTORE.md](BACKUP_RESTORE.md) for the format,
+operational limits and required Pi validation.
 
 ## UI
 

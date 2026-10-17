@@ -19,7 +19,6 @@ revision has passed fresh device sign-off.
 | Drum machine | Implemented in `dev`; current-build sign-off pending |
 | Community Presets | Implemented in `dev`; current-build sign-off pending |
 | 1.0 · Stabilization | Active priority; see readiness report |
-| External backing sources | Deferred until after 1.0; requires supported integration and licensing design |
 
 ## Development and release strategy
 
@@ -99,17 +98,6 @@ Implemented:
 - Duplicate-name/content protection and uninstall cleanup
 
 Security and publishing details are in [COMMUNITY_PRESETS.md](COMMUNITY_PRESETS.md).
-
-## Future: external backing-track sources
-
-Local backing-track import comes first. Direct WikiLoops or another provider is
-only appropriate through a supported integration that preserves authentication,
-download limits, attribution, licensing, and remix lineage.
-
-If a direct integration is unavailable, Pi-MFX can still support a safe workflow
-that opens the provider page and imports a file the signed-in user legitimately
-downloaded. Imported media must pass through the same bounded local validation
-path as ordinary backing tracks.
 
 ## Cross-feature release requirements
 

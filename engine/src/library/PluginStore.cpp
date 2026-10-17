@@ -718,6 +718,10 @@ bool PluginStore::helperPing() {
     return error.empty() && reply["ok"].asBool(false);
 }
 
+Json PluginStore::backupCommand(const std::string& action, const Json& payload, std::string& error) {
+    return helperCall("backup-" + action, payload, error, 30);
+}
+
 Json PluginStore::aptSearch(const std::string& query, std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     Json args = Json::object();

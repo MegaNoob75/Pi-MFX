@@ -43,7 +43,8 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="VIRTUAL CONTROLS" subtitle="Build the touchscreen control surface and its preset bindings" onClick={() => onOpen("virtualLayout")} />
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
-                <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel, backup and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="BACKUP & RESTORE" subtitle="Export the complete rig or selected content; recover after a fresh OS install" onClick={() => onOpen("backup")} />
                 <HubCard title="SETUP PROFILES" subtitle="Save or load the complete rig setup at once" onClick={() => onOpen("profiles")} />
                 <HubCard title="MODEL LIBRARY" subtitle="TONE3000 hosted browser and API key" onClick={() => onOpen("tone3000")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
@@ -417,7 +418,10 @@ export function SettingsPage({
     if (page === "keyboard") {
         return <KeyboardSettingsView engine={engine} />;
     }
-    if (page === "ui" || page === "backup") {
+    if (page === "backup") {
+        return <BackupView engine={engine} run={run} />;
+    }
+    if (page === "ui") {
         return <UiSettings engine={engine} run={run} />;
     }
     if (page === "tone3000") {
@@ -1918,7 +1922,6 @@ function UiSettings({
                 </label>
                 <div className="muted">Added on top of the firmware debounce. Leave at 0 unless a switch or encoder click double-fires.</div>
             </div>
-            <BackupView engine={engine} run={run} embedded />
         </div>
     );
 }

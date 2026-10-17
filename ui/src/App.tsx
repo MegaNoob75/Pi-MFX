@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useEngine } from "./api";
+import { useRigPreferences } from "./rigPreferences";
 import { arr, bool, num, obj, str, type JsonObject } from "./json";
 import { applyHardwareNavFocus, handleHardwareNav, watchHardwareNavFocus } from "./hardwareNav";
 import { AboutView } from "./views/AboutView";
@@ -290,6 +291,7 @@ function SwipeSurface({ direction, onSwipe, peek, children }: {
 
 export function App() {
     const engine = useEngine();
+    useRigPreferences(engine);
     const returnToUpdatesAfterInstall = useRef(hasPendingUpdateReturn());
     const [view, setView] = useState<View>(() => returnToUpdatesAfterInstall.current ? "updates" : "performance");
     const [menuOpen, setMenuOpen] = useState(false);

@@ -22,8 +22,8 @@ public:
     Settings loadSettings();
     bool saveSettings(const Settings& settings);
 
-    /// Loads every bank. On first run this writes a starter bank so the user
-    /// lands on something playable instead of an empty screen.
+    /// Loads every bank, preserving an intentionally empty library. On a fresh
+    /// installation without settings this writes a starter bank.
     std::vector<Bank> loadBanks();
     bool saveBank(const Bank& bank);
     bool saveBanks(const std::vector<Bank>& banks);

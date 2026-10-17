@@ -2007,6 +2007,18 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 }
 .routing-block.disconnected { border-style: dashed; }
 .routing-block-top { display: flex; height: 44px; border-bottom: 1px solid var(--mfx-border); }
+.routing-menu-icon { width: 44px; min-width: 44px; height: 44px; padding: 0; font-size: 25px; }
+.routing-bypass { align-self: flex-start; width: 32px; min-width: 32px; height: 32px; display: grid; place-items: center; border: 0; background: transparent; cursor: pointer; }
+.routing-bypass:focus-visible { outline: 2px solid var(--mfx-purple-light); outline-offset: -2px; }
+.routing-led { display: inline-block; width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; background: #30363c; border: 1px solid #66717b; }
+.routing-led.on { background: #49df88; box-shadow: 0 0 4px #49df8866; }
+.routing-led.bypassed { background: #ff5050; box-shadow: 0 0 4px #ff505066; }
+.routing-led.hot { background: #ffd05b; }
+.routing-led.clip { background: #ff5050; }
+.routing-signal { display: inline-flex; gap: 4px; align-items: center; padding-right: 5px; white-space: nowrap; }
+.routing-signal small { font-size: 10px; font-variant-numeric: tabular-nums; }
+.routing-block-heading { display: flex; align-items: center; gap: 4px; }
+.routing-block-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .routing-ports .routing-block-remove { font-size: 24px; cursor: pointer; }
 .routing-block-heading { flex: 1; min-width: 0; width: 100%; height: 44px; text-align: left; padding: 8px; background: var(--mfx-panel-2, var(--mfx-panel)); color: var(--mfx-purple-light); border: 0; touch-action: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .routing-block-body { width: 100%; height: 40px; padding: 5px 8px; background: transparent; border: 1px solid var(--mfx-border); border-radius: 4px; color: var(--mfx-text); display: grid; text-align: left; gap: 3px; }
@@ -2014,6 +2026,16 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .routing-block-body small { color: var(--mfx-muted); }
 .routing-ports { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; }
 .routing-ports > .btn { width: 100%; padding: 4px; }
+.routing-output-load { grid-column: span 2; min-width: 0; align-self: center; display: grid; gap: 2px; padding: 2px 4px; color: var(--mfx-muted); font-size: 11px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.routing-output-audio, .routing-output-cpu { display: flex; justify-content: space-between; gap: 4px; white-space: nowrap; }
+.routing-output-load.normal .routing-output-audio { color: #49df88; }
+.routing-output-load.warning .routing-output-audio { color: #ffd05b; }
+.routing-output-load.critical .routing-output-audio { color: #ff5050; }
+.routing-output-load-track { height: 3px; overflow: hidden; border-radius: 2px; background: var(--mfx-border); }
+.routing-output-load-track > span { display: block; height: 100%; background: var(--mfx-muted); }
+.routing-output-load.normal .routing-output-load-track > span { background: #49df88; }
+.routing-output-load.warning .routing-output-load-track > span { background: #ffd05b; }
+.routing-output-load.critical .routing-output-load-track > span { background: #ff5050; }
 .routing-connections { max-height: 90px; overflow: auto; }
 .routing-mix-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; overflow: auto; }
 .routing-mix-panels.routing-mix-rig-only { grid-template-columns: minmax(0, 1fr); }

@@ -59,6 +59,7 @@ Actions:
   boot-speed-restore Undo boot-speed service changes
   hotspot          Install Wi-Fi hotspot support
   status           Branch, service, audio cards
+  restore          Restore an exported Pi-MFX backup (interactive file selection)
   reboot           Reboot the Pi
   remove           Stop the service and undo OS changes
 
@@ -130,7 +131,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|complete|install|update|rebuild|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
+        menu|complete|install|update|rebuild|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|restore|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -315,8 +316,15 @@ configure_touchscreen() {
         die "touchscreen setup needs Raspberry Pi OS and raspi-config"
 
     log "Setting up a fullscreen Pi-MFX session for $DISPLAY_USER"
-    apt-get update
-    apt-get install -y --no-install-recommends labwc chromium wtype squeekboard
+    if [[ "${PIMFX_RECOVERY_OFFLINE:-0}" == "1" ]]; then
+        for package in labwc chromium wtype squeekboard; do
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
+                || die "recovery needs the archived $package package; include Plugins and dependencies"
+        done
+    else
+        apt-get update
+        apt-get install -y --no-install-recommends labwc chromium wtype squeekboard
+    fi
     [[ -x /usr/bin/chromium ]] || die "chromium did not install at /usr/bin/chromium"
 
     mkdir -p "$DISPLAY_STATE_DIR" /etc/xdg/labwc
@@ -394,6 +402,17 @@ do_rebuild() {
 
 do_status() {
     run_script status.sh
+}
+
+do_restore_backup() {
+    local archive
+    [[ -t 0 ]] || die "restore needs an interactive terminal for the backup password"
+    read -r -p "Exported backup file (full path, without quotes): " archive
+    [[ -f "$archive" ]] || die "backup file not found"
+    [[ -f /etc/systemd/system/pimfx.service ]] || die "install Pi-MFX first, then restore your backup"
+    PIMFX_USER="$(awk -F= '/^User=/{print $2; exit}' /etc/systemd/system/pimfx.service)" \
+        PIMFX_DATA_ROOT="${DATA_ROOT:-/var/lib/pimfx}" PIMFX_PREFIX="${PREFIX:-/usr/local}" \
+        python3 "${PREFIX:-/usr/local}/libexec/pimfx/backup.py" restore "$archive"
 }
 
 do_remove() {
@@ -539,9 +558,10 @@ show_menu() {
   11) Remove Pi-MFX
   12) Reboot now
   13) Exit
+  14) Restore an exported backup
 MENU
         echo
-        read -r -p "Choose [1-13]: " choice
+        read -r -p "Choose [1-14]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
@@ -562,7 +582,8 @@ MENU
                 ;;
             12) do_reboot ;;
             13|q|Q) return 0 ;;
-            *) warn "pick a number from 1 to 13"; pause_for_menu; continue ;;
+            14) do_restore_backup || warn "restore did not finish" ;;
+            *) warn "pick a number from 1 to 14"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -597,6 +618,7 @@ main() {
         boot-speed-unused) do_boot_speed_unused ${ASSUME_YES:+--yes} ;;
         boot-speed-restore) do_boot_speed_restore ${ASSUME_YES:+--yes} ;;
         hotspot) do_hotspot ;;
+        restore) do_restore_backup ;;
         remove) do_remove ;;
         reboot) do_reboot ;;
     esac

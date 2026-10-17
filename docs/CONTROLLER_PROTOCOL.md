@@ -8,8 +8,7 @@ repository.
 The current sketch advertises firmware **1.1**, 14 controls (8 switches,
 4 pots, encoder turn and push), 8 LEDs, and RGB support. These are the stock
 `Pins.h`/`Protocol.h` values, not negotiated requirements for a custom board.
-Application 1.0.0 and firmware 1.1 are independent version numbers. Device
-validation is pending in [V1_READINESS.md](V1_READINESS.md).
+Application and firmware version numbers are independent.
 
 ## SysEx wrapper
 
@@ -78,6 +77,20 @@ The stock firmware uses:
 Learn in the UI captures whatever CC or note the board actually sends, so
 custom firmware does not need this table. Hardware Setup can reverse a pot or
 encoder in software if it is wired or turning the wrong way.
+
+There is no application control-count limit tied to the stock wiring. Add logical
+controls in Layout or Hardware Setup, then Learn in Hardware Setup. Each physical turn/push/pot/
+switch needs a distinct message type, channel, and number on the selected input
+port. Learn records that address; it does not identify GPIOs or infer control kind.
+Relearning an address transfers it from the previous logical owner. MIDI CC and
+note numbers are 0–127 on each of 16 channels; the supplied sketch uses channel 1.
+Identity counts are descriptive, not a cap and not an auto-discovery of control
+types. Firmware must implement any multiplexers/expanders used by the enclosure.
+
+`Pins.h` contains switch, pot, and encoder arrays. Add encoder rows with independent
+A/B pins, turn CC, optional push pin/CC, and steps per detent. Use `-1` for a missing
+push pin. The identity count is calculated from the arrays, including only pushes
+that exist. See [DIY controller](DIY_CONTROLLER.md) for the setup workflow.
 
 ## Device name
 

@@ -59,6 +59,7 @@ fi
 
 log "Stopping services"
 systemctl disable --now pimfx.service          >/dev/null 2>&1 || true
+systemctl stop pimfx-recovery-guard.service >/dev/null 2>&1 || true
 systemctl disable --now pimfx-plugin-helper.service >/dev/null 2>&1 || true
 systemctl disable --now pimfx-mdns.service     >/dev/null 2>&1 || true
 systemctl disable --now pimfx-hotspot.service  >/dev/null 2>&1 || true
@@ -83,6 +84,9 @@ fi
 
 log "Removing files"
 rm -f /etc/systemd/system/pimfx.service
+rm -f /etc/systemd/system/pimfx-recovery-guard.service
+rm -f /etc/systemd/system/pimfx.service.d/50-recovery-port.conf
+rm -f /etc/systemd/system/pimfx-mdns.service.d/50-recovery-port.conf
 rm -f /etc/systemd/system/pimfx-plugin-helper.service
 rm -f /etc/systemd/system/pimfx-mdns.service
 rm -f /etc/systemd/system/pimfx-hotspot.service
@@ -95,6 +99,7 @@ rm -f /etc/sysctl.d/95-pimfx-audio.conf
 rm -f /etc/modprobe.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
 rm -f "$PREFIX/libexec/pimfx/plugin-helper.py"
+rm -f "$PREFIX/libexec/pimfx/backup.py"
 rm -f "$PREFIX/libexec/pimfx/hotspot.py"
 rm -f "$PREFIX/libexec/pimfx/mdns.py"
 rmdir "$PREFIX/libexec/pimfx" >/dev/null 2>&1 || true

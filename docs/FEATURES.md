@@ -16,6 +16,7 @@ but also works from phones, tablets, and computers on the same trusted network.
 - Engine-owned live preset drafts, model audition, explicit Save, and Reload
   of the saved base preset; drafts do not survive an engine restart
 - Tempo-link controls for compatible time-based effects
+- Block active/bypass LEDs, endpoint signal indicators, and ten-change editor undo/redo
 
 ## Banks, presets, snapshots, and community
 
@@ -63,7 +64,9 @@ but also works from phones, tablets, and computers on the same trusted network.
 - Optional ESP32-S3 USB-MIDI floorboard
 - Learn and mapping for momentary/latching switches, pots, sliders, expression
   pedals, encoders, encoder buttons, and LEDs
-- Custom themes, on-screen keyboard modes, interface feel, configuration
+- Add hardware controls from Layout or Hardware Setup without a stock-count cap;
+  learn distinct CC/note addresses, with multiple encoders in the supplied firmware
+- Custom themes, on-screen keyboard modes, interface feel, full/selective
   backup/restore, and separate setup/controller/layout profiles
 - Multiple connected UIs share navigation and editor session state
 
@@ -82,11 +85,16 @@ The attached loopback touchscreen stays unlocked. Remembered browsers survive
 service restarts until locked or revoked by a password change. HTTP remains
 unencrypted; use a trusted network. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
 
-Configuration backups exclude banks, models, IRs, audio media, plugin binaries,
-and credentials. They are not a full-device recovery image.
+Compressed recovery archives include banks, models, IRs, plugins/dependencies, media,
+settings, credentials and Pi-MFX installation choices. Export to USB or download
+off the Pi; restore after a fresh OS and installer run. Selective restore and
+legacy configuration imports are supported. Choose smaller archives with
+recorded plugin downloads or include installers for self-contained restoration.
+Manual plugins and packages without download records remain included.
+See [BACKUP_RESTORE.md](BACKUP_RESTORE.md)
+for compatibility, working-space requirements and pending Pi validation.
 
 Implementation in the repository is not the same as Raspberry Pi sign-off.
 Actual audio formats, LV2 plugins, touch/encoder behavior, CPU load, latency,
 storage performance, and XRuns must be validated on the target Pi.
-The 1.0 stabilization scope and unresolved findings are tracked in
-[V1_READINESS.md](V1_READINESS.md).
+Maintainer release and device-validation work is covered in [Development](DEV_FLOW.md).

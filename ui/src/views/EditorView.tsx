@@ -87,7 +87,7 @@ export function EditorView({
     const [structureBusy, setStructureBusy] = useState(false);
     const structureBusyRef = useRef(false);
     const sessionDirty = bool(state.sessionPresetDirty);
-    const presetName = str(obj(preset).name, "current preset");
+    const presetName = str(obj(preset).name, "No preset");
     const sessionPresetId = str(obj(preset).id, str(state.activePresetId));
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
 
@@ -173,7 +173,7 @@ export function EditorView({
     const virtualConfig = obj(state.virtualControls);
     const virtualPages = virtualControlPages(virtualConfig);
     const virtualControls = objects(virtualConfig.controls);
-    const parameterBindings = objects(obj(preset).parameterBindings);
+    const parameterBindings = objects(state.editorBindings ?? obj(preset).parameterBindings);
     const bindingsForParameter = (slotId: string, symbol: string) =>
         parameterBindings.filter((binding) =>
             str(binding.action) === "setParameter"
@@ -255,14 +255,15 @@ export function EditorView({
         <div className="mfx-screen editor-screen">
             <div className="editor-main">
             {page !== "chain" && page !== "mixers" && <div className="editor-session-bar">
-                <span><strong>{presetName}</strong><small>{sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small></span>
+                <span><strong>{presetName}</strong><small>{!preset ? "CREATE OR SELECT A PRESET" : sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small></span>
                 {sessionStatus && <strong className="editor-session-status">{sessionStatus}</strong>}
                 {sessionButtons}
             </div>}
             {(page === "chain" || page === "mixers") && (
                 <>
                     <RoutingEditor key={str(state.activePresetId)} client={client} catalog={catalog} blocks={chain} routing={obj(state.routing)}
-                        presetId={str(state.activePresetId)} locked={lockChain || structureBusy || bool(state.chainPreparing)}
+                        undoCount={num(state.editorUndoCount)} redoCount={num(state.editorRedoCount)}
+                        presetId={str(state.activePresetId)} locked={!preset || lockChain || structureBusy || bool(state.chainPreparing)}
                         mix={page === "mixers"} onMixChange={mix => {
                             const next = mix ? "mixers" : "chain";
                             setPage(next);
@@ -271,8 +272,8 @@ export function EditorView({
                         toolbarContent={<>
                             <button type="button" className="editor-preset-name routing-preset-selector" disabled={lockChain} onClick={() => setPickerOpen(true)}>
                                 <span className="routing-preset-copy">
-                                    <MarqueeText text={`${str(obj(bank).name, "Bank")} / ${str(obj(preset).name, "Preset")}`} align="center" fontWeight={900} />
-                                    <small role="status">{sessionStatus || (bool(state.chainPreparing) ? "PREPARING ROUTING…" : sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET")}</small>
+                                    <MarqueeText text={`${str(obj(bank).name, "No bank")} / ${presetName}`} align="center" fontWeight={900} />
+                                    <small role="status">{!preset ? "CREATE OR SELECT A PRESET" : sessionStatus || (bool(state.chainPreparing) ? "PREPARING ROUTING…" : sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET")}</small>
                                 </span>
                                 <span className="editor-preset-chevron">▾</span>
                             </button>
@@ -280,13 +281,13 @@ export function EditorView({
                         </>}
                         presetActions={<>
                             {!lockChain && <button type="button" className="btn" onClick={() => setNewPresetOpen(true)}>NEW PRESET</button>}
-                            <button type="button" className="btn" onClick={onSnapshots}>SNAPSHOTS</button>
+                            <button type="button" className="btn" disabled={!preset} onClick={onSnapshots}>SNAPSHOTS</button>
                             {lockChain && <p className="muted">Snapshot editing cannot add, remove or reorder effects.</p>}
                         </>}
                         presetManagementActions={<>
                             {!lockChain && <>
-                                <button type="button" className="btn" onClick={renamePreset}>RENAME PRESET</button>
-                                <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>DELETE PRESET</button>
+                                <button type="button" className="btn" disabled={!preset} onClick={renamePreset}>RENAME PRESET</button>
+                                <button type="button" className="btn btn-danger" disabled={!preset} onClick={() => setConfirmDelete(true)}>DELETE PRESET</button>
                             </>}
                         </>}
                         run={run} runStructure={runStructureChange} onRemove={id => runStructureChange(() => client.request("chain/remove", { slotId: id }))} onEdit={openControls} onIo={kind => {

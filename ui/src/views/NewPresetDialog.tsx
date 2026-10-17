@@ -16,7 +16,9 @@ export function NewPresetDialog({
     onCreate: (name: string, bankId: string) => void;
 }) {
     const [name, setName] = useState(defaultName);
-    const [bankId, setBankId] = useState(defaultBankId || str(objects(banks)[0]?.id));
+    const [bankId, setBankId] = useState(banks.some((bank) => str(bank.id) === defaultBankId)
+        ? defaultBankId : str(objects(banks)[0]?.id));
+    const canCreate = Boolean(name.trim()) && (Boolean(bankId) || banks.length === 0);
 
     const close = () => {
         dismissOnScreenKeyboard();
@@ -34,7 +36,7 @@ export function NewPresetDialog({
                         value={name}
                         onChange={(event) => setName(event.target.value)}
                         onKeyDown={(event) => {
-                            if (event.key === "Enter" && name.trim()) {
+                            if (event.key === "Enter" && canCreate) {
                                 onCreate(name.trim(), bankId);
                             }
                             if (event.key === "Escape") {
@@ -49,6 +51,7 @@ export function NewPresetDialog({
                         value={bankId}
                         onChange={(event) => setBankId(event.target.value)}
                     >
+                        {!banks.length && <option value="">New bank (Bank 1)</option>}
                         {banks.map((bank) => (
                             <option key={str(bank.id)} value={str(bank.id)}>
                                 {str(bank.name, str(bank.id))}
@@ -61,7 +64,7 @@ export function NewPresetDialog({
                     <button
                         type="button"
                         className="btn btn-accent"
-                        disabled={!name.trim() || !bankId}
+                        disabled={!canCreate}
                         onClick={() => onCreate(name.trim(), bankId)}
                     >
                         CREATE

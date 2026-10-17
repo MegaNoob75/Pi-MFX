@@ -1,7 +1,7 @@
 # Installing Pi-MFX
 
-These instructions describe the current development feature set. The planned
-1.0.0 release still needs the sign-off in [V1_READINESS.md](V1_READINESS.md).
+See the [User guide](USER_GUIDE.md) for first sound, feature chapters, and setup
+examples after installation.
 
 ## What you need
 
@@ -233,11 +233,12 @@ Your banks, settings, models, and IRs live in `/var/lib/pimfx` and are not
 touched by an update or a reinstall. Run install again only if you need new
 system packages or want to re-apply tuning.
 
-Keep a separate copy of that data before release upgrades. The in-app
-configuration backup does not include banks, models, IRs, recordings, loops,
-backing tracks, drum assets, plugins, or credentials. For a consistent complete
-copy, stop Pi-MFX cleanly before copying its data root and preserve ownership
-and permissions. See [TECHNICAL.md](TECHNICAL.md).
+Export a recovery archive before release upgrades using **Settings → Backup &
+Restore**. Full archives contain the complete Pi-MFX rig and require a backup
+password. After installing a fresh OS and Pi-MFX, restore the exported file from
+that screen or choose **14) Restore an exported backup** in the installer menu.
+See [BACKUP_RESTORE.md](BACKUP_RESTORE.md) for required free space, compatibility,
+selective restore, rollback and pending Pi validation.
 
 ## Removing
 

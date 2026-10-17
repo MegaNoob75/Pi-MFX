@@ -37,19 +37,30 @@ constexpr AnalogControl kPots[] = {
     {11, 13},
 };
 
-constexpr uint8_t kEncoderPinA = 18;
-constexpr uint8_t kEncoderPinB = 17;
-constexpr uint8_t kEncoderPinButton = 21;
-constexpr uint8_t kEncoderTurnCc = 30;
-constexpr uint8_t kEncoderButtonCc = 31;
-constexpr uint8_t kEncoderStepsPerDetent = 4;
+struct EncoderControl {
+    uint8_t pinA, pinB;
+    int16_t buttonPin; // -1 for an encoder without a push switch
+    uint8_t turnCc, buttonCc;
+    uint8_t stepsPerDetent;
+};
+// Add one row per encoder. Give every turn/push a unique CC, and use
+// GPIOs that are free on your particular board. Learn each row in Hardware Setup.
+constexpr EncoderControl kEncoders[] = {
+    {18, 17, 21, 30, 31, 4},
+};
 
 constexpr uint8_t kLedPin = 48;
 constexpr uint16_t kLedCount = 8;
 
-constexpr uint8_t kSwitchCount = sizeof(kSwitches) / sizeof(kSwitches[0]);
-constexpr uint8_t kPotCount = sizeof(kPots) / sizeof(kPots[0]);
-constexpr uint8_t kReportedControlCount = kSwitchCount + kPotCount + 2; // encoder turn + push
+constexpr size_t kSwitchCount = sizeof(kSwitches) / sizeof(kSwitches[0]);
+constexpr size_t kPotCount = sizeof(kPots) / sizeof(kPots[0]);
+constexpr size_t kEncoderCount = sizeof(kEncoders) / sizeof(kEncoders[0]);
+constexpr size_t reportedControlCount() {
+    size_t count = kSwitchCount + kPotCount;
+    for (const auto& encoder : kEncoders) count += encoder.buttonPin >= 0 ? 2 : 1;
+    return count;
+}
+constexpr size_t kReportedControlCount = reportedControlCount();
 
 constexpr uint32_t kSwitchDebounceMs = 20;
 constexpr uint32_t kAnalogIntervalMs = 4;

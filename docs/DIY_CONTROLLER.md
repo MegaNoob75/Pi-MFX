@@ -65,12 +65,41 @@ Edit `Pins.h` if your enclosure uses different GPIOs, then flash again.
    to scroll lists (menus, banks, presets, themes) and confirm the highlight.
 5. Assign presets by holding a Performance tile — not from Hardware Setup.
 
-## Release validation
+## Expand the controls
+
+The wiring table is an example, not a Pi-MFX limit. Add entries to `kSwitches`,
+`kPots`, and `kEncoders` in `Pins.h` for the controls your board can support.
+Each encoder row is `{pinA, pinB, buttonPin, turnCc, buttonCc, stepsPerDetent}`.
+Use `-1` for `buttonPin` when no push switch exists. For example:
+
+```cpp
+constexpr EncoderControl kEncoders[] = {
+    {18, 17, 21, 30, 31, 4}, // stock encoder and push
+    {9, 10, -1, 32, 33, 4}, // example extra encoder, no push
+};
+```
+
+Pins 9/10 are examples only: check they are actually free and usable on your board.
+Give every switch, analog control, encoder turn and push a unique CC. The supplied
+sketch uses channel 1, with CC numbers 0–127. A custom controller can use other MIDI
+channels or notes, which Learn also records. GPIO/ADC capacity, electrical design,
+scan speed, USB bandwidth, and expanders remain hardware constraints. Pi-MFX does
+not read GPIOs or configure expanders through the Learn button.
+
+Flash the changed firmware. In Hardware Setup add the appropriate logical control,
+select Learn Turn, operate the encoder, and separately Learn Button if it has a
+push. Repeat for every added control. Learn transfers a reused MIDI address from
+its previous owner; two controls need distinct addresses to work independently.
+Open Layout to show/place and size the new controls, then save the layout and a
+controller profile. Bind preset parameters in Preset Editor. Nothing requires all
+encoders to perform navigation; each can control a different assigned parameter.
+
+## Check your controller
 
 On the candidate Pi build, verify all eight switch press/releases, four pots
 including endpoints/catch behavior, both encoder directions, encoder push,
 hold/double actions, and every RGB LED. Unplug/reconnect the controller and
 restart the engine, then confirm mappings and LED states recover. Test the
-touchscreen and floorboard together. Record results in
-[V1_READINESS.md](V1_READINESS.md). Review the exact installed library notices
+touchscreen and floorboard together. Include every additional control from your
+custom arrays. Review the exact installed library notices
 before distributing compiled firmware; see [THIRD_PARTY.md](THIRD_PARTY.md).

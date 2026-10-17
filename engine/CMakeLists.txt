@@ -152,6 +152,22 @@ install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(pimfx_bank_storage_test
+        tests/BankStorageTest.cpp
+        src/model/Storage.cpp
+        src/model/Model.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_bank_storage_test PRIVATE src)
+    target_link_libraries(pimfx_bank_storage_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pimfx_bank_storage_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME bank_storage COMMAND pimfx_bank_storage_test)
+
     add_executable(pimfx_startup_guard_test
         tests/StartupGuardTest.cpp
         src/core/Paths.cpp

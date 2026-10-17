@@ -84,6 +84,9 @@ public:
     Json diagnosticsState() const;
     bool libraryPathInUse(const std::string& path) const;
     const Paths& storagePaths() const { return storage_.paths(); }
+    bool prepareBackup(bool includeLoop, std::string& error);
+    void releaseBackupPreparation() { backupPreparing_.store(false, std::memory_order_release); }
+    bool backupPreparing() const { return backupPreparing_.load(std::memory_order_acquire); }
 
     // --- audio -----------------------------------------------------------
     bool applyAudioSettings(const Json& json, std::string& error);
@@ -166,6 +169,10 @@ public:
     /// Puts the live chain back to the stored base preset, discarding a
     /// snapshot that is being auditioned or edited.
     bool restoreLiveFromStoredPreset(std::string& error);
+    Json withEditorHistory(const std::string& key, bool finished, bool& ok,
+                           const std::function<Json()>& work);
+    bool stepEditorHistory(bool redo, std::string& error);
+    void resetEditorHistory();
 
     // --- controller ------------------------------------------------------
     bool applyControllerConfig(const Json& json, std::string& error);
@@ -271,6 +278,7 @@ private:
             std::string id;
             ChainSlot* slot = nullptr;
             bool active = false;
+            bool mixBypassed = false;
             std::vector<std::vector<float>> input, output;
             std::vector<float*> inputPointers, outputPointers;
             std::vector<RoutingEdge*> incoming;
@@ -341,9 +349,11 @@ private:
     std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error,
                                     const Chain* retained = nullptr,
                                     const std::string& recreatedSlotId = "");
+    void publishEmptyChain();
     bool validateGraphEditChain(const Chain* chain, std::string& error) const;
     void applySnapshotToChain(const Snapshot& snapshot);
     Snapshot captureCurrentChain(const std::string& name) const;
+    Json captureBackupSession();
     Snapshot* findSnapshotBySlot(Preset& preset, int slot);
     const Snapshot* findSnapshotBySlot(const Preset& preset, int slot) const;
     void restoreStoredPresetToChainUnlocked(Preset& preset);
@@ -410,6 +420,10 @@ private:
     /// Unsaved, engine-owned working copies. These deliberately never enter
     /// bank serialization; Save promotes one copy and Reload discards it.
     std::unordered_map<std::string, Preset> sessionPresetDrafts_;
+    std::string editorHistoryPresetId_, editorGesture_;
+    std::vector<Preset> editorUndo_, editorRedo_;
+    std::atomic<bool> backupPreparing_{false};
+    std::optional<Preset> recoveryLivePreset_;
     std::string activeVirtualControlId_;
     uint64_t virtualControlRevision_ = 0;
 

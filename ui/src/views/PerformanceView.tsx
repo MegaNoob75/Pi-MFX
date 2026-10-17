@@ -128,7 +128,7 @@ export function PerformanceView({
 
     const positions = obj(state.controlPositions);
     const chain = objects(state.chain);
-    const parameterBindings = objects(obj(preset).parameterBindings);
+    const parameterBindings = objects(state.editorBindings ?? obj(preset).parameterBindings);
     const [bankMenuOpen, setBankMenuOpen] = useState(false);
     const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menu, setMenu] = useState<TileMenu | null>(null);
@@ -743,11 +743,13 @@ export function PerformanceView({
                 const sessionEntry = encoderMode === "session" && presetSlotIndex != null && catalog.length > 0
                     ? catalog[wrapIndex(browseIndex + presetSlotIndex, catalog.length)]
                     : undefined;
-                const displayPresetId = sessionEntry?.presetId || presetId;
+                const requestedPresetId = sessionEntry?.presetId || presetId;
                 const displayBankId = sessionEntry?.bankId || str(obj(bank).id);
-                const presetItem = presets.find((entry) => str(entry.id) === displayPresetId)
+                const presetItem = presets.find((entry) => str(entry.id) === requestedPresetId)
                     || objects(obj(banks.find((item) => str(item.id) === displayBankId)).presets)
-                        .find((entry) => str(entry.id) === displayPresetId);
+                        .find((entry) => str(entry.id) === requestedPresetId);
+                // Old controller profiles can still contain deleted IDs.
+                const displayPresetId = presetItem ? requestedPresetId : "";
                 const minSize = analogMinSize(kind);
                 const empty = canAssign && !displayPresetId;
                 const presetBind = parameterBindings.find((item) => str(item.controlId) === controlId);
@@ -757,7 +759,7 @@ export function PerformanceView({
                 const toggleSlot = str(obj(presetBind).action) === "toggleEffect"
                     ? str(presetBind?.slotId)
                     : (action === "toggleEffect" ? str(binding.slotId) : "");
-                const active = (displayPresetId === str(state.activePresetId)
+                const active = (!!displayPresetId && displayPresetId === str(state.activePresetId)
                     && (!sessionEntry || displayBankId === str(state.activeBankId)))
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)

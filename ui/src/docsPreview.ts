@@ -6,6 +6,18 @@ const params = new URLSearchParams(window.location.search);
 const requestedView = params.get("view") || "performance";
 const variant = params.get("variant") || "";
 
+// Exercise an older prepared archive over the HTTP download fallback without
+// touching a Pi, writing a backup, or downloading a real archive.
+const backupDownloadPreview = requestedView === "backup" && variant === "http-download";
+let previewBackupId = "docs-backup-existing";
+let previewBackupExported = false;
+if (backupDownloadPreview) {
+    Object.defineProperty(window, "showSaveFilePicker", { configurable: true, value: undefined });
+    document.addEventListener("click", event => {
+        if (event.target instanceof Element && event.target.closest('a[href^="/api/backup/download"]')) event.preventDefault();
+    });
+}
+
 const waveform = Array.from({ length: 72 }, (_, index) =>
     0.18 + Math.abs(Math.sin(index * 0.37)) * 0.72
 );
@@ -149,7 +161,7 @@ const state: Body = {
     banks,
     chain: chain.map(previewSlot),
     chainLayout: [
-        ...chain.map(previewSlot),
+        ...chain.filter(slot => ["slot-nam", "slot-drive"].includes(slot.id)).map(previewSlot),
         { id: "slot-cab", uri: "http://two-play.com/plugins/toob-cab-ir", name: "TooB Cab IR", enabled: true,
           state: { controls: { reverb_mix: -6, reverb_mix2: -9, reverb_mix3: -12 }, properties: {
             "http://two-play.com/plugins/toob-cab-ir#impulseFile": "Cabinets/Greenback-212.wav",
@@ -159,8 +171,8 @@ const state: Body = {
         { id: "rig-mix", name: "Rig blend", kind: "mixer", enabled: true, state: {} }
     ],
     routing: { version: 1, positions: {
-        input: { x: 25, y: 110 }, "slot-nam": { x: 245, y: 30 }, "slot-cab": { x: 465, y: 30 },
-        "slot-drive": { x: 245, y: 210 }, "rig-mix": { x: 685, y: 110 }, output: { x: 905, y: 110 }
+        input: { x: 20, y: 60 }, "slot-nam": { x: 220, y: 20 }, "slot-cab": { x: 420, y: 20 },
+        "slot-drive": { x: 220, y: 220 }, "rig-mix": { x: 620, y: 120 }, output: { x: 820, y: 120 }
     }, edges: [
         { from: "input", to: "slot-nam" }, { from: "slot-nam", to: "slot-cab" },
         { from: "slot-cab", to: "rig-mix", levelDb: -3, pan: 0 },
@@ -253,7 +265,7 @@ const drums: Body = {
 };
 const meters: Body = {
     type: "meters", running: true, dspLoad: .09, engineCpuLoad: .14, engineCpuLoadAvailable: true, xruns: 0, bufferMs: 2.67, roundTripMs: 5.25,
-    input: [.31, .08], output: [.27, .25], inputPeak: [.62, .12], outputPeak: [.55, .51], guitarInputPeak: .31, guitarInputRms: .12, safetyLookaheadMs: .75,
+    input: [.31, .08], output: [.27, .25], inputPeak: .12, outputPeak: .55, guitarInputPeak: .31, guitarInputRms: .12, safetyLookaheadMs: .75,
     effects: [
         { slotId: "slot-gate", inputPeak: .31, outputPeak: .29 },
         { slotId: "slot-drive", inputPeak: .29, outputPeak: .43 },
@@ -289,6 +301,20 @@ const communityCatalog = {
 };
 
 function responseFor(command: string): Body {
+    if (backupDownloadPreview) {
+        if (command === "backup/options") return { ok: true, devices: [], categories: [{ id: "banks", label: "Banks, presets and snapshots" }] };
+        if (command === "backup/status") return { ok: true, job: {
+            id: previewBackupId, state: "complete", action: "create",
+            message: previewBackupExported ? "Backup saved off the Pi; temporary archive removed" : "Ready to download; keep the exported file off this Pi",
+            result: { name: "Pi-MFX-example.pimfx-backup", bytes: 150500000, categories: ["banks"], encrypted: true,
+                exported: previewBackupExported, destination: previewBackupExported ? "Browser download — saved file confirmed by user" : "", sha256: "example-checksum" }
+        } };
+        if (command === "backup/create") {
+            previewBackupId = "docs-backup-created"; previewBackupExported = false;
+            return { ok: true, id: previewBackupId };
+        }
+        if (command === "backup/exported") { previewBackupExported = true; return { ok: true }; }
+    }
     if (command === "audio/devices") return { ok: true, devices: [{ id: "hw:USB", name: "Scarlett Solo 4th Gen", duplex: true, maxInputChannels: 2, maxOutputChannels: 2, sampleRates: [44100, 48000, 96000], periodSizes: [32, 64, 128, 256] }] };
     if (command === "tone3000/status") return { ok: true, configured: true, authenticated: true, accountName: "Pi-MFX Player", publishableKey: "configured", redirectUri: `${window.location.origin}/` };
     if (command === "community/status") return { ok: true, enabled: true, submissionAvailable: true, submissionUrl: "https://github.com/MegaNoob75/Pi-MFX-Community-Presets/issues/new" };

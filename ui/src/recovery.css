@@ -1,0 +1,8 @@
+.recovery-categories { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.recovery-category { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 10px; border: 1px solid var(--mfx-border); border-radius: var(--mfx-radius); overflow-wrap: anywhere; }
+.recovery-category input { flex: 0 0 auto; width: 22px; height: 22px; }
+.recovery-category small { display: block; opacity: .7; }
+.recovery-checksum { overflow-wrap: anywhere; font-size: .8em; }
+.recovery-file-list { display: grid; gap: 6px; max-height: 320px; overflow-y: auto; }
+.recovery-view progress { width: 100%; }
+@media (max-width: 560px) { .recovery-categories { grid-template-columns: minmax(0, 1fr); } }

@@ -55,6 +55,7 @@ private:
     /// Runs one command. Returns the reply payload; `ok` and `error` describe
     /// the outcome.
     Json dispatch(const std::string& command, const Json& payload, bool& ok, std::string& error);
+    Json dispatchCommand(const std::string& command, const Json& payload, bool& ok, std::string& error);
 
     Json tone3000Command(const std::string& command, const Json& payload, bool& ok, std::string& error);
     Json pluginsCommand(const std::string& command, const Json& payload, bool& ok, std::string& error);

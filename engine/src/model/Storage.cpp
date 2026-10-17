@@ -95,7 +95,9 @@ std::vector<Bank> Storage::loadBanks() {
         }
     }
 
-    if (banks.empty()) {
+    // Only seed a fresh installation. An existing settings file also marks a
+    // library whose last bank was deliberately deleted.
+    if (banks.empty() && !fileExists(paths_.settingsFile())) {
         Bank starter = makeStarterBank();
         saveBank(starter);
         banks.push_back(std::move(starter));

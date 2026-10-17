@@ -38,10 +38,8 @@ unlocked at its loopback address. Set the password on a trusted network and
 keep using the same hostname so the browser can remember its login. HTTP is
 unencrypted. See [Remote access](docs/REMOTE_ACCESS.md).
 
-The current `dev` feature set is entering stabilization for **1.0.0**. This is
-not a 1.0 release announcement or device sign-off. Repair status, remaining
-validation, and the Pi 5 release checklist are in
-[1.0 readiness](docs/V1_READINESS.md).
+Start with the [User guide](docs/USER_GUIDE.md) for feature chapters and examples.
+An offline browser edition with search and printing opens from **About → User Guide**.
 
 ## Documentation
 
@@ -52,7 +50,6 @@ validation, and the Pi 5 release checklist are in
 | [Features](docs/FEATURES.md) | What Pi-MFX does |
 | [Install](docs/INSTALL.md) | First Pi, audio HAT, kiosk, hotspot |
 | [Development](docs/DEV_FLOW.md) | PC edit → Pi rebuild loop |
-| [1.0 readiness](docs/V1_READINESS.md) | Audit repairs, pending validation, and device sign-off |
 | [Technical](docs/TECHNICAL.md) | Engine, UI, firmware, data files |
 | [Remote access](docs/REMOTE_ACCESS.md) | Password setup, remembered browsers, recovery |
 | [Roadmap](docs/ROADMAP.md) | Stabilization scope and deferred ideas |

@@ -313,6 +313,8 @@ struct VirtualControlsConfig {
 /// UI preferences that live on the Pi rather than in the browser, so every
 /// device that connects sees the same rig.
 struct UiSettings {
+    /// Persistent rig preferences formerly stored only in the kiosk browser.
+    Json browserPreferences = Json::object();
     std::string themeId = "Pi-MFX Purple";
     Json customThemes = Json::array();
     Json ledColors = Json::object();

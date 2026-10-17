@@ -112,7 +112,8 @@ source-text assertion is not behavioral or audio evidence.
    capture and transport ownership.
 5. Test Save/Reload, Save As, rename/reorder/move/delete and library dependency
    protection. Restore configuration/setup profiles and banks/assets on a
-   disposable setup. Configuration backup is not a full device image.
+   disposable setup. Validate full/selective recovery archives on a fresh OS
+   using [BACKUP_RESTORE.md](BACKUP_RESTORE.md), including corruption and rollback.
 6. Run the [remote-access checklist](REMOTE_ACCESS.md), offline startup/use,
    Wi-Fi/hotspot transitions, two-browser concurrent edits/reconnects and
    password revocation during pending operations.

@@ -1,3 +1,4 @@
+param([string[]]$Only = @(), [string]$BrowserPath = "")
 $ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
@@ -8,6 +9,7 @@ $edgeCandidates = @(
     "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
 )
 $edge = $edgeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($BrowserPath) { $edge = $BrowserPath }
 if (-not $edge) {
     throw "Microsoft Edge was not found. Install Edge or update capture-docs.ps1 with a Chromium path."
 }
@@ -65,12 +67,17 @@ $shots = [ordered]@{
 
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 foreach ($entry in $shots.GetEnumerator()) {
+    if ($Only.Count -gt 0 -and $entry.Key -notin $Only) { continue }
     $path = Join-Path $output $entry.Key
     $temporaryPath = Join-Path $output ".capture-$PID-$($entry.Key)"
     Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
     $arguments = @(
         "--headless=new"
         "--disable-gpu"
+        "--no-first-run"
+        "--no-default-browser-check"
+        "--disable-extensions"
+        "--user-data-dir=$env:TEMP\pimfx-docs-$PID"
         "--hide-scrollbars"
         "--virtual-time-budget=2500"
         "--window-size=1024,600"
@@ -88,4 +95,4 @@ foreach ($entry in $shots.GetEnumerator()) {
     Write-Host "Captured $($entry.Key)"
 }
 
-Write-Host "Updated $($shots.Count) screenshots in $output"
+Write-Host "Finished capturing requested screenshots in $output"

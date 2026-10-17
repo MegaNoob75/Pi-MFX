@@ -38,7 +38,7 @@ Json envelope(bool ok, const std::string& error, const Json& payload) {
 }
 
 bool slowApiCommand(const std::string& command) {
-    return command == "catalog" || command == "library" || command.rfind("plugins/", 0) == 0 || command.rfind("community/", 0) == 0
+    return command.rfind("backup/", 0) == 0 || command == "catalog" || command == "library" || command.rfind("plugins/", 0) == 0 || command.rfind("community/", 0) == 0
         || command.rfind("library/", 0) == 0 || command == "backing/import"
         || command == "drums/library/import" || command == "drums/library/audio" || command == "drums/sample/import"
         || command == "looper/load" || command == "looper/save" || command == "looper/export"
@@ -193,7 +193,7 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
         "state", "catalog", "audio/devices", "midi/ports", "library", "diagnostics", "meters",
         "transport/state", "backing/state", "looper/state", "recorder/state", "drums/state",
         "library/list", "library/tree", "library/read", "looper/export", "recorder/export",
-        "drums/library/audio", "system/update/status", "plugins/status", "tone3000/status"
+        "drums/library/audio", "system/update/status", "plugins/status", "tone3000/status", "backup/download"
     };
     if (request.method != "POST" && !(request.method == "GET" && readable.count(command))) {
         response.extraHeaders.emplace_back("Allow", readable.count(command) ? "GET, POST" : "POST");
@@ -221,6 +221,42 @@ bool ApiRouter::handleRequestNow(const HttpRequest& request, HttpResponse& respo
     }
 
     const std::string command = request.path.substr(5);
+    if (command == "backup/upload/chunk" && request.method == "POST") {
+        if (request.body.empty() || request.body.size() > 512u * 1024u) {
+            response.error(400, "invalid recovery upload chunk"); return true;
+        }
+        std::string error;
+        const std::string offset = request.header("x-pimfx-offset");
+        char* end = nullptr;
+        const long long position = std::strtoll(offset.c_str(), &end, 10);
+        if (offset.empty() || !end || *end || position < 0) {
+            response.error(400, "invalid recovery upload position"); return true;
+        }
+        const Json reply = plugins_.backupCommand("upload-chunk", Json::object({
+            {"id", request.header("x-pimfx-job")}, {"offset", Json(static_cast<int64_t>(position))},
+            {"data", base64Encode(request.body)}}), error);
+        response.json(envelope(error.empty(), error, reply).dump(), error.empty() ? 200 : 400);
+        return true;
+    }
+    if (command == "backup/download" && request.method == "GET") {
+        std::string error;
+        if (request.local) {
+            response.error(400, "use Export to USB on the Pi; download the backup from another computer"); return true;
+        }
+        const Json reply = plugins_.backupCommand("download", Json::object({{"id", request.queryValue("id")}}), error);
+        if (!error.empty()) response.error(400, error);
+        else {
+            response.filePath = reply["path"].asString();
+            response.fileSize = static_cast<uint64_t>(reply["bytes"].asInt64());
+            response.contentType = "application/octet-stream";
+            response.extraHeaders.emplace_back("Cache-Control", "no-store");
+            response.extraHeaders.emplace_back("Content-Disposition", "attachment; filename=\"" + reply["name"].asString() + "\"");
+        }
+        return true;
+    }
+    if (engine_.backupPreparing() && command.rfind("backup/", 0) != 0 && command != "state") {
+        response.error(409, "backup/restore is preparing; wait for the engine to reconnect"); return true;
+    }
     if (command == "drums/library/import" && request.method == "POST") {
         Json result = Json::object(); std::string error;
         const bool ok = engine_.drumLibraryImport(urlDecode(request.header("x-pimfx-relative")), request.body, result, error);
@@ -401,8 +437,54 @@ void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& messag
 
 Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                          bool& ok, std::string& error) {
+    static const std::set<std::string> edits = {"chain/add", "chain/replace", "chain/remove",
+        "chain/enable", "chain/control", "chain/controls", "chain/tempo-link", "chain/property",
+        "routing/edit", "preset/bind"};
+    if (edits.count(command) && !engine_.backupPreparing()) {
+        return engine_.withEditorHistory(command + ":" + payload["slotId"].asString()
+            + ":" + payload["port"].asString() + ":" + payload["property"].asString(),
+            payload["persist"].asBool(true), ok,
+            [&] { return dispatchCommand(command, payload, ok, error); });
+    }
+    const Json result = dispatchCommand(command, payload, ok, error);
+    // Saved snapshot metadata has its own lifecycle; do not let an older
+    // graph checkpoint overwrite captures, names, or colors made afterwards.
+    if (ok && command.rfind("snapshot/", 0) == 0) engine_.resetEditorHistory();
+    return result;
+}
+
+Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
+                                bool& ok, std::string& error) {
     ok = true;
     error.clear();
+
+    if (command.rfind("backup/", 0) == 0) {
+        const std::string action = command.substr(7);
+        if (action == "release") { engine_.releaseBackupPreparation(); return Json::object(); }
+        static const std::set<std::string> actions = {"options", "status", "create", "upload-begin", "inspect", "files", "restore", "discard", "exported", "legacy", "usb-files", "import-usb", "prepare", "rollback"};
+        if (!actions.count(action)) { ok = false; error = "unknown recovery command"; return Json(); }
+        Json args = payload;
+        if (action == "prepare" && engine_.backupPreparing()) return Json::object();
+        if (action == "create" || action == "restore" || action == "prepare" || action == "rollback") {
+            {
+                std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+                for (const auto& entry : toneDownloadJobs_) if (!entry.second->done.load()) {
+                    ok = false; error = "finish model downloads before backup/restore"; return Json();
+                }
+            }
+            if (!engine_.prepareBackup(true, error)) { ok = false; return Json(); }
+            args.set("port", server_.port());
+            args.set("application", Json::object({{"version", PIMFX_VERSION}}));
+        }
+        if (action == "prepare") return args;
+        const Json reply = plugins_.backupCommand(action, args, error);
+        ok = error.empty();
+        if (!ok && (action == "create" || action == "restore" || action == "rollback")) engine_.releaseBackupPreparation();
+        return reply;
+    }
+    if (engine_.backupPreparing() && command != "state") {
+        ok = false; error = "backup/restore is preparing; wait for the engine to reconnect"; return Json();
+    }
 
     // --- reads ------------------------------------------------------------
     if (command == "state") {
@@ -474,6 +556,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- presets and banks -------------------------------------------------
+    if (command == "preset/undo" || command == "preset/redo") {
+        ok = engine_.stepEditorHistory(command == "preset/redo", error);
+        return Json::object();
+    }
     if (command == "preset/bind") {
         ok = engine_.bindPresetControl(payload, error);
         return Json::object();

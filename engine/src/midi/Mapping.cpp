@@ -77,7 +77,9 @@ ControllerConfig ControllerRuntime::config() const {
 
 void ControllerRuntime::beginLearn(const std::string& controlId) {
     std::lock_guard<std::mutex> lock(mutex_);
-    learnControlId_ = controlId;
+    const auto found = std::find_if(config_.controls.begin(), config_.controls.end(),
+        [&](const ControllerControl& control) { return control.id == controlId; });
+    learnControlId_ = found == config_.controls.end() ? std::string() : controlId;
 }
 
 void ControllerRuntime::cancelLearn() {
@@ -127,6 +129,15 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
         }
         for (ControllerControl& control : config_.controls) {
             if (control.id == learnControlId_) {
+                // One physical address belongs to one logical control. A stock
+                // mapping or a previous Learn must not shadow the new owner.
+                for (ControllerControl& other : config_.controls) {
+                    if (other.id != control.id && other.channel == message.data1
+                        && other.useNoteMessages == message.isNoteOn()
+                        && (other.midiChannel == 0 || other.midiChannel == message.channel() + 1)) {
+                        other.channel = -1;
+                    }
+                }
                 control.channel = message.data1;
                 control.midiChannel = message.channel() + 1;
                 control.useNoteMessages = message.isNoteOn();

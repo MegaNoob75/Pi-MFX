@@ -34,11 +34,13 @@ bool switchStable[pimfx::kSwitchCount] = {};
 bool switchRaw[pimfx::kSwitchCount] = {};
 uint32_t switchChangedAt[pimfx::kSwitchCount] = {};
 
-uint8_t encoderPreviousAb = 0;
-int16_t encoderAccum = 0;
-bool encoderButtonStable = false;
-bool encoderButtonRaw = false;
-uint32_t encoderButtonChangedAt = 0;
+struct EncoderState {
+    uint8_t previousAb = 0;
+    int16_t accum = 0;
+    bool buttonStable = false, buttonRaw = false;
+    uint32_t buttonChangedAt = 0;
+};
+EncoderState encoders[pimfx::kEncoderCount] = {};
 
 uint32_t lastIdentityAt = 0;
 uint8_t identityBurstsLeft = 8;
@@ -136,7 +138,7 @@ void setupDigital(uint8_t pin) {
 
 void pollSwitches() {
     const uint32_t now = millis();
-    for (uint8_t i = 0; i < pimfx::kSwitchCount; ++i) {
+    for (size_t i = 0; i < pimfx::kSwitchCount; ++i) {
         const bool pressed = digitalRead(pimfx::kSwitches[i].pin) == LOW;
         if (pressed != switchRaw[i]) {
             switchRaw[i] = pressed;
@@ -154,7 +156,7 @@ void pollSwitches() {
 }
 
 void pollPots() {
-    static uint8_t next = 0;
+    static size_t next = 0;
     static uint32_t lastSample = 0;
     const uint32_t now = millis();
     if (now - lastSample < pimfx::kAnalogIntervalMs) {
@@ -162,8 +164,9 @@ void pollPots() {
     }
     lastSample = now;
 
-    const uint8_t i = next;
-    next = static_cast<uint8_t>((next + 1) % pimfx::kPotCount);
+    if (pimfx::kPotCount == 0) return;
+    const size_t i = next;
+    next = (next + 1) % pimfx::kPotCount;
     const uint32_t raw = analogRead(pimfx::kPots[i].pin);
     analogAccum[i] = analogPrimed[i]
         ? analogAccum[i] - (analogAccum[i] >> pimfx::kAnalogFilterShift) + raw
@@ -182,37 +185,43 @@ void pollPots() {
     }
 }
 
-void pollEncoder() {
-    const uint8_t a = digitalRead(pimfx::kEncoderPinA) == HIGH ? 1 : 0;
-    const uint8_t b = digitalRead(pimfx::kEncoderPinB) == HIGH ? 1 : 0;
-    const uint8_t ab = static_cast<uint8_t>((a << 1) | b);
-    static const int8_t kTable[] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
-    const int8_t step = kTable[(encoderPreviousAb << 2) | ab];
-    encoderPreviousAb = ab;
-    // A contact bounce can leave one transition from the old direction after
-    // a detent was emitted. Do not make the next real click cancel that stale
-    // residue before it starts moving in the new direction.
-    if ((encoderAccum > 0 && step < 0) || (encoderAccum < 0 && step > 0)) {
-        encoderAccum = 0;
-    }
-    encoderAccum = static_cast<int16_t>(encoderAccum + step);
-    if (encoderAccum >= static_cast<int16_t>(pimfx::kEncoderStepsPerDetent)) {
-        sendControlChange(pimfx::kEncoderTurnCc, 65);
-        encoderAccum = 0;
-    } else if (encoderAccum <= -static_cast<int16_t>(pimfx::kEncoderStepsPerDetent)) {
-        sendControlChange(pimfx::kEncoderTurnCc, 63);
-        encoderAccum = 0;
-    }
+void pollEncoders() {
+    for (size_t i = 0; i < pimfx::kEncoderCount; ++i) {
+        const auto& config = pimfx::kEncoders[i];
+        auto& encoder = encoders[i];
+        const uint8_t a = digitalRead(config.pinA) == HIGH ? 1 : 0;
+        const uint8_t b = digitalRead(config.pinB) == HIGH ? 1 : 0;
+        const uint8_t ab = static_cast<uint8_t>((a << 1) | b);
+        static const int8_t kTable[] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
+        const int8_t step = kTable[(encoder.previousAb << 2) | ab];
+        encoder.previousAb = ab;
+        // A contact bounce can leave one transition from the old direction after
+        // a detent was emitted. Do not make the next real click cancel that stale
+        // residue before it starts moving in the new direction.
+        if ((encoder.accum > 0 && step < 0) || (encoder.accum < 0 && step > 0)) {
+            encoder.accum = 0;
+        }
+        encoder.accum = static_cast<int16_t>(encoder.accum + step);
+        const int16_t needed = config.stepsPerDetent ? config.stepsPerDetent : 1;
+        if (encoder.accum >= needed) {
+            sendControlChange(config.turnCc, 65);
+            encoder.accum = 0;
+        } else if (encoder.accum <= -needed) {
+            sendControlChange(config.turnCc, 63);
+            encoder.accum = 0;
+        }
 
-    const uint32_t now = millis();
-    const bool pressed = digitalRead(pimfx::kEncoderPinButton) == LOW;
-    if (pressed != encoderButtonRaw) {
-        encoderButtonRaw = pressed;
-        encoderButtonChangedAt = now;
-    }
-    if (pressed != encoderButtonStable && now - encoderButtonChangedAt >= pimfx::kSwitchDebounceMs) {
-        encoderButtonStable = pressed;
-        sendControlChange(pimfx::kEncoderButtonCc, pressed ? 127 : 0);
+        if (config.buttonPin < 0) continue;
+        const uint32_t now = millis();
+        const bool pressed = digitalRead(config.buttonPin) == LOW;
+        if (pressed != encoder.buttonRaw) {
+            encoder.buttonRaw = pressed;
+            encoder.buttonChangedAt = now;
+        }
+        if (pressed != encoder.buttonStable && now - encoder.buttonChangedAt >= pimfx::kSwitchDebounceMs) {
+            encoder.buttonStable = pressed;
+            sendControlChange(config.buttonCc, pressed ? 127 : 0);
+        }
     }
 }
 
@@ -223,18 +232,25 @@ void setup() {
     Control_Surface.begin();
     midi.setCallbacks(midiCallbacks);
 
-    for (uint8_t i = 0; i < pimfx::kSwitchCount; ++i) {
+    for (size_t i = 0; i < pimfx::kSwitchCount; ++i) {
         setupDigital(pimfx::kSwitches[i].pin);
         switchRaw[i] = digitalRead(pimfx::kSwitches[i].pin) == LOW;
         switchStable[i] = switchRaw[i];
     }
-    setupDigital(pimfx::kEncoderPinA);
-    setupDigital(pimfx::kEncoderPinB);
-    setupDigital(pimfx::kEncoderPinButton);
-    encoderPreviousAb = static_cast<uint8_t>(
-        ((digitalRead(pimfx::kEncoderPinA) == HIGH) << 1)
-        | (digitalRead(pimfx::kEncoderPinB) == HIGH ? 1 : 0)
-    );
+    for (size_t i = 0; i < pimfx::kEncoderCount; ++i) {
+        const auto& config = pimfx::kEncoders[i];
+        setupDigital(config.pinA);
+        setupDigital(config.pinB);
+        if (config.buttonPin >= 0) setupDigital(config.buttonPin);
+        encoders[i].previousAb = static_cast<uint8_t>(
+            ((digitalRead(config.pinA) == HIGH) << 1)
+            | (digitalRead(config.pinB) == HIGH ? 1 : 0)
+        );
+        if (config.buttonPin >= 0) {
+            encoders[i].buttonRaw = digitalRead(config.buttonPin) == LOW;
+            encoders[i].buttonStable = encoders[i].buttonRaw;
+        }
+    }
 
     pixels.begin();
     pixels.clear();
@@ -245,7 +261,7 @@ void loop() {
     Control_Surface.loop();
     pollSwitches();
     pollPots();
-    pollEncoder();
+    pollEncoders();
 
     const uint32_t now = millis();
     if (identityBurstsLeft > 0 && now - lastIdentityAt >= 400) {

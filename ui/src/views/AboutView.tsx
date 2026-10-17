@@ -109,6 +109,7 @@ export function AboutView({ state }: { state: JsonObject }) {
                     <InfoRow label="Engine" value={str(state.audioBackend, "unknown")} />
                     <InfoRow label="Plugins" value={`${num(state.pluginCount)} loaded`} />
                     <div className="row" style={{ marginTop: 8 }}>
+                        <a className="btn-mfx" href="/help/index.html" target="_blank" rel="noopener noreferrer">USER GUIDE</a>
                         <button type="button" className="btn-mfx" onClick={() => setLegalOpen(true)}>
                             ABOUT / LEGAL
                         </button>

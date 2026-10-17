@@ -263,6 +263,7 @@ sed -e "s|@USER@|$PIMFX_USER|g" \
     "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
 
 log "Installing the plugin helper"
+PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" bash "$REPO_DIR/scripts/install-recovery.sh"
 install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugin-helper.py"
 sed -e "s|@USER@|$PIMFX_USER|g" \
     -e "s|@PREFIX@|$PREFIX|g" \
@@ -314,6 +315,9 @@ Pi-MFX is installed and running.
   Remove      sudo ./scripts/uninstall.sh
 
 First steps:
+  Recovery: open Settings -> Backup & Restore to import an
+     exported .pimfx-backup file. On the Pi, choose Restore from USB.
+     Installer menu option 14 also restores directly from a backup file.
   1. Settings -> Audio: pick your interface or HAT, then set the sample rate,
      period size, and period count. Start at 48000 / 64 / 3 and work down
      while watching the xrun counter.

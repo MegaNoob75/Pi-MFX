@@ -21,7 +21,7 @@ const LIBRARY_KINDS: LibraryKindInfo[] = [
     { id: "plugin", label: "LV2 Plugins", group: "AMPS & EFFECTS", description: "Installed LV2 plugin bundles (view only).", readOnly: true },
     { id: "bank", label: "Preset / Bank Exports", group: "PRESETS & SETUP", description: "Exported preset banks that can be copied or restored." },
     { id: "setupprofile", label: "Settings / Setup Profiles", group: "PRESETS & SETUP", description: "Saved Pi-MFX setup and settings profiles." },
-    { id: "backup", label: "Backups", group: "PRESETS & SETUP", description: "Pi-MFX backup files." },
+    { id: "backup", label: "Legacy Configuration Backups", group: "PRESETS & SETUP", description: "Old configuration JSON files. Full recovery archives are exported from Settings → Backup & Restore." },
     { id: "theme", label: "Themes", group: "PRESETS & SETUP", description: "Custom user-interface themes." },
     { id: "layout", label: "Performance Layouts", group: "PRESETS & SETUP", description: "Saved performance-screen layouts." },
     { id: "virtuallayout", label: "Virtual Control Layouts", group: "PRESETS & SETUP", description: "Saved virtual-control layouts." },
@@ -408,6 +408,24 @@ export function utf8ToBase64(text: string): string {
         binary += String.fromCharCode(value);
     });
     return btoa(binary);
+}
+
+/** External imports share the library's controls while keeping large files binary. */
+export function LibraryFileImport({ accept, label, disabled = false, onFile }: {
+    accept: string;
+    label: string;
+    disabled?: boolean;
+    onFile: (file: File) => void;
+}) {
+    const input = useRef<HTMLInputElement>(null);
+    return <>
+        <button type="button" className="btn btn-accent" disabled={disabled} onClick={() => input.current?.click()}>{label}</button>
+        <input ref={input} type="file" hidden accept={accept} onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) onFile(file);
+        }} />
+    </>;
 }
 
 export function LibraryJsonPicker({

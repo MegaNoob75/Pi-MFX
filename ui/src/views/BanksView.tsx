@@ -31,7 +31,7 @@ export function BanksView({
     const [busy, setBusy] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [saveContents, setSaveContents] = useState("");
-    const [emptyBank, setEmptyBank] = useState<JsonObject | null>(null);
+    const [newPresetOpen, setNewPresetOpen] = useState(false);
     const [toast, setToast] = useState("");
     const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
     const [dropBankId, setDropBankId] = useState("");
@@ -41,7 +41,8 @@ export function BanksView({
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
-    const selectedPresetId = cursorPreset || presetId;
+    const selectedPresetId = presets.some((preset) => str(preset.id) === cursorPreset)
+        ? cursorPreset : presetId || str(presets[0]?.id);
     const bankIndex = banks.findIndex((bank) => str(bank.id) === bankId);
     const presetIndex = presets.findIndex((preset) => str(preset.id) === selectedPresetId);
     const dirtyPresetIds = new Set(arr(state.sessionPresetDirtyIds).map((value) => str(value)));
@@ -106,14 +107,10 @@ export function BanksView({
     };
 
     const selectBank = (id: string) => {
-        const bank = banks.find((item) => str(item.id) === id);
-        if (!objects(obj(bank).presets).length) {
-            setEmptyBank(obj(bank));
-            setToast(`“${str(obj(bank).name, "This bank")}” has no presets.`);
-            window.setTimeout(() => setToast(""), 2800);
-            return;
-        }
-        mutate(() => client.request("bank/select", { bankId: id }));
+        mutate(async () => {
+            await client.request("bank/select", { bankId: id });
+            setCursorPreset("");
+        });
     };
 
     const saveBankToPi = () => {
@@ -352,6 +349,9 @@ export function BanksView({
                     {busy && <span className="muted">Updating…</span>}
                 </div>
                 <div className="split-list" data-mfx-nav-list="banks">
+                    {!banks.length && <div className="muted" style={{ padding: 12 }}>
+                        No banks. Choose NEW, LOAD, or IMPORT BANK.
+                    </div>}
                     {banks.map((bank) => (
                         <button
                             key={str(bank.id)}
@@ -383,7 +383,9 @@ export function BanksView({
                         }} />
                 </div>
                 <div className="split-toolbar">
-                    <button type="button" className="btn" disabled={!activePreset || busy} onClick={renamePreset}>RENAME</button>
+                    <button type="button" className="btn" disabled={busy || obj(activeBank).communityHolding === true}
+                        onClick={() => setNewPresetOpen(true)}>NEW</button>
+                    <button type="button" className="btn" disabled={!selectedPresetId || busy} onClick={renamePreset}>RENAME</button>
                     <button type="button" className="btn" disabled={presetIndex <= 0 || busy} onClick={() => {
                         mutate(() => client.request("preset/reorder", { presetId: selectedPresetId, index: presetIndex - 1 }));
                     }}>↑</button>
@@ -393,6 +395,11 @@ export function BanksView({
                     <button type="button" className="btn btn-danger" disabled={!selectedPresetId || busy} onClick={() => setConfirm("preset")}>DELETE</button>
                 </div>
                 <div className="split-list" data-mfx-nav-list="presets">
+                    {!presets.length && <div className="muted" style={{ padding: 12 }}>
+                        {obj(activeBank).communityHolding === true ? "No downloaded presets."
+                            : activeBank ? "No presets. Choose NEW or IMPORT PRESET."
+                                : "Create a preset, or select a bank to import into."}
+                    </div>}
                     {presets.map((preset, index) => (
                         <div
                             key={str(preset.id)}
@@ -464,13 +471,13 @@ export function BanksView({
                     </div>
                 </div>
             )}
-            {emptyBank && (
+            {newPresetOpen && (
                 <NewPresetDialog
-                    banks={[emptyBank, ...banks.filter((item) => str(item.id) !== str(emptyBank.id))]}
-                    defaultBankId={str(emptyBank.id)}
-                    onCancel={() => setEmptyBank(null)}
+                    banks={banks.filter((item) => item.communityHolding !== true)}
+                    defaultBankId={bankId}
+                    onCancel={() => setNewPresetOpen(false)}
                     onCreate={(name, createBankId) => {
-                        setEmptyBank(null);
+                        setNewPresetOpen(false);
                         mutate(() => client.request("preset/create", { name, bankId: createBankId }));
                     }}
                 />

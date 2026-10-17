@@ -1,8 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { userGuidePlugin } from "./guide.mjs";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), userGuidePlugin()],
   base: "./",
   server: {
     port: 5173,

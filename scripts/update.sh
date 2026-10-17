@@ -155,6 +155,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
     if [[ -f "$REPO_DIR/scripts/plugin-helper.py" ]]; then
         log "Refreshing the plugin helper"
+        PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" bash "$REPO_DIR/scripts/install-recovery.sh"
         install -d -o "$PIMFX_USER" -g "$PIMFX_USER" "$DATA_ROOT/lv2"
         install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugin-helper.py"
         sed -e "s|@USER@|$PIMFX_USER|g" \

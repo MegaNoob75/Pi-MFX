@@ -757,6 +757,7 @@ Json audioDeviceToJson(const AudioDeviceInfo& device) {
 
 Json UiSettings::toJson() const {
     Json json = Json::object();
+    json.set("browserPreferences", browserPreferences);
     json.set("themeId", themeId);
     json.set("customThemes", customThemes);
     json.set("ledColors", ledColors.isObject() ? ledColors : Json::object());
@@ -776,6 +777,7 @@ Json UiSettings::toJson() const {
 
 UiSettings UiSettings::fromJson(const Json& json) {
     UiSettings settings;
+    settings.browserPreferences = json["browserPreferences"].isObject() ? json["browserPreferences"] : Json::object();
     settings.themeId = json["themeId"].asString("Pi-MFX Purple");
     if (settings.themeId == "MultiFX Purple") {
         settings.themeId = "Pi-MFX Purple";
