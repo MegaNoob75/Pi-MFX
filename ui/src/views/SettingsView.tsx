@@ -1182,18 +1182,25 @@ function ControllerSettings({
     const [ports, setPorts] = useState<JsonObject[]>([]);
     const [selectedId, setSelectedId] = useState("");
     const [removeControlId, setRemoveControlId] = useState("");
+    const [removeLedId, setRemoveLedId] = useState("");
     const [profilePicker, setProfilePicker] = useState<"load" | "save" | null>(null);
     const [pendingProfile, setPendingProfile] = useState<JsonObject | null>(null);
     const [profileNotice, setProfileNotice] = useState("");
-    const selected = grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
+    const selectedLed = leds.find((item) => str(item.id) === selectedId);
+    const selected = selectedLed ? undefined : grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
+    const patchLed = (nextLed: JsonObject) => {
+        const next = ledsRef.current.map((item) => str(item.id) === str(nextLed.id) ? nextLed : item);
+        ledsRef.current = next;
+        save({ ...controllerRef.current, leds: next });
+    };
 
     useEffect(() => {
         const sharedId = str(obj(engine.uiSession.settings).controllerSelectedId);
-        if (sharedId && grouped.some((item) => str(item.id) === sharedId)) {
+        if (sharedId && [...grouped, ...leds].some((item) => str(item.id) === sharedId)) {
             setSelectedId(sharedId);
         }
         setRemoveControlId(str(obj(engine.uiSession.settings).removeControlId));
-    }, [engine.uiSession.settings, grouped]);
+    }, [engine.uiSession.settings, grouped, leds]);
 
     const selectControl = (id: string) => {
         setSelectedId(id);
@@ -1383,7 +1390,6 @@ function ControllerSettings({
                 </button>
             </div>
             {str(state.controllerError) && <div className="danger" style={{ padding: "0 10px" }}>{str(state.controllerError)}</div>}
-            {bool(controller.universalFirmware) && <ControllerBoardSetup controller={controller} selected={selected} client={client} run={run} />}
             <div className="split-panes">
                 <section className="split-pane">
                     <div className="split-pane-title">CONTROLS</div>
@@ -1419,12 +1425,16 @@ function ControllerSettings({
                             selectControl(encId);
                             save({ ...controller, controls: next });
                         }}>ADD ENCODER</button>
-                        <button type="button" className="btn" onClick={() => {
+                        <button type="button" className="btn" disabled={leds.length >= 127} onClick={() => {
                             const current = ledsRef.current;
+                            const ledId = `led-${Date.now().toString(36)}-${current.length}`;
+                            let pixelIndex = 0;
+                            while (current.some((led) => num(led.pixelIndex) === pixelIndex)) pixelIndex++;
                             const next = [
                                 ...current,
                                 {
-                                    id: `led-${Date.now().toString(36)}-${current.length}`,
+                                    id: ledId,
+                                    pixelIndex,
                                     label: nextLedLabel(current),
                                     rgb: true,
                                     role: "preset",
@@ -1432,6 +1442,7 @@ function ControllerSettings({
                                 }
                             ];
                             ledsRef.current = next;
+                            selectControl(ledId);
                             save({ ...controller, leds: next });
                         }}>ADD LED</button>
                     </div>
@@ -1450,13 +1461,33 @@ function ControllerSettings({
                                 />
                             </button>
                         ))}
-                        {grouped.length === 0 && <div className="muted">Add a switch, pot or encoder to edit it here.</div>}
+                        {leds.map((led) => <button key={str(led.id)} type="button"
+                            className={`split-row${str(led.id) === selectedId ? " selected" : ""}`}
+                            onClick={() => selectControl(str(led.id))}>
+                            <MarqueeText text={`${str(led.label, "LED")} · LED`} align="left" fontWeight={800} />
+                        </button>)}
+                        {grouped.length === 0 && leds.length === 0 && <div className="muted">Add a switch, pot or encoder to edit it here.</div>}
                     </div>
                 </section>
                 <section className="split-pane">
-                    <div className="split-pane-title">{selected ? (str(selected.label).trim() || "CONTROL") : "DETAIL"}</div>
+                    <div className="split-pane-title">{selectedLed ? str(selectedLed.label, "LED") : selected ? (str(selected.label).trim() || "CONTROL") : "DETAIL"}</div>
                     <div className="hardware-setup-detail" data-mfx-sync-scroll="settings-controller-detail">
-                        {selected ? (
+                        {selectedLed ? <div className="stack">
+                            <label className="field"><span>Name</span><KeyboardCommitInput className="input"
+                                defaultValue={str(selectedLed.label)} key={str(selectedLed.id)}
+                                onCommit={(label) => patchLed({ ...selectedLed, label })} /></label>
+                            <div className="hardware-field-grid">
+                                <label className="field"><span>Pixel index (starts at 0)</span><input type="number" min={0} max={126}
+                                    value={num(selectedLed.pixelIndex)} onChange={(e) => patchLed({ ...selectedLed, pixelIndex: Math.max(0, Math.min(126, Number(e.target.value))) })} /></label>
+                                <label className="field"><span>Theme role</span><select value={str(selectedLed.role, "preset")}
+                                    onChange={(e) => patchLed({ ...selectedLed, role: e.target.value })}>
+                                    {["preset", "navigation", "utility", "snapshot", "bypass", "danger"].map((role) => <option key={role} value={role}>{role}</option>)}
+                                </select></label>
+
+                            </div>
+                            <p className="muted">Assign this LED from a control’s LED selector. The pixel index identifies its position in the saved LED strip.</p>
+                            <button type="button" className="btn btn-danger" onClick={() => setRemoveLedId(str(selectedLed.id))}>REMOVE LED</button>
+                        </div> : selected ? (
                             <HardwareControlDetail
                                 control={selected}
                                 controller={controller}
@@ -1514,9 +1545,21 @@ function ControllerSettings({
                         ) : (
                             <div className="muted">Select a control from the list.</div>
                         )}
+                        {bool(controller.universalFirmware) && <ControllerBoardSetup controller={controller} selected={selected}
+                            ledSelected={!!selectedLed} client={client} run={run} />}
                     </div>
                 </section>
             </div>
+            {removeLedId && <ConfirmDialog title="REMOVE LED?" body="Remove this LED entry and its control assignments? The physical strip configuration stays unchanged."
+                confirmLabel="REMOVE" danger onCancel={() => setRemoveLedId("")} onConfirm={() => {
+                    const next = ledsRef.current.filter((led) => str(led.id) !== removeLedId);
+                    const nextControls = controlsRef.current.map((control) => str(control.ledId) === removeLedId ? { ...control, ledId: "" } : control);
+                    ledsRef.current = next;
+                    controlsRef.current = nextControls;
+                    selectControl(str(next[0]?.id, str(grouped[0]?.id)));
+                    setRemoveLedId("");
+                    save({ ...controllerRef.current, leds: next, controls: nextControls });
+                }} />}
             {removeControlId && (
                 <ConfirmDialog
                     title="REMOVE CONTROL?"

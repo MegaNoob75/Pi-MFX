@@ -6170,32 +6170,18 @@ button.list-item {
 /* Physical wiring setup remains collapsed during the normal control workflow. */
 .controller-board-setup { padding: 8px 10px; border-bottom: 1px solid var(--mfx-border); flex: 0 0 auto; }
 .controller-board-setup > .row { flex-wrap: wrap; }
-.controller-wiring-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: 30;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--mfx-bg);
+.controller-inline-details > summary {
+    cursor: pointer;
+    min-height: 44px;
+    display: list-item;
+    align-content: center;
+    font-weight: 800;
+    padding: 8px;
+    border: 1px solid var(--mfx-border);
+    border-radius: var(--mfx-radius);
 }
-.controller-wiring-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-}
-.controller-wiring-header strong { flex: 1; }
-.controller-wiring-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-    padding: 0 10px 8px;
-    border-bottom: 1px solid var(--mfx-border);
-}
-.controller-wiring-tabs .btn { min-height: 44px; padding-inline: 6px; }
-.controller-board-advanced { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
-.controller-board-advanced > * { flex-shrink: 0; }
+.controller-inline-details[open] > summary { margin-bottom: 8px; }
+.hardware-setup-detail > .controller-board-setup { padding: 12px 0 0; border-bottom: 0; border-top: 1px solid var(--mfx-border); }
 .controller-recovery-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .controller-recovery-actions .btn { min-height: 48px; white-space: normal; }
 .controller-board-setup fieldset { margin: 0; padding: 10px; min-width: 0; }
