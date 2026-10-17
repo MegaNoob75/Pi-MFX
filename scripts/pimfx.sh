@@ -48,6 +48,8 @@ Actions:
   install          First-time setup: packages, engine, UI, service
   update           Pull, rebuild, restart
   rebuild          Rebuild from files already on the Pi (no git pull)
+  firmware-update  Controller firmware from GitHub (--branch, default dev)
+  firmware-local   Controller firmware from this Pi's source checkout
   display          Fullscreen touchscreen (Labwc + Chromium)
   display-refresh  Re-apply Chromium flags, hide the pointer, hide the system keyboard, hard-refresh
   kiosk-reload     Hard-refresh the attached Chromium kiosk (no Chromium restart)
@@ -59,13 +61,14 @@ Actions:
   boot-speed-restore Undo boot-speed service changes
   hotspot          Install Wi-Fi hotspot support
   status           Branch, service, audio cards
+  restore          Restore an exported Pi-MFX backup (interactive file selection)
   reboot           Reboot the Pi
   remove           Stop the service and undo OS changes
 
 Options:
   --no-tuning            Install the service but leave the OS alone
   --branch main|dev|workstation
-                         Update from that GitHub branch (update only)
+                         App or controller firmware source branch
   --port <n>             Web UI port (default 8080)
   --display-user USER    Account that auto-logs in on the screen
   --purge                Also delete /var/lib/pimfx (remove only)
@@ -130,7 +133,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|complete|install|update|rebuild|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|reboot|remove) ;;
+        menu|complete|install|update|rebuild|firmware-update|firmware-local|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|restore|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -258,6 +261,23 @@ write_chromium_autostart() {
     wtype -M alt -M logo -k h -m logo -m alt >/dev/null 2>&1 || true
 ) &
 squeekboard >/dev/null 2>&1 &
+AUTOSTART
+    cat >> /etc/xdg/labwc/autostart <<'HOSTNAME_RECOVERY'
+# Chromium's profile lock contains the hostname. After a Pi rename, discard
+# the old host's singleton links only when this user's browser is not running.
+profile="${XDG_CONFIG_HOME:-$HOME/.config}/chromium"
+lock="$(readlink "$profile/SingletonLock" 2>/dev/null || true)"
+lock_host="${lock%-*}"
+lock_pid="${lock##*-}"
+if [[ -n "$lock" && "$lock_host" != "$(hostname)" && "$lock_pid" =~ ^[0-9]+$ ]] \
+    && ! pgrep -u "$(id -u)" -x chromium >/dev/null 2>&1 \
+    && ! pgrep -u "$(id -u)" -x chromium-browser >/dev/null 2>&1; then
+    for name in SingletonLock SingletonSocket SingletonCookie; do
+        [[ ! -L "$profile/$name" ]] || rm -f -- "$profile/$name"
+    done
+fi
+HOSTNAME_RECOVERY
+    cat >> /etc/xdg/labwc/autostart <<AUTOSTART
 exec /usr/bin/chromium \\
     --ozone-platform=wayland \\
     --start-maximized \\
@@ -298,8 +318,15 @@ configure_touchscreen() {
         die "touchscreen setup needs Raspberry Pi OS and raspi-config"
 
     log "Setting up a fullscreen Pi-MFX session for $DISPLAY_USER"
-    apt-get update
-    apt-get install -y --no-install-recommends labwc chromium wtype squeekboard
+    if [[ "${PIMFX_RECOVERY_OFFLINE:-0}" == "1" ]]; then
+        for package in labwc chromium wtype squeekboard; do
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' \
+                || die "recovery needs the archived $package package; include Plugins and dependencies"
+        done
+    else
+        apt-get update
+        apt-get install -y --no-install-recommends labwc chromium wtype squeekboard
+    fi
     [[ -x /usr/bin/chromium ]] || die "chromium did not install at /usr/bin/chromium"
 
     mkdir -p "$DISPLAY_STATE_DIR" /etc/xdg/labwc
@@ -377,6 +404,17 @@ do_rebuild() {
 
 do_status() {
     run_script status.sh
+}
+
+do_restore_backup() {
+    local archive
+    [[ -t 0 ]] || die "restore needs an interactive terminal for the backup password"
+    read -r -p "Exported backup file (full path, without quotes): " archive
+    [[ -f "$archive" ]] || die "backup file not found"
+    [[ -f /etc/systemd/system/pimfx.service ]] || die "install Pi-MFX first, then restore your backup"
+    PIMFX_USER="$(awk -F= '/^User=/{print $2; exit}' /etc/systemd/system/pimfx.service)" \
+        PIMFX_DATA_ROOT="${DATA_ROOT:-/var/lib/pimfx}" PIMFX_PREFIX="${PREFIX:-/usr/local}" \
+        python3 "${PREFIX:-/usr/local}/libexec/pimfx/backup.py" restore "$archive"
 }
 
 do_remove() {
@@ -475,7 +513,7 @@ MENU
 }
 
 update_branch_menu() {
-    local choice branch
+    local choice branch mode="${1:-app}"
     draw_banner
     cat <<'MENU'
   Update from GitHub
@@ -494,7 +532,11 @@ MENU
         4) return 0 ;;
         *) warn "pick a number from 1 to 4"; return 0 ;;
     esac
-    UPDATE_BRANCH="$branch" do_update
+    if [[ "$mode" == controller ]]; then
+        run_script controller-update.sh github "$branch"
+    else
+        UPDATE_BRANCH="$branch" do_update
+    fi
 }
 
 do_reboot() {
@@ -509,43 +551,59 @@ show_menu() {
     while true; do
         draw_banner
         cat <<'MENU'
+  Install and update Pi-MFX
   1) Complete setup  (install + touchscreen)
   2) Install / first-time setup
   3) Update from GitHub  (choose main, dev or workstation)
   4) Rebuild local files  (no git pull)
-  5) Set up touchscreen display
-  6) Remove touchscreen display
-  7) Boot screen  (PI-MFX logo, hide boot text)
-  8) Faster boot  (skip network wait, unused services)
-  9) Wi-Fi hotspot support
-  10) Status
-  11) Remove Pi-MFX
-  12) Reboot now
-  13) Exit
+
+  Controller firmware only
+  5) Update firmware from GitHub  (choose branch)
+  6) Update firmware from this Pi's source checkout
+
+  Display and system setup
+  7) Set up touchscreen display
+  8) Refresh touchscreen display
+  9) Remove touchscreen display
+  10) Boot screen  (PI-MFX logo, hide boot text)
+  11) Faster boot  (network wait, unused services)
+  12) Wi-Fi hotspot support
+
+  Maintenance and recovery
+  13) Status
+  14) Reboot now
+  15) Restore an exported backup
+  16) Remove Pi-MFX
+
+  0) Exit
 MENU
         echo
-        read -r -p "Choose [1-13]: " choice
+        read -r -p "Choose [0-16]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
             3) update_branch_menu || warn "update did not finish" ;;
             4) do_rebuild || warn "rebuild did not finish" ;;
-            5) configure_touchscreen || warn "touchscreen setup did not finish" ;;
-            6) remove_touchscreen || warn "touchscreen remove did not finish" ;;
-            7) boot_screen_menu || warn "boot screen change did not finish" ;;
-            8) faster_boot_menu || warn "boot-speed change did not finish" ;;
-            9) do_hotspot || warn "hotspot install did not finish" ;;
-            10) do_status || warn "status failed" ;;
-            11)
+            5) update_branch_menu controller || warn "controller update did not finish" ;;
+            6) run_script controller-update.sh local "$REPO_DIR" || warn "controller update did not finish" ;;
+            7) configure_touchscreen || warn "touchscreen setup did not finish" ;;
+            8) refresh_touchscreen_session || warn "touchscreen refresh did not finish" ;;
+            9) remove_touchscreen || warn "touchscreen remove did not finish" ;;
+            10) boot_screen_menu || warn "boot screen change did not finish" ;;
+            11) faster_boot_menu || warn "boot-speed change did not finish" ;;
+            12) do_hotspot || warn "hotspot install did not finish" ;;
+            13) do_status || warn "status failed" ;;
+            16)
                 PURGE="no"
                 if confirm "Also delete /var/lib/pimfx (banks, models, IRs)?"; then
                     PURGE="yes"
                 fi
                 do_remove confirmed || warn "remove did not finish"
                 ;;
-            12) do_reboot ;;
-            13|q|Q) return 0 ;;
-            *) warn "pick a number from 1 to 13"; pause_for_menu; continue ;;
+            14) do_reboot ;;
+            0|q|Q) return 0 ;;
+            15) do_restore_backup || warn "restore did not finish" ;;
+            *) warn "pick a number from 0 to 16"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -566,6 +624,8 @@ main() {
         install) do_install ;;
         update) do_update ;;
         rebuild) do_rebuild ;;
+        firmware-update) run_script controller-update.sh github "${UPDATE_BRANCH:-dev}" ;;
+        firmware-local) run_script controller-update.sh local "$REPO_DIR" ;;
         display) configure_touchscreen ;;
         display-refresh) refresh_touchscreen_session ;;
         kiosk-reload)
@@ -580,6 +640,7 @@ main() {
         boot-speed-unused) do_boot_speed_unused ${ASSUME_YES:+--yes} ;;
         boot-speed-restore) do_boot_speed_restore ${ASSUME_YES:+--yes} ;;
         hotspot) do_hotspot ;;
+        restore) do_restore_backup ;;
         remove) do_remove ;;
         reboot) do_reboot ;;
     esac

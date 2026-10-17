@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <type_traits>
 #include <vector>
 
 namespace pimfx {
@@ -18,6 +19,7 @@ namespace pimfx {
 /// anything larger by pointer, and free it on the control thread.
 template <typename T>
 class SpscQueue {
+    static_assert(std::is_trivially_copyable<T>::value, "SPSC messages cannot own resources; transfer pointers explicitly");
 public:
     explicit SpscQueue(size_t capacity = 1024) {
         size_t size = 2;

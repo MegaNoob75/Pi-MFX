@@ -86,6 +86,7 @@ DrumMachine::~DrumMachine() {
     while (kitCommands_.pop(pending)) delete pending.kit;
     collectRetired();
     delete activeKit_;
+    delete deferredRetiredKit_;
 }
 
 void DrumMachine::prepare(unsigned sampleRate) {
@@ -630,15 +631,20 @@ void DrumMachine::render(float* const* master, unsigned masterChannels,
             std::fill(sourceTap[channel], sourceTap[channel] + frames, 0.0f);
     }
     KitCommand command;
-    while (kitCommands_.pop(command)) {
+    if (deferredRetiredKit_ && retiredKits_.push(deferredRetiredKit_)) deferredRetiredKit_ = nullptr;
+    while (!deferredRetiredKit_ && kitCommands_.pop(command)) {
         Kit* previous = activeKit_;
         activeKit_ = command.kit;
         for (Playback& voice : playback_) voice = Playback{};
-        if (previous && !retiredKits_.push(previous)) droppedKitChanges_.fetch_add(1, std::memory_order_relaxed);
+        if (previous && !retiredKits_.push(previous)) {
+            deferredRetiredKit_ = previous;
+            droppedKitChanges_.fetch_add(1, std::memory_order_relaxed);
+        }
         kitGeneration_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (!activeKit_ || !master || masterChannels == 0) return;
+    if (!activeKit_ || !master || masterChannels == 0) { sequencer_.consumePendingProgram(); return; }
     if (!playing_.load(std::memory_order_acquire)) {
+        sequencer_.consumePendingProgram();
         for (Playback& voice : playback_) voice = Playback{};
         return;
     }
@@ -753,7 +759,7 @@ bool DrumMachine::loadStateUnlocked() {
     return true;
 }
 
-Json DrumMachine::state() const {
+Json DrumMachine::state(bool includeDetails) const {
     std::lock_guard<std::mutex> lock(stateMutex_); collectRetired();
     Json out = Json::object(); out.set("type", "drums"); out.set("available", true);
     out.set("projectId", projectId_); out.set("projectName", projectName_);
@@ -766,6 +772,7 @@ Json DrumMachine::state() const {
     out.set("activeSongSection", sequencer_.activeSongSection());
     out.set("droppedTriggers", static_cast<int64_t>(sequencer_.droppedTriggers()));
     out.set("droppedKitChanges", static_cast<int64_t>(droppedKitChanges_.load()));
+    if (!includeDetails) { out.set("partial", true); return out; }
     Json voices = Json::array();
     for (size_t index = 0; index < DrumSequencer::kVoiceCount; ++index) {
         Json voice = Json::object(); voice.set("id", static_cast<int>(index));

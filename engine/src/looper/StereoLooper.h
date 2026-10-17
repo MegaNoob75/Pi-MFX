@@ -42,9 +42,12 @@ public:
                  float* const* output, unsigned outputChannels, unsigned frames,
                  const TransportBlock* transport) noexcept;
 
-    Json state() const;
+    Json state(bool includeDetails = true) const;
     std::string savedPath() const;
     bool wantsTransport() const noexcept;
+    bool fileOperationPending() const noexcept {
+        return saving_.load(std::memory_order_acquire) || loading_.load(std::memory_order_acquire);
+    }
     bool wantsCountIn() const noexcept { return countIn_.load(std::memory_order_relaxed); }
 
 private:
@@ -65,14 +68,21 @@ private:
     bool readWaveFile(const std::string& path, int buffer, size_t& frames, std::string& error);
     void refreshSavedFilesUnlocked();
     bool safeSavedName(const std::string& name, std::string& safe) const;
+    // commandMutex_ serializes control producers. Audio grants a lease only
+    // at a block boundary with no queued/scheduled edit or active writer.
+    bool acquireBufferLease(std::string& error);
+    void releaseBufferLease() noexcept;
 
     std::string root_;
+    mutable std::mutex configurationMutex_; // prepare/state; never acquired by audio
     std::array<std::vector<float>, 2> buffers_;
     size_t capacityFrames_ = 0;
     std::atomic<unsigned> sampleRate_{48000};
 
     SpscQueue<Command> commands_{64};
     std::mutex commandMutex_;
+    enum class BufferLease : uint8_t { None, Requested, Granted, Rejected };
+    std::atomic<BufferLease> bufferLease_{BufferLease::None};
 
     // Audio-thread-owned playback/edit state, mirrored through atomics.
     int activeBuffer_ = 0;

@@ -1,4 +1,5 @@
 #include "recorder/MultitrackRecorder.h"
+#include "core/Paths.h"
 
 #include <algorithm>
 #include <cassert>
@@ -81,6 +82,42 @@ int main() {
     assert(recorder.exportFile("mix", "", path, name, error));
     assert(std::filesystem::is_regular_file(path));
     assert(std::filesystem::file_size(path) == 44 + 80 * 4);
+
+    assert(!recorder.canReconfigure(200, error));
+    assert(recorder.canReconfigure(100, error));
+    MultitrackRecorder mismatched(root.string());
+    mismatched.prepare(200, 16);
+    assert(!mismatched.command("project/open", Json::object({{"id", "Session"}}), error));
+    std::string manifest;
+    assert(pimfx::readFile((root / "Session" / "project.json").string(), manifest));
+    assert(Json::parse(manifest)["sampleRate"].asInt() == 100);
+
+    // Stop arriving after admission must wait for the last callback, including
+    // sources populated after Stop has returned to the control thread.
+    assert(recorder.command("project/new", Json::object({{"name", "Tail"}}), error));
+    assert(recorder.command("record/start", Json::object(), error));
+    assert(recorder.beginCapture(10, 0));
+    assert(recorder.command("record/stop", Json::object(), error));
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    assert(recorder.state()["status"].asString() == "finalizing");
+    recorder.captureSource(MultitrackRecorder::Source::Processed, wetPointers, 2, 10);
+    recorder.finishCapture();
+    for (int attempt = 0; attempt < 200 && recorder.state()["status"].asString() != "stopped"; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    state = recorder.state();
+    assert(state["tracks"].at(0)["clips"].at(0)["length"].asInt64() == 10);
+    assert(recorder.exportFile("mix", "", path, name, error));
+    assert(std::filesystem::file_size(path) == 44 + 10 * 4);
+
+    // A blocked atomic-save target must be reported to the caller, without
+    // replacing the last stored project with a successful-looking update.
+    assert(pimfx::readFile((root / "Tail" / "project.json").string(), manifest));
+    std::filesystem::create_directory(root / "Tail" / "project.json.tmp");
+    assert(!recorder.command("track/update", Json::object({{"id", state["tracks"].at(0)["id"]}, {"level", 0.25}}), error));
+    assert(!error.empty());
+    std::string unchanged;
+    assert(pimfx::readFile((root / "Tail" / "project.json").string(), unchanged));
+    assert(unchanged == manifest);
 
     recorder.stop();
     std::error_code ignored;

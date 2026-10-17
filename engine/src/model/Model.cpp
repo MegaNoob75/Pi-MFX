@@ -36,9 +36,14 @@ std::string newId(const std::string& prefix) {
 Json EffectSlot::toJson() const {
     Json json = Json::object();
     json.set("id", id);
-    json.set("uri", uri);
     json.set("name", name);
     json.set("enabled", enabled);
+    if (kind == "mixer") {
+        json.set("kind", "mixer");
+        json.set("state", state);
+        return json;
+    }
+    json.set("uri", uri);
     json.set("state", state);
     if (tempoLinks.isObject() && tempoLinks.size() > 0) {
         json.set("tempoLinks", tempoLinks);
@@ -49,9 +54,10 @@ Json EffectSlot::toJson() const {
 EffectSlot EffectSlot::fromJson(const Json& json) {
     EffectSlot slot;
     slot.id = json["id"].asString(newId("slot"));
-    slot.uri = json["uri"].asString();
+    slot.kind = json["kind"].asString("effect");
     slot.name = json["name"].asString();
     slot.enabled = json["enabled"].asBool(true);
+    slot.uri = json["uri"].asString();
     slot.state = json["state"].isObject() ? json["state"] : Json::object();
     slot.tempoLinks = json["tempoLinks"].isObject() ? json["tempoLinks"] : Json::object();
     return slot;
@@ -62,6 +68,7 @@ Json Snapshot::toJson() const {
     json.set("id", id);
     json.set("name", name);
     json.set("slots", slots);
+    json.set("routingMix", routingMix);
     json.set("slot", slot);
     if (!color.empty()) {
         json.set("color", color);
@@ -74,6 +81,7 @@ Snapshot Snapshot::fromJson(const Json& json) {
     snapshot.id = json["id"].asString(newId("snap"));
     snapshot.name = json["name"].asString("Snapshot");
     snapshot.slots = json["slots"].isObject() ? json["slots"] : Json::object();
+    snapshot.routingMix = json["routingMix"].isArray() ? json["routingMix"] : Json::array();
     snapshot.color = json["color"].asString();
     snapshot.slot = json["slot"].asInt(-1);
     return snapshot;
@@ -163,6 +171,8 @@ Json Preset::toJson() const {
         chainJson.push(slot.toJson());
     }
     json.set("chain", chainJson);
+    json.set("routing", routing);
+    json.set("routingFormat", 1);
 
     Json snapshotJson = Json::array();
     for (const Snapshot& snapshot : snapshots) {
@@ -195,6 +205,11 @@ Preset Preset::fromJson(const Json& json) {
     preset.tempo = json["tempo"].asDouble(120.0);
     preset.inputGainDb = json["inputGainDb"].asFloat(0.0f);
     preset.outputGainDb = json["outputGainDb"].asFloat(0.0f);
+    if (json["routingFormat"].asInt() != 1) {
+        // Development format break: old chains are not silently reinterpreted.
+        return preset;
+    }
+    preset.routing = json["routing"];
 
     const Json& chainJson = json["chain"];
     for (size_t i = 0; i < chainJson.size(); ++i) {
@@ -334,6 +349,7 @@ Json ControllerControl::toJson() const {
     json.set("label", label);
     json.set("kind", controlKindToString(kind));
     json.set("module", module);
+    json.set("hardware", hardware);
     json.set("channel", channel);
     json.set("midiChannel", midiChannel);
     json.set("useNoteMessages", useNoteMessages);
@@ -357,6 +373,7 @@ ControllerControl ControllerControl::fromJson(const Json& json) {
     control.label = json["label"].asString();
     control.kind = controlKindFromString(json["kind"].asString("momentary"));
     control.module = json["module"].asString();
+    control.hardware = json["hardware"];
     control.channel = json["channel"].asInt(-1);
     control.midiChannel = json["midiChannel"].asInt(0);
     control.useNoteMessages = json["useNoteMessages"].asBool(false);
@@ -421,6 +438,7 @@ Json ControllerConfig::toJson() const {
         ledJson.push(led.toJson());
     }
     json.set("leds", ledJson);
+    json.set("boardHardware", boardHardware);
     json.set("performanceLayout", performanceLayout.isObject() ? performanceLayout : Json::object());
     json.set("layoutDefaults", layoutDefaults.isObject() ? layoutDefaults : Json::object());
     json.set("presetAssignments", presetAssignments.isObject() ? presetAssignments : Json::object());
@@ -438,6 +456,7 @@ ControllerConfig ControllerConfig::fromJson(const Json& json) {
     config.mirrorLayoutOnScreen = json["mirrorLayoutOnScreen"].asBool(true);
     config.syncLedColours = json["syncLedColours"].asBool(true);
     config.ledBrightness = json["ledBrightness"].asFloat(0.7f);
+    config.boardHardware = json["boardHardware"];
 
     const Json& controlJson = json["controls"];
     for (size_t i = 0; i < controlJson.size(); ++i) {
@@ -742,6 +761,7 @@ Json audioDeviceToJson(const AudioDeviceInfo& device) {
 
 Json UiSettings::toJson() const {
     Json json = Json::object();
+    json.set("browserPreferences", browserPreferences);
     json.set("themeId", themeId);
     json.set("customThemes", customThemes);
     json.set("ledColors", ledColors.isObject() ? ledColors : Json::object());
@@ -761,6 +781,7 @@ Json UiSettings::toJson() const {
 
 UiSettings UiSettings::fromJson(const Json& json) {
     UiSettings settings;
+    settings.browserPreferences = json["browserPreferences"].isObject() ? json["browserPreferences"] : Json::object();
     settings.themeId = json["themeId"].asString("Pi-MFX Purple");
     if (settings.themeId == "MultiFX Purple") {
         settings.themeId = "Pi-MFX Purple";
@@ -793,8 +814,6 @@ Json SystemSettings::toJson() const {
     json.set("workerThreadPriority", workerThreadPriority);
     json.set("lockMemory", lockMemory);
     json.set("holdCpuLatency", holdCpuLatency);
-    json.set("sharedTransportEnabled", sharedTransportEnabled);
-    json.set("backingTracksEnabled", backingTracksEnabled);
     return json;
 }
 
@@ -806,11 +825,6 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     settings.workerThreadPriority = std::max(1, std::min(94, json["workerThreadPriority"].asInt(70)));
     settings.lockMemory = json["lockMemory"].asBool(true);
     settings.holdCpuLatency = json["holdCpuLatency"].asBool(true);
-    // These compatibility fields may be false in settings saved while the
-    // milestones were under test. Completed services are now always enabled;
-    // Backing Tracks still reports unavailable when decoder libraries are absent.
-    settings.sharedTransportEnabled = true;
-    settings.backingTracksEnabled = true;
     return settings;
 }
 

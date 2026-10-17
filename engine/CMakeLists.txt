@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pimfx VERSION 0.1.0 LANGUAGES CXX)
+project(pimfx VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,9 +15,6 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -fno-math-errno -fno-trapping-math")
 
 option(PIMFX_NATIVE_ARCH "Tune for the build machine (leave OFF for portable builds)" OFF)
-option(PIMFX_ENABLE_MULTITRACK_RECORDER "Build the Milestone 3 multitrack recorder" ON)
-option(PIMFX_ENABLE_DRUM_MACHINE "Build the Milestone 4 drum machine" ON)
-option(PIMFX_ENABLE_COMMUNITY_CATALOG "Build the Milestone 5 community preset catalog" ON)
 
 add_executable(pimfx)
 
@@ -38,8 +35,10 @@ target_sources(pimfx PRIVATE
     src/model/Model.cpp
     src/model/Storage.cpp
     src/control/HttpServer.cpp
+    src/control/AccessControl.cpp
     src/control/ApiRouter.cpp
     src/midi/Mapping.cpp
+    src/midi/ControllerHardware.cpp
     src/midi/MidiInput.cpp
     src/transport/MusicalTransport.cpp
     src/backing/BackingTrackPlayer.cpp
@@ -52,6 +51,9 @@ target_sources(pimfx PRIVATE
     src/community/CommunityPresetPackage.cpp
     src/community/CommunityCatalog.cpp
 )
+
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+target_link_libraries(pimfx PRIVATE OpenSSL::Crypto)
 
 # ---------------------------------------------------------------------------
 # ALSA: the realtime audio and MIDI path. Linux only; other platforms build
@@ -147,22 +149,66 @@ target_compile_definitions(pimfx PRIVATE
     PIMFX_GIT_SHA="${PIMFX_GIT_SHA}"
 )
 
-if(PIMFX_ENABLE_MULTITRACK_RECORDER)
-    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_MULTITRACK_RECORDER=1)
-endif()
-
-if(PIMFX_ENABLE_DRUM_MACHINE)
-    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_DRUM_MACHINE=1)
-endif()
-
-if(PIMFX_ENABLE_COMMUNITY_CATALOG)
-    target_compile_definitions(pimfx PRIVATE PIMFX_ENABLE_COMMUNITY_CATALOG=1)
-endif()
-
 install(TARGETS pimfx RUNTIME DESTINATION bin)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(pimfx_bank_storage_test
+        tests/BankStorageTest.cpp
+        src/model/Storage.cpp
+        src/model/Model.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_bank_storage_test PRIVATE src)
+    target_link_libraries(pimfx_bank_storage_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pimfx_bank_storage_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME bank_storage COMMAND pimfx_bank_storage_test)
+
+    add_executable(pimfx_controller_hardware_test
+        tests/ControllerHardwareTest.cpp
+        src/midi/ControllerHardware.cpp
+        src/midi/Mapping.cpp
+        src/model/Model.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+    )
+    target_include_directories(pimfx_controller_hardware_test PRIVATE src)
+    target_link_libraries(pimfx_controller_hardware_test PRIVATE Threads::Threads)
+    add_test(NAME controller_hardware COMMAND pimfx_controller_hardware_test)
+
+    add_executable(pimfx_startup_guard_test
+        tests/StartupGuardTest.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_startup_guard_test PRIVATE src)
+    add_test(NAME startup_guard COMMAND pimfx_startup_guard_test)
+
+    add_executable(pimfx_access_control_test
+        tests/AccessControlTest.cpp
+        src/control/AccessControl.cpp
+        src/control/HttpServer.cpp
+        src/core/Crypto.cpp
+        src/core/Json.cpp
+        src/core/Paths.cpp
+        src/core/Log.cpp
+    )
+    target_include_directories(pimfx_access_control_test PRIVATE src)
+    target_compile_options(pimfx_access_control_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    target_link_libraries(pimfx_access_control_test PRIVATE OpenSSL::Crypto Threads::Threads)
+    if(WIN32)
+        target_link_libraries(pimfx_access_control_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME access_control COMMAND pimfx_access_control_test)
+
     add_executable(pimfx_audio_safety_transition_test
         tests/AudioSafetyTransitionTest.cpp
         src/audio/MasterOutputSafety.cpp
@@ -200,6 +246,10 @@ if(BUILD_TESTING)
         src/core/Json.cpp
     )
     target_include_directories(pimfx_transport_test PRIVATE src)
+    target_compile_options(pimfx_transport_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
     target_link_libraries(pimfx_transport_test PRIVATE Threads::Threads)
     add_test(NAME musical_transport COMMAND pimfx_transport_test)
     add_executable(pimfx_drum_sequencer_test

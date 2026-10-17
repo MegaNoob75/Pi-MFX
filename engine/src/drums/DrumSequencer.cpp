@@ -151,13 +151,17 @@ void DrumSequencer::insertTrigger(Trigger trigger, Trigger* triggers, size_t& co
     ++count;
 }
 
-size_t DrumSequencer::renderBlock(const TransportBlock& transport, unsigned frames,
-                                  Trigger* triggers, size_t capacity) noexcept {
+void DrumSequencer::consumePendingProgram() noexcept {
     Command command;
     while (commands_.pop(command)) {
         audioProgram_ = command.program;
         activePatternLength_.store(audioProgram_.variations[0].length, std::memory_order_release);
     }
+}
+
+size_t DrumSequencer::renderBlock(const TransportBlock& transport, unsigned frames,
+                                  Trigger* triggers, size_t capacity) noexcept {
+    consumePendingProgram();
 
     if (!transport.playing || transport.timelineFrame < 0 || frames == 0
         || !triggers || capacity == 0 || !std::isfinite(transport.framesPerBeat)

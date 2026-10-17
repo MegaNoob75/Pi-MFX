@@ -30,7 +30,7 @@ public:
     void setSourceAvailable(Source source, bool available) noexcept;
 
     bool command(const std::string& command, const Json& payload, std::string& error);
-    Json state() const;
+    Json state(bool includeDetails = true) const;
     bool exportFile(const std::string& kind, const std::string& trackId,
                     std::string& path, std::string& name, std::string& error);
 
@@ -43,6 +43,7 @@ public:
     void renderPlayback(float* const* output, unsigned channels, unsigned frames) noexcept;
     bool recording() const noexcept { return recording_.load(std::memory_order_acquire); }
     bool playing() const noexcept { return playbackPlaying_.load(std::memory_order_acquire); }
+    bool canReconfigure(unsigned sampleRate, std::string& error) const;
 
 private:
     static constexpr size_t kSourceCount = static_cast<size_t>(Source::Count);
@@ -105,9 +106,9 @@ private:
     bool deleteProject(const Json& payload, std::string& error);
     bool writeExport(const std::string& kind, const std::string& trackId,
                      std::string& path, std::string& name, std::string& error);
-    void saveProjectUnlocked();
+    bool saveProjectUnlocked();
     void rebuildWaveformsUnlocked();
-    void saveRecoveryUnlocked();
+    bool saveRecoveryUnlocked();
     void refreshProjectsUnlocked();
     void recoverInterruptedProjects();
     void finalizeRecordingUnlocked();
@@ -121,6 +122,7 @@ private:
     std::string root_;
     std::string projectId_;
     std::string projectName_;
+    unsigned projectSampleRate_ = 48000; // The file/timeline clock, independent of device negotiation.
     std::vector<std::string> projects_;
     std::vector<Track> tracks_;
     std::vector<ActiveFile> activeFiles_;
@@ -133,6 +135,8 @@ private:
     std::atomic<size_t> readBlock_{0};
     RingBlock* currentBlock_ = nullptr;
     uint32_t currentMask_ = 0;
+    uint32_t currentArmedMask_ = 0;
+    std::atomic<bool> captureInProgress_{false};
     std::atomic<uint32_t> armedMask_{0};
     std::atomic<uint32_t> availableMask_{0};
     std::atomic<bool> recording_{false};
@@ -166,6 +170,7 @@ private:
     mutable std::mutex stateMutex_;
     std::condition_variable wake_;
     std::string lastError_;
+    bool writeFailed_ = false;
     std::string warning_;
     std::vector<std::string> recoveredFiles_;
 };

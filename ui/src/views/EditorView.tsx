@@ -1,3 +1,4 @@
+import { RoutingEditor } from "./RoutingEditor";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { controlValue, findBank, findPreset, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
@@ -13,7 +14,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { PerformanceControl, type PerformanceTile } from "./PerformanceControl";
 import { virtualControlPageId, virtualControlPages, virtualTargetCompatible } from "../virtualControls";
 
-type EditPage = "chain" | "controls" | "io";
+type EditPage = "chain" | "mixers" | "controls" | "io";
 type PathBrowserKind = "model" | "ir";
 const PATH_BROWSER_DIR_KEYS: Record<PathBrowserKind, string> = {
     model: "pimfx-nam-browser-dir",
@@ -55,7 +56,14 @@ export function EditorView({
     onPageChange?: (page: EditPage, title?: string) => void;
 }) {
     const { client, state, catalog, library } = engine;
-    const chain = objects(state.chain);
+    const liveChain = objects(state.chain);
+    const hydrateLayoutItem = (item: JsonObject): JsonObject => {
+        const live = liveChain.find((slot) => str(slot.id) === str(item.id));
+        return live ? { ...item, ...live, name: str(item.name) || str(live.name) } : item;
+    };
+    const chain = Array.isArray(state.chainLayout)
+        ? objects(state.chainLayout).map(hydrateLayoutItem)
+        : liveChain;
     const plugins = objects(catalog.plugins);
     const preset = findPreset(state);
     const bank = findBank(state);
@@ -63,27 +71,64 @@ export function EditorView({
     const [selectedId, setSelectedId] = useState("");
     const [page, setPage] = useState<EditPage>("chain");
     const [ioKind, setIoKind] = useState<"input" | "output">("input");
-    const [browser, setBrowser] = useState<{ mode: "add" | "replace"; index: number } | null>(null);
-    const [dragId, setDragId] = useState("");
-    const [dragOverTrash, setDragOverTrash] = useState(false);
-    const [dropGap, setDropGap] = useState<number | null>(null);
-    const [dragGhost, setDragGhost] = useState<{ title: string; x: number; y: number } | null>(null);
+    const [browser, setBrowser] = useState<{
+        mode: "add" | "replace";
+        index: number;
+        slotId?: string;
+    } | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [pendingTrashId, setPendingTrashId] = useState("");
     const [newPresetOpen, setNewPresetOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
     const [bindTarget, setBindTarget] = useState<BindTarget | null>(null);
     const [dropBankId, setDropBankId] = useState("");
-    const dragRef = useRef<{ id: string; title: string; from: number; x: number; y: number; dragging: boolean } | null>(null);
-    const chainPageRef = useRef<HTMLDivElement | null>(null);
-    const [chainItemsPerRow, setChainItemsPerRow] = useState(5);
-    const [chainCardWidth, setChainCardWidth] = useState(142);
     const [sessionAction, setSessionAction] = useState<"save" | "reload" | "">("");
     const [sessionStatus, setSessionStatus] = useState("");
+    const [structureBusy, setStructureBusy] = useState(false);
+    const structureBusyRef = useRef(false);
     const sessionDirty = bool(state.sessionPresetDirty);
-    const presetName = str(obj(preset).name, "current preset");
+    const presetName = str(obj(preset).name, "No preset");
     const sessionPresetId = str(obj(preset).id, str(state.activePresetId));
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
+
+    const waitForChainGeneration = (generation: number) => new Promise<void>((resolve, reject) => {
+        let finished = false;
+        let unsubscribe: () => void = () => undefined;
+        let timer = 0;
+        const finish = (error?: Error) => {
+            if (finished) return;
+            finished = true;
+            window.clearTimeout(timer);
+            unsubscribe();
+            if (error) reject(error); else resolve();
+        };
+        timer = window.setTimeout(() => finish(new Error("Effect chain preparation timed out. Reload the saved preset or choose another preset.")), 30000);
+        unsubscribe = client.subscribe((snapshot) => {
+            if (num(snapshot.state.chainGeneration) > generation) finish();
+        });
+        // subscribe immediately delivers the current state; finish can run
+        // before its unsubscribe handle has been assigned.
+        if (finished) unsubscribe();
+    });
+
+    const runStructureChange = async (work: () => Promise<unknown>, afterPublication?: () => void) => {
+        if (structureBusyRef.current) return;
+        structureBusyRef.current = true;
+        setStructureBusy(true);
+        setSessionStatus("PREPARING EFFECT CHAIN…");
+        const generation = num(client.snapshot.state.chainGeneration);
+        try {
+            await run(async () => {
+                await work();
+                await waitForChainGeneration(generation);
+                afterPublication?.();
+            });
+        } finally {
+            structureBusyRef.current = false;
+            setStructureBusy(false);
+            setSessionStatus("");
+        }
+    };
 
     const finishSessionAction = async (action: "save" | "reload") => {
         setSessionAction("");
@@ -101,7 +146,7 @@ export function EditorView({
 
     useEffect(() => {
         const sharedPage = str(engine.uiSession.editorPage) as EditPage;
-        if (["chain", "controls", "io"].includes(sharedPage) && sharedPage !== page) {
+        if (["chain", "mixers", "controls", "io"].includes(sharedPage) && sharedPage !== page) {
             setPage(sharedPage);
         }
         const sharedSelectedId = str(engine.uiSession.editorSelectedId);
@@ -114,7 +159,8 @@ export function EditorView({
         }
     }, [engine.uiSession.editorPage, engine.uiSession.editorSelectedId, engine.uiSession.editorIoKind]);
 
-    const selected = chain.find((slot) => str(slot.id) === selectedId) ?? chain[0];
+    const pluginSlots = chain.filter(item => str(item.kind) !== "mixer");
+    const selected = pluginSlots.find((slot) => str(slot.id) === selectedId) ?? pluginSlots[0];
     const plugin = obj(obj(selected).plugin);
     const ports = objects(plugin.ports).filter((port) => str(port.kind) === "control"
         && bool(port.input, true) && !bool(port.notOnGui));
@@ -127,7 +173,7 @@ export function EditorView({
     const virtualConfig = obj(state.virtualControls);
     const virtualPages = virtualControlPages(virtualConfig);
     const virtualControls = objects(virtualConfig.controls);
-    const parameterBindings = objects(obj(preset).parameterBindings);
+    const parameterBindings = objects(state.editorBindings ?? obj(preset).parameterBindings);
     const bindingsForParameter = (slotId: string, symbol: string) =>
         parameterBindings.filter((binding) =>
             str(binding.action) === "setParameter"
@@ -136,20 +182,18 @@ export function EditorView({
     const bindingsForBypass = (slotId: string) =>
         parameterBindings.filter((binding) =>
             str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
-    const bindForBypass = (slotId: string) =>
-        parameterBindings.find((binding) =>
-            str(binding.action) === "toggleEffect" && str(binding.slotId) === slotId);
+
 
     const applyBind = (payload: JsonObject, close = true) => {
         if (!str(payload.controlId)) {
             setBindTarget(null);
             return;
         }
-        void run(() => client.request("preset/bind", {
+        void run(async () => { await client.request("preset/bind", {
             ...payload,
             ownerBankId: str(obj(bank).id),
             ownerPresetId: sessionPresetId
-        })).then(() => {
+        });
             if (close) setBindTarget(null);
         });
     };
@@ -157,7 +201,7 @@ export function EditorView({
     const effectTitle = str(obj(selected).name) || str(plugin.name, "Effect");
 
     useEffect(() => {
-        onPageChange?.(page, page === "chain" ? undefined : page === "io" ? (ioKind === "input" ? "INPUT" : "OUTPUT") : effectTitle);
+        onPageChange?.(page, page === "chain" || page === "mixers" ? undefined : page === "io" ? (ioKind === "input" ? "INPUT" : "OUTPUT") : effectTitle);
     }, [page, effectTitle, ioKind]);
 
     const previousBackRequestRef = useRef(backRequest);
@@ -172,81 +216,11 @@ export function EditorView({
     }, [backRequest]);
 
     useEffect(() => {
-        const ids = new Set(chain.map((slot) => str(slot.id)));
+        const ids = new Set([...chain, ...pluginSlots].map((slot) => str(slot.id)));
         if (selectedId && !ids.has(selectedId)) {
             setSelectedId("");
         }
-    }, [str(state.activePresetId), chain.map((slot) => str(slot.id)).join("|")]);
-
-    useEffect(() => {
-        if (page !== "chain") {
-            return;
-        }
-        const element = chainPageRef.current;
-        if (!element) {
-            return;
-        }
-        const updateLayout = () => {
-            const style = getComputedStyle(element);
-            const availableWidth = Math.max(
-                1,
-                element.clientWidth
-                    - (parseFloat(style.paddingLeft) || 0)
-                    - (parseFloat(style.paddingRight) || 0)
-            );
-            const uiScale = Math.max(0.5, parseFloat(
-                getComputedStyle(document.documentElement).getPropertyValue("--mfx-ui-scale")
-            ) || 1);
-            const targetCardWidth = 142 * uiScale;
-            const connectorWidth = 70 * uiScale;
-            const itemsPerRow = Math.max(2, Math.floor(
-                (availableWidth + connectorWidth) / (targetCardWidth + connectorWidth)
-            ));
-            const widthForCards = (availableWidth - Math.max(0, itemsPerRow - 1) * connectorWidth) / itemsPerRow;
-            setChainItemsPerRow(itemsPerRow);
-            setChainCardWidth(Math.max(118 * uiScale, Math.min(210 * uiScale, widthForCards)));
-        };
-        updateLayout();
-        const observer = new ResizeObserver(updateLayout);
-        observer.observe(element);
-        return () => observer.disconnect();
-    }, [page]);
-
-    const chainNodes = useMemo(() => {
-        const nodes: {
-            key: string;
-            kind: "input" | "plugin" | "output";
-            globalIndex: number;
-            slot?: JsonObject;
-            chainIndex?: number;
-        }[] = [{ key: "input", kind: "input", globalIndex: 0 }];
-        chain.forEach((slot, index) => {
-            nodes.push({
-                key: str(slot.id),
-                kind: "plugin",
-                globalIndex: index + 1,
-                slot,
-                chainIndex: index
-            });
-        });
-        nodes.push({ key: "output", kind: "output", globalIndex: chain.length + 1 });
-        return nodes;
-    }, [chain]);
-
-    const chainRows = useMemo(() => {
-        const rows: typeof chainNodes[] = [];
-        for (let i = 0; i < chainNodes.length; i += chainItemsPerRow) {
-            rows.push(chainNodes.slice(i, i + chainItemsPerRow));
-        }
-        return rows;
-    }, [chainNodes, chainItemsPerRow]);
-
-    const addAfter = (globalIndex: number) => {
-        if (lockChain || globalIndex < 0 || globalIndex >= chainNodes.length - 1) {
-            return;
-        }
-        setBrowser({ mode: "add", index: globalIndex });
-    };
+    }, [str(state.activePresetId), [...chain, ...pluginSlots].map((slot) => str(slot.id)).join("|")]);
 
     const renamePreset = () => {
         void askText("Rename preset", str(obj(preset).name, "Preset")).then((name) => {
@@ -269,244 +243,58 @@ export function EditorView({
         });
     };
 
-    const onPointerDown = (slot: JsonObject, index: number, event: React.PointerEvent) => {
-        if (lockChain) {
-            return;
-        }
-        dragRef.current = {
-            id: str(slot.id),
-            title: str(slot.name) || str(obj(slot.plugin).name, "Effect"),
-            from: index,
-            x: event.clientX,
-            y: event.clientY,
-            dragging: false
-        };
-        event.currentTarget.setPointerCapture(event.pointerId);
-    };
 
-    const isTrashAtPoint = (x: number, y: number) => {
-        const trash = document.querySelector("[data-chain-trash]") as HTMLElement | null;
-        if (!trash) {
-            return false;
-        }
-        const rect = trash.getBoundingClientRect();
-        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-    };
-
-    const onPointerMove = (event: React.PointerEvent) => {
-        const drag = dragRef.current;
-        if (!drag) {
-            return;
-        }
-        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 10) {
-            drag.dragging = true;
-            setDragId(drag.id);
-            setDragGhost({ title: drag.title, x: event.clientX, y: event.clientY });
-        }
-        setDragOverTrash(isTrashAtPoint(event.clientX, event.clientY));
-        const gap = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
-        const gapIndex = Number(gap?.dataset.chainIndex);
-        setDropGap(Number.isInteger(gapIndex) ? gapIndex : null);
-    };
-
-    const onPointerUp = (slot: JsonObject, event: React.PointerEvent) => {
-        const drag = dragRef.current;
-        dragRef.current = null;
-        const wasDragging = Boolean(drag?.dragging);
-        setDragId("");
-        setDragOverTrash(false);
-        setDragGhost(null);
-        setDropGap(null);
-        if (!drag || !wasDragging) {
-            openControls(str(slot.id));
-            return;
-        }
-        if (isTrashAtPoint(event.clientX, event.clientY)) {
-            setPendingTrashId(drag.id);
-            return;
-        }
-        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-chain-index]") as HTMLElement | null;
-        if (target) {
-            const index = Number(target.dataset.chainIndex);
-            if (Number.isInteger(index) && index !== drag.from) {
-                void run(() => client.request("chain/move", { slotId: drag.id, index }));
-            }
-        }
-    };
+    const sessionButtons = <>
+        <button type="button" className="btn" disabled={structureBusy || bool(state.chainPreparing) || !sessionDirty || activeSnapshot >= 0}
+            onClick={() => setSessionAction("save")}><span className="routing-long-label">SAVE CHANGES</span><span className="routing-short-label">SAVE</span></button>
+        <button type="button" className="btn" disabled={structureBusy || bool(state.chainPreparing) || !sessionDirty}
+            onClick={() => setSessionAction("reload")}><span className="routing-long-label">RELOAD SAVED</span><span className="routing-short-label">RELOAD</span></button>
+    </>;
 
     return (
         <div className="mfx-screen editor-screen">
             <div className="editor-main">
-            <div className="editor-session-bar">
-                <span>
-                    <strong>{presetName}</strong>
-                    <small>{sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small>
-                </span>
+            {page !== "chain" && page !== "mixers" && <div className="editor-session-bar">
+                <span><strong>{presetName}</strong><small>{!preset ? "CREATE OR SELECT A PRESET" : sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET"}</small></span>
                 {sessionStatus && <strong className="editor-session-status">{sessionStatus}</strong>}
-                <button type="button" className="btn" disabled={!sessionDirty || activeSnapshot >= 0}
-                    onClick={() => setSessionAction("save")}>SAVE CHANGES</button>
-                <button type="button" className="btn" disabled={!sessionDirty}
-                    onClick={() => setSessionAction("reload")}>RELOAD SAVED</button>
-            </div>
-            {page === "chain" && (
+                {sessionButtons}
+            </div>}
+            {(page === "chain" || page === "mixers") && (
                 <>
-                    <div className="editor-toolbar editor-chain-bar">
-                        <div className="editor-primary-actions">
-                            {!lockChain && (
-                                <button type="button" className="btn btn-accent" onClick={() => setNewPresetOpen(true)}>NEW</button>
-                            )}
-                            <button type="button" className="btn" onClick={onSnapshots}>SNAPSHOTS</button>
-                        </div>
-                        <button
-                            type="button"
-                            className="editor-preset-name"
-                            onClick={() => {
-                                if (!lockChain) {
-                                    setPickerOpen(true);
-                                }
-                            }}
-                        >
-                            <MarqueeText
-                                text={`${str(obj(bank).name, "Bank")} / ${str(obj(preset).name, "Preset")}`}
-                                align="center"
-                                fontWeight={900}
-                            />
-                            <span className="editor-preset-chevron">▾</span>
-                        </button>
-                        {!lockChain ? (
-                            <div className="editor-primary-actions">
-                                <button type="button" className="btn" onClick={renamePreset}>RENAME</button>
-                                <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
-                                    DELETE
-                                </button>
-                            </div>
-                        ) : <div />}
-                        {lockChain && (
-                            <div className="editor-toolbar-copy">
-                                <span>Snapshot editing cannot add, remove or reorder effects.</span>
-                            </div>
-                        )}
-                    </div>
-                    <div className="chain-page" ref={chainPageRef}>
-                        {chainRows.map((logicalRow, rowIndex) => {
-                            const flowsLeft = rowIndex % 2 === 1;
-                            const visualRow = flowsLeft ? [...logicalRow].reverse() : logicalRow;
-                            return (
-                                <div key={`row-${rowIndex}`}>
-                                    <div className={`chain-row${flowsLeft ? " rtl" : ""}`}>
-                                        {visualRow.map((node, visualIndex) => {
-                                            const nextVisual = visualRow[visualIndex + 1];
-                                            const sourceIndex = nextVisual
-                                                ? Math.min(node.globalIndex, nextVisual.globalIndex)
-                                                : -1;
-                                            return (
-                                                <div key={node.key} className="chain-node">
-                                                    {node.kind === "plugin" && node.slot
-                                                        ? (
-                                                            <ChainPluginCard
-                                                                slot={node.slot}
-                                                                chainIndex={node.chainIndex ?? 0}
-                                                                cardWidth={chainCardWidth}
-                                                                selected={str(obj(selected).id) === str(node.slot.id)}
-                                                                dragging={dragId === str(node.slot.id)}
-                                                                lockChain={lockChain}
-                                                                onPointerDown={(event) => onPointerDown(node.slot!, node.chainIndex ?? 0, event)}
-                                                                onPointerMove={onPointerMove}
-                                                                onPointerUp={(event) => onPointerUp(node.slot!, event)}
-                                                                onPointerCancel={() => {
-                                                                    dragRef.current = null;
-                                                                    setDragId("");
-                                                                    setDragOverTrash(false);
-                                                                }}
-                                                                onToggle={() => void run(() => client.request("chain/enable", {
-                                                                    slotId: str(node.slot!.id),
-                                                                    enabled: !bool(node.slot!.enabled, true)
-                                                                }))}
-                                                                bypassBound={Boolean(bindForBypass(str(node.slot.id)))}
-                                                                onBypassLongPress={() => setBindTarget({
-                                                                    mode: "bypass",
-                                                                    slotId: str(node.slot!.id),
-                                                                    name: str(node.slot!.name) || str(obj(obj(node.slot).plugin).name, "Effect")
-                                                                })}
-                                                            />
-                                                        )
-                                                        : (
-                                                            <button
-                                                                type="button"
-                                                                className={`chain-slot endpoint${selectedId === node.kind ? " selected" : ""}`}
-                                                                style={{ flex: `0 0 ${chainCardWidth}px`, width: chainCardWidth }}
-                                                                onClick={() => {
-                                                                    const kind = node.kind === "input" ? "input" : "output";
-                                                                    setIoKind(kind);
-                                                                    setSelectedId(node.kind);
-                                                                    setPage("io");
-                                                                    client.updateUiSession({
-                                                                        editorPage: "io",
-                                                                        editorSelectedId: node.kind,
-                                                                        editorIoKind: kind,
-                                                                        editSubpage: "io"
-                                                                    });
-                                                                }}
-                                                            >
-                                                                <strong>{node.kind === "input" ? "INPUT" : "OUTPUT"}</strong>
-                                                                <div className="muted">{node.kind === "input" ? "SIGNAL IN" : "SIGNAL OUT"}</div>
-                                                            </button>
-                                                        )}
-                                                    {nextVisual && sourceIndex >= 0 && (
-                                                        <div
-                                                            className={`chain-connector${flowsLeft ? " left" : " right"}${dropGap === sourceIndex ? " drop-active" : ""}`}
-                                                            data-chain-index={sourceIndex}
-                                                        >
-                                                            <button
-                                                                type="button"
-                                                                className="chain-insert"
-                                                                disabled={lockChain}
-                                                                onClick={() => addAfter(sourceIndex)}
-                                                            >
-                                                                +
-                                                            </button>
-                                                            <span className="chain-flow-line" />
-                                                            <span className="chain-flow-arrow">{flowsLeft ? "◀" : "▶"}</span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                    {rowIndex < chainRows.length - 1 && (
-                                        <div
-                                            className={`chain-turn ${flowsLeft ? "left" : "right"}${dropGap === logicalRow[logicalRow.length - 1].globalIndex ? " drop-active" : ""}`}
-                                            data-chain-index={logicalRow[logicalRow.length - 1].globalIndex}
-                                        >
-                                            {!lockChain && (
-                                                <button
-                                                    type="button"
-                                                    className="chain-insert"
-                                                    onClick={() => addAfter(logicalRow[logicalRow.length - 1].globalIndex)}
-                                                >
-                                                    +
-                                                </button>
-                                            )}
-                                            <span className="chain-turn-line" />
-                                            <span className="chain-flow-arrow">▼</span>
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                        {dragGhost && (
-                            <>
-                                <div className={`chain-trash-icon${dragOverTrash ? " active" : ""}`} data-chain-trash="true">🗑</div>
-                                {createPortal(
-                                    <div className="chain-ghost" style={{ left: dragGhost.x + 16, top: dragGhost.y + 14 }}>
-                                        <div>{dragGhost.title}</div>
-                                        <div className="muted">MOVE EFFECT</div>
-                                    </div>,
-                                    document.body
-                                )}
-                            </>
-                        )}
-                    </div>
+                    <RoutingEditor key={str(state.activePresetId)} client={client} catalog={catalog} blocks={chain} routing={obj(state.routing)}
+                        undoCount={num(state.editorUndoCount)} redoCount={num(state.editorRedoCount)}
+                        presetId={str(state.activePresetId)} locked={!preset || lockChain || structureBusy || bool(state.chainPreparing)}
+                        mix={page === "mixers"} onMixChange={mix => {
+                            const next = mix ? "mixers" : "chain";
+                            setPage(next);
+                            client.updateUiSession({ editorPage: next, editSubpage: next });
+                        }}
+                        toolbarContent={<>
+                            <button type="button" className="editor-preset-name routing-preset-selector" disabled={lockChain} onClick={() => setPickerOpen(true)}>
+                                <span className="routing-preset-copy">
+                                    <MarqueeText text={`${str(obj(bank).name, "No bank")} / ${presetName}`} align="center" fontWeight={900} />
+                                    <small role="status">{!preset ? "CREATE OR SELECT A PRESET" : sessionStatus || (bool(state.chainPreparing) ? "PREPARING ROUTING…" : sessionDirty ? "UNSAVED LIVE CHANGES" : "SAVED PRESET")}</small>
+                                </span>
+                                <span className="editor-preset-chevron">▾</span>
+                            </button>
+                            {sessionButtons}
+                        </>}
+                        presetActions={<>
+                            {!lockChain && <button type="button" className="btn" onClick={() => setNewPresetOpen(true)}>NEW PRESET</button>}
+                            <button type="button" className="btn" disabled={!preset} onClick={onSnapshots}>SNAPSHOTS</button>
+                            {lockChain && <p className="muted">Snapshot editing cannot add, remove or reorder effects.</p>}
+                        </>}
+                        presetManagementActions={<>
+                            {!lockChain && <>
+                                <button type="button" className="btn" disabled={!preset} onClick={renamePreset}>RENAME PRESET</button>
+                                <button type="button" className="btn btn-danger" disabled={!preset} onClick={() => setConfirmDelete(true)}>DELETE PRESET</button>
+                            </>}
+                        </>}
+                        run={run} runStructure={runStructureChange} onRemove={id => runStructureChange(() => client.request("chain/remove", { slotId: id }))} onEdit={openControls} onIo={kind => {
+                            setIoKind(kind); setPage("io");
+                            client.updateUiSession({ editorPage: "io", editorIoKind: kind });
+                        }} />
+
                 </>
             )}
 
@@ -524,7 +312,7 @@ export function EditorView({
                 </>
             )}
 
-            {page !== "chain" && page !== "io" && selected && (
+            {page === "controls" && selected && (
                 <>
                     <div className="editor-toolbar">
                         <div className="editor-toolbar-copy">
@@ -534,6 +322,7 @@ export function EditorView({
                         <button
                             type="button"
                             className={`btn ${bool(selected.enabled, true) ? "btn-active" : ""}`}
+                            disabled={structureBusy}
                             onClick={() => void run(() => client.request("chain/enable", {
                                 slotId: str(selected.id),
                                 enabled: !bool(selected.enabled, true)
@@ -543,10 +332,15 @@ export function EditorView({
                         </button>
                         {!lockChain && (
                             <>
-                                <button type="button" className="btn" onClick={() => setBrowser({ mode: "replace", index: selectedIndex })}>
+                                <button type="button" className="btn" disabled={structureBusy}
+                                    onClick={() => setBrowser({
+                                        mode: "replace",
+                                        index: selectedIndex,
+                                        slotId: str(selected.id)
+                                    })}>
                                     REPLACE
                                 </button>
-                                <button type="button" className="btn btn-danger" onClick={() => {
+                                <button type="button" className="btn btn-danger" disabled={structureBusy} onClick={() => {
                                     setPendingTrashId(str(selected.id));
                                 }}>REMOVE</button>
                             </>
@@ -586,6 +380,9 @@ export function EditorView({
 
             <PluginBrowser
                 open={browser !== null}
+                sessionKey={browser
+                    ? `${browser.mode}:${browser.slotId ?? "new"}:${browser.index}`
+                    : "closed"}
                 catalog={catalog}
                 title={browser?.mode === "replace" ? "SELECT PLUGIN" : "ADD EFFECT"}
                 actionLabel={browser?.mode === "replace" ? "USE PLUGIN" : "ADD HERE"}
@@ -596,15 +393,22 @@ export function EditorView({
                     if (!target) {
                         return;
                     }
-                    void run(async () => {
-                        if (target.mode === "replace" && selected) {
-                            await client.request("chain/replace", {
-                                slotId: str(selected.id),
+                    let replacementId = "";
+                    void runStructureChange(async () => {
+                        if (target.mode === "replace" && target.slotId) {
+                            const result = obj(await client.request("chain/replace", {
+                                slotId: target.slotId,
                                 uri
-                            });
+                            }));
+                            replacementId = str(result.slotId);
                         } else {
                             await client.request("chain/add", { uri, index: target.index });
                         }
+                    }, () => {
+                        // The replacement ID is absent from the old live chain.
+                        // Open it only after the prepared chain has been swapped
+                        // and published, or selection fallback can show another effect.
+                        if (replacementId) openControls(replacementId);
                     });
                 }}
             />
@@ -676,10 +480,10 @@ export function EditorView({
                                                 type="button"
                                                 className="editor-picker-select"
                                                 onClick={() => {
-                                                    void run(() => client.request("preset/select", {
+                                                    void run(async () => { await client.request("preset/select", {
                                                         bankId: str(item.id),
                                                         presetId: str(row.id)
-                                                    })).then(() => setPickerOpen(false));
+                                                    }); setPickerOpen(false); });
                                                 }}
                                             >
                                                 <MarqueeText text={str(row.name, "Preset")} align="left" fontWeight={800} />
@@ -708,13 +512,15 @@ export function EditorView({
                 />
             )}
             {pendingTrashId && <ConfirmDialog title="REMOVE EFFECT?"
-                body={str(obj(chain.find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
+                body={str(obj([...chain, ...pluginSlots].find((slot) => str(slot.id) === pendingTrashId)).name, "this effect")}
                 confirmLabel="REMOVE" danger onCancel={() => setPendingTrashId("")} onConfirm={() => {
                     const slotId = pendingTrashId;
                     setPendingTrashId("");
-                    void run(() => client.request("chain/remove", { slotId })).then(() => {
-                        setPage("chain");
-                        client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+                    void runStructureChange(() => client.request("chain/remove", { slotId }), () => {
+                        {
+                            setPage("chain");
+                            client.updateUiSession({ editorPage: "chain", editSubpage: "chain" });
+                        }
                     });
                 }} />}
             {confirmDelete && <ConfirmDialog title="DELETE PRESET?"
@@ -760,108 +566,6 @@ export function EditorView({
                 document.body
             )}
         </div>
-    );
-}
-
-function ChainPluginCard({
-    slot,
-    chainIndex,
-    cardWidth,
-    selected,
-    dragging,
-    lockChain,
-    onPointerDown,
-    onPointerMove,
-    onPointerUp,
-    onPointerCancel,
-    onToggle,
-    bypassBound = false,
-    onBypassLongPress
-}: {
-    slot: JsonObject;
-    chainIndex: number;
-    cardWidth: number;
-    selected: boolean;
-    dragging: boolean;
-    lockChain: boolean;
-    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
-    onPointerCancel: () => void;
-    onToggle: () => void;
-    bypassBound?: boolean;
-    onBypassLongPress?: () => void;
-}) {
-    const info = obj(slot.plugin);
-    const on = bool(slot.enabled, true);
-    const holdRef = useRef<number | null>(null);
-    const holdFiredRef = useRef(false);
-    const clearHold = () => {
-        if (holdRef.current !== null) {
-            window.clearTimeout(holdRef.current);
-            holdRef.current = null;
-        }
-    };
-    return (
-        <button
-            type="button"
-            data-chain-index={chainIndex}
-            className={`chain-slot${selected ? " selected" : ""}${on ? "" : " off"}${dragging ? " dragging" : ""}`}
-            style={{ flex: `0 0 ${cardWidth}px`, width: cardWidth }}
-            onPointerDown={lockChain ? undefined : onPointerDown}
-            onPointerMove={lockChain ? undefined : onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={lockChain ? undefined : onPointerCancel}
-        >
-            <div className="chain-slot-top">
-                <span className="chain-handle">⋮⋮</span>
-                <MarqueeText
-                    text={str(slot.name) || str(info.name, str(slot.uri))}
-                    align="left"
-                    fontWeight={900}
-                />
-                <span
-                    className={`chain-led${on ? " on" : ""}${bypassBound ? " bound" : ""}`}
-                    role="switch"
-                    aria-checked={on}
-                    onPointerDown={(event) => {
-                        event.stopPropagation();
-                        event.preventDefault();
-                        holdFiredRef.current = false;
-                        clearHold();
-                        try {
-                            event.currentTarget.setPointerCapture(event.pointerId);
-                        } catch {
-                            // optional
-                        }
-                        if (!onBypassLongPress) {
-                            return;
-                        }
-                        holdRef.current = window.setTimeout(() => {
-                            holdRef.current = null;
-                            holdFiredRef.current = true;
-                            onBypassLongPress();
-                        }, 550);
-                    }}
-                    onPointerUp={(event) => {
-                        event.stopPropagation();
-                        clearHold();
-                        if (!holdFiredRef.current) {
-                            onToggle();
-                        }
-                    }}
-                    onPointerCancel={() => clearHold()}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        event.preventDefault();
-                    }}
-                />
-            </div>
-            <div className="muted">{on ? "ACTIVE" : "BYPASSED"}</div>
-            <div className="muted" style={{ fontSize: "0.62rem" }}>
-                TAP TO EDIT • LED = BYPASS{bypassBound ? " • BOUND" : ""}
-            </div>
-        </button>
     );
 }
 
@@ -1027,12 +731,12 @@ function PathPropertyPicker({
         highlightedRef.current = path;
         setHighlighted(path);
         lastSent.current = path;
-        void run(() => client.request("chain/property", {
+        void run(async () => { await client.request("chain/property", {
             slotId,
             property: propertyUri,
             path,
             persist: true
-        })).then(() => {
+        });
             setOpen(false);
             syncPathBrowser({ open: false, highlightedPath: path });
         });
@@ -1041,12 +745,12 @@ function PathPropertyPicker({
     const cancel = () => {
         const path = original.current;
         lastSent.current = path;
-        void run(() => client.request("chain/property", {
+        void run(async () => { await client.request("chain/property", {
             slotId,
             property: propertyUri,
             path,
             persist: false
-        })).then(() => {
+        });
             setOpen(false);
             syncPathBrowser({ open: false, highlightedPath: path });
         });
@@ -1632,6 +1336,16 @@ export function EffectControls({
                                     freeform: true,
                                     scrollFriendly: true,
                                     hardwarePopout: hardwarePopoutSymbol === symbol,
+                                    onPopoutDismiss: () => {
+                                        setHardwarePopoutSymbol((current) => {
+                                            if (current !== symbol) return current;
+                                            if (hardwarePopoutTimer.current !== null) {
+                                                window.clearTimeout(hardwarePopoutTimer.current);
+                                                hardwarePopoutTimer.current = null;
+                                            }
+                                            return "";
+                                        });
+                                    },
                                     encoderSelected: selectedControlSymbol === symbol,
                                     onEngage: () => setSelectedControlSymbol(symbol),
                                     onPress: () => {

@@ -55,6 +55,8 @@ private:
     std::atomic<unsigned> limiterLookaheadFrames_{36};
     std::atomic<float> fadeOutStep_{1.0f / 240.0f};
     std::atomic<float> fadeInStep_{1.0f / 384.0f};
+    std::atomic<float> parameterSmoothingStep_{1.0f / 240.0f};
+    std::atomic<unsigned> lookaheadCrossfadeFrames_{240};
     std::atomic<TransitionState> transitionState_{TransitionState::Running};
 
     std::vector<float> limiterDelay_;
@@ -64,6 +66,14 @@ private:
     std::array<float, kMaxChannels> dcPreviousOutput_{};
     float limiterGain_ = 1.0f;
     unsigned limiterHoldFrames_ = 0;
+    size_t activeLookaheadFrames_ = 0;
+    size_t previousLookaheadFrames_ = 0;
+    unsigned lookaheadCrossfadeRemaining_ = 0;
+    float limiterWet_ = 1.0f;
+    float dcWet_ = 1.0f;
+    float smoothedDcPole_ = 0.9991f;
+    float smoothedCeilingGain_ = 0.8913f;
+    float smoothedReleaseStep_ = 0.00026f;
     float transitionGain_ = 1.0f;
 };
 

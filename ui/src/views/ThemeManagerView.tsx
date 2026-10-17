@@ -336,6 +336,26 @@ export default function ThemeManagerView({
         return () => window.cancelAnimationFrame(frame);
     }, [activeName, browseMode]);
 
+    useEffect(() => {
+        const list = themeListRef.current;
+        if (!list) return;
+        const previewEncoderSelection = () => {
+            const item = list.querySelector<HTMLButtonElement>(
+                '[data-theme-name][data-mfx-nav-cursor="true"]'
+            );
+            // Other screens receive the preview through the shared theme session.
+            if (item?.getAttribute("data-mfx-nav-remote") === "true") return;
+            item?.click();
+        };
+        const observer = new MutationObserver(previewEncoderSelection);
+        observer.observe(list, {
+            attributes: true,
+            subtree: true,
+            attributeFilter: ["data-mfx-nav-cursor"]
+        });
+        return () => observer.disconnect();
+    }, []);
+
     const groupedBuiltIns = useMemo(() => {
         const categoryOrder: readonly string[] = browseMode === "STYLE"
             ? STYLE_CATEGORY_ORDER

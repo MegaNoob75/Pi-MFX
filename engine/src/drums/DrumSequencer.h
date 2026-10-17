@@ -72,6 +72,7 @@ public:
 
     /// Generates triggers for [timelineFrame, timelineFrame + frames). The
     /// caller supplies fixed storage so the audio callback never allocates.
+    void consumePendingProgram() noexcept;
     size_t renderBlock(const TransportBlock& transport, unsigned frames,
                        Trigger* triggers, size_t capacity) noexcept;
 

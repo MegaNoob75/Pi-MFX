@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { askText } from "../keyboard/ask";
-import { arr, obj, str, objects, type JsonObject } from "../json";
+import { arr, isObj, obj, str, objects, type Json, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
 import { LibraryJsonPicker } from "./LibraryManager";
 import { NewPresetDialog } from "./NewPresetDialog";
@@ -22,7 +22,7 @@ export function BanksView({
 }) {
     const { client, state } = engine;
     const banks = objects(state.banks);
-    const activeBank = findBank(state);
+    const activeBank = findBank(state, str(state.browseBankId, str(state.activeBankId)));
     const activePreset = findPreset(state);
     const presets = objects(obj(activeBank).presets);
     const [focused, setFocused] = useState<"banks" | "presets">("presets");
@@ -31,15 +31,19 @@ export function BanksView({
     const [busy, setBusy] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [saveContents, setSaveContents] = useState("");
-    const [emptyBank, setEmptyBank] = useState<JsonObject | null>(null);
+    const [newPresetOpen, setNewPresetOpen] = useState(false);
     const [toast, setToast] = useState("");
     const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
     const [dropBankId, setDropBankId] = useState("");
     const suppressPresetClickRef = useRef(false);
+    const bankImportRef = useRef<HTMLInputElement>(null);
+    const presetImportRef = useRef<HTMLInputElement>(null);
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
-    const selectedPresetId = cursorPreset || presetId;
+    const selectedPresetId = presets.some((preset) => str(preset.id) === cursorPreset)
+        ? cursorPreset : presets.some((preset) => str(preset.id) === presetId)
+            ? presetId : str(presets[0]?.id);
     const bankIndex = banks.findIndex((bank) => str(bank.id) === bankId);
     const presetIndex = presets.findIndex((preset) => str(preset.id) === selectedPresetId);
     const dirtyPresetIds = new Set(arr(state.sessionPresetDirtyIds).map((value) => str(value)));
@@ -104,14 +108,10 @@ export function BanksView({
     };
 
     const selectBank = (id: string) => {
-        const bank = banks.find((item) => str(item.id) === id);
-        if (!objects(obj(bank).presets).length) {
-            setEmptyBank(obj(bank));
-            setToast(`“${str(obj(bank).name, "This bank")}” has no presets.`);
-            window.setTimeout(() => setToast(""), 2800);
-            return;
-        }
-        mutate(() => client.request("bank/select", { bankId: id }));
+        mutate(async () => {
+            await client.request("bank/select", { bankId: id });
+            setCursorPreset("");
+        });
     };
 
     const saveBankToPi = () => {
@@ -122,6 +122,68 @@ export function BanksView({
             const result = await client.request("bank/export", { bankId });
             setSaveContents(JSON.stringify(obj(result.bank), null, 2));
             setPicker("save");
+        });
+    };
+
+    const downloadJson = (contents: JsonObject, name: string, kind: "bank" | "preset") => {
+        const filename = name.replace(/[<>:"\/\\|?*\u0000-\u001f]/g, "_").trim() || kind;
+        const url = URL.createObjectURL(new Blob([JSON.stringify(contents, null, 2)], { type: "application/json" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${filename}.${kind}.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
+    const exportBankFile = () => {
+        mutate(async () => {
+            const result = await client.request("bank/export", { bankId });
+            downloadJson(obj(result.bank), str(obj(result.bank).name, "bank"), "bank");
+        });
+    };
+    const exportPresetFile = () => {
+        mutate(async () => {
+            const result = await client.request("preset/export", { presetId: selectedPresetId });
+            downloadJson(obj(result.preset), str(obj(result.preset).name, "preset"), "preset");
+        });
+    };
+    const importPresetFile = (file: File) => {
+        mutate(async () => {
+            if (file.size > 64 * 1024 * 1024) throw new Error("This preset exceeds the 64 MB file upload limit.");
+            let parsed: Json;
+            try { parsed = JSON.parse(await file.text()) as Json; }
+            catch { throw new Error("Choose a valid Pi-MFX preset JSON file."); }
+            if (!isObj(parsed) || parsed.format !== "pimfx-preset" || parsed.formatVersion !== 2
+                || parsed.routingFormat !== 1 || !Array.isArray(parsed.chain) || !isObj(parsed.routing)) {
+                throw new Error("Choose a Pi-MFX preset exported in the current routing format.");
+            }
+            await client.request("preset/import", { preset: parsed, bankId });
+            setToast(`Imported “${str(parsed.name, file.name)}” into “${str(obj(activeBank).name)}”.`);
+            window.setTimeout(() => setToast(""), 5000);
+        });
+    };
+
+    const importBankFile = (file: File) => {
+        mutate(async () => {
+            if (file.size > 64 * 1024 * 1024) {
+                throw new Error("This bank exceeds the 64 MB file upload limit.");
+            }
+            let parsed: Json;
+            try {
+                parsed = JSON.parse(await file.text()) as Json;
+            } catch {
+                throw new Error("Choose a valid Pi-MFX bank JSON file.");
+            }
+            if (!isObj(parsed) || parsed.format !== "pimfx-bank" || parsed.formatVersion !== 2
+                || !Array.isArray(parsed.presets)) {
+                throw new Error("Choose a Pi-MFX bank exported in the current routing format.");
+            }
+            await client.request("bank/import", { bank: parsed });
+            // Import adds a bank; the user chooses when to load its audio.
+            setToast(`Imported “${str(parsed.name, file.name)}”. Select it in the bank list.`);
+            window.setTimeout(() => setToast(""), 5000);
         });
     };
 
@@ -180,7 +242,7 @@ export function BanksView({
                 mutate(async () => {
                     const exported = await client.request("bank/export", { bankId });
                     await client.request("bank/import", {
-                        bank: { ...obj(exported.bank), name, format: "pimfx-bank", formatVersion: 1 }
+                        bank: { ...obj(exported.bank), name }
                     });
                 });
             }
@@ -263,6 +325,17 @@ export function BanksView({
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={cloneBank}>CLONE</button>
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={saveBankToPi}>SAVE</button>
                     <button type="button" className="btn" disabled={busy} onClick={() => setPicker("load")}>LOAD</button>
+                    <button type="button" className="btn" disabled={busy}
+                        title="Import a bank JSON file from this device"
+                        onClick={() => bankImportRef.current?.click()}>IMPORT BANK</button>
+                    <button type="button" className="btn" disabled={!activeBank || busy}
+                        title="Download this bank's saved presets as JSON" onClick={exportBankFile}>EXPORT BANK</button>
+                    <input ref={bankImportRef} type="file" accept=".json,application/json" hidden
+                        aria-label="Choose a Pi-MFX bank file" onChange={(event) => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (file) importBankFile(file);
+                        }} />
                 </div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={busy} onClick={createBank}>NEW</button>
@@ -277,6 +350,9 @@ export function BanksView({
                     {busy && <span className="muted">Updating…</span>}
                 </div>
                 <div className="split-list" data-mfx-nav-list="banks">
+                    {!banks.length && <div className="muted" style={{ padding: 12 }}>
+                        No banks. Choose NEW, LOAD, or IMPORT BANK.
+                    </div>}
                     {banks.map((bank) => (
                         <button
                             key={str(bank.id)}
@@ -295,8 +371,22 @@ export function BanksView({
             <section className={`split-pane${focused === "presets" ? " is-nav-focused" : ""}`}
                 onPointerDown={() => focusPane("presets")}>
                 <div className="split-pane-title">PRESETS</div>
+                <div className="split-tools">
+                    <button type="button" className="btn" disabled={!activeBank || busy || obj(activeBank).communityHolding === true}
+                        title="Import a preset JSON file into this bank" onClick={() => presetImportRef.current?.click()}>IMPORT PRESET</button>
+                    <button type="button" className="btn" disabled={presetIndex < 0 || busy}
+                        title="Download the selected preset's saved settings as JSON" onClick={exportPresetFile}>EXPORT PRESET</button>
+                    <input ref={presetImportRef} type="file" accept=".json,application/json" hidden
+                        aria-label="Choose a Pi-MFX preset file" onChange={event => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (file) importPresetFile(file);
+                        }} />
+                </div>
                 <div className="split-toolbar">
-                    <button type="button" className="btn" disabled={!activePreset || busy} onClick={renamePreset}>RENAME</button>
+                    <button type="button" className="btn" disabled={busy || obj(activeBank).communityHolding === true}
+                        onClick={() => setNewPresetOpen(true)}>NEW</button>
+                    <button type="button" className="btn" disabled={!selectedPresetId || busy} onClick={renamePreset}>RENAME</button>
                     <button type="button" className="btn" disabled={presetIndex <= 0 || busy} onClick={() => {
                         mutate(() => client.request("preset/reorder", { presetId: selectedPresetId, index: presetIndex - 1 }));
                     }}>↑</button>
@@ -306,6 +396,11 @@ export function BanksView({
                     <button type="button" className="btn btn-danger" disabled={!selectedPresetId || busy} onClick={() => setConfirm("preset")}>DELETE</button>
                 </div>
                 <div className="split-list" data-mfx-nav-list="presets">
+                    {!presets.length && <div className="muted" style={{ padding: 12 }}>
+                        {obj(activeBank).communityHolding === true ? "No downloaded presets."
+                            : activeBank ? "No presets. Choose NEW or IMPORT PRESET."
+                                : "Create a preset, or select a bank to import into."}
+                    </div>}
                     {presets.map((preset, index) => (
                         <div
                             key={str(preset.id)}
@@ -377,13 +472,13 @@ export function BanksView({
                     </div>
                 </div>
             )}
-            {emptyBank && (
+            {newPresetOpen && (
                 <NewPresetDialog
-                    banks={[emptyBank, ...banks.filter((item) => str(item.id) !== str(emptyBank.id))]}
-                    defaultBankId={str(emptyBank.id)}
-                    onCancel={() => setEmptyBank(null)}
+                    banks={banks.filter((item) => item.communityHolding !== true)}
+                    defaultBankId={bankId}
+                    onCancel={() => setNewPresetOpen(false)}
                     onCreate={(name, createBankId) => {
-                        setEmptyBank(null);
+                        setNewPresetOpen(false);
                         mutate(() => client.request("preset/create", { name, bankId: createBankId }));
                     }}
                 />

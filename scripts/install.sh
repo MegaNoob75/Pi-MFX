@@ -89,7 +89,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     build-essential cmake pkg-config git \
     libasound2-dev liblilv-dev lv2-dev \
-    libcurl4-openssl-dev libsndfile1-dev libsamplerate0-dev \
+    libcurl4-openssl-dev libssl-dev libsndfile1-dev libsamplerate0-dev \
     nodejs npm python3 xz-utils unzip gnupg ca-certificates \
     network-manager dnsmasq-base iw \
     avahi-daemon avahi-utils
@@ -101,8 +101,7 @@ apt-get install -y --no-install-recommends \
 log "Building the engine"
 ensure_clone_writable
 as_clone_owner cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DPIMFX_ENABLE_DRUM_MACHINE=ON >/dev/null
+    -DCMAKE_BUILD_TYPE=Release >/dev/null
 as_clone_owner cmake --build "$REPO_DIR/engine/build" -j "$(nproc)"
 
 log "Building the user interface"
@@ -264,6 +263,7 @@ sed -e "s|@USER@|$PIMFX_USER|g" \
     "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
 
 log "Installing the plugin helper"
+PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" bash "$REPO_DIR/scripts/install-recovery.sh"
 install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugin-helper.py"
 sed -e "s|@USER@|$PIMFX_USER|g" \
     -e "s|@PREFIX@|$PREFIX|g" \
@@ -315,6 +315,9 @@ Pi-MFX is installed and running.
   Remove      sudo ./scripts/uninstall.sh
 
 First steps:
+  Recovery: open Settings -> Backup & Restore to import an
+     exported .pimfx-backup file. On the Pi, choose Restore from USB.
+     Installer menu option 14 also restores directly from a backup file.
   1. Settings -> Audio: pick your interface or HAT, then set the sample rate,
      period size, and period count. Start at 48000 / 64 / 3 and work down
      while watching the xrun counter.

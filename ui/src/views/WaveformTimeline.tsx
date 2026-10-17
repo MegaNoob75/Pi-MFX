@@ -7,6 +7,9 @@ export function WaveformTimeline({
     duration = 0,
     bpm = 0,
     beatsPerBar = 4,
+    loopEnabled = false,
+    loopStart = 0,
+    loopEnd = 0,
     emptyText = "No waveform available.",
     onSeek
 }: {
@@ -15,6 +18,9 @@ export function WaveformTimeline({
     duration?: number;
     bpm?: number;
     beatsPerBar?: number;
+    loopEnabled?: boolean;
+    loopStart?: number;
+    loopEnd?: number;
     emptyText?: string;
     onSeek?: (seconds: number) => void;
 }) {
@@ -43,6 +49,8 @@ export function WaveformTimeline({
 
     if (!values.length) return <div className="waveform-timeline waveform-empty"><span className="muted">{emptyText}</span></div>;
     const progress = duration > 0 ? Math.max(0, Math.min(1000, position / duration * 1000)) : 0;
+    const loopLeft = duration > 0 ? Math.max(0, Math.min(1000, loopStart / duration * 1000)) : 0;
+    const loopRight = duration > 0 ? Math.max(loopLeft, Math.min(1000, loopEnd / duration * 1000)) : 0;
     return <div className={`waveform-timeline${onSeek ? " seekable" : ""}`}>
         <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img" aria-label="Audio waveform timeline"
             onClick={seek}>
@@ -52,6 +60,11 @@ export function WaveformTimeline({
                 return <line className="waveform-bar" key={index} x1={x} y1="0" x2={x} y2="100" />;
             })}
             <polygon className="waveform-shape" points={shape} />
+            {loopEnabled && loopRight > loopLeft && <>
+                <rect className="waveform-loop-region" x={loopLeft} y="0" width={loopRight - loopLeft} height="100" />
+                <line className="waveform-loop-edge" x1={loopLeft} y1="0" x2={loopLeft} y2="100" />
+                <line className="waveform-loop-edge" x1={loopRight} y1="0" x2={loopRight} y2="100" />
+            </>}
             <line className="waveform-playhead" x1={progress} y1="0" x2={progress} y2="100" />
         </svg>
     </div>;

@@ -22,10 +22,11 @@ public:
     Settings loadSettings();
     bool saveSettings(const Settings& settings);
 
-    /// Loads every bank. On first run this writes a starter bank so the user
-    /// lands on something playable instead of an empty screen.
+    /// Loads every bank, preserving an intentionally empty library. On a fresh
+    /// installation without settings this writes a starter bank.
     std::vector<Bank> loadBanks();
     bool saveBank(const Bank& bank);
+    bool saveBanks(const std::vector<Bank>& banks);
     bool deleteBank(const std::string& bankId);
     const std::vector<std::string>& brokenBankFiles() const { return brokenBankFiles_; }
 
@@ -51,9 +52,15 @@ public:
     /// path under the matching library tree, then a unique file name. Empty
     /// if nothing matches or two files share the name.
     std::string resolveLibraryFile(const std::string& path) const;
-    std::string resolveLibraryFile(const std::string& path, std::string& error) const;
+    std::string resolveLibraryFile(const std::string& path, std::string& error,
+        const std::vector<LibraryEntry>* index = nullptr) const;
+    std::vector<LibraryEntry> libraryFileIndex() const;
+    bool referencesLibraryPath(const Json& value, const std::string& target,
+        const std::vector<LibraryEntry>& index) const;
 
 private:
+    bool saveBankFile(const Bank& bank, bool durable = false);
+    bool recoverBankTransaction();
     std::string bankFile(const std::string& bankId) const;
     std::string bankFileStem(const std::string& bankId) const;
     std::vector<LibraryEntry> listLibrary(const std::string& root,
@@ -63,7 +70,7 @@ private:
     std::vector<std::string> brokenBankFiles_;
 };
 
-/// The bank a fresh install starts with: one clean preset, no plugins assumed
+/// The bank a fresh install starts with: four named presets, no plugins assumed
 /// to be installed, so it loads on any machine.
 Bank makeStarterBank();
 

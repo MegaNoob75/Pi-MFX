@@ -2,6 +2,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { clampUnit, isAnalogKind, isEncoderKind } from "../api";
+import { announceControlPopout, CONTROL_POPOUT_OPEN_EVENT } from "../controlPopout";
 import { num, obj, str, objects, type JsonObject } from "../json";
 import { loadUiBehavior } from "../uiBehavior";
 import MultiFXFootswitchGraphic, { MultiFXArcadeButtonGraphic } from "../theme/FootswitchGraphic";
@@ -60,6 +61,7 @@ export interface PerformanceTile {
     onEngage?: () => void;
     onRelease?: () => void;
     onCancelPress?: () => void;
+    onPopoutDismiss?: () => void;
     onFeedback?: (feedback: AnalogFeedback | null) => void;
     onPresetPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
     onPresetPointerMove?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -110,6 +112,8 @@ export function PerformanceControl({
     const popoutScale = loadUiBehavior().controlPopoutScale;
     const [popout, setPopout] = useState(false);
     const popoutCloseTimer = useRef<number | null>(null);
+    const popoutCard = useRef<HTMLDivElement | null>(null);
+    const popoutOwner = useRef({});
     const drag = useRef<{
         pointerId: number;
         startY: number;
@@ -153,7 +157,14 @@ export function PerformanceControl({
 
     const revealPopout = () => {
         clearPopoutClose();
+        announceControlPopout(popoutOwner.current);
         setPopout(true);
+    };
+
+    const dismissPopout = () => {
+        clearPopoutClose();
+        setPopout(false);
+        tile.onPopoutDismiss?.();
     };
 
     const schedulePopoutClose = () => {
@@ -178,6 +189,27 @@ export function PerformanceControl({
             setPopout(false);
         }
     }, [analog, tile.hardwarePopout]);
+
+    useEffect(() => {
+        if (!popout) return;
+        const dismissForOutsideInteraction = (event: Event) => {
+            const target = event.target;
+            if (target instanceof Node && popoutCard.current?.contains(target)) return;
+            dismissPopout();
+        };
+        const dismissForReplacement = (event: Event) => {
+            if ((event as CustomEvent<object>).detail === popoutOwner.current) return;
+            dismissPopout();
+        };
+        window.addEventListener("pointerdown", dismissForOutsideInteraction, true);
+        window.addEventListener("wheel", dismissForOutsideInteraction, true);
+        window.addEventListener(CONTROL_POPOUT_OPEN_EVENT, dismissForReplacement);
+        return () => {
+            window.removeEventListener("pointerdown", dismissForOutsideInteraction, true);
+            window.removeEventListener("wheel", dismissForOutsideInteraction, true);
+            window.removeEventListener(CONTROL_POPOUT_OPEN_EVENT, dismissForReplacement);
+        };
+    }, [popout, tile.onPopoutDismiss]);
 
     const clearHold = () => {
         if (hold.current.timer !== null) {
@@ -638,6 +670,7 @@ export function PerformanceControl({
 
     const analogCard = (className: string, style?: CSSProperties) => (
         <div
+            ref={className.includes("popout") ? popoutCard : undefined}
             className={`mfx-performance-control${className}`}
             data-control-kind={tile.kind ?? "pot"}
             data-assigned={assigned ? "true" : "false"}
@@ -702,9 +735,7 @@ export function PerformanceControl({
                     <div
                         className="mfx-performance-control-popout"
                         role="dialog"
-                        aria-modal="true"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`${tile.analogSource || tile.switchLabel} adjustment`}
                     >
                         {analogCard(" mfx-performance-control--popout", {
                             position: "relative",

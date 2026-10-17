@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <charconv>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -70,6 +71,7 @@ const char* statusText(int status) {
         case 404: return "Not Found";
         case 409: return "Conflict";
         case 413: return "Payload Too Large";
+        case 429: return "Too Many Requests";
         case 500: return "Internal Server Error";
         case 503: return "Service Unavailable";
         default: return "OK";
@@ -242,7 +244,7 @@ void HttpServer::broadcast(const std::string& message) {
     std::lock_guard<std::mutex> lock(pendingMutex_);
     // Drop the oldest updates rather than growing without bound if a client
     // stalls. State messages are snapshots, so a missed one is harmless.
-    if (pending_.size() > 512) {
+    if (pending_.size() >= 512) {
         pending_.pop_front();
     }
     pending_.push_back({0, message});
@@ -250,7 +252,13 @@ void HttpServer::broadcast(const std::string& message) {
 
 void HttpServer::sendTo(uint64_t clientId, const std::string& message) {
     std::lock_guard<std::mutex> lock(pendingMutex_);
+    if (pending_.size() >= 512) pending_.pop_front();
     pending_.push_back({clientId, message});
+}
+
+void HttpServer::completeResponse(uint64_t clientId, HttpResponse response) {
+    std::lock_guard<std::mutex> lock(pendingMutex_);
+    completedResponses_.emplace_back(clientId, std::move(response));
 }
 
 void HttpServer::run() {
@@ -260,11 +268,24 @@ void HttpServer::run() {
         {
             std::lock_guard<std::mutex> lock(pendingMutex_);
             std::lock_guard<std::mutex> clientLock(clientMutex_);
+            while (!completedResponses_.empty()) {
+                auto response = std::move(completedResponses_.front());
+                completedResponses_.pop_front();
+                for (Client& client : clients_) {
+                    if (client.id != response.first || !client.requestPending) continue;
+                    client.requestPending = false;
+                    response.second.extraHeaders.insert(response.second.extraHeaders.end(),
+                        client.pendingHeaders.begin(), client.pendingHeaders.end());
+                    client.pendingHeaders.clear();
+                    if (!sendHttpResponse(client, std::move(response.second))) client.closing = true;
+                }
+            }
             while (!pending_.empty()) {
                 const OutgoingMessage message = std::move(pending_.front());
                 pending_.pop_front();
                 for (Client& client : clients_) {
-                    if (!client.websocket || client.closing) {
+                    if (!client.websocket || client.closing
+                        || !access_.sessionValid(client.accessToken, client.trustedLocal)) {
                         continue;
                     }
                     if (message.clientId == 0 || message.clientId == client.id) {
@@ -279,7 +300,7 @@ void HttpServer::run() {
         {
             std::lock_guard<std::mutex> lock(clientMutex_);
             for (const Client& client : clients_) {
-                short events = POLLIN;
+                short events = client.requestPending ? 0 : POLLIN;
                 if (!client.outbox.empty() || client.responseFile.is_open()) {
                     events |= POLLOUT;
                 }
@@ -305,9 +326,17 @@ void HttpServer::run() {
                 const short revents = descriptors[i + 1].revents;
                 Client& client = clients_[i];
 
+                if (client.websocket && !access_.sessionValid(client.accessToken, client.trustedLocal)) {
+                    doomed.push_back(i);
+                    continue;
+                }
+
                 if (revents & (POLLHUP | POLLERR | POLLNVAL)) {
                     doomed.push_back(i);
                     continue;
+                }
+                if (!client.websocket && !client.requestPending && !client.inbox.empty()) {
+                    if (!handleHttp(client)) { doomed.push_back(i); continue; }
                 }
                 if ((revents & POLLOUT) && !client.outbox.empty()) {
                     flush(client);
@@ -354,6 +383,7 @@ void HttpServer::acceptClient() {
         Client client;
         client.fd = static_cast<int>(fd);
         client.id = nextClientId_++;
+        client.local = (ntohl(address.sin_addr.s_addr) >> 24) == 127;
 
         std::lock_guard<std::mutex> lock(clientMutex_);
         if (clients_.size() >= 32) {
@@ -377,6 +407,7 @@ void HttpServer::dropClient(size_t index) {
 }
 
 bool HttpServer::serviceClient(Client& client) {
+    if (client.websocket && !access_.sessionValid(client.accessToken, client.trustedLocal)) return false;
     char buffer[16384];
     while (true) {
         const int received = static_cast<int>(::recv(static_cast<SocketHandle>(client.fd),
@@ -409,6 +440,8 @@ bool HttpServer::handleHttp(Client& client) {
         const std::string requestLine = head.substr(0, lineStart == std::string::npos ? head.size() : lineStart);
 
         HttpRequest request;
+        request.clientId = client.id;
+        request.local = client.local;
         {
             const size_t firstSpace = requestLine.find(' ');
             const size_t secondSpace = requestLine.find(' ', firstSpace + 1);
@@ -458,7 +491,9 @@ bool HttpServer::handleHttp(Client& client) {
         size_t bodyLength = 0;
         const std::string contentLength = request.header("content-length");
         if (!contentLength.empty()) {
-            bodyLength = static_cast<size_t>(std::strtoul(contentLength.c_str(), nullptr, 10));
+            const auto parsed = std::from_chars(contentLength.data(), contentLength.data() + contentLength.size(), bodyLength);
+            if (parsed.ec != std::errc() || parsed.ptr != contentLength.data() + contentLength.size()
+                || bodyLength > kMaxRequestBytes - std::min(kMaxRequestBytes, headerEnd + 4)) return false;
         }
         const size_t total = headerEnd + 4 + bodyLength;
         if (client.inbox.size() < total) {
@@ -467,47 +502,61 @@ bool HttpServer::handleHttp(Client& client) {
         request.body = client.inbox.substr(headerEnd + 4, bodyLength);
         client.inbox.erase(0, total);
 
-        if (toLower(request.header("upgrade")) == "websocket") {
+        HttpResponse response;
+        const bool accessHandled = access_.handle(request, response);
+        if (!accessHandled && toLower(request.header("upgrade")) == "websocket") {
+            client.trustedLocal = AccessControl::trustedLocal(request);
+            client.accessToken = AccessControl::sessionToken(request);
             completeUpgrade(client, request);
             return true;
         }
 
-        HttpResponse response;
-        bool handled = false;
-        if (requestHandler_) {
+        bool handled = accessHandled;
+        if (!handled && requestHandler_) {
             handled = requestHandler_(request, response);
         }
         if (!handled) {
             serveStatic(request, response);
         }
 
-        std::string out = "HTTP/1.1 " + std::to_string(response.status) + " "
-                        + statusText(response.status) + "\r\n";
-        out += "Content-Type: " + response.contentType + "\r\n";
-        out += "Content-Length: " + std::to_string(response.filePath.empty() ? response.body.size() : response.fileSize) + "\r\n";
-        out += response.filePath.empty() ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
-        // The UI is served from the same origin, so no cross-origin access is
-        // granted. State changes go through the API, and the API is only
-        // reachable from this origin.
-        out += "X-Content-Type-Options: nosniff\r\n";
-        for (const auto& header : response.extraHeaders) {
-            out += header.first + ": " + header.second + "\r\n";
+        if (response.deferred) {
+            client.requestPending = true;
+            client.pendingHeaders = std::move(response.extraHeaders);
+            return true;
         }
-        out += "\r\n";
-        if (response.filePath.empty()) {
-            out += response.body;
-        } else {
-            client.responseFile.open(response.filePath, std::ios::binary);
-            if (!client.responseFile) {
-                client.closing = true;
-                return false;
-            }
-            client.closing = true;
-        }
-
-        client.outbox += out;
-        flush(client);
+        if (!sendHttpResponse(client, std::move(response))) return false;
+        if (client.closing) return true;
     }
+}
+
+bool HttpServer::sendHttpResponse(Client& client, HttpResponse response) {
+    std::string out = "HTTP/1.1 " + std::to_string(response.status) + " "
+            + statusText(response.status) + "\r\n";
+    out += "Content-Type: " + response.contentType + "\r\n";
+    out += "Content-Length: " + std::to_string(response.filePath.empty() ? response.body.size() : response.fileSize) + "\r\n";
+    out += response.filePath.empty() ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    // The UI is served from the same origin, so no cross-origin access is
+    // granted. State changes go through the API, and the API is only
+    // reachable from this origin.
+    out += "X-Content-Type-Options: nosniff\r\n";
+    for (const auto& header : response.extraHeaders) {
+        out += header.first + ": " + header.second + "\r\n";
+    }
+    out += "\r\n";
+    if (response.filePath.empty()) {
+        out += response.body;
+    } else {
+        client.responseFile.open(response.filePath, std::ios::binary);
+        if (!client.responseFile) {
+            client.closing = true;
+            return false;
+        }
+        client.closing = true;
+    }
+
+    client.outbox += out;
+    flush(client);
+    return true;
 }
 
 void HttpServer::completeUpgrade(Client& client, const HttpRequest& request) {
@@ -560,6 +609,8 @@ bool HttpServer::handleWebSocketFrames(Client& client) {
             offset = 10;
         }
 
+        if (!masked || (data[0] & 0x70) != 0
+            || (opcode >= 0x8 && (!fin || payloadLength > 125))) return false;
         if (payloadLength > kMaxRequestBytes) {
             return false;
         }
@@ -587,10 +638,12 @@ bool HttpServer::handleWebSocketFrames(Client& client) {
 
         switch (opcode) {
             case 0x0: // continuation
+                if (client.fragmentOpcode == 0 || payload.size() > kMaxRequestBytes - client.frameBuffer.size()) return false;
                 client.frameBuffer += payload;
                 break;
             case 0x1: // text
             case 0x2: // binary
+                if (client.fragmentOpcode != 0) return false;
                 client.frameBuffer = payload;
                 client.fragmentOpcode = opcode;
                 break;
@@ -612,6 +665,7 @@ bool HttpServer::handleWebSocketFrames(Client& client) {
                 socketMessage_(client.id, client.frameBuffer);
             }
             client.frameBuffer.clear();
+            client.fragmentOpcode = 0;
         }
     }
     return true;

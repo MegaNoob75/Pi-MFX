@@ -33,8 +33,13 @@ looping, recording, and drums on one engine-owned clock.
   stereo loop, capture multitrack projects, program drum patterns, and browse
   the reviewed Community Presets catalog without leaving the touchscreen UI.
 
-Anyone on the same local network or hotspot can open the UI and control the Pi.
-There is no login on the LAN HTTP or WebSocket APIs.
+Remote browsers require a Pi-MFX password; the attached touchscreen stays
+unlocked at its loopback address. Set the password on a trusted network and
+keep using the same hostname so the browser can remember its login. HTTP is
+unencrypted. See [Remote access](docs/REMOTE_ACCESS.md).
+
+Start with the [User guide](docs/USER_GUIDE.md) for feature chapters and examples.
+An offline browser edition with search and printing opens from **About → User Guide**.
 
 ## Documentation
 
@@ -46,6 +51,8 @@ There is no login on the LAN HTTP or WebSocket APIs.
 | [Install](docs/INSTALL.md) | First Pi, audio HAT, kiosk, hotspot |
 | [Development](docs/DEV_FLOW.md) | PC edit → Pi rebuild loop |
 | [Technical](docs/TECHNICAL.md) | Engine, UI, firmware, data files |
+| [Remote access](docs/REMOTE_ACCESS.md) | Password setup, remembered browsers, recovery |
+| [Roadmap](docs/ROADMAP.md) | Stabilization scope and deferred ideas |
 | [Low latency](docs/LOW_LATENCY.md) | OS tuning and round-trip |
 | [DIY controller](docs/DIY_CONTROLLER.md) | ESP32-S3 floorboard |
 | [Controller protocol](docs/CONTROLLER_PROTOCOL.md) | USB-MIDI SysEx |

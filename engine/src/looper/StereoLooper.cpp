@@ -59,6 +59,17 @@ void StereoLooper::stop() {
 }
 
 void StereoLooper::prepare(unsigned sampleRate, unsigned maximumSeconds) {
+    // Caller has stopped the callback and joined the file worker.
+    std::lock_guard<std::mutex> lock(commandMutex_);
+    Command stale;
+    std::lock_guard<std::mutex> configurationLock(configurationMutex_);
+    while (commands_.pop(stale)) {}
+    bufferLease_.store(BufferLease::None, std::memory_order_release);
+    saving_.store(false, std::memory_order_release);
+    loading_.store(false, std::memory_order_release);
+    loadReady_.store(false, std::memory_order_release);
+    muted_.store(false, std::memory_order_release);
+    publishedActiveBuffer_.store(0, std::memory_order_release);
     sampleRate_.store(std::max(1u, sampleRate), std::memory_order_release);
     capacityFrames_ = static_cast<size_t>(std::max(1u, sampleRate)) * std::max(1u, maximumSeconds);
     for (auto& buffer : buffers_) buffer.assign(capacityFrames_ * 2, 0.0f);
@@ -85,13 +96,13 @@ void StereoLooper::configure(const std::string& quantization, bool countIn, floa
 }
 
 bool StereoLooper::enqueue(Action action, std::string& error) {
+    std::lock_guard<std::mutex> lock(commandMutex_);
     if (buffers_[0].empty()) { error = "looper audio buffers are not ready"; return false; }
     if ((saving_.load(std::memory_order_acquire) || loading_.load(std::memory_order_acquire))
         && action != Action::Play && action != Action::Stop) {
         error = "wait for the loop file operation to finish";
         return false;
     }
-    std::lock_guard<std::mutex> lock(commandMutex_);
     Command command{action};
     const Mode current = mode_.load(std::memory_order_acquire);
     if (action == Action::Overdub && current != Mode::Overdubbing) {
@@ -100,9 +111,11 @@ bool StereoLooper::enqueue(Action action, std::string& error) {
             error = "record a loop before overdubbing";
             return false;
         }
+        if (!acquireBufferLease(error)) return false;
         const int active = publishedActiveBuffer_.load(std::memory_order_acquire);
         command.preparedBuffer = 1 - active;
         std::copy_n(buffers_[active].data(), frames * 2, buffers_[command.preparedBuffer].data());
+        releaseBufferLease();
     }
     if (!commands_.push(command)) {
         error = "looper command queue is full";
@@ -112,6 +125,7 @@ bool StereoLooper::enqueue(Action action, std::string& error) {
 }
 
 bool StereoLooper::save(const std::string& name, bool overwrite, std::string& error) {
+    std::lock_guard<std::mutex> commandLock(commandMutex_);
     if (loading_.load(std::memory_order_acquire)) {
         error = "wait for the saved loop to finish loading";
         return false;
@@ -138,6 +152,10 @@ bool StereoLooper::save(const std::string& name, bool overwrite, std::string& er
         error = "a loop with that name already exists; confirm overwrite to replace it";
         return false;
     }
+    if (!acquireBufferLease(error)) {
+        saving_.store(false, std::memory_order_release);
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lock(saveMutex_);
         pendingSaveName_ = safe;
@@ -156,6 +174,7 @@ bool StereoLooper::safeSavedName(const std::string& name, std::string& safe) con
 }
 
 bool StereoLooper::load(const std::string& name, std::string& error) {
+    std::lock_guard<std::mutex> lock(commandMutex_);
     const Mode current = mode_.load(std::memory_order_acquire);
     if (current == Mode::Recording || current == Mode::Armed || current == Mode::Overdubbing) {
         error = "finish recording or overdubbing before loading a saved loop";
@@ -167,7 +186,7 @@ bool StereoLooper::load(const std::string& name, std::string& error) {
     }
     std::string safe;
     if (!safeSavedName(name, safe)) { error = "that loop name cannot be used"; return false; }
-    std::lock_guard<std::mutex> lock(commandMutex_);
+    if (!acquireBufferLease(error)) return false;
     loadReady_.store(false, std::memory_order_release);
     loading_.store(true, std::memory_order_release);
     const int target = 1 - publishedActiveBuffer_.load(std::memory_order_acquire);
@@ -175,11 +194,13 @@ bool StereoLooper::load(const std::string& name, std::string& error) {
     const std::string path = joinPath(root_, safe);
     if (!readWaveFile(path, target, frames, error)) {
         loading_.store(false, std::memory_order_release);
+        releaseBufferLease();
         return false;
     }
     if (!commands_.push(Command{Action::LoadPrepared, target, frames})) {
         error = "looper command queue is full";
         loading_.store(false, std::memory_order_release);
+        releaseBufferLease();
         return false;
     }
     {
@@ -188,10 +209,38 @@ bool StereoLooper::load(const std::string& name, std::string& error) {
         saveError_.clear();
     }
     loadReady_.store(true, std::memory_order_release);
+    releaseBufferLease();
     return true;
 }
 
+bool StereoLooper::acquireBufferLease(std::string& error) {
+    bufferLease_.store(BufferLease::Requested, std::memory_order_release);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    for (;;) {
+        const auto lease = bufferLease_.load(std::memory_order_acquire);
+        if (lease == BufferLease::Granted) return true;
+        if (lease == BufferLease::Rejected) {
+            releaseBufferLease();
+            error = "finish the pending loop action before editing or saving loop audio";
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            auto expected = BufferLease::Requested;
+            if (!bufferLease_.compare_exchange_strong(expected, BufferLease::None,
+                    std::memory_order_acq_rel)) continue;
+            error = "loop audio is not running; try again after audio starts";
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+void StereoLooper::releaseBufferLease() noexcept {
+    bufferLease_.store(BufferLease::None, std::memory_order_release);
+}
+
 bool StereoLooper::renameSaved(const std::string& name, const std::string& nextName, std::string& error) {
+    std::lock_guard<std::mutex> commandLock(commandMutex_);
     if (saving_.load(std::memory_order_acquire) || loading_.load(std::memory_order_acquire)) {
         error = "wait for the loop file operation to finish";
         return false;
@@ -216,6 +265,7 @@ bool StereoLooper::renameSaved(const std::string& name, const std::string& nextN
 }
 
 bool StereoLooper::deleteSaved(const std::string& name, std::string& error) {
+    std::lock_guard<std::mutex> commandLock(commandMutex_);
     if (saving_.load(std::memory_order_acquire) || loading_.load(std::memory_order_acquire)) {
         error = "wait for the loop file operation to finish";
         return false;
@@ -397,8 +447,18 @@ void StereoLooper::finishRecording() noexcept {
 void StereoLooper::process(const float* const* input, unsigned inputChannels,
                            float* const* output, unsigned outputChannels, unsigned frames,
                            const TransportBlock* transport) noexcept {
+    auto lease = bufferLease_.load(std::memory_order_acquire);
+    if (lease == BufferLease::Requested) {
+        const bool stable = commands_.empty() && !pending_
+            && audioMode_ != Mode::Recording && audioMode_ != Mode::Armed
+            && audioMode_ != Mode::Overdubbing;
+        bufferLease_.compare_exchange_strong(lease,
+            stable ? BufferLease::Granted : BufferLease::Rejected, std::memory_order_acq_rel);
+        lease = bufferLease_.load(std::memory_order_acquire);
+    }
+    const bool leased = lease == BufferLease::Requested || lease == BufferLease::Granted;
     Command command;
-    if (!loading_.load(std::memory_order_acquire) || loadReady_.load(std::memory_order_acquire)) {
+    if (!leased && (!loading_.load(std::memory_order_acquire) || loadReady_.load(std::memory_order_acquire))) {
         while (commands_.pop(command)) receiveCommand(command, transport);
     }
 
@@ -407,7 +467,7 @@ void StereoLooper::process(const float* const* input, unsigned inputChannels,
     const unsigned rate = sampleRate_.load(std::memory_order_relaxed);
     for (unsigned frame = 0; frame < frames; ++frame) {
         const int64_t timeline = transport ? transport->timelineFrame + static_cast<int64_t>(frame) : frame;
-        if (pending_ && timeline >= pendingFrame_) {
+        if (!leased && pending_ && timeline >= pendingFrame_) {
             pending_ = false;
             beginAction(pendingAction_, pendingPreparedBuffer_);
         }
@@ -467,7 +527,8 @@ void StereoLooper::process(const float* const* input, unsigned inputChannels,
     canRedo_.store(redoAvailable_, std::memory_order_release);
 }
 
-Json StereoLooper::state() const {
+Json StereoLooper::state(bool includeDetails) const {
+    std::lock_guard<std::mutex> configurationLock(configurationMutex_);
     Json out = Json::object();
     out.set("type", "looper");
     const Mode current = mode_.load(std::memory_order_acquire);
@@ -490,6 +551,7 @@ Json StereoLooper::state() const {
     out.set("level", levelMilli_.load() / 1000.0);
     out.set("feedback", feedbackMilli_.load() / 1000.0);
     out.set("maximumSeconds", capacityFrames_ / static_cast<double>(std::max(1u, rate)));
+    if (!includeDetails) { out.set("partial", true); return out; }
     Json peaks = Json::array();
     if (frames > 0 && current != Mode::Recording) {
         const size_t bucketFrames = std::max<size_t>(1, capacityFrames_ / waveform_.size());
@@ -589,7 +651,7 @@ void StereoLooper::refreshSavedFilesUnlocked() {
 }
 
 void StereoLooper::worker() {
-    while (!stopping_.load(std::memory_order_acquire)) {
+    for (;;) {
         std::string name;
         bool overwrite = false;
         {
@@ -597,7 +659,7 @@ void StereoLooper::worker() {
             saveWake_.wait_for(lock, std::chrono::milliseconds(100), [&] {
                 return stopping_.load(std::memory_order_acquire) || !pendingSaveName_.empty();
             });
-            if (stopping_.load(std::memory_order_acquire)) break;
+            if (stopping_.load(std::memory_order_acquire) && pendingSaveName_.empty()) break;
             name.swap(pendingSaveName_);
             overwrite = pendingSaveOverwrite_;
             pendingSaveOverwrite_ = false;
@@ -608,11 +670,11 @@ void StereoLooper::worker() {
         if (fileExists(finalPath) && !overwrite) {
             std::lock_guard<std::mutex> lock(saveMutex_);
             saveError_ = "a loop with that name already exists; confirm overwrite to replace it";
+            releaseBufferLease();
             saving_.store(false, std::memory_order_release);
             continue;
         }
         const std::string temporary = finalPath + ".partial";
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
         const int buffer = publishedActiveBuffer_.load(std::memory_order_acquire);
         const size_t frames = loopFrames_.load(std::memory_order_acquire);
         std::string error;
@@ -632,6 +694,7 @@ void StereoLooper::worker() {
             if (error.empty()) savedPath_ = finalPath;
             refreshSavedFilesUnlocked();
         }
+        releaseBufferLease();
         saving_.store(false, std::memory_order_release);
     }
 }

@@ -193,9 +193,15 @@ do_install() {
     done
 
     log "Installing Plymouth and the PI-MFX theme"
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        plymouth plymouth-themes librsvg2-bin
+    if [[ "${PIMFX_RECOVERY_OFFLINE:-0}" == "1" ]]; then
+        for option in plymouth plymouth-themes librsvg2-bin; do
+            package_installed "$option" || die "recovery needs the archived $option package"
+        done
+    else
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            plymouth plymouth-themes librsvg2-bin
+    fi
 
     install_logo_png
     install -Dm644 "$REPO_DIR/branding/plymouth/pimfx.plymouth" "$THEME_DIR/pimfx.plymouth"

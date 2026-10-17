@@ -39,7 +39,11 @@ function websocketUrl(): string {
 export class EngineClient {
     private socket: WebSocket | undefined;
     private reconnectTimer: number | undefined;
+    private recoveryReturn: JsonObject | undefined;
     private closed = false;
+    private stateEpoch = "";
+    private fullStateRevision = 0;
+    private latestPerformance: JsonObject | undefined;
     private listeners = new Set<(snapshot: EngineSnapshot) => void>();
     private meterListeners = new Set<(meters: JsonObject) => void>();
     private navListeners = new Set<(message: JsonObject) => boolean | void>();
@@ -47,6 +51,7 @@ export class EngineClient {
     snapshot: EngineSnapshot = emptySnapshot();
 
     start(): void {
+        if (this.socket) return;
         this.closed = false;
         this.connect();
     }
@@ -57,8 +62,9 @@ export class EngineClient {
             window.clearTimeout(this.reconnectTimer);
             this.reconnectTimer = undefined;
         }
-        this.socket?.close();
+        const socket = this.socket;
         this.socket = undefined;
+        if (socket) { socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null; socket.close(); }
     }
 
     subscribe(listener: (snapshot: EngineSnapshot) => void): () => void {
@@ -108,6 +114,7 @@ export class EngineClient {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
+        if (response.status === 401) window.location.replace("/");
         const json: unknown = await response.json();
         if (!isObj(json as Json)) {
             throw new Error(`${command}: the engine did not return JSON`);
@@ -193,47 +200,90 @@ export class EngineClient {
     }
 
     private connect(): void {
-        if (this.closed) {
-            return;
-        }
+        if (this.closed || this.socket) return;
+        this.reconnectTimer = undefined;
         const socket = new WebSocket(websocketUrl());
         this.socket = socket;
         socket.onopen = () => {
+            if (this.socket !== socket || this.closed) return;
+            this.stateEpoch = "";
+            this.fullStateRevision = 0;
+            this.latestPerformance = undefined;
             this.patch({ connected: true, lastError: "" });
         };
         socket.onmessage = (event) => {
+            if (this.socket !== socket || this.closed) return;
             try {
                 const parsed: unknown = JSON.parse(String(event.data));
                 if (isObj(parsed as Json)) {
-                    this.ingest(parsed as JsonObject);
+                    this.ingest(parsed as JsonObject, true);
                 }
             } catch {
                 // ignore a single bad frame
             }
         };
         socket.onerror = () => {
+            if (this.socket !== socket || this.closed) return;
             this.patch({ lastError: "lost contact with the engine" });
         };
         socket.onclose = () => {
+            if (this.socket !== socket) return;
+            if (this.snapshot.uiSession.view === "backup") this.recoveryReturn = { ...this.snapshot.uiSession };
+            this.socket = undefined;
             this.patch({ connected: false });
             if (!this.closed) {
+                // Password changes, logout, and session expiry return remote browsers to login.
+                void fetch("/access/status").then((response) => {
+                    if (response.status === 401) window.location.replace("/");
+                    else return response.json().then((status: unknown) => {
+                        if (isObj(status as Json) && !bool((status as JsonObject).authenticated, true)) window.location.replace("/");
+                    });
+                }).catch(() => { /* The Pi may simply be offline. */ });
                 this.reconnectTimer = window.setTimeout(() => this.connect(), 750);
             }
         };
     }
 
-    private ingest(message: JsonObject): void {
+    private ingest(message: JsonObject, fromSocket = false): void {
         const type = str(message.type);
+        if (type === "state" || type === "performance") {
+            const epoch = str(message.stateEpoch);
+            if (epoch && epoch !== this.stateEpoch) {
+                // An old HTTP reply cannot roll back a restarted engine.
+                if (this.stateEpoch && (!fromSocket || type !== "state")) return;
+                this.stateEpoch = epoch;
+                this.fullStateRevision = 0;
+                this.latestPerformance = undefined;
+            }
+            const revision = num(message.revision);
+            if (type === "state") {
+                if (revision > 0 && revision < this.fullStateRevision) return;
+                if (revision > 0) this.fullStateRevision = revision;
+            } else {
+                if (revision > 0 && revision < Math.max(this.fullStateRevision, num(this.latestPerformance?.revision))) return;
+                this.latestPerformance = message;
+            }
+        }
         if (type === "state") {
-            this.patch({
+            const partial: Partial<EngineSnapshot> = {
                 state: message,
                 transport: isObj(message.transport as Json) ? message.transport as JsonObject : this.snapshot.transport,
                 backing: isObj(message.backing as Json) ? message.backing as JsonObject : this.snapshot.backing,
                 looper: isObj(message.looper as Json) ? message.looper as JsonObject : this.snapshot.looper,
-                recorder: isObj(message.recorder as Json) ? message.recorder as JsonObject : this.snapshot.recorder,
+                recorder: isObj(message.recorder as Json)
+                    ? bool((message.recorder as JsonObject).partial)
+                        ? { ...this.snapshot.recorder, ...message.recorder as JsonObject }
+                        : message.recorder as JsonObject
+                    : this.snapshot.recorder,
                 drums: isObj(message.drums as Json) ? message.drums as JsonObject : this.snapshot.drums,
-                lastError: str(message.audioError)
-            });
+                lastError: str(message.audioError) || str(message.chainPreparationError) || str(message.persistenceError)
+            };
+            if (this.latestPerformance && num(this.latestPerformance.revision) > num(message.revision)) {
+                // A newer partial update must not hide unrelated full-state
+                // fields (for example a renamed bank). Overlay it before notifying.
+                this.snapshot = { ...this.snapshot, ...partial };
+                this.ingest(this.latestPerformance);
+            } else this.patch(partial);
             return;
         }
         if (type === "catalog") {
@@ -260,15 +310,15 @@ export class EngineClient {
             return;
         }
         if (type === "looper") {
-            this.patch({ looper: message });
+            this.patch({ looper: bool(message.partial) ? { ...this.snapshot.looper, ...message } : message });
             return;
         }
         if (type === "recorder") {
-            this.patch({ recorder: message });
+            this.patch({ recorder: bool(message.partial) ? { ...this.snapshot.recorder, ...message } : message });
             return;
         }
         if (type === "drums") {
-            this.patch({ drums: message });
+            this.patch({ drums: bool(message.partial) ? { ...this.snapshot.drums, ...message } : message });
             return;
         }
         if (type === "uiNav") {
@@ -289,24 +339,40 @@ export class EngineClient {
             return;
         }
         if (type === "uiSession") {
+            // The recovery helper deliberately restarts the engine. Its fresh
+            // default page must not navigate away from the running job/report.
+            if (this.recoveryReturn && message.view === "performance") {
+                const session = this.recoveryReturn;
+                this.recoveryReturn = undefined;
+                this.updateUiSession(session);
+                return;
+            }
+            this.recoveryReturn = undefined;
             this.patch({ uiSession: message });
             return;
         }
         if (type === "performance") {
             const nextState: JsonObject = {
                 ...this.snapshot.state,
+                stateEpoch: message.stateEpoch ?? this.snapshot.state.stateEpoch,
+                revision: message.revision ?? this.snapshot.state.revision,
+                persistenceError: message.persistenceError ?? this.snapshot.state.persistenceError,
+                browseBankId: message.browseBankId ?? this.snapshot.state.browseBankId,
                 activeBankId: message.activeBankId ?? this.snapshot.state.activeBankId,
                 activePresetId: message.activePresetId ?? this.snapshot.state.activePresetId,
                 bypassAll: message.bypassAll ?? this.snapshot.state.bypassAll,
                 snapshotMode: message.snapshotMode ?? this.snapshot.state.snapshotMode,
                 presetReloadCount: message.presetReloadCount ?? this.snapshot.state.presetReloadCount,
                 tempo: message.tempo ?? this.snapshot.state.tempo,
+                routing: message.routing ?? this.snapshot.state.routing,
                 controlPositions: message.controlPositions ?? this.snapshot.state.controlPositions,
                 activeVirtualControlId: message.activeVirtualControlId ?? this.snapshot.state.activeVirtualControlId,
                 virtualControlRevision: message.virtualControlRevision ?? this.snapshot.state.virtualControlRevision,
                 virtualControlFine: message.virtualControlFine ?? this.snapshot.state.virtualControlFine,
                 sessionPresetDirty: message.sessionPresetDirty ?? this.snapshot.state.sessionPresetDirty,
                 sessionPresetDirtyCount: message.sessionPresetDirtyCount ?? this.snapshot.state.sessionPresetDirtyCount,
+                editorUndoCount: message.editorUndoCount ?? this.snapshot.state.editorUndoCount,
+                editorRedoCount: message.editorRedoCount ?? this.snapshot.state.editorRedoCount,
                 sessionPresetDirtyIds: message.sessionPresetDirtyIds ?? this.snapshot.state.sessionPresetDirtyIds
             };
             if (typeof message.activeSnapshot === "number") {
@@ -328,6 +394,13 @@ export class EngineClient {
             }
             const liveSlots = objects(message.slots);
             if (liveSlots.length > 0) {
+                const mergeLive = (slot: Json): Json => {
+                    if (!isObj(slot)) return slot;
+                    const live = liveSlots.find((item) => str(item.id) === str(slot.id));
+                    return live
+                        ? { ...slot, enabled: live.enabled ?? slot.enabled, state: live.state ?? slot.state }
+                        : slot;
+                };
                 nextState.chain = arr(this.snapshot.state.chain).map((slot) => {
                     if (!isObj(slot)) {
                         return slot;
@@ -337,8 +410,9 @@ export class EngineClient {
                         ? { ...slot, enabled: live.enabled ?? slot.enabled, state: live.state ?? slot.state }
                         : slot;
                 });
+                nextState.chainLayout = arr(this.snapshot.state.chainLayout).map(mergeLive);
             }
-            this.patch({ state: nextState });
+            this.patch({ state: nextState, lastError: str(message.persistenceError) || str(nextState.audioError) || str(nextState.chainPreparationError) });
         }
     }
 

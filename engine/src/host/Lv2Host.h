@@ -5,7 +5,9 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pimfx {
@@ -103,6 +105,7 @@ struct PluginInfo {
 /// demand when the user installs new plugins.
 class Lv2Catalog {
 public:
+    struct Impl;
     Lv2Catalog();
     ~Lv2Catalog();
 
@@ -119,20 +122,21 @@ public:
 
     bool available() const;
 
-    const std::vector<PluginInfo>& plugins() const { return plugins_; }
-    const PluginInfo* find(const std::string& uri) const;
+    std::vector<PluginInfo> plugins() const;
+    size_t pluginCount() const;
+    std::shared_ptr<const PluginInfo> find(const std::string& uri,
+        std::shared_ptr<Impl>* world = nullptr) const;
 
     /// Distinct plugin classes present, for the category rail in the picker.
     std::vector<std::string> categories() const;
 
     UridMap& urids() { return urids_; }
 
-    struct Impl;
-    Impl* impl() { return impl_.get(); }
+    std::shared_ptr<Impl> sharedImpl() const { return std::atomic_load(&impl_); }
 
 private:
-    std::unique_ptr<Impl> impl_;
-    std::vector<PluginInfo> plugins_;
+    std::shared_ptr<Impl> impl_;
+    std::mutex scanMutex_;
     UridMap urids_;
     std::string userBundleDirectory_;
 };
@@ -146,6 +150,7 @@ class PluginInstance {
 public:
     ~PluginInstance();
 
+    /// Creates a native LV2 instance from one retained catalog snapshot.
     static std::unique_ptr<PluginInstance> create(Lv2Catalog& catalog,
                                                   const std::string& uri,
                                                   unsigned sampleRate,
@@ -157,6 +162,8 @@ public:
 
     /// Thread-safe: stores the value for the next `run()`.
     void setControl(uint32_t portIndex, float value);
+    /// Control-thread group update; audio uses a complete group or the previous values.
+    void setControls(const std::vector<std::pair<uint32_t, float>>& values);
     bool setControlDeferred(uint32_t portIndex, float value);
     float control(uint32_t portIndex) const;
 
@@ -188,6 +195,11 @@ public:
     void process(const float* const* inputs, unsigned inputCount,
                  float* const* outputs, unsigned outputCount,
                  unsigned frames, const TransportBlock* transport = nullptr);
+
+    /// Audio thread only. Rebind after a graph swap without running the plugin;
+    /// disconnected/bypassed processors must not retain retired graph buffers.
+    void connectAudioBuffers(const float* const* inputs, unsigned inputCount,
+                             float* const* outputs, unsigned outputCount);
 
     unsigned audioInputs() const { return info_.audioInputs; }
     unsigned audioOutputs() const { return info_.audioOutputs; }

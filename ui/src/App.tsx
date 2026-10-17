@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useEngine } from "./api";
+import { useRigPreferences } from "./rigPreferences";
 import { arr, bool, num, obj, str, type JsonObject } from "./json";
 import { applyHardwareNavFocus, handleHardwareNav, watchHardwareNavFocus } from "./hardwareNav";
 import { AboutView } from "./views/AboutView";
@@ -56,7 +57,7 @@ export type View =
     | "tuner"
     | "about";
 
-type EditSubpage = "chain" | "controls" | "io";
+type EditSubpage = "chain" | "mixers" | "controls" | "io";
 
 type MenuId = "performance" | "virtualControls" | "transport" | "backingTracks" | "looper" | "recorder"
     | "drums" | "community" | "tuner" | "banks" | "edit" | "library" | "plugins" | "files" | "settings" | "about";
@@ -84,7 +85,7 @@ const MENU_ENTRIES: readonly MenuEntry[] = [
     { id: "edit", view: "edit", label: "PRESET EDITOR", subtitle: "Plugins, controls and signal chain", icon: "edit" },
     { id: "library", view: "library", label: "MODEL LIBRARY", subtitle: "Manage local NAM and IR files or browse TONE3000", icon: "library" },
     { id: "plugins", view: "plugins", label: "PLUGINS", subtitle: "Installed effects and Raspberry Pi OS / PatchStorage installs", icon: "plugins" },
-    { id: "files", view: "files", label: "FILES", subtitle: "Browse NAM, AIDA-X and IR folders", icon: "files" },
+    { id: "files", view: "files", label: "FILES", subtitle: "Browse Pi-MFX libraries, media and backups", icon: "files" },
     { id: "settings", view: "settings", label: "SETTINGS", subtitle: "Controller, theme, PI-MFX UI and system", icon: "settings" },
     { id: "about", view: "about", label: "ABOUT", subtitle: "About Pi-MFX", icon: "about" }
 ] as const;
@@ -290,6 +291,7 @@ function SwipeSurface({ direction, onSwipe, peek, children }: {
 
 export function App() {
     const engine = useEngine();
+    useRigPreferences(engine);
     const returnToUpdatesAfterInstall = useRef(hasPendingUpdateReturn());
     const [view, setView] = useState<View>(() => returnToUpdatesAfterInstall.current ? "updates" : "performance");
     const [menuOpen, setMenuOpen] = useState(false);
@@ -444,7 +446,7 @@ export function App() {
             setSnapshotEditId(sharedSnapshotId);
         }
         const sharedSubpage = str(shared.editSubpage) as EditSubpage;
-        if (["chain", "controls", "io"].includes(sharedSubpage) && sharedSubpage !== editSubpage) {
+        if (["chain", "mixers", "controls", "io"].includes(sharedSubpage) && sharedSubpage !== editSubpage) {
             setEditSubpage(sharedSubpage);
         }
         const sharedHistory = arr(shared.viewHistory)
@@ -944,6 +946,7 @@ export function App() {
             return "SNAPSHOTS";
         }
         if (view === "edit") {
+            if (editSubpage === "mixers") return "PRESET MIXERS";
             if (editSubpage === "controls") {
                 return `EFFECT — ${editEffectTitle ?? "SETTINGS"}`;
             }

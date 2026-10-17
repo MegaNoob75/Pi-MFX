@@ -1,3 +1,4 @@
+#include "model/Routing.h"
 #include "community/CommunityPresetPackage.h"
 
 #include "core/Crypto.h"
@@ -194,6 +195,66 @@ Json cleanState(const Json& state, const std::string& pluginUri, const Paths& pa
     return cleaned;
 }
 
+bool validateChainItem(const Json& slot, std::set<std::string>& slotIds,
+                       std::set<std::string>& effectUris, int& slotCount,
+                       std::string& error) {
+    const std::string id = slot["id"].asString();
+    if (!safeId(id) || !slotIds.insert(id).second || ++slotCount > 96) {
+        error = "the preset contains an invalid or duplicate slot ID";
+        return false;
+    }
+    if (slot["kind"].asString() == "mixer") {
+        return allowedKeys(slot, {"id", "kind", "name", "enabled", "state"}, "mixer", error)
+            && slot["state"].isObject() && slot["state"].size() == 0;
+    }
+    if (slot["kind"].asString("effect") != "effect") {
+        error = "Unsupported routing block"; return false;
+    }
+
+    const std::string uri = slot["uri"].asString();
+    if (!allowedKeys(slot, {"id", "kind", "uri", "name", "enabled", "state", "tempoLinks"},
+                     "effect slot", error)
+        || uri.empty() || uri.size() > 300
+        || (uri.rfind("urn:", 0) != 0 && uri.rfind("http://", 0) != 0
+            && uri.rfind("https://", 0) != 0)
+        || !slot["state"].isObject()) {
+        error = "the preset contains an invalid effect slot";
+        return false;
+    }
+    effectUris.insert(uri);
+    for (const Json::Member& property : slot["state"]["properties"].members()) {
+        if (!property.second.asString().empty() && !safeFileName(property.second.asString())) {
+            error = "plugin file properties must contain filenames only";
+            return false;
+        }
+        const std::string extension = lower(
+            std::filesystem::path(property.second.asString()).extension().string());
+        if (extension == ".nam" && uri != kTooBNamUri) {
+            error = "community NAM files must use TooB Neural Amp Modeler";
+            return false;
+        }
+        if (extension == ".wav" && uri != kTooBCabIrUri) {
+            error = "community cabinet IR files must use TooB Cab IR";
+            return false;
+        }
+    }
+    return true;
+}
+
+Json cleanChainItem(const Json& incoming, const Paths& paths, Json& localAssets,
+                    Json& effects, std::string& error) {
+    Json slot = incoming;
+    if (incoming["kind"].asString() == "mixer") return slot;
+    const std::string uri = incoming["uri"].asString();
+    slot.set("state", cleanState(incoming["state"], uri, paths, localAssets, error));
+    if (!error.empty()) return Json();
+    Json effect = Json::object();
+    effect.set("uri", uri);
+    if (uri == kTooBNamUri || uri == kTooBCabIrUri) effect.set("catalogId", "toobamp");
+    effects.push(effect);
+    return slot;
+}
+
 } // namespace
 
 bool CommunityPresetPackage::validate(const Json& manifest, std::string& error) {
@@ -294,10 +355,10 @@ bool CommunityPresetPackage::validate(const Json& manifest, std::string& error) 
     }
     const Json& preset = manifest["preset"];
     if (!allowedKeys(preset, {"name", "author", "tempo", "inputGainDb", "outputGainDb",
-            "chain", "snapshots", "parameterBindings"}, "preset", error)) return false;
+            "chain", "snapshots", "parameterBindings", "routingFormat", "routing"}, "preset", error)) return false;
     if (!requireString(preset, "name", 80, error)
         || preset["tempo"].asDouble(0.0) < 30.0 || preset["tempo"].asDouble(0.0) > 300.0
-        || !preset["chain"].isArray() || preset["chain"].size() > 32
+        || !preset["chain"].isArray() || preset["chain"].size() > 96
         || !preset["snapshots"].isArray() || preset["snapshots"].size() > 16
         || !preset["parameterBindings"].isArray() || preset["parameterBindings"].size() > 512) {
         if (error.empty()) error = "the preset structure is invalid";
@@ -312,35 +373,16 @@ bool CommunityPresetPackage::validate(const Json& manifest, std::string& error) 
     }
     std::set<std::string> slotIds;
     std::set<std::string> effectUris;
+    int slotCount = 0;
     for (const Json& slot : preset["chain"].items()) {
-        const std::string id = slot["id"].asString();
-        const std::string uri = slot["uri"].asString();
-        if (!allowedKeys(slot, {"id", "uri", "name", "enabled", "state", "tempoLinks"},
-                         "effect slot", error)
-            || !safeId(id) || !slotIds.insert(id).second
-            || uri.empty() || uri.size() > 300
-            || (uri.rfind("urn:", 0) != 0 && uri.rfind("http://", 0) != 0 && uri.rfind("https://", 0) != 0)
-            || !slot["state"].isObject()) {
-            error = "the preset contains an invalid effect slot";
-            return false;
-        }
-        effectUris.insert(uri);
-        for (const Json::Member& property : slot["state"]["properties"].members()) {
-            if (!property.second.asString().empty() && !safeFileName(property.second.asString())) {
-                error = "plugin file properties must contain filenames only";
-                return false;
-            }
-            const std::string extension = lower(std::filesystem::path(property.second.asString()).extension().string());
-            if (extension == ".nam" && uri != kTooBNamUri) {
-                error = "community NAM files must use TooB Neural Amp Modeler";
-                return false;
-            }
-            if (extension == ".wav" && uri != kTooBCabIrUri) {
-                error = "community cabinet IR files must use TooB Cab IR";
-                return false;
-            }
-        }
+        if (!validateChainItem(slot, slotIds, effectUris, slotCount, error)) return false;
     }
+    if (preset["routingFormat"].asInt() != 1) { error = "Routing presets required"; return false; }
+    std::vector<std::string> order;
+    if (!routingOrder(Preset::fromJson(preset), preset["routing"], order, error)) return false;
+    const Preset routedPreset = Preset::fromJson(preset);
+    for (const auto& snapshot : preset["snapshots"].items())
+        if (snapshot.has("routingMix") && !routingMixValid(routedPreset, snapshot["routingMix"], error)) return false;
     const Json& dependencies = manifest["dependencies"];
     if (!allowedKeys(dependencies, {"effects", "tone3000", "irs", "localAssets"},
                      "dependencies", error)) return false;
@@ -423,16 +465,9 @@ Json CommunityPresetPackage::create(const Preset& preset, const Paths& paths,
     Json localAssets = Json::array();
     Json chain = Json::array();
     for (const Json& incoming : cleanPreset["chain"].items()) {
-        Json slot = incoming;
-        slot.set("state", cleanState(incoming["state"], incoming["uri"].asString(), paths,
-                                     localAssets, error));
+        Json slot = cleanChainItem(incoming, paths, localAssets, effects, error);
         if (!error.empty()) return Json();
         chain.push(slot);
-        Json effect = Json::object();
-        effect.set("uri", incoming["uri"].asString());
-        if (incoming["uri"].asString() == kTooBNamUri
-            || incoming["uri"].asString() == kTooBCabIrUri) effect.set("catalogId", "toobamp");
-        effects.push(effect);
     }
     cleanPreset.set("chain", chain);
 
@@ -483,7 +518,7 @@ Json CommunityPresetPackage::create(const Preset& preset, const Paths& paths,
     manifest.set("tags", metadata["tags"].isArray() ? metadata["tags"] : Json::array());
     manifest.set("license", "MIT");
     Json compatibility = Json::object();
-    compatibility.set("minimumPiMfxVersion", metadata["minimumPiMfxVersion"].asString("0.1.0"));
+    compatibility.set("minimumPiMfxVersion", "0.6.0");
     manifest.set("compatibility", compatibility);
     manifest.set("preset", cleanPreset);
     manifest.set("dependencies", dependencies);
@@ -512,6 +547,9 @@ std::string CommunityPresetPackage::contentFingerprint(const Json& manifest) {
     if (preset.isObject()) {
         preset.remove("name");
         preset.remove("author");
+        Json routing = preset["routing"];
+        routing.remove("positions");
+        preset.set("routing", routing);
         identity.set("preset", preset);
     }
     return toHex(sha256(identity.dump()));

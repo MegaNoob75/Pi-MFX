@@ -1,8 +1,15 @@
-# Milestone 5 — Community preset catalog
+# Community Presets
 
-Milestone 5 adds a feature-gated Community Presets view and a strict declarative
-package boundary. Catalog activity is control-plane work and never enters
+Community Presets is part of the integrated `dev` feature set, with a strict
+declarative package boundary. Catalog activity is control-plane work and never enters
 `Engine::processAudio()`.
+
+This page records the design and intended publishing workflow. The current
+device format is Community manifest version 3 with routing format 1; the
+catalog index/offline cache is still version 2. Fresh release validation is
+tracked in [V1_READINESS.md](V1_READINESS.md). GitHub workflow files are excluded
+by the root `.gptignore` and were not inspected in this review, so the
+publishing automation described below still needs separate maintainer sign-off.
 
 ## Device workflow
 
@@ -51,10 +58,11 @@ no GitHub credential belongs on a Pi.
 ## Validation
 
 - `pimfx_community_package_test` exercises the native package boundary.
-- `ui/tests/communityPresetCatalog.test.cjs` protects the gate, plan, token,
+- `ui/tests/communityPresetCatalog.test.cjs` checks the plan, token,
   incomplete-import, and unsafe-content paths.
 - `ui/tests/menuNavigation.test.cjs` includes Community Presets in shared menu
   and shortcut navigation.
 - Raspberry Pi sign-off still requires option 0 validation of catalog refresh,
   install planning, TONE3000 authentication/download, touch layout, offline
   cache behavior, ordinary preset use, CPU load, and XRuns.
+  Historical test results are not a pass for the current release candidate.

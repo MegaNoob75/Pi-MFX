@@ -83,6 +83,7 @@ export function KeyboardProvider() {
             label: inferLabel(element),
             layout: inferLayout(element),
             value: element.value,
+            secret: element instanceof HTMLInputElement && element.type === "password",
             selectionStart: start,
             selectionEnd: end
         };
@@ -120,6 +121,7 @@ export function KeyboardProvider() {
                 label: request.label,
                 layout: request.layout,
                 value: request.value,
+                secret: request.secret,
                 selectionStart: cursor,
                 selectionEnd: cursor,
                 resolve: request.resolve
@@ -241,6 +243,7 @@ export function KeyboardProvider() {
                         <div className="mfx-overlay-title">{ask.label}</div>
                         <input
                             className="input"
+                            type={ask.secret ? "password" : "text"}
                             value={askValue}
                             data-pimfx-keyboard-layout={ask.layout}
                             onChange={(event) => setAskValue(event.target.value)}

@@ -8,6 +8,7 @@
 #include "core/SpscQueue.h"
 #include "host/Lv2Host.h"
 #include "midi/Mapping.h"
+#include "midi/ControllerHardware.h"
 #include "midi/MidiInput.h"
 #include "model/Storage.h"
 #include "transport/MusicalTransport.h"
@@ -19,6 +20,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -27,6 +29,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace pimfx {
@@ -46,8 +49,9 @@ struct TunerReading {
 ///
 /// Engine owns the audio device, the plugin chain, the preset library, and the
 /// controller link, and is the only thing the control API talks to. Everything
-/// that must not block the audio thread happens here on the control thread;
-/// the audio thread only reads what has already been published.
+/// that must not block audio runs on API, MIDI, housekeeping, preparation, or
+/// media workers. State mutations use stateMutex_; audio consumes published
+/// buffers/atomics and never takes those locks.
 class Engine : public AudioProcessor {
 public:
     explicit Engine(Paths paths);
@@ -57,7 +61,7 @@ public:
     /// controller. Returns false only for failures that make the engine
     /// useless; a missing audio device is reported through the state instead,
     /// so the user can fix it from the UI.
-    bool start(std::string& error);
+    bool start(std::string& error, bool recoverStartup = false);
     void stop();
 
     /// Invoked whenever anything the UI shows has changed. The listener is
@@ -71,15 +75,19 @@ public:
     Json meterState() const;
     Json transportState() const;
     Json backingState() const;
-    Json looperState() const;
-    Json recorderState() const;
-    Json drumState() const;
+    Json looperState(bool includeDetails = true) const;
+    Json recorderState(bool includeDetails = true) const;
+    Json drumState(bool includeDetails = true) const;
     Json catalogState(bool includePorts) const;
     Json audioDevicesState();
     Json midiPortsState() const;
     Json libraryState() const;
     Json diagnosticsState() const;
+    bool libraryPathInUse(const std::string& path) const;
     const Paths& storagePaths() const { return storage_.paths(); }
+    bool prepareBackup(bool includeLoop, std::string& error);
+    void releaseBackupPreparation() { backupPreparing_.store(false, std::memory_order_release); }
+    bool backupPreparing() const { return backupPreparing_.load(std::memory_order_acquire); }
 
     // --- audio -----------------------------------------------------------
     bool applyAudioSettings(const Json& json, std::string& error);
@@ -125,6 +133,8 @@ public:
     bool reorderBank(const std::string& bankId, int newIndex, std::string& error);
     Json exportBank(const std::string& bankId) const;
     bool importBank(const Json& json, std::string& error);
+    Json exportPreset(const std::string& presetId) const;
+    bool importPreset(const Json& json, const std::string& bankId, std::string& error);
     bool exportPresetForCommunity(const std::string& bankId, const std::string& presetId,
                                   Preset& preset, std::string& error);
     bool importCommunityPreset(const Json& manifest, bool incomplete,
@@ -132,14 +142,16 @@ public:
     bool uninstallCommunityPreset(const std::string& catalogId, int& removed, std::string& error);
 
     // --- chain -----------------------------------------------------------
-    bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error);
+    bool addEffect(const std::string& uri, int index, std::string& slotId, std::string& error,
+                   const Json& layout = Json());
+    bool editRouting(const Json& values, std::string& error);
     bool replaceEffect(const std::string& slotId, const std::string& uri, std::string& newSlotId, std::string& error);
     bool removeEffect(const std::string& slotId, std::string& error);
-    bool moveEffect(const std::string& slotId, int newIndex, std::string& error);
     bool setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
                           bool persist = true);
     bool setControlValue(const std::string& slotId, const std::string& portSymbol,
                          float value, std::string& error, bool persist = true);
+    bool setControlValues(const std::string& slotId, const Json& controls, std::string& error);
     bool setTempoLink(const std::string& slotId, const std::string& portSymbol,
                       double quarterNoteBeats, std::string& error);
     bool setEffectProperty(const std::string& slotId, const std::string& propertyUri,
@@ -158,12 +170,18 @@ public:
     /// Puts the live chain back to the stored base preset, discarding a
     /// snapshot that is being auditioned or edited.
     bool restoreLiveFromStoredPreset(std::string& error);
+    Json withEditorHistory(const std::string& key, bool finished, bool& ok,
+                           const std::function<Json()>& work);
+    bool stepEditorHistory(bool redo, std::string& error);
+    void resetEditorHistory();
 
     // --- controller ------------------------------------------------------
     bool applyControllerConfig(const Json& json, std::string& error);
+    bool applyPresetAssignments(const Json& json, std::string& error);
     bool connectController(const std::string& port, std::string& error);
     void disconnectController();
-    void beginControlLearn(const std::string& controlId);
+    bool beginControlLearn(const std::string& controlId, std::string& error);
+    bool controllerHardwareCommand(const std::string& action, const Json& payload, std::string& error);
     void cancelControlLearn();
     /// Presses a control from the browser. This is what makes a tablet a
     /// complete control surface with no hardware attached.
@@ -229,11 +247,21 @@ public:
     void releaseResources() override;
 
 private:
+    struct RoutingEdge {
+        size_t source = 0, destination = 0;
+        std::atomic<float> levelDb{0}, pan{0};
+        std::atomic<bool> mute{false}, solo{false};
+        float left = 1, right = 1;
+    };
     /// One live plugin plus the flag the audio thread reads to decide whether
     /// to run it.
     struct ChainSlot {
         std::string id;
-        std::unique_ptr<PluginInstance> plugin;
+        // Structural edits keep unaffected processors alive across the
+        // chain swap. Ownership changes only on non-audio threads.
+        std::shared_ptr<PluginInstance> plugin;
+        // Preparation must only run newly created, unpublished processors.
+        bool retainedProcessor = false;
         std::atomic<bool> enabled{true};
         std::atomic<int> pendingEnabled{-1};
         std::atomic<float> inputPeak{0.0f};
@@ -243,13 +271,55 @@ private:
     /// A whole signal chain. Chains are built on the control thread and handed
     /// to the audio thread by pointer swap, never edited in place.
     struct Chain {
+        ~Chain() {
+            // A plugin may still reference its last connected audio buffers
+            // while stopping its workers. Release it before those buffers.
+            slots.clear();
+        }
+        struct Node {
+            std::string id;
+            ChainSlot* slot = nullptr;
+            bool active = false;
+            bool mixBypassed = false;
+            std::vector<std::vector<float>> input, output;
+            std::vector<float*> inputPointers, outputPointers;
+            std::vector<RoutingEdge*> incoming;
+        };
+        std::vector<Node> nodes;
+        std::vector<std::unique_ptr<RoutingEdge>> edges;
         std::vector<std::unique_ptr<ChainSlot>> slots;
         std::vector<std::vector<float>> bufferA;
         std::vector<std::vector<float>> bufferB;
         std::vector<float*> pointersA;
         std::vector<float*> pointersB;
+        std::string presetId;
         unsigned channels = 2;
         float outputGain = 1.0f;
+        uint64_t publicationGeneration = 0;
+        bool rebindOnSwap = false;
+    };
+
+    /// Pins retired chains while non-audio threads inspect the current one.
+    /// The audio thread remains lock-free; housekeeping simply postpones
+    /// deletion while any control-side reader is active.
+    class ActiveChainReadGuard {
+    public:
+        explicit ActiveChainReadGuard(const Engine& engine) noexcept
+            : engine_(engine) {
+            engine_.chainReaders_.fetch_add(1, std::memory_order_acq_rel);
+            chain_ = engine_.activeChain_.load(std::memory_order_acquire);
+        }
+        ~ActiveChainReadGuard() {
+            engine_.chainReaders_.fetch_sub(1, std::memory_order_release);
+        }
+        Chain* get() const noexcept { return chain_; }
+
+        ActiveChainReadGuard(const ActiveChainReadGuard&) = delete;
+        ActiveChainReadGuard& operator=(const ActiveChainReadGuard&) = delete;
+
+    private:
+        const Engine& engine_;
+        Chain* chain_ = nullptr;
     };
 
     struct RetiredChain {
@@ -258,9 +328,18 @@ private:
     };
 
     bool restartAudio(std::string& error);
+    bool canRestartAudio(unsigned sampleRate, std::string& error) const;
     void publishChain(std::unique_ptr<Chain> chain);
+    void publishPreparedChain(std::unique_ptr<Chain> chain);
+    bool chainNeedsPreparation(const Chain& chain) const noexcept;
+    bool prepareChainForPublication(Chain& chain, uint64_t requestGeneration);
+    void chainPreparationThread();
+    void startChainPreparationThread();
+    void stopChainPreparationThread();
+    void cancelChainPreparationsLocked();
     void collectRetiredChains();
     bool swapPendingChainFromAudio();
+    bool activeChainReadyForPreset(const Preset& preset) const noexcept;
     void beginAudioTransitionBlock();
     bool applyDeferredTransitionStateFromAudio();
     bool activeChainTransitionPending() const;
@@ -269,9 +348,14 @@ private:
     void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                  unsigned frames, const float* dryInput, float dryGain);
     void configureAudioSafety(const AudioSettings& settings);
-    std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error);
+    std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error,
+                                    const Chain* retained = nullptr,
+                                    const std::string& recreatedSlotId = "");
+    void publishEmptyChain();
+    bool validateGraphEditChain(const Chain* chain, std::string& error) const;
     void applySnapshotToChain(const Snapshot& snapshot);
     Snapshot captureCurrentChain(const std::string& name) const;
+    Json captureBackupSession();
     Snapshot* findSnapshotBySlot(Preset& preset, int slot);
     const Snapshot* findSnapshotBySlot(const Preset& preset, int slot) const;
     void restoreStoredPresetToChainUnlocked(Preset& preset);
@@ -299,9 +383,10 @@ private:
     void persistActiveBankUnlocked();
     void persistBankUnlocked(Bank* bank, bool syncFromChain);
     void flushPendingBasePresetUnlocked();
-    void requestBankPersist(bool immediate);
-    void flushBankPersistIfDue();
-    bool persistSettings();
+    void requestBankPersist(const std::string& bankId);
+    void requestSettingsPersist();
+    void flushPendingPersistence(bool force = false);
+    bool persistSettings(std::string* error = nullptr);
     void notify();
     void notifyPerformance();
     void notifyUiNav(int delta, bool select, const std::string& virtualControlAction = "");
@@ -333,10 +418,17 @@ private:
     Settings settings_;
     std::vector<Bank> banks_;
     std::string activeBankId_;
+    // Browsing banks must not change the owner of the sounding preset.
+    std::string browseBankId_;
+    std::string browseBankId() const;
     std::string activePresetId_;
     /// Unsaved, engine-owned working copies. These deliberately never enter
     /// bank serialization; Save promotes one copy and Reload discards it.
     std::unordered_map<std::string, Preset> sessionPresetDrafts_;
+    std::string editorHistoryPresetId_, editorGesture_;
+    std::vector<Preset> editorUndo_, editorRedo_;
+    std::atomic<bool> backupPreparing_{false};
+    std::optional<Preset> recoveryLivePreset_;
     std::string activeVirtualControlId_;
     uint64_t virtualControlRevision_ = 0;
 
@@ -344,6 +436,8 @@ private:
     std::unique_ptr<AudioBackend> backend_;
     std::string audioDeviceName_;
     AudioMetrics metrics_;
+    std::atomic<float> engineCpuLoad_{0.0f};
+    std::atomic<bool> engineCpuLoadAvailable_{false};
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 
     std::atomic<Chain*> activeChain_{nullptr};
@@ -352,8 +446,18 @@ private:
     Chain* deferredRetiredChain_ = nullptr; // audio thread only
     std::vector<std::pair<std::unique_ptr<Chain>, uint64_t>> retiredChains_;
     std::atomic<uint64_t> audioGeneration_{0};
+    mutable std::atomic<uint32_t> chainReaders_{0};
+    std::atomic<uint64_t> chainPublicationGeneration_{0};
     std::atomic<bool> chainStateDirty_{false};
+    std::atomic<bool> chainPreparationTimedOut_{false};
     mutable std::mutex chainMutex_;
+
+    std::thread chainPreparationWorker_;
+    std::mutex chainPreparationMutex_;
+    std::condition_variable chainPreparationWake_;
+    std::unique_ptr<Chain> chainAwaitingPreparation_;
+    std::atomic<bool> chainPreparationStopping_{false};
+    std::atomic<uint64_t> chainPreparationRequestGeneration_{0};
 
     std::atomic<bool> bypassAll_{false};
     std::atomic<int> pendingBypassAll_{-1};
@@ -373,7 +477,12 @@ private:
 
     MidiInput midi_;
     ControllerRuntime controller_;
+    ControllerHardware controllerHardware_;
+    bool controllerHardwareCapable_ = false;
+    bool controllerGuidedAnalogCapable_ = false;
+    bool controllerConnecting_ = false; // stateMutex_; MIDI stop/join runs outside it
     std::string audioError_;
+    std::string persistenceError_; // stateMutex_; failed settings are retried by housekeeping
     std::string controllerError_;
     std::string controllerFirmwareVersion_;
     bool controllerFirmwareUpdateRequired_ = false;
@@ -383,7 +492,7 @@ private:
     // Tuner: the audio thread copies a decimated mono signal into this ring
     // and a background thread does the analysis, so pitch detection can never
     // affect the audio path.
-    std::vector<float> tunerRing_;
+    std::vector<std::atomic<float>> tunerRing_;
     std::atomic<size_t> tunerWrite_{0};
     std::atomic<bool> tunerEnabled_{true};
     std::atomic<bool> tunerViewOpen_{false};
@@ -402,6 +511,8 @@ private:
     std::atomic<bool> shuttingDown_{false};
     std::atomic<bool> bankPersistPending_{false};
     std::atomic<int64_t> bankPersistDueMs_{0};
+    std::unordered_set<std::string> pendingBankPersistIds_;
+    bool settingsPersistPending_ = false;
 
     std::atomic<unsigned> sampleRate_{48000};
     std::atomic<unsigned> maxFrames_{64};
@@ -451,6 +562,11 @@ private:
     StateListener listener_;
     mutable std::mutex listenerMutex_;
     mutable std::recursive_mutex stateMutex_;
+    // Lock order: state -> media -> service state; no media operation may
+    // acquire engine state. Workers never take the engine media lock.
+    mutable std::recursive_mutex mediaMutex_;
+    const std::string stateEpoch_ = newId("engine");
+    mutable uint64_t stateRevision_ = 0; // stateMutex_, shared by full/performance snapshots
 };
 
 } // namespace pimfx

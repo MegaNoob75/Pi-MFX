@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace pimfx {
@@ -34,7 +35,6 @@ struct Paths {
 
     std::string settingsFile() const;
     std::string banksDir() const;
-    std::string controllerFile() const;
     std::string themesDir() const;
     std::string credentialsFile() const;
     std::string pluginsFile() const;
@@ -55,9 +55,10 @@ bool readFile(const std::string& path, std::string& out);
 
 /// Writes to a temporary file in the same directory and renames it into place,
 /// so a power cut mid-save cannot truncate a bank or the settings file.
-bool writeFileAtomic(const std::string& path, const std::string& contents);
+bool writeFileAtomic(const std::string& path, const std::string& contents, bool durable = false);
 
-bool removeFile(const std::string& path);
+bool removeFile(const std::string& path, bool durable = false);
+bool renameFileNoReplace(const std::string& source, const std::string& destination, std::error_code& error);
 
 std::vector<std::string> listDirectory(const std::string& path, const std::string& suffix = std::string());
 

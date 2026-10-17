@@ -1,63 +1,130 @@
-# DIY ESP32-S3 controller
+# DIY universal ESP32-S3 controller
 
-Optional USB-MIDI floorboard for Pi-MFX. Firmware lives in this repo:
+Flash the supplied universal firmware once, then configure the controller in
+**Settings → Controller → Hardware Setup**. Rewiring or adding supported inputs
+requires no firmware source edits or reflash.
 
-```
-firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino
-```
+The current image is **2.1**, for **ESP32-S3 DevKitC-1 with direct wiring**. Other
+ESP32 families, expansion modules, plain LED outputs and arbitrary displays need
+additional drivers/images. Firmware updates may still be necessary for fixes or
+new component support. See [protocol](CONTROLLER_PROTOCOL.md) and
+[validation checklist](CONTROLLER_VALIDATION.md).
 
-Flash the sketch in this repository so the engine can identify the board and
-drive RGB LEDs. Protocol details: [CONTROLLER_PROTOCOL.md](CONTROLLER_PROTOCOL.md).
+## Flash once
 
-## What you need
+1. Install Arduino IDE 2 and Espressif's ESP32 board package.
+2. Install **Control Surface** (Pieter P) and **Adafruit NeoPixel**.
+3. Open `firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino`.
+4. Choose **ESP32S3 Dev Module**, **USB-OTG (TinyUSB)**, and disable USB CDC on Boot.
+5. Choose **Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)** and keep Erase All Flash disabled.
+6. Upload using the board's native USB port, then reconnect it to the Pi.
 
-- ESP32-S3 DevKitC-1 (use the port labelled **USB**, not UART)
-- Footswitches to ground (active-low; firmware enables pull-ups)
-- Optional pots between 3.3 V and GND
-- Optional WS2812 / NeoPixel strip on GPIO 48
-- Arduino IDE 2 with the Espressif **esp32** core, **Control Surface**
-  (by Pieter P), and **Adafruit NeoPixel**
+If upload mode is needed, hold BOOT, tap RST, then release BOOT. Use the port
+labelled USB rather than the UART-only port. A serial/JTAG COM device alone is
+not a USB-MIDI controller.
 
-## Flash with Arduino IDE
+A fresh board has no assigned inputs or LED outputs. It still enumerates over
+USB and responds to setup commands. Configuration is stored in ESP32 NVS;
+normal restarts, reconnects and application updates retain it. A full flash erase
+removes that configuration.
 
-The sketch will not compile until both libraries are installed.
+After this one-time upload, Pi-MFX updates can build and install newer controller
+firmware automatically. See [firmware updates](CONTROLLER_FIRMWARE_UPDATES.md).
 
-1. Open `firmware/esp32s3/PiMFX_Controller/PiMFX_Controller.ino`.
-2. Board: **ESP32S3 Dev Module**.
-3. USB Mode: **USB-OTG (TinyUSB)**. USB CDC on Boot: **Disabled**.
-   Hardware CDC and JTAG makes a serial port, not MIDI.
-4. Sketch → Include Library → Manage Libraries, then install:
-   - **Control Surface** (by Pieter P)
-   - **Adafruit NeoPixel** (by Adafruit)
-5. Upload.
+## Wire and Learn
 
-If the serial port does not appear: hold **BOOT**, tap **RST**, release **BOOT**.
+Use active-low switches to ground and quadrature encoders with their common
+connected to ground. Analog pots/sliders/expression inputs use 3.3 V and ground.
+Never feed 5 V into an ESP32 input. Check the actual board's schematic before
+wiring; software cannot make an electrically incompatible circuit safe.
 
-Windows and the Pi should list a MIDI device named something like **ESP32**,
-**ESP32S3**, or **TinyUSB**.
-If they show a COM / “USB JTAG” serial device instead, USB Mode was wrong:
-re-select USB-OTG (TinyUSB) and upload again, then unplug and replug.
+1. Select the actual ESP32 USB-MIDI device in Hardware Setup and enable it.
+   The board should report current firmware 1.1 and READY after configuration readback.
+   This renumbered image retains guided calibration and reports its capabilities explicitly.
+2. Add Momentary, Latching, Pot, Slider, Expression or Encoder. Choose the correct
+   type first; Learn discovers its connection rather than guessing the type.
+3. Select the control and press Learn. Keep everything still for one second.
+4. Operate only the selected control:
+   - Switch: press and release. Latching: change its position.
+   - Analog: turn to 0/minimum and tap **Set Minimum**. Slowly turn to maximum
+     and tap **Set Maximum**. Keep other controls still. Each step allows three
+     minutes, and pausing does not automatically finish discovery.
+   - Encoder: turn clockwise at least four clicks, then stop. Learn Button
+     separately if a push switch is fitted.
+5. Review the proposed GPIOs and choose **Save on Controller**. Pi-MFX waits for
+   persistent save and verified readback before accepting the assignment.
+6. Set actions/direction/hold behaviour, then show and arrange the control in
+   Layout. Bind preset parameters in Preset Editor as usual.
 
-## Default wiring (ESP32-S3 DevKitC-1)
+MIDI addresses are allocated automatically. Performance messages are paused
+throughout setup so Learn gestures do not change presets or execute actions.
+The board times out abandoned transactions after 90 seconds. Pi-MFX times out
+missing replies; Read Board reconciles what actually survived a connection loss.
 
-Edit `Pins.h` if your enclosure uses different GPIOs, then flash again.
+A pin assigned to another control or the LED strip is excluded from discovery.
+Remove the existing wiring first to reuse it. More than one moving input is
+rejected as ambiguous. For noisy wiring or unsupported discovery behaviour, use
+Advanced Wiring; do not repeatedly accept an unexpected pin.
+
+## Advanced wiring and LEDs
+
+Open **Wiring & Recovery**. Choose a control (encoder rotation or
+its paired push), input pin(s), encoder transitions per click, switch debounce,
+or analog endpoints. Review Wiring stages the change for confirmation.
+Default encoder decoding is four quadrature transitions per detent; adjust for
+your encoder. Leave Pi-MFX's additional Encoder Pulses per Click at 1.
+
+The direct input allowlist is GPIO 1, 2, 4–18, 21, 38–42 and 47. Analog inputs
+are the allowed pins within 1–18. GPIO 48 is additionally offered for NeoPixel
+output. USB, flash/PSRAM, boot straps, UART and absent pins are excluded. The
+allowlist is deliberately for this board profile, not every ESP32-S3 module.
+
+Configure one WS2812/NeoPixel strip: data pin, pixel count (0 disables), GRB/RGB
+order. Confirm the change, then use Test Pixel with a zero-based pixel index.
+The test lights that saved pixel white briefly at low brightness. Logical LED
+roles and links to controls remain in Hardware Setup; configure those separately
+so theme/performance feedback follows the intended controls.
+
+Current firmware limits: 32 input records and 127 NeoPixels, subject to pin and
+physical electrical limits. An encoder turn and its push use separate records.
+Adding logical controls in Pi-MFX does not create additional physical GPIOs.
+
+## Existing controller and recovery
+
+**Default Wiring Template** stages the former wiring example:
 
 | Function | GPIO | MIDI |
 | --- | --- | --- |
-| Switch 1–8 | 6, 7, 15, 16, 1, 2, 4, 5 | CC 20–27 |
-| Pot 1–4 | 8, 12, 13, 11 | CC 10–13 |
-| Encoder A / B / push | 18, 17, 21 | CC 30 relative / CC 31 |
-| LED data | 48 | SysEx set-LED |
+| Switches 1–8 | 6, 7, 15, 16, 1, 2, 4, 5 | Channel 1, CC 20–27 |
+| Pots 1–4 | 8, 12, 13, 11 | Channel 1, CC 10–13 |
+| Encoder A/B | 18, 17 | Channel 1, CC 30 |
+| Encoder push | 21 | Channel 1, CC 31 |
+| NeoPixel strip | 48, 8 pixels | RGB feedback |
 
-## On the Pi
+Confirm only if the wiring matches. Then use **Use Board Controls** to recover
+missing logical controls, assign actions and arrange Layout. Existing matching
+legacy MIDI mappings are reused when possible.
 
-1. Plug the ESP32 into the Pi.
-2. Settings → Controller → Hardware Setup: pick the **ESP32** MIDI device
-   (not Midi Through) and press SELECT. Hardware buttons stay dead until
-   a device is selected.
-3. Add a switch, pot or encoder, press **LEARN**, then use the matching control.
-   Encoders also have **LEARN BUTTON** for the built-in click. Reverse a pot or
-   encoder in Hardware Setup if it is wired or turning backwards.
-4. Assign an encoder’s turn to **Navigate menus** and its click to **Select**
-   to scroll lists (menus, banks, presets, themes) and confirm the highlight.
-5. Assign presets by holding a Performance tile — not from Hardware Setup.
+Controller profiles version 2 include the last verified/adopted wiring. Older
+version-1 profiles still load. Loading a profile or restoring an application
+backup never silently drives the board's pins: **Review Saved Wiring** explicitly
+stages the profile's wiring for confirmation. Read Board only reads; Use Board
+Controls recovers logical controls without changing firmware configuration.
+
+Remove Control stages removal of its physical wiring (including a paired push
+when deleting an encoder), then removes the logical control after verified save.
+Remove Wiring keeps the logical control but frees its GPIO assignment. Clear
+Board Wiring stages an empty board; it requires confirmation and leaves USB
+setup available. It does not erase application presets.
+
+Invalid saved records fall back to the previous valid board configuration, or an
+empty setup if neither record is valid. USB stays available because setup never
+assigns its pins. If Pi-MFX stops midway through setup, Read Board discards any
+abandoned unsaved draft; adopt or restore the desired configuration afterwards.
+If communication is unavailable, the board also abandons setup after 90 seconds.
+A reported save timeout
+can mean the board saved successfully but its reply was lost: always read back.
+
+Generic MIDI controllers and old firmware retain MIDI-message Learn. They do not
+support physical GPIO discovery. Application rollback to v0.6.3 retains this
+firmware's normal CC/relative-encoder messages, but cannot edit its wiring.

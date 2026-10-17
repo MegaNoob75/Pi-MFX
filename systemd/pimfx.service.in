@@ -3,7 +3,8 @@ Description=Pi-MFX guitar multi-effects engine
 Documentation=https://github.com/MegaNoob75/Pi-MFX
 # Sound cards, including USB interfaces, must exist before the engine opens
 # them. Without this the service races the driver on a cold boot.
-After=sound.target network.target pimfx-plugin-helper.service
+After=sound.target network.target pimfx-plugin-helper.service pimfx-recovery-guard.service
+Requires=pimfx-recovery-guard.service
 Wants=sound.target pimfx-plugin-helper.service
 StartLimitBurst=5
 StartLimitIntervalSec=60

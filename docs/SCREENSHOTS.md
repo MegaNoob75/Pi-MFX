@@ -1,6 +1,6 @@
 # Screenshots
 
-These are the current Pi-MFX React views at **1024×600**, the target size for a
+This gallery records Pi-MFX React views at **1024×600**, the target size for a
 7-inch kiosk display. They use the read-only documentation fixture in
 `ui/docs.html`, so the captures show representative banks, effects, tracks,
 projects, patterns, and catalog entries without changing a Pi or user data.
@@ -8,6 +8,11 @@ projects, patterns, and catalog entries without changing a Pi or user data.
 Open `http://pimfx.local:8080` on a Pi for live audio, hardware, storage, and
 network state. The fixture is visual documentation, not Raspberry Pi audio or
 XRun validation.
+
+The Preset Editor capture is refreshed for the routing grid, block bypass LEDs,
+and endpoint signal indicators. Other images retain their existing captures.
+Use the [User guide](USER_GUIDE.md) for feature instructions. These are browser
+fixtures, not captures of live Pi audio or hardware behavior.
 
 ## Shell and performance
 
@@ -114,6 +119,10 @@ How to use each screen: [USER_GUIDE.md](USER_GUIDE.md).
 From `ui/`, run `npm run dev`. On Windows, run
 `powershell -ExecutionPolicy Bypass -File scripts/capture-docs.ps1` from the
 repository root to replace the full gallery. Individual preview URLs include:
+
+To refresh only the editor, add `-Only editor.png`. `-BrowserPath` can select a
+different installed Chromium browser. Keep all other excluded assets outside
+the scope of an individual screenshot request.
 
 ```text
 http://127.0.0.1:5173/docs.html?view=performance

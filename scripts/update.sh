@@ -20,6 +20,11 @@ die()  { printf '\033[1;31m error\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run this with sudo:  sudo ./scripts/update.sh"
 
+# Keep source replacement/builds separate from the pending firmware worker.
+install -d /run/pimfx
+exec 9>/run/pimfx/update-build.lock
+flock -x 9
+
 cd "$REPO_DIR"
 export GIT_TERMINAL_PROMPT=0
 log "Starting update in $REPO_DIR"
@@ -108,6 +113,10 @@ if [[ "${SKIP_PULL:-0}" != "1" || -z "${PIMFX_GIT_SHA:-}" ]]; then
 fi
 
 jobs="$(nproc)"
+if ! dpkg-query -W -f='${Status}' libssl-dev 2>/dev/null | grep -q 'install ok installed'; then
+    log "Installing the remote access security build dependency"
+    apt-get install -y --no-install-recommends libssl-dev
+fi
 # Leave one core when the pedal or kiosk is live so SSH and audio stay up.
 # A stopped engine can use every core.
 if { pgrep -x chromium >/dev/null 2>&1 || systemctl is-active --quiet pimfx.service; } && [[ "$jobs" -gt 1 ]]; then
@@ -117,8 +126,7 @@ log "Building the engine (${jobs} cores)"
 as_clone_owner env PIMFX_GIT_SHA="${PIMFX_GIT_SHA:-}" \
     nice -n 10 cmake -S "$REPO_DIR/engine" -B "$REPO_DIR/engine/build" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DPIMFX_BUILD_COMMIT="${PIMFX_GIT_SHA:-}" \
-        -DPIMFX_ENABLE_DRUM_MACHINE=ON >/dev/null
+        -DPIMFX_BUILD_COMMIT="${PIMFX_GIT_SHA:-}" >/dev/null
 as_clone_owner nice -n 10 cmake --build "$REPO_DIR/engine/build" -j "$jobs"
 
 if [[ -f "$REPO_DIR/ui/package.json" ]]; then
@@ -152,6 +160,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         "$REPO_DIR/systemd/pimfx.service.in" > /etc/systemd/system/pimfx.service
     if [[ -f "$REPO_DIR/scripts/plugin-helper.py" ]]; then
         log "Refreshing the plugin helper"
+        PREFIX="$PREFIX" DATA_ROOT="$DATA_ROOT" PIMFX_USER="$PIMFX_USER" bash "$REPO_DIR/scripts/install-recovery.sh"
         install -d -o "$PIMFX_USER" -g "$PIMFX_USER" "$DATA_ROOT/lv2"
         install -Dm644 "$REPO_DIR/scripts/plugin-helper.py" "$PREFIX/libexec/pimfx/plugin-helper.py"
         sed -e "s|@USER@|$PIMFX_USER|g" \
@@ -210,6 +219,12 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         [[ -f "$CMDLINE.pimfx-backup" ]] || cp "$CMDLINE" "$CMDLINE.pimfx-backup"
         sed -i '1 s/$/ usbcore.autosuspend=-1/' "$CMDLINE"
     fi
+    log "Building and updating newer controller firmware (or leaving it pending until connected)"
+    if ! python3 "$PREFIX/libexec/pimfx/controller_firmware.py" --arm \
+        --repo "$REPO_DIR" --data "$DATA_ROOT" --user "$PIMFX_USER"; then
+        warn "Pi-MFX was installed, but controller firmware needs attention. Open Settings > Updates to retry."
+        CONTROLLER_UPDATE_FAILED=1
+    fi
     log "Restarting pimfx"
     systemctl restart pimfx.service
     sleep 2
@@ -240,3 +255,6 @@ if [[ "${PIMFX_UPDATE_FROM_HELPER:-0}" == "1" ]] && command -v systemd-run >/dev
         /bin/systemctl restart pimfx-plugin-helper.service \
         || warn "could not schedule the plugin helper refresh"
 fi
+
+# Do not report the combined update as successful after a firmware failure.
+[[ "${CONTROLLER_UPDATE_FAILED:-0}" != "1" ]]

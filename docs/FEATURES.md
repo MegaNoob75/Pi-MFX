@@ -10,10 +10,13 @@ but also works from phones, tablets, and computers on the same trusted network.
 - USB class-compliant interfaces and I2S HATs
 - User-selected input channel, sample rate, period size, and period count
 - Measured driver round-trip latency, live meters, and XRun diagnostics
-- In-process serial LV2 chain with bypass, input/output gain, and generic LV2 controls
+- In-process LV2 routing graph with split/merge connections, mixer blocks,
+  per-connection level/pan/mute/solo, bypass, and generic LV2 controls
 - NAM, AIDA-X, and cabinet-IR file properties for compatible plugins
-- Live, nonpersistent control and model audition followed by explicit persistence
+- Engine-owned live preset drafts, model audition, explicit Save, and Reload
+  of the saved base preset; drafts do not survive an engine restart
 - Tempo-link controls for compatible time-based effects
+- Block active/bypass LEDs, endpoint signal indicators, and ten-change editor undo/redo
 
 ## Banks, presets, snapshots, and community
 
@@ -45,6 +48,8 @@ but also works from phones, tablets, and computers on the same trusted network.
   accents, swing, humanization, fills, four variations, and song chains
 - Hardware actions and visible states for transport, backing, looper, recorder,
   drums, tuner, banks, presets, snapshots, and effects
+- Services integrated into normal operation; backing availability still depends
+  on the decoder libraries included in the Pi build
 
 ## Models, plugins, and files
 
@@ -59,7 +64,10 @@ but also works from phones, tablets, and computers on the same trusted network.
 - Optional ESP32-S3 USB-MIDI floorboard
 - Learn and mapping for momentary/latching switches, pots, sliders, expression
   pedals, encoders, encoder buttons, and LEDs
-- Custom themes, on-screen keyboard modes, interface feel, and backup/restore
+- Add hardware controls from Layout or Hardware Setup without a stock-count cap;
+  learn distinct CC/note addresses, with multiple encoders in the supplied firmware
+- Custom themes, on-screen keyboard modes, interface feel, full/selective
+  backup/restore, and separate setup/controller/layout profiles
 - Multiple connected UIs share navigation and editor session state
 
 ## System
@@ -72,9 +80,21 @@ but also works from phones, tablets, and computers on the same trusted network.
 
 ## Network and validation boundary
 
-The LAN HTTP and WebSocket APIs do not have a login. Anyone on the same LAN or
-hotspot can control audio and system settings, so use a trusted network.
+Remote HTTP, WebSocket, upload, and download access requires a Pi-MFX password.
+The attached loopback touchscreen stays unlocked. Remembered browsers survive
+service restarts until locked or revoked by a password change. HTTP remains
+unencrypted; use a trusted network. See [REMOTE_ACCESS.md](REMOTE_ACCESS.md).
+
+Compressed recovery archives include banks, models, IRs, plugins/dependencies, media,
+settings, credentials and Pi-MFX installation choices. Export to USB or download
+off the Pi; restore after a fresh OS and installer run. Selective restore and
+legacy configuration imports are supported. Choose smaller archives with
+recorded plugin downloads or include installers for self-contained restoration.
+Manual plugins and packages without download records remain included.
+See [BACKUP_RESTORE.md](BACKUP_RESTORE.md)
+for compatibility, working-space requirements and pending Pi validation.
 
 Implementation in the repository is not the same as Raspberry Pi sign-off.
 Actual audio formats, LV2 plugins, touch/encoder behavior, CPU load, latency,
 storage performance, and XRuns must be validated on the target Pi.
+Maintainer release and device-validation work is covered in [Development](DEV_FLOW.md).

@@ -4,6 +4,7 @@
 #include "community/CommunityCatalog.h"
 #include "core/Log.h"
 #include "core/Paths.h"
+#include "core/StartupGuard.h"
 #include "library/PluginStore.h"
 #include "library/Tone3000.h"
 
@@ -112,9 +113,15 @@ int main(int argc, char** argv) {
     logInfo("Pi-MFX " PIMFX_VERSION " starting");
     logInfo("data root: " + paths.dataRoot);
 
-    Engine engine(paths);
     std::string error;
-    if (!engine.start(error)) {
+    StartupGuard startupGuard(paths.dataRoot);
+    bool recovery = false;
+    if (!startupGuard.arm(recovery, error)) {
+        logError(error + "; refusing to load preset plugins without recovery protection");
+        return 1;
+    }
+    Engine engine(paths);
+    if (!engine.start(error, recovery)) {
         logError("engine failed to start: " + error);
         return 1;
     }
@@ -123,6 +130,7 @@ int main(int argc, char** argv) {
     PluginStore plugins(paths);
     CommunityCatalog community(paths);
     HttpServer server;
+    server.setAccessFile(joinPath(paths.dataRoot, "access.json"));
     ApiRouter router(engine, tone3000, plugins, community, server);
     router.attach();
 
@@ -140,10 +148,14 @@ int main(int argc, char** argv) {
 
     logInfo("shutting down");
     logInfo("shutdown: stopping web server");
+    router.stop();
     server.stop();
     logInfo("shutdown: web server stopped");
     logInfo("shutdown: stopping engine");
     engine.stop();
+    if (!startupGuard.finish()) {
+        logWarn("startup: recovery marker could not be cleared; next start will use a silent preset");
+    }
     logInfo("shutdown: complete");
     return 0;
 }

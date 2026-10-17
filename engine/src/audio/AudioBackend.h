@@ -11,10 +11,12 @@ namespace pimfx {
 
 enum class AudioFailureCategory : uint32_t {
     None = 0,
+    PrimePlayback,
     StartCapture,
     PreparePlaybackAfterXrun,
     PrepareCaptureAfterXrun,
     RelinkAfterXrun,
+    PrimePlaybackAfterXrun,
     RestartCaptureAfterXrun,
 };
 

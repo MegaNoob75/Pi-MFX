@@ -26,6 +26,9 @@ import threading
 import time
 import urllib.request
 
+import backup as recovery
+import controller_firmware
+
 SOCK_PATH = sys.argv[1] if len(sys.argv) > 1 else "/run/pimfx/plugin-helper.sock"
 PIMFX_USER = os.environ.get("PIMFX_USER", "pimfx")
 DATA_ROOT = os.environ.get("PIMFX_DATA_ROOT", "/var/lib/pimfx")
@@ -88,6 +91,8 @@ _fetch_error = ""
 _install_running = False
 LV2_CHECK_LOCK = threading.Lock()
 _lv2_check_running = False
+FIRMWARE = controller_firmware.Manager(lambda: find_repo(), DATA_ROOT, PIMFX_USER,
+                                      busy=lambda: install_in_progress())
 
 
 def reply(conn: socket.socket, payload: dict) -> None:
@@ -596,6 +601,14 @@ def install_apt_lv2_updates(timeout: int) -> dict:
 
 def handle(request: dict) -> dict:
     op = request.get("op") or ""
+    if op == "controller-firmware-status":
+        return {"ok": True, **FIRMWARE.status(branch=request.get("branch") or "dev", refresh=bool(request.get("refresh")))}
+    if op == "controller-firmware-install":
+        return {"ok": True, **FIRMWARE.start(arm=True, github=True, branch=request.get("branch") or "dev")}
+    if op.startswith("backup-"):
+        return recovery.handle(request)
+    if op in HEAVY_OPS and recovery.recovery_busy():
+        return {"ok": False, "error": "finish the backup or restore before changing installed software"}
     timeout = int(request.get("timeout") or 60)
     max_timeout = 1800 if op == "update-install" else (900 if op == "lv2-update-install-apt" else 300)
     timeout = max(10, min(timeout, max_timeout))
@@ -867,7 +880,8 @@ def read_request(conn: socket.socket) -> dict:
             break
         chunks.append(piece)
         total += len(piece)
-        if total > 64 * 1024:
+        # Recovery imports use bounded 512 KiB chunks, never whole archives.
+        if total > 1024 * 1024:
             raise ValueError("request too large")
     raw = b"".join(chunks).decode("utf-8").strip()
     if not raw:
@@ -908,6 +922,7 @@ def serve() -> None:
         start_lv2_update_check(force=False)
 
     threading.Thread(target=boot_update_check, daemon=True, name="pimfx-boot-update-check").start()
+    FIRMWARE.monitor()
 
     while True:
         conn, _unused = sock.accept()
@@ -1161,6 +1176,8 @@ def git_update_status(fetch: bool, branch_wanted: str = "", deployed_commit: str
 def git_update_install(timeout: int, branch: str = "", deployed_commit: str = "") -> dict:
     global _install_running
     del timeout  # the job runs in the background; the HTTP thread must not wait
+    if FIRMWARE.status().get("state") in controller_firmware.ACTIVE:
+        return {"ok": False, "error": "Wait for the controller firmware update to finish."}
     repo = find_repo()
     if not repo_is_clone(repo):
         return {
@@ -1190,6 +1207,7 @@ def git_update_install(timeout: int, branch: str = "", deployed_commit: str = ""
             return stored
         _install_running = True
     write_update_log("Starting update...\n")
+    update_started_at = time.time()
     write_update_status({"ok": True, "jobState": "installing", "message": "Updating"})
     script = os.path.join(repo, "scripts", "update.sh")
     env = os.environ.copy()
@@ -1244,6 +1262,9 @@ def git_update_install(timeout: int, branch: str = "", deployed_commit: str = ""
             "jobState": "idle" if code == 0 else "failed",
             "message": "Update finished" if code == 0 else "update failed",
         }
+        firmware = FIRMWARE.status()
+        if code != 0 and firmware.get("state") == "failed" and firmware.get("updatedAt", 0) >= update_started_at:
+            payload["message"] = "Pi-MFX installed; controller firmware update failed. Open Controller Firmware to retry."
         if code != 0:
             payload["error"] = payload["message"]
         write_update_status(payload)

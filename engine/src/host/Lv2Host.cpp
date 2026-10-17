@@ -297,6 +297,7 @@ struct MidiMessage {
 struct Lv2Catalog::Impl {
     LilvWorld* world = nullptr;
     const LilvPlugins* plugins = nullptr;
+    std::vector<PluginInfo> metadata;
 
     LilvNode* audioPort = nullptr;
     LilvNode* controlPort = nullptr;
@@ -399,13 +400,17 @@ void loadUserBundles(LilvWorld* world, const std::string& directory) {
     }
 }
 
-Lv2Catalog::Lv2Catalog() : impl_(std::make_unique<Impl>()) {}
+Lv2Catalog::Lv2Catalog() : impl_(std::make_shared<Impl>()) {}
 Lv2Catalog::~Lv2Catalog() = default;
 
-bool Lv2Catalog::available() const { return impl_ && impl_->world != nullptr; }
+bool Lv2Catalog::available() const { const auto world = sharedImpl(); return world && world->world != nullptr; }
 
 bool Lv2Catalog::rescan(std::string& error) {
-    Impl& impl = *impl_;
+    std::lock_guard<std::mutex> lock(scanMutex_);
+    // Loading into an existing world retains metadata for removed bundles.
+    // Live instances keep their previous world until they are destroyed.
+    auto next = std::make_shared<Impl>();
+    Impl& impl = *next;
 
     if (!impl.world) {
         impl.world = lilv_world_new();
@@ -672,8 +677,9 @@ bool Lv2Catalog::rescan(std::string& error) {
     std::sort(discovered.begin(), discovered.end(),
               [](const PluginInfo& a, const PluginInfo& b) { return toLower(a.name) < toLower(b.name); });
 
-    plugins_ = std::move(discovered);
-    logInfo("lv2: " + std::to_string(plugins_.size()) + " plugins available");
+    next->metadata = std::move(discovered);
+    logInfo("lv2: " + std::to_string(next->metadata.size()) + " plugins available");
+    std::atomic_store(&impl_, std::move(next));
     error.clear();
     return true;
 }
@@ -686,6 +692,7 @@ struct PluginInstance::Impl {
     static constexpr size_t kPendingPropertyCapacity = 32;
 
     Lv2Catalog* catalog = nullptr;
+    std::shared_ptr<Lv2Catalog::Impl> world;
     const LilvPlugin* plugin = nullptr;
     LilvInstance* instance = nullptr;
 
@@ -698,6 +705,8 @@ struct PluginInstance::Impl {
     // actually reads) once per period.
     std::vector<std::atomic<float>> staged;
     std::vector<float> live;
+    std::vector<float> controlScratch;
+    std::atomic<uint32_t> controlBatchRevision{0};
     std::vector<bool> isControlInput;
     std::vector<bool> isControlOutput;
 
@@ -705,6 +714,7 @@ struct PluginInstance::Impl {
     std::vector<uint32_t> audioOutputPorts;
     std::vector<std::vector<float>> silentInputs;
     std::vector<std::vector<float>> spareOutputs;
+    std::vector<std::vector<float>> cvBuffers;
 
     // Atom ports for MIDI and patch messages.
     int atomInputPort = -1;
@@ -830,6 +840,8 @@ struct PluginInstance::Impl {
     void runCycle(const float* const* inputs, unsigned inputCount,
                   float* const* outputs, unsigned outputCount,
                   unsigned frames, const TransportBlock* transport);
+    void connectAudioBuffers(const float* const* inputs, unsigned inputCount,
+                             float* const* outputs, unsigned outputCount);
 };
 
 namespace {
@@ -857,13 +869,14 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
         error = "no LV2 support in this build";
         return nullptr;
     }
-    const PluginInfo* info = catalog.find(uri);
+    std::shared_ptr<Lv2Catalog::Impl> catalogWorld;
+    const auto info = catalog.find(uri, &catalogWorld);
     if (!info) {
         error = "plugin not installed: " + uri;
         return nullptr;
     }
 
-    Lv2Catalog::Impl& world = *catalog.impl();
+    Lv2Catalog::Impl& world = *catalogWorld;
     LilvNode* uriNode = lilv_new_uri(world.world, uri.c_str());
     const LilvPlugin* plugin = lilv_plugins_get_by_uri(world.plugins, uriNode);
     lilv_node_free(uriNode);
@@ -888,6 +901,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     }
 
     impl.catalog = &catalog;
+    impl.world = std::move(catalogWorld);
     impl.plugin = plugin;
     impl.sampleRate = sampleRate;
     impl.maxFrames = maxFrames;
@@ -970,6 +984,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     const uint32_t portCount = lilv_plugin_get_num_ports(plugin);
     impl.staged = std::vector<std::atomic<float>>(portCount);
     impl.live.assign(portCount, 0.0f);
+    impl.controlScratch.assign(portCount, 0.0f);
     impl.isControlInput.assign(portCount, false);
     impl.isControlOutput.assign(portCount, false);
 
@@ -997,16 +1012,16 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
         } else if (port.cv) {
             // CV ports are connected to a silent buffer so the plugin has
             // valid memory even though Pi-MFX does not route CV.
-            impl.spareOutputs.emplace_back(impl.maxFrames, 0.0f);
-            lilv_instance_connect_port(impl.instance, port.index, impl.spareOutputs.back().data());
+            impl.cvBuffers.emplace_back(impl.maxFrames, 0.0f);
+            lilv_instance_connect_port(impl.instance, port.index, impl.cvBuffers.back().data());
         }
     }
 
     impl.silentInputs.assign(impl.audioInputPorts.size(), std::vector<float>(impl.maxFrames, 0.0f));
-    impl.spareOutputs.reserve(impl.spareOutputs.size() + impl.audioOutputPorts.size());
-    for (size_t i = 0; i < impl.audioOutputPorts.size(); ++i) {
-        impl.spareOutputs.emplace_back(impl.maxFrames, 0.0f);
-    }
+    impl.spareOutputs.assign(impl.audioOutputPorts.size(), std::vector<float>(impl.maxFrames, 0.0f));
+    // Activation may inspect audio ports even before the first run. Keep all
+    // ports bound to instance-owned storage until a chain supplies its buffers.
+    impl.connectAudioBuffers(nullptr, 0, nullptr, 0);
 
     if (impl.atomInputPort >= 0) {
         impl.atomInput.assign(static_cast<size_t>(impl.sequenceSize), 0);
@@ -1064,6 +1079,19 @@ void PluginInstance::setControl(uint32_t portIndex, float value) {
     impl.staged[portIndex].store(value, std::memory_order_relaxed);
 }
 
+void PluginInstance::setControls(const std::vector<std::pair<uint32_t, float>>& values) {
+    Impl& impl = *impl_;
+    // Writers are serialized by the engine state lock. An odd revision means
+    // the audio thread must keep the preceding complete control snapshot.
+    impl.controlBatchRevision.fetch_add(1, std::memory_order_seq_cst);
+    for (const auto& value : values) {
+        if (value.first < impl.staged.size() && impl.isControlInput[value.first]) {
+            impl.staged[value.first].store(value.second, std::memory_order_seq_cst);
+        }
+    }
+    impl.controlBatchRevision.fetch_add(1, std::memory_order_seq_cst);
+}
+
 bool PluginInstance::setControlDeferred(uint32_t portIndex, float value) {
     return impl_->deferredControls.push({portIndex, value});
 }
@@ -1078,13 +1106,16 @@ float PluginInstance::control(uint32_t portIndex) const {
 
 float PluginInstance::readOutput(uint32_t portIndex) const {
     const Impl& impl = *impl_;
-    if (portIndex >= impl.live.size()) {
+    if (portIndex >= impl.staged.size()) {
         return 0.0f;
     }
-    return impl.live[portIndex];
+    // The plugin writes live ports during run(); UI readers use the published
+    // atomic snapshot instead of racing those writes.
+    return impl.staged[portIndex].load(std::memory_order_relaxed);
 }
 
 void PluginInstance::pushMidi(const uint8_t* data, uint32_t size, uint32_t frameOffset) {
+
     if (size == 0 || size > sizeof(MidiMessage::data)) {
         return;
     }
@@ -1099,6 +1130,7 @@ bool PluginInstance::setProperty(const std::string& propertyUri,
                                  const std::string& value,
                                  std::string& error) {
     Impl& impl = *impl_;
+
     if (impl.atomInputPort < 0) {
         error = "this plugin has no atom input, so it cannot take a file";
         return false;
@@ -1154,10 +1186,12 @@ void PluginInstance::releasePropertyChanges() {
 
 bool PluginInstance::propertyTransitionPending() const {
     const Impl& impl = *impl_;
+
     return impl.propertyChangesHeld.load(std::memory_order_acquire)
         || !impl.deferredControls.empty()
         || !impl.propertyQueue.empty()
-        || impl.pendingPropertyCount != 0
+        // begin() precedes staging and active stays set until staging drains.
+        // pendingPropertyCount itself belongs exclusively to the audio thread.
         || impl.propertyTransition.active();
 }
 
@@ -1175,13 +1209,13 @@ bool PluginInstance::applyDeferredStateChanges() {
             changed = true;
         }
     }
+
     const bool wasHeld = impl.propertyChangesHeld.exchange(false, std::memory_order_acq_rel);
     return changed || wasHeld;
 }
 
-void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
-                                    float* const* outputs, unsigned outputCount,
-                                    unsigned frames, const TransportBlock* transport) {
+void PluginInstance::Impl::connectAudioBuffers(const float* const* inputs, unsigned inputCount,
+                                              float* const* outputs, unsigned outputCount) {
     for (size_t i = 0; i < audioInputPorts.size(); ++i) {
         const float* source = i < inputCount ? inputs[i] : silentInputs[i].data();
         lilv_instance_connect_port(instance, audioInputPorts[i], const_cast<float*>(source));
@@ -1190,6 +1224,18 @@ void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCo
         float* destination = i < outputCount ? outputs[i] : spareOutputs[i].data();
         lilv_instance_connect_port(instance, audioOutputPorts[i], destination);
     }
+}
+
+void PluginInstance::connectAudioBuffers(const float* const* inputs, unsigned inputCount,
+                                        float* const* outputs, unsigned outputCount) {
+    Impl& impl = *impl_;
+    if (impl.instance) impl.connectAudioBuffers(inputs, inputCount, outputs, outputCount);
+}
+
+void PluginInstance::Impl::runCycle(const float* const* inputs, unsigned inputCount,
+                                    float* const* outputs, unsigned outputCount,
+                                    unsigned frames, const TransportBlock* transport) {
+    connectAudioBuffers(inputs, inputCount, outputs, outputCount);
 
     if (atomInputPort >= 0) {
         lv2_atom_forge_set_buffer(&forge, atomInput.data(), atomInput.size());
@@ -1311,10 +1357,17 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
         return;
     }
 
-    for (size_t i = 0; i < impl.live.size(); ++i) {
-        if (impl.isControlInput[i]) {
-            impl.live[i] = impl.staged[i].load(std::memory_order_relaxed);
+    const uint32_t revision = impl.controlBatchRevision.load(std::memory_order_seq_cst);
+    if ((revision & 1u) == 0) {
+        for (size_t i = 0; i < impl.live.size(); ++i) {
+            if (impl.isControlInput[i]) impl.controlScratch[i] = impl.staged[i].load(std::memory_order_seq_cst);
         }
+        if (revision == impl.controlBatchRevision.load(std::memory_order_seq_cst)) {
+            for (size_t i = 0; i < impl.live.size(); ++i) {
+                if (impl.isControlInput[i]) impl.live[i] = impl.controlScratch[i];
+            }
+        }
+        // No retry or waiting in the audio callback when an update overlaps.
     }
     for (const PortInfo& port : info_.ports) {
         if (port.control && port.input && port.trigger) {
@@ -1327,6 +1380,11 @@ void PluginInstance::process(const float* const* inputs, unsigned inputCount,
     }
 
     impl.runCycle(inputs, inputCount, outputs, outputCount, frames, transport);
+    for (const PortInfo& port : info_.ports) {
+        if (port.control && !port.input) {
+            impl.staged[port.index].store(impl.live[port.index], std::memory_order_relaxed);
+        }
+    }
 }
 
 Json PluginInstance::saveState() const {
@@ -1399,15 +1457,14 @@ void PluginInstance::loadState(const Json& state, bool deferControls) {
 
 #else // no lilv: the control plane still runs, and the UI explains why
 
-struct Lv2Catalog::Impl {};
+struct Lv2Catalog::Impl { std::vector<PluginInfo> metadata; };
 
-Lv2Catalog::Lv2Catalog() : impl_(std::make_unique<Impl>()) {}
+Lv2Catalog::Lv2Catalog() : impl_(std::make_shared<Impl>()) {}
 Lv2Catalog::~Lv2Catalog() = default;
 
 bool Lv2Catalog::available() const { return false; }
 
 bool Lv2Catalog::rescan(std::string& error) {
-    plugins_.clear();
     error = "this build has no LV2 support (lilv was not found at build time)";
     return false;
 }
@@ -1424,6 +1481,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog&, const std::s
 }
 
 void PluginInstance::setControl(uint32_t, float) {}
+void PluginInstance::setControls(const std::vector<std::pair<uint32_t, float>>&) {}
 bool PluginInstance::setControlDeferred(uint32_t, float) { return false; }
 float PluginInstance::control(uint32_t) const { return 0.0f; }
 float PluginInstance::readOutput(uint32_t) const { return 0.0f; }
@@ -1440,19 +1498,28 @@ void PluginInstance::beginDeferredStateChanges() {}
 bool PluginInstance::applyDeferredStateChanges() { return false; }
 void PluginInstance::process(const float* const*, unsigned, float* const*, unsigned, unsigned,
                              const TransportBlock*) {}
+void PluginInstance::connectAudioBuffers(const float* const*, unsigned, float* const*, unsigned) {}
 Json PluginInstance::saveState() const { return Json::object(); }
 void PluginInstance::loadState(const Json&, bool) {}
 
 #endif
 
 void Lv2Catalog::setUserBundleDirectory(std::string directory) {
+    std::lock_guard<std::mutex> lock(scanMutex_);
     userBundleDirectory_ = std::move(directory);
 }
 
-const PluginInfo* Lv2Catalog::find(const std::string& uri) const {
-    for (const PluginInfo& info : plugins_) {
+size_t Lv2Catalog::pluginCount() const { return sharedImpl()->metadata.size(); }
+
+std::vector<PluginInfo> Lv2Catalog::plugins() const { return sharedImpl()->metadata; }
+
+std::shared_ptr<const PluginInfo> Lv2Catalog::find(const std::string& uri,
+    std::shared_ptr<Impl>* world) const {
+    auto snapshot = sharedImpl();
+    if (world) *world = snapshot;
+    for (const PluginInfo& info : snapshot->metadata) {
         if (info.uri == uri) {
-            return &info;
+            return std::shared_ptr<const PluginInfo>(snapshot, &info);
         }
     }
     return nullptr;
@@ -1460,7 +1527,8 @@ const PluginInfo* Lv2Catalog::find(const std::string& uri) const {
 
 std::vector<std::string> Lv2Catalog::categories() const {
     std::vector<std::string> out;
-    for (const PluginInfo& info : plugins_) {
+    const auto snapshot = sharedImpl();
+    for (const PluginInfo& info : snapshot->metadata) {
         if (std::find(out.begin(), out.end(), info.className) == out.end()) {
             out.push_back(info.className);
         }

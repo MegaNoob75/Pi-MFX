@@ -103,7 +103,7 @@ export function PerformanceView({
     onEditSnapshot?: (snapshotId: string) => void;
 }) {
     const { client, state } = engine;
-    const bank = findBank(state);
+    const bank = findBank(state, str(state.browseBankId, str(state.activeBankId)));
     const preset = findPreset(state);
     const banks = objects(state.banks).filter((item) => !bool(item.communityHolding));
     const ui = obj(state.ui);
@@ -128,7 +128,7 @@ export function PerformanceView({
 
     const positions = obj(state.controlPositions);
     const chain = objects(state.chain);
-    const parameterBindings = objects(obj(preset).parameterBindings);
+    const parameterBindings = objects(state.editorBindings ?? obj(preset).parameterBindings);
     const [bankMenuOpen, setBankMenuOpen] = useState(false);
     const [presetMenuOpen, setPresetMenuOpen] = useState(false);
     const [menu, setMenu] = useState<TileMenu | null>(null);
@@ -173,7 +173,7 @@ export function PerformanceView({
         if (bool(obj(bank).communityHolding) && playableBankId) {
             void run(() => client.request("bank/select", { bankId: playableBankId }));
         }
-    }, [state.activeBankId, playableBankId, client, run]);
+    }, [state.browseBankId, state.activeBankId, playableBankId, client, run]);
     const presetModified = useMemo(
         () => isPresetModified(str(state.activePresetId), chainSignature),
         [state.activePresetId, chainSignature]
@@ -325,13 +325,12 @@ export function PerformanceView({
         if (!bankId) {
             return Promise.resolve();
         }
-        return client.request("controller/config", {
-            ...controller,
-            presetAssignments: {
-                ...obj(controller.presetAssignments),
-                [bankId]: nextMap
-            }
-        });
+        const previous = bankMap();
+        const changes: JsonObject = {};
+        for (const id of new Set([...Object.keys(previous), ...Object.keys(nextMap)])) {
+            if (previous[id] !== nextMap[id]) changes[id] = nextMap[id] ?? null;
+        }
+        return client.request("controller/assignments", { bankId, changes });
     };
 
     const fireControl = (id: string, fire: "tap" | "hold" | "double") => {
@@ -527,7 +526,8 @@ export function PerformanceView({
             delete next[sourceId];
         }
         next[targetId] = sourcePreset;
-        void run(() => saveAssignments(next)).then(() => {
+        void run(async () => {
+            await saveAssignments(next);
             showToast(targetPreset ? "Preset assignments swapped" : "Preset moved to empty switch");
         });
     };
@@ -535,7 +535,7 @@ export function PerformanceView({
     const clearAssignment = (controlId: string) => {
         const next = bankMap();
         delete next[controlId];
-        void run(() => saveAssignments(next)).then(() => showToast("Assignment cleared — preset kept"));
+        void run(async () => { await saveAssignments(next); showToast("Assignment cleared — preset kept"); });
     };
 
     const beginPresetDrag = (event: ReactPointerEvent<HTMLButtonElement>, controlId: string, slotIndex: number, name: string) => {
@@ -695,10 +695,12 @@ export function PerformanceView({
                         return;
                     }
                     const clearing = activeSnapshot === widget.slot;
-                    void run(() => client.request("snapshot/select", { snapshotId: str(snapshot.id) }))
-                        .then(() => showToast(clearing
+                    void run(async () => {
+                        await client.request("snapshot/select", { snapshotId: str(snapshot.id) });
+                        showToast(clearing
                             ? "SNAPSHOT INACTIVE"
-                            : `${str(snapshot.name, `SNAPSHOT ${widget.slot + 1}`)} ACTIVE`));
+                            : `${str(snapshot.name, `SNAPSHOT ${widget.slot + 1}`)} ACTIVE`);
+                    });
                 },
                 onLongPress: () => {
                     if (empty) {
@@ -741,11 +743,13 @@ export function PerformanceView({
                 const sessionEntry = encoderMode === "session" && presetSlotIndex != null && catalog.length > 0
                     ? catalog[wrapIndex(browseIndex + presetSlotIndex, catalog.length)]
                     : undefined;
-                const displayPresetId = sessionEntry?.presetId || presetId;
+                const requestedPresetId = sessionEntry?.presetId || presetId;
                 const displayBankId = sessionEntry?.bankId || str(obj(bank).id);
-                const presetItem = presets.find((entry) => str(entry.id) === displayPresetId)
+                const presetItem = presets.find((entry) => str(entry.id) === requestedPresetId)
                     || objects(obj(banks.find((item) => str(item.id) === displayBankId)).presets)
-                        .find((entry) => str(entry.id) === displayPresetId);
+                        .find((entry) => str(entry.id) === requestedPresetId);
+                // Old controller profiles can still contain deleted IDs.
+                const displayPresetId = presetItem ? requestedPresetId : "";
                 const minSize = analogMinSize(kind);
                 const empty = canAssign && !displayPresetId;
                 const presetBind = parameterBindings.find((item) => str(item.controlId) === controlId);
@@ -755,8 +759,8 @@ export function PerformanceView({
                 const toggleSlot = str(obj(presetBind).action) === "toggleEffect"
                     ? str(presetBind?.slotId)
                     : (action === "toggleEffect" ? str(binding.slotId) : "");
-                const active = (displayPresetId === str(state.activePresetId)
-                    && (!sessionEntry || displayBankId === str(state.activeBankId)))
+                const active = (!!displayPresetId && displayPresetId === str(state.activePresetId)
+                    && displayBankId === str(state.activeBankId))
                     || (action === "bypassAll" && bypassAll)
                     || (action === "snapshotMode" && snapshotMode)
                     || (action === "tapTempo" && bool(engine.transport.beatPulse))
@@ -905,7 +909,17 @@ export function PerformanceView({
                     onPresetPointerUp: canAssign && displayPresetId && encoderMode !== "session"
                         ? (event) => endPresetDrag(event)
                         : undefined,
-                    hardwarePopout: analog && hardwarePopoutId === controlId
+                    hardwarePopout: analog && hardwarePopoutId === controlId,
+                    onPopoutDismiss: () => {
+                        setHardwarePopoutId((current) => {
+                            if (current !== controlId) return current;
+                            if (physicalPopoutTimer.current !== null) {
+                                window.clearTimeout(physicalPopoutTimer.current);
+                                physicalPopoutTimer.current = null;
+                            }
+                            return "";
+                        });
+                    }
                 };
                 });
             })()
@@ -1079,8 +1093,10 @@ export function PerformanceView({
 
     const assignPreset = (presetId: string, controlId: string) => {
         closeMenu();
-        void run(() => saveAssignments({ ...bankMap(), [controlId]: presetId }))
-            .then(() => showToast("Preset assigned to switch"));
+        void run(async () => {
+            await saveAssignments({ ...bankMap(), [controlId]: presetId });
+            showToast("Preset assigned to switch");
+        });
     };
 
     const selectedPreset = menu?.kind === "preset"
@@ -1094,7 +1110,7 @@ export function PerformanceView({
             : "BASE PRESET";
 
     const widgetValues = {
-        bank: str(obj(bank).name, "—"),
+        bank: `${str(obj(bank).name, "—")}${str(obj(bank).id) !== str(state.activeBankId) ? " · BROWSING" : ""}`,
         preset: str(obj(preset).name, "—"),
         bypass: bypassAll ? "ON" : "OFF",
         snaps: snapshotStatus
@@ -1103,11 +1119,6 @@ export function PerformanceView({
     const selectBankId = (id: string) => {
         setBankMenuOpen(false);
         client.updateUiSession({ performancePicker: "" });
-        const item = banks.find((entry) => str(entry.id) === id);
-        if (!objects(obj(item).presets).length) {
-            showToast(`“${str(obj(item).name, "This bank")}” has no presets`);
-            return;
-        }
         void run(() => client.request("bank/select", { bankId: id }));
     };
 
@@ -1127,7 +1138,7 @@ export function PerformanceView({
     const bankPicker = (
         <NamePicker
             variant={useFreeform ? "freeform" : "grid-bank"}
-            label="CURRENT BANK"
+            label={str(obj(bank).id) !== str(state.activeBankId) ? "BROWSING BANK" : "CURRENT BANK"}
             preview={!bankMenuOpen && previewNav}
             value={`${!bankMenuOpen && previewNav && pending
                 ? pending.bankName
@@ -1207,8 +1218,12 @@ export function PerformanceView({
         if ((encoderDrivingRef.current && encoderMode === "live") || catalog.length === 0) {
             return;
         }
-        setBrowseIndex(catalogIndexOf(catalog, str(state.activeBankId), str(state.activePresetId)));
-    }, [state.activeBankId, state.activePresetId, catalogSig, encoderMode]);
+        const bankId = str(state.browseBankId, str(state.activeBankId));
+        const firstInBank = catalog.findIndex((entry) => entry.bankId === bankId);
+        setBrowseIndex(bankId === str(state.activeBankId)
+            ? catalogIndexOf(catalog, bankId, str(state.activePresetId))
+            : Math.max(0, firstInBank));
+    }, [state.browseBankId, state.activeBankId, state.activePresetId, catalogSig, encoderMode]);
 
     useEffect(() => {
         const markDriving = () => {
@@ -1328,7 +1343,7 @@ export function PerformanceView({
                     return (
                         <div
                             key={id}
-                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}`}
+                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}
                             style={{
                                 ...rectStyle(widget.rect, isMeterWidget(id) && widget.orientation === "vertical"),
                                 zIndex: pickerOpen ? 50 : undefined
@@ -1355,10 +1370,10 @@ export function PerformanceView({
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
                                         <>
-                                            {widget.showLabel && (
+                                            {widget.showLabel && id !== "cpuUsage" && (
                                                 <div className="field-label mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
                                             )}
-                                            <strong className="marquee mfx-performance-ui-value">
+                                            <strong className={`marquee mfx-performance-ui-value${id === "cpuUsage" ? " cpu-load-readings" : ""}`}>
                                                 <LiveMeterText
                                                     client={client}
                                                     id={id}
@@ -1546,10 +1561,10 @@ export function PerformanceView({
                                 void askText("Snapshot name", str(obj(current).name, `Snap ${menu.index + 1}`)).then((name) => {
                                     if (name?.trim()) {
                                         closeMenu();
-                                        void run(() => client.request("snapshot/rename", {
+                                        void run(async () => { await client.request("snapshot/rename", {
                                             snapshotId: menu.snapshotId,
                                             name: name.trim()
-                                        })).then(() => showToast("SNAPSHOT RENAMED"));
+                                        }); showToast("SNAPSHOT RENAMED"); });
                                     }
                                 });
                             }}
@@ -1598,14 +1613,17 @@ export function PerformanceView({
                 confirmLabel="DELETE" danger onCancel={() => setPendingSnapshotDelete(null)} onConfirm={() => {
                     const pending = pendingSnapshotDelete;
                     setPendingSnapshotDelete(null);
-                    void run(() => client.request("snapshot/delete", { snapshotId: pending.id }))
-                        .then(() => showToast(`SNAPSHOT ${pending.index + 1} DELETED`));
+                    void run(async () => {
+                        await client.request("snapshot/delete", { snapshotId: pending.id });
+                        showToast(`SNAPSHOT ${pending.index + 1} DELETED`);
+                    });
                 }} />}
             {confirmOverwrite && <ConfirmDialog title="OVERWRITE SAVED PRESET?"
                 body={`Replace “${str(obj(preset).name, "this preset")}” with the current effect settings?`}
                 confirmLabel="OVERWRITE" danger onCancel={() => setConfirmOverwrite(false)} onConfirm={() => {
                     setConfirmOverwrite(false);
-                    void run(() => client.request("preset/save")).then(() => {
+                    void run(async () => {
+                        await client.request("preset/save");
                         rememberPresetBaseline(str(state.activePresetId), signatureForChain(chain), true);
                     });
                 }} />}
@@ -1832,7 +1850,9 @@ function LiveMeterText({
     const meters = useMeters(client);
     const tuner = obj(meters.tuner);
     return widgetText(id, {
-        dsp: `${(num(meters.dspLoad) * 100).toFixed(0)}%`,
+        load: `AUDIO ${(num(meters.dspLoad) * 100).toFixed(0)}%\nCPU ${bool(meters.engineCpuLoadAvailable)
+            ? `${(num(meters.engineCpuLoad) * 100).toFixed(0)}%`
+            : "—"}`,
         xruns: `${num(meters.xruns)}`,
         audio: bool(meters.running, audioRunning) ? "RUN" : "STOP",
         tuner: bool(tuner.valid)
@@ -1871,7 +1891,7 @@ function widgetText(id: string, values: Record<string, string>): string {
     switch (id) {
         case "currentBank": return values.bank;
         case "activePreset": return values.preset;
-        case "cpuUsage": return values.dsp;
+        case "cpuUsage": return values.load;
         case "xruns": return values.xruns;
         case "audioStatus": return values.audio;
         case "chainBypassStatus": return values.bypass;

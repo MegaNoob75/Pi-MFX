@@ -718,6 +718,10 @@ bool PluginStore::helperPing() {
     return error.empty() && reply["ok"].asBool(false);
 }
 
+Json PluginStore::backupCommand(const std::string& action, const Json& payload, std::string& error) {
+    return helperCall("backup-" + action, payload, error, 30);
+}
+
 Json PluginStore::aptSearch(const std::string& query, std::string& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     Json args = Json::object();
@@ -1677,6 +1681,14 @@ Json PluginStore::updateInstall(const Json& payload, std::string& error) {
     args.set("branch", payload["branch"].asString());
     args.set("installedCommit", payload["installedCommit"].asString());
     return helperCall("update-install", args, error, 15);
+}
+
+Json PluginStore::controllerFirmware(bool install, const Json& payload, std::string& error) {
+    Json args = Json::object();
+    args.set("branch", payload["branch"].asString("dev"));
+    args.set("refresh", payload["refresh"].asBool(false));
+    return helperCall(install ? "controller-firmware-install" : "controller-firmware-status",
+                      args, error, 15);
 }
 
 Json PluginStore::systemPower(const std::string& action, std::string& error) {

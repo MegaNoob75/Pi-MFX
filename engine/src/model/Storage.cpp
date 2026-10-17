@@ -36,7 +36,7 @@ Settings Storage::loadSettings() {
 }
 
 bool Storage::saveSettings(const Settings& settings) {
-    return writeFileAtomic(paths_.settingsFile(), settings.toJson().dump(2));
+    return writeFileAtomic(paths_.settingsFile(), settings.toJson().dump(2), true);
 }
 
 std::string Storage::bankFileStem(const std::string& bankId) const {
@@ -61,6 +61,7 @@ std::string Storage::bankFile(const std::string& bankId) const {
 std::vector<Bank> Storage::loadBanks() {
     std::vector<Bank> banks;
     brokenBankFiles_.clear();
+    recoverBankTransaction();
 
     for (const std::string& file : listDirectory(paths_.banksDir(), ".json")) {
         std::string contents;
@@ -81,7 +82,22 @@ std::vector<Bank> Storage::loadBanks() {
         banks.push_back(Bank::fromJson(json));
     }
 
-    if (banks.empty()) {
+    // A committed transaction remains authoritative even if the disk is still
+    // too full to finish copying its banks to their individual files.
+    std::string pending;
+    if (readFile(joinPath(paths_.dataRoot, "banks-transaction.json"), pending)) {
+        const Json transaction = Json::parse(pending);
+        for (const Json& item : transaction["banks"].items()) {
+            Bank bank = Bank::fromJson(item);
+            auto existing = std::find_if(banks.begin(), banks.end(), [&](const Bank& b) { return b.id == bank.id; });
+            if (existing == banks.end()) banks.push_back(std::move(bank));
+            else *existing = std::move(bank);
+        }
+    }
+
+    // Only seed a fresh installation. An existing settings file also marks a
+    // library whose last bank was deliberately deleted.
+    if (banks.empty() && !fileExists(paths_.settingsFile())) {
         Bank starter = makeStarterBank();
         saveBank(starter);
         banks.push_back(std::move(starter));
@@ -100,7 +116,7 @@ std::vector<Bank> Storage::loadBanks() {
     return banks;
 }
 
-bool Storage::saveBank(const Bank& bank) {
+bool Storage::saveBankFile(const Bank& bank, bool durable) {
     if (bank.id.empty()) {
         return false;
     }
@@ -118,11 +134,46 @@ bool Storage::saveBank(const Bank& bank) {
             }
         }
     }
-    return writeFileAtomic(path, bank.toJson().dump(2));
+    return writeFileAtomic(path, bank.toJson().dump(2), durable);
+}
+
+bool Storage::recoverBankTransaction() {
+    const std::string journal = joinPath(paths_.dataRoot, "banks-transaction.json");
+    if (!fileExists(journal)) return true;
+    std::string text, error;
+    if (!readFile(journal, text)) return false;
+    const Json transaction = Json::parse(text, &error);
+    if (!error.empty() || transaction["version"].asInt() != 1 || !transaction["banks"].isArray()) {
+        logError("banks: cannot read pending bank transaction; retaining it for recovery");
+        return false;
+    }
+    for (const Json& item : transaction["banks"].items()) {
+        if (!saveBankFile(Bank::fromJson(item), true)) return false;
+    }
+    return removeFile(journal, true);
+}
+
+bool Storage::saveBank(const Bank& bank) {
+    return recoverBankTransaction() && saveBankFile(bank, true);
+}
+
+bool Storage::saveBanks(const std::vector<Bank>& banks) {
+    if (!recoverBankTransaction()) return false;
+    Json records = Json::array();
+    for (const Bank& bank : banks) {
+        if (bank.id.empty()) return false;
+        records.push(bank.toJson());
+    }
+    // Persist every destination together before removing anything from a source.
+    // Startup rolls this forward if power is lost between individual bank writes.
+    if (!writeFileAtomic(joinPath(paths_.dataRoot, "banks-transaction.json"),
+        Json::object({{"version", 1}, {"banks", records}}).dump(2), true)) return false;
+    if (!recoverBankTransaction()) logWarn("banks: committed update retained in recovery journal");
+    return true;
 }
 
 bool Storage::deleteBank(const std::string& bankId) {
-    return removeFile(bankFile(bankId));
+    return recoverBankTransaction() && removeFile(bankFile(bankId));
 }
 
 std::vector<Storage::LibraryEntry> Storage::listLibrary(
@@ -217,7 +268,8 @@ std::string Storage::resolveLibraryFile(const std::string& path) const {
     return resolveLibraryFile(path, error);
 }
 
-std::string Storage::resolveLibraryFile(const std::string& path, std::string& error) const {
+std::string Storage::resolveLibraryFile(const std::string& path, std::string& error,
+    const std::vector<LibraryEntry>* index) const {
     error.clear();
     if (path.empty()) {
         return std::string();
@@ -267,9 +319,8 @@ std::string Storage::resolveLibraryFile(const std::string& path, std::string& er
             }
         }
     };
-    collect(listModels());
-    collect(listAidax());
-    collect(listImpulseResponses());
+    if (index) collect(*index);
+    else collect(libraryFileIndex());
 
     auto uniqueHit = [&](const std::vector<std::string>& hits, const std::string& label) -> std::string {
         if (hits.size() == 1) {
@@ -291,6 +342,44 @@ std::string Storage::resolveLibraryFile(const std::string& path, std::string& er
         error = "can't find that file in the library (" + fileName(path) + ")";
     }
     return hit;
+}
+
+std::vector<Storage::LibraryEntry> Storage::libraryFileIndex() const {
+    auto result = listModels();
+    for (const auto& entries : {listAidax(), listImpulseResponses()})
+        result.insert(result.end(), entries.begin(), entries.end());
+    return result;
+}
+
+bool Storage::referencesLibraryPath(const Json& value, const std::string& target,
+    const std::vector<LibraryEntry>& index) const {
+    const auto matches = [&](const Json& path) {
+        if (!path.isString() || path.asString().empty()) return false;
+        std::string error;
+        const std::string resolved = resolveLibraryFile(path.asString(), error, &index);
+        if (resolved.empty()) return false;
+        std::string base, candidate;
+        if (!resolveLibraryPath(target, base) || !resolveLibraryPath(resolved, candidate)) return false;
+        const fs::path targetPath(base), candidatePath(candidate);
+        auto c = candidatePath.begin();
+        for (auto t = targetPath.begin(); t != targetPath.end(); ++t, ++c)
+            if (c == candidatePath.end() || *t != *c) return false;
+        return true;
+    };
+    if (value.isArray()) {
+        for (const Json& item : value.items()) if (referencesLibraryPath(item, target, index)) return true;
+    } else if (value.isObject()) {
+        for (const auto& member : value.members()) {
+            if (member.first == "properties" && member.second.isObject()) {
+                for (const auto& property : member.second.members()) if (matches(property.second)) return true;
+            } else if (member.first == "expectedFilename") {
+                const std::string kind = value["kind"].asString("model");
+                const std::string root = kind == "ir" ? paths_.irsDir : paths_.modelsDir;
+                if (matches(Json(joinPath(joinPath(root, "Community"), member.second.asString())))) return true;
+            } else if (referencesLibraryPath(member.second, target, index)) return true;
+        }
+    }
+    return false;
 }
 
 Bank makeStarterBank() {

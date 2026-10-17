@@ -1,12 +1,15 @@
+#include "model/Routing.h"
 #include "Engine.h"
 #include "community/CommunityPresetPackage.h"
 
 #include "core/Log.h"
 
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -17,9 +20,9 @@ namespace {
 constexpr size_t kTunerRingSize = 16384;
 constexpr float kTunerMinFrequency = 20.0f;   // covers low-F# extended-range bass
 constexpr float kTunerMaxFrequency = 1400.0f; // above the 24th fret of a high E
-constexpr int kRequiredControllerFirmwareMajor = 1;
-constexpr int kRequiredControllerFirmwareMinor = 1;
-constexpr const char* kRequiredControllerFirmwareVersion = "1.1";
+constexpr const char* kRequiredControllerFirmwareVersion = "1.0";
+static_assert(std::atomic<float>::is_always_lock_free,
+              "tuner handoff requires lock-free float atomics");
 
 float dbToGain(float db) {
     return std::pow(10.0f, db / 20.0f);
@@ -40,6 +43,8 @@ float audioBufferPeak(const std::vector<float*>& buffers, unsigned channels,
 
 const char* audioFailureDescription(AudioFailureCategory category) {
     switch (category) {
+        case AudioFailureCategory::PrimePlayback:
+            return "cannot prime playback";
         case AudioFailureCategory::StartCapture:
             return "cannot start capture";
         case AudioFailureCategory::PreparePlaybackAfterXrun:
@@ -48,6 +53,8 @@ const char* audioFailureDescription(AudioFailureCategory category) {
             return "cannot prepare capture after xrun";
         case AudioFailureCategory::RelinkAfterXrun:
             return "cannot re-link capture and playback after xrun";
+        case AudioFailureCategory::PrimePlaybackAfterXrun:
+            return "cannot prime playback after xrun";
         case AudioFailureCategory::RestartCaptureAfterXrun:
             return "cannot restart capture after xrun";
         case AudioFailureCategory::None:
@@ -503,17 +510,16 @@ bool latchOn(const ActionRequest& request) {
 
 Engine::Engine(Paths paths)
     : storage_(std::move(paths)),
-      tunerRing_(kTunerRingSize, 0.0f),
+      tunerRing_(kTunerRingSize),
       backing_(std::make_unique<BackingTrackPlayer>(storage_.paths().backingTracksDir)),
       looper_(std::make_unique<StereoLooper>(storage_.paths().loopsDir)) {
-#ifdef PIMFX_ENABLE_MULTITRACK_RECORDER
+    for (auto& sample : tunerRing_) sample.store(0.0f, std::memory_order_relaxed);
     recorder_ = std::make_unique<MultitrackRecorder>(storage_.paths().recordingsDir);
     recorderEnabled_.store(true, std::memory_order_relaxed);
-#endif
-#ifdef PIMFX_ENABLE_DRUM_MACHINE
+
     drums_ = std::make_unique<DrumMachine>(storage_.paths().drumsDir);
     drumsEnabled_.store(true, std::memory_order_relaxed);
-#endif
+
 }
 
 Engine::~Engine() {
@@ -525,7 +531,8 @@ void Engine::setStateListener(StateListener listener) {
     listener_ = std::move(listener);
 }
 
-bool Engine::start(std::string& error) {
+bool Engine::start(std::string& error, bool recoverStartup) {
+    Json recoverySession = Json::object();
     settings_ = storage_.loadSettings();
     tunerThreshold_.store(std::max(0.0005f, std::min(0.05f,
         settings_.ui.tuner["threshold"].asFloat(0.0025f))), std::memory_order_relaxed);
@@ -537,7 +544,7 @@ bool Engine::start(std::string& error) {
         || tunerInstrument == "bass5" || tunerInstrument == "bass6" || tunerInstrument == "bass7",
         std::memory_order_relaxed);
     configureAudioSafety(settings_.audio);
-    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    backingEnabled_.store(backing_->available(), std::memory_order_release);
     if (backingEnabled_.load(std::memory_order_acquire)) backing_->start();
     looper_->configure(settings_.looper.quantization, settings_.looper.countIn,
                        settings_.looper.level, settings_.looper.feedback);
@@ -546,20 +553,66 @@ bool Engine::start(std::string& error) {
     banks_ = storage_.loadBanks();
     brokenBankFiles_ = storage_.brokenBankFiles();
 
+    // Recovery drafts are a one-shot restore artifact. Keep stored base presets
+    // separate so Reload still discards unsaved changes after disaster recovery.
+    const std::string recoveryFile = joinPath(storage_.paths().dataRoot, "backup-session.json");
+    std::string recoveryText, recoveryError;
+    if (!recoverStartup && readFile(recoveryFile, recoveryText)) {
+        const Json recovery = Json::parse(recoveryText, &recoveryError);
+        if (recoveryError.empty() && recovery["version"].asInt() == 1) {
+            recoverySession = recovery;
+            for (const Json& value : recovery["drafts"].items()) {
+                Preset draft = Preset::fromJson(value);
+                if (findPresetAnywhere(draft.id)) sessionPresetDrafts_[draft.id] = std::move(draft);
+            }
+        } else logWarn("backup: recovery draft file could not be read; retained for inspection");
+    }
+
+    if (recoverStartup) {
+        // Do not trust any existing preset, even one named "Clean". Create a
+        // new plugin-free, disconnected preset without modifying the suspect
+        // bank. Its normal editor/selector remains available for deliberate tests.
+        Bank recovery;
+        recovery.id = newId("bank");
+        recovery.name = "Recovery";
+        Preset silent;
+        silent.id = newId("preset");
+        silent.name = "Safe startup";
+        silent.routing.set("edges", Json::array());
+        recovery.presets.push_back(std::move(silent));
+        if (!storage_.saveBank(recovery)) {
+            error = "Cannot save silent startup recovery preset";
+            return false;
+        }
+        logWarn("startup: previous engine shutdown was incomplete; skipping saved preset "
+                + settings_.activePresetId + " and selecting Recovery / Safe startup");
+        settings_.activeBankId = recovery.id;
+        settings_.activePresetId = recovery.presets.front().id;
+        if (!storage_.saveSettings(settings_)) {
+            error = "Cannot save startup recovery selection";
+            return false;
+        }
+        banks_.push_back(std::move(recovery));
+    }
+
     activeBankId_ = settings_.activeBankId;
     activePresetId_ = settings_.activePresetId;
-    if (!activeBank() && !banks_.empty()) {
-        activeBankId_ = banks_.front().id;
+    if (!activeBank()) {
+        activeBankId_ = banks_.empty() ? "" : banks_.front().id;
         activePresetId_.clear();
     }
     if (!activePreset()) {
         const Bank* bank = activeBank();
-        if (bank && !bank->presets.empty()) {
-            activePresetId_ = bank->presets.front().id;
-        }
+        activePresetId_ = bank && !bank->presets.empty() ? bank->presets.front().id : "";
+    }
+    if (recoverySession["livePreset"]["id"].asString() == activePresetId_
+        && recoverySession["livePreset"]["routingFormat"].asInt() == 1 && activePreset()) {
+        recoveryLivePreset_ = Preset::fromJson(recoverySession["livePreset"]);
+        activePreset()->activeSnapshot = recoverySession["activeSnapshot"].asInt(-1);
+        bypassAll_.store(recoverySession["bypassAll"].asBool(), std::memory_order_relaxed);
     }
 
-    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
+    transportEnabled_.store(true, std::memory_order_release);
     transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
     transport_.setCountInBars(settings_.transport.countInBars);
     transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
@@ -588,6 +641,7 @@ bool Engine::start(std::string& error) {
     }
 
     backend_ = createAudioBackend();
+    startChainPreparationThread();
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
     const Preset* gainPreset = activePreset();
@@ -605,6 +659,12 @@ bool Engine::start(std::string& error) {
         logWarn("audio: " + audioError);
     }
 
+    if (looper_ && !recoverySession["loopFile"].asString().empty()) {
+        std::string loopError;
+        if (!looper_->load(fileName(recoverySession["loopFile"].asString()), loopError))
+            logWarn("backup: current loop remains in the loop library: " + loopError);
+    }
+
     controller_.setConfig(settings_.controller);
     applyControllerFeel();
     midi_.setMessageHandler([this](const MidiMessage& message) { handleMidiMessage(message); });
@@ -618,6 +678,7 @@ bool Engine::start(std::string& error) {
             settings_.controller.midiPort = midi_.activePort();
             persistSettings();
         }
+        if (midi_.isRunning()) midi_.send(ControllerRuntime::encodeIdentityRequest());
     }
 
     armAnalogCatchUnlocked();
@@ -632,12 +693,10 @@ bool Engine::start(std::string& error) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
-    logInfo("shutdown: stopping backing tracks");
-    if (backing_) backing_->stop();
-    logInfo("shutdown: stopping looper");
-    if (looper_) looper_->stop();
-    logInfo("shutdown: stopping recorder");
-    if (recorder_) recorder_->stop();
+    logInfo("shutdown: stopping MIDI");
+    midi_.stop();
+    logInfo("shutdown: stopping chain preparation");
+    stopChainPreparationThread();
     logInfo("shutdown: joining control workers");
     if (tunerThread_.joinable()) {
         tunerThread_.join();
@@ -645,18 +704,24 @@ void Engine::stop() {
     if (housekeepingThread_.joinable()) {
         housekeepingThread_.join();
     }
+    // Finish the callback's last capture before draining/finalizing writers.
+    logInfo("shutdown: stopping audio and draining media workers");
+    if (backend_) backend_->stop();
+    if (backing_) backing_->stop();
+    if (looper_) looper_->stop();
+    if (recorder_) recorder_->stop();
 
     logInfo("shutdown: saving active preset");
     {
         std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         persistActiveBankUnlocked();
-    }
-
-    logInfo("shutdown: stopping MIDI");
-    midi_.stop();
-    logInfo("shutdown: stopping audio");
-    if (backend_) {
-        backend_->stop();
+        flushPendingPersistence(true);
+        if (backupPreparing()) {
+            if (activeSessionDraft()) captureActiveSessionDraft();
+            const Json session = captureBackupSession();
+            if (!writeFileAtomic(joinPath(storage_.paths().dataRoot, "backup-session.pending.json"), session.dump(), true))
+                logWarn("backup: final session capture failed; recovery will use the prepared capture");
+        }
     }
 
     Chain* chain = activeChain_.exchange(nullptr);
@@ -678,17 +743,37 @@ void Engine::stop() {
 // ---------------------------------------------------------------------------
 
 bool Engine::restartAudio(std::string& error) {
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     if (!backend_) {
         error = "no audio backend";
         return false;
     }
 
+    if (!canRestartAudio(settings_.audio.sampleRate, error)) return false;
+    // Reopen the device using the audible working state. Explicit Reload is
+    // the only preset operation here that intentionally discards its draft.
+    std::optional<Preset> livePreset;
+    if (recoveryLivePreset_ && recoveryLivePreset_->id == activePresetId_) {
+        livePreset = *recoveryLivePreset_;
+    } else if (const Preset* preset = effectiveActivePreset()) {
+        livePreset = *preset;
+        livePreset->activeSnapshot = -1;
+        captureChainIntoPreset(*livePreset);
+    }
     backend_->stop();
+    if (looper_) looper_->stop();
+    if (recorder_) recorder_->stop();
 
     // A chain's scratch buffers are sized for the old period. With audio
     // stopped it is safe to dispose of every published/retired chain before
     // opening a stream that may negotiate a different block size.
     {
+        // The preparation worker takes this mutex before its final publish.
+        // Holding it across the chain clear prevents an old-rate chain from
+        // appearing after the restart has disposed of the old generation.
+        std::lock_guard<std::mutex> preparationLock(chainPreparationMutex_);
+        cancelChainPreparationsLocked();
         std::lock_guard<std::mutex> lock(chainMutex_);
         delete activeChain_.exchange(nullptr, std::memory_order_acq_rel);
         delete pendingChain_.clear();
@@ -705,7 +790,10 @@ bool Engine::restartAudio(std::string& error) {
 
     backend_->configureRealtime(settings_.system.audioThreadPriority);
 
-    if (!backend_->start(settings_.audio, this, &metrics_, error)) {
+    const bool started = backend_->start(settings_.audio, this, &metrics_, error);
+    if (looper_) looper_->start();
+    if (recorder_) recorder_->start();
+    if (!started) {
         return false;
     }
 
@@ -734,24 +822,42 @@ bool Engine::restartAudio(std::string& error) {
     }
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
-    if (const Preset* preset = activePreset()) {
+    if (livePreset) {
         std::string chainError;
-        if (std::unique_ptr<Chain> chain = buildChain(*preset, chainError)) {
+        if (std::unique_ptr<Chain> chain = buildChain(*livePreset, chainError)) {
             publishChain(std::move(chain));
+            recoveryLivePreset_.reset();
+            removeFile(joinPath(storage_.paths().dataRoot, "backup-session.json"), true);
         } else if (!chainError.empty()) {
             logWarn("chain: " + chainError);
         }
+    } else {
+        publishEmptyChain();
+        recoveryLivePreset_.reset();
+        removeFile(joinPath(storage_.paths().dataRoot, "backup-session.json"), true);
     }
 
     audioError_.clear();
     return true;
 }
 
+bool Engine::canRestartAudio(unsigned rate, std::string& error) const {
+    if (looper_ && looper_->fileOperationPending()) {
+        error = "finish the loop file operation before changing audio settings";
+        return false;
+    }
+    return !recorder_ || recorder_->canReconfigure(rate, error);
+}
+
 bool Engine::applyAudioSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
 
     const AudioSettings previous = settings_.audio;
-    settings_.audio = audioSettingsFromJson(json, settings_.audio);
+    const auto requested = audioSettingsFromJson(json, settings_.audio);
+    if (requested != previous && !canRestartAudio(requested.sampleRate, error)) return false;
+    settings_.audio = requested;
     configureAudioSafety(settings_.audio);
 
     inputGain_.store(dbToGain(settings_.audio.inputGainDb), std::memory_order_relaxed);
@@ -792,7 +898,7 @@ bool Engine::applyAudioSettings(const Json& json, std::string& error) {
         }
     }
 
-    persistSettings();
+    if (!persistSettings()) { error = "audio settings are live but could not be saved"; return false; }
     notify();
     return true;
 }
@@ -813,11 +919,13 @@ void Engine::previewAudioSettings(const Json& json) {
 
 bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    const bool wasTransportEnabled = transportEnabled_.load(std::memory_order_acquire);
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
+    if (!canRestartAudio(settings_.audio.sampleRate, error)) return false;
     const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
     settings_.system = SystemSettings::fromJson(json);
-    transportEnabled_.store(settings_.system.sharedTransportEnabled, std::memory_order_release);
-    backingEnabled_.store(settings_.system.backingTracksEnabled && backing_->available(), std::memory_order_release);
+    transportEnabled_.store(true, std::memory_order_release);
+    backingEnabled_.store(backing_->available(), std::memory_order_release);
     if (recorder_) recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
         backingEnabled_.load(std::memory_order_acquire));
     if (backingEnabled_.load(std::memory_order_acquire) && !wasBackingEnabled) {
@@ -826,16 +934,6 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
         backing_->stopPlayback();
         backing_->stop();
     }
-    if (!settings_.system.sharedTransportEnabled) {
-        transport_.stop();
-    } else if (!wasTransportEnabled) {
-        transport_.setTimeSignature(settings_.transport.beatsPerBar, settings_.transport.beatUnit);
-        transport_.setCountInBars(settings_.transport.countInBars);
-        transport_.setMetronomeEnabled(settings_.transport.metronomeEnabled);
-        transport_.setQuantizationEnabled(settings_.transport.quantizationEnabled);
-        if (const Preset* preset = activePreset()) transport_.setBpm(preset->tempo);
-    }
-
     if (settings_.system.holdCpuLatency && !latencyGuard_) {
         latencyGuard_ = std::make_unique<rt::CpuLatencyGuard>();
     } else if (!settings_.system.holdCpuLatency) {
@@ -848,7 +946,7 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     if (!restartAudio(restartError)) {
         error = restartError;
     }
-    persistSettings();
+    if (!persistSettings()) error = "system settings are live but could not be saved";
     notify();
     return error.empty();
 }
@@ -873,7 +971,7 @@ bool Engine::applyTransportSettings(const Json& json, std::string& error) {
             applyTempoLinksUnlocked(*draft);
         }
     }
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     notifyPerformance();
     return true;
 }
@@ -907,7 +1005,29 @@ bool Engine::transportRestart(std::string& error) {
 
 void Engine::resetMeters() {
     metrics_.xruns.store(0, std::memory_order_relaxed);
+    metrics_.captureXruns.store(0, std::memory_order_relaxed);
+    metrics_.playbackXruns.store(0, std::memory_order_relaxed);
+    metrics_.shortCaptureTransfers.store(0, std::memory_order_relaxed);
+    metrics_.shortPlaybackTransfers.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunDirection.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunError.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunPeriod.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunTransitionPhase.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunWorkerTransitions.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunChainPreparationActive.store(false, std::memory_order_relaxed);
+    metrics_.lastXrunChainGeneration.store(0, std::memory_order_relaxed);
+    metrics_.lastXrunDspLoad.store(0.0f, std::memory_order_relaxed);
     metrics_.dspLoadPeak.store(0.0f, std::memory_order_relaxed);
+}
+
+std::vector<EffectSlot>* containingLane(std::vector<EffectSlot>& chain, const std::string& slotId) {
+    for (const auto& item : chain) if (item.id == slotId) return &chain;
+    return nullptr;
+}
+void collectSlotIds(const EffectSlot& item, std::vector<std::string>& ids) { ids.push_back(item.id); }
+template <typename Function>
+void forEachPluginSlot(std::vector<EffectSlot>& chain, Function&& function) {
+    for (auto& item : chain) if (item.kind == "effect") function(item);
 }
 
 void Engine::prepareToPlay(unsigned sampleRate, unsigned maxFrames) {
@@ -974,6 +1094,8 @@ void Engine::applyPresetTransition(float* const* outputs, unsigned outputChannel
         && !transitionRequested_.load(std::memory_order_acquire)
         && !activeChainTransitionPending();
     outputSafety_.processTransition(outputs, outputChannels, frames, allowFadeIn);
+    metrics_.transitionPhase.store(
+        static_cast<uint32_t>(outputSafety_.transitionState()), std::memory_order_relaxed);
 }
 
 void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
@@ -981,12 +1103,24 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
                           unsigned frames) {
     audioGeneration_.fetch_add(1, std::memory_order_release);
     beginAudioTransitionBlock();
+    metrics_.transitionPhase.store(
+        static_cast<uint32_t>(outputSafety_.transitionState()), std::memory_order_relaxed);
 
     const bool transportEnabled = transportEnabled_.load(std::memory_order_acquire);
     const TransportBlock transportBlock = transportEnabled
         ? transport_.beginAudioBlock(frames) : TransportBlock{};
 
     Chain* chain = activeChain_.load(std::memory_order_acquire);
+    uint32_t workerTransitions = 0;
+    if (chain) {
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            if (slot->enabled.load(std::memory_order_relaxed) && slot->plugin
+                && slot->plugin->propertyTransitionPending()) {
+                ++workerTransitions;
+            }
+        }
+    }
+    metrics_.activeWorkerTransitions.store(workerTransitions, std::memory_order_relaxed);
 
     const unsigned channels = chain ? chain->channels : std::min(outputChannels, 2u);
     const float inputGain = inputGain_.load(std::memory_order_relaxed);
@@ -1035,7 +1169,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             // Analyse the same gain-adjusted guitar signal used by the dry
             // tuner passthrough. Otherwise a quiet interface input remains
             // close to the detector noise floor even after Input Gain is set.
-            tunerRing_[write] = source[frame] * inputGain;
+            tunerRing_[write].store(source[frame] * inputGain, std::memory_order_relaxed);
             write = (write + 1) % kTunerRingSize;
         }
         tunerWrite_.store(write, std::memory_order_release);
@@ -1044,11 +1178,7 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
     if (!chain || chain->bufferA.empty()) {
         feedTuner();
         for (unsigned channel = 0; channel < outputChannels; ++channel) {
-            if (inputChannels > 0) {
-                copyGuitar(outputs[channel]);
-            } else {
-                std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
-            }
+            std::fill(outputs[channel], outputs[channel] + frames, 0.0f);
         }
         if (recorderCapturing) {
             recorder_->captureSource(MultitrackRecorder::Source::Processed,
@@ -1108,44 +1238,85 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 
     std::vector<float*>* rendered = &chain->pointersA;
 
-    if (!bypassAll_.load(std::memory_order_relaxed)) {
+    if (chain->presetId.empty() || !bypassAll_.load(std::memory_order_relaxed)) {
         std::vector<float*>* source = &chain->pointersA;
-        std::vector<float*>* destination = &chain->pointersB;
-        float sourcePeak = audioBufferPeak(*source, channels, frames);
 
-        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-            slot->inputPeak.store(sourcePeak, std::memory_order_relaxed);
-
-            if (!slot->enabled.load(std::memory_order_relaxed) || !slot->plugin) {
-                slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
-                continue;
+        const auto runSlot = [&](ChainSlot& slot, std::vector<float*>*& slotSource,
+                                 std::vector<float*>*& slotDestination, float& peak) {
+            slot.inputPeak.store(peak, std::memory_order_relaxed);
+            if (!slot.enabled.load(std::memory_order_relaxed) || !slot.plugin) {
+                slot.outputPeak.store(peak, std::memory_order_relaxed);
+                return;
             }
-
-            const unsigned pluginInputs = slot->plugin->audioInputs();
-            const unsigned pluginOutputs = slot->plugin->audioOutputs();
+            const unsigned pluginInputs = slot.plugin->audioInputs();
+            const unsigned pluginOutputs = slot.plugin->audioOutputs();
             if (pluginInputs == 0 && pluginOutputs == 0) {
-                slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
-                continue; // a plugin with no audio ports has nothing to do here
+                slot.outputPeak.store(peak, std::memory_order_relaxed);
+                return;
             }
-
-            slot->plugin->process(reinterpret_cast<const float* const*>(source->data()),
-                                  std::min(pluginInputs, channels),
-                                  destination->data(),
-                                  std::min(pluginOutputs, channels),
-                                  frames, transportEnabled ? &transportBlock : nullptr);
-
-            // A mono plugin in a stereo chain feeds both sides rather than
-            // silencing the right channel.
+            if (pluginInputs == 1 && channels > 1)
+                for (unsigned f = 0; f < frames; ++f)
+                    (*slotSource)[0][f] = 0.5f * ((*slotSource)[0][f] + (*slotSource)[1][f]);
+            slot.plugin->process(reinterpret_cast<const float* const*>(slotSource->data()),
+                                 std::min(pluginInputs, channels), slotDestination->data(),
+                                 std::min(pluginOutputs, channels), frames,
+                                 transportEnabled ? &transportBlock : nullptr);
             if (pluginOutputs == 1 && channels > 1) {
                 for (unsigned channel = 1; channel < channels; ++channel) {
-                    std::memcpy((*destination)[channel], (*destination)[0], frames * sizeof(float));
+                    std::memcpy((*slotDestination)[channel], (*slotDestination)[0],
+                                frames * sizeof(float));
                 }
             }
+            if (pluginOutputs == 0) {
+                slot.outputPeak.store(peak, std::memory_order_relaxed);
+                return;
+            }
+            peak = audioBufferPeak(*slotDestination, channels, frames);
+            slot.outputPeak.store(peak, std::memory_order_relaxed);
+            std::swap(slotSource, slotDestination);
+        };
 
-            sourcePeak = audioBufferPeak(*destination, channels, frames);
-            slot->outputPeak.store(sourcePeak, std::memory_order_relaxed);
-
-            std::swap(source, destination);
+        const float smoothing = 1.0f - std::exp(-1.0f / std::max(1.0f,
+            sampleRate_.load(std::memory_order_relaxed) * 0.015f));
+        for (auto& node : chain->nodes) {
+            if (!node.active) continue;
+            if (node.id == "input") {
+                for (unsigned c = 0; c < channels; ++c)
+                    std::memcpy(node.outputPointers[c], chain->pointersA[c], frames * sizeof(float));
+                continue;
+            }
+            for (unsigned c = 0; c < channels; ++c) {
+                std::fill(node.inputPointers[c], node.inputPointers[c] + frames, 0.0f);
+                std::fill(node.outputPointers[c], node.outputPointers[c] + frames, 0.0f);
+            }
+            bool anySolo = false;
+            for (const auto* edge : node.incoming) anySolo |= edge->solo.load(std::memory_order_relaxed);
+            for (auto* edge : node.incoming) {
+                const float pan = node.mixBypassed ? 0.0f : edge->pan.load(std::memory_order_relaxed);
+                const bool audible = !edge->mute.load(std::memory_order_relaxed)
+                    && (!anySolo || edge->solo.load(std::memory_order_relaxed));
+                const float gain = audible ? (node.mixBypassed ? 1.0f : dbToGain(edge->levelDb.load(std::memory_order_relaxed))) : 0;
+                const float left = gain * (channels > 1 && pan > 0 ? 1 - pan : 1);
+                const float right = gain * (pan < 0 ? 1 + pan : 1);
+                const auto& upstream = chain->nodes[edge->source];
+                for (unsigned f = 0; f < frames; ++f) {
+                    edge->left += smoothing * (left - edge->left);
+                    edge->right += smoothing * (right - edge->right);
+                    for (unsigned c = 0; c < channels; ++c)
+                        node.inputPointers[c][f] += upstream.outputPointers[c][f]
+                            * (c == 0 ? edge->left : edge->right);
+                }
+            }
+            auto* in = &node.inputPointers;
+            auto* out = &node.outputPointers;
+            float peak = audioBufferPeak(*in, channels, frames);
+            if (node.slot) runSlot(*node.slot, in, out, peak);
+            // Bypassed, missing and mixer blocks transparently pass their input.
+            if (in == &node.inputPointers) {
+                for (unsigned c = 0; c < channels; ++c)
+                    std::memcpy(node.outputPointers[c], node.inputPointers[c], frames * sizeof(float));
+            }
+            if (node.id == "output") source = &node.outputPointers;
         }
 
         rendered = source;
@@ -1155,6 +1326,29 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
             slot->inputPeak.store(bypassPeak, std::memory_order_relaxed);
             slot->outputPeak.store(bypassPeak, std::memory_order_relaxed);
         }
+    }
+
+    // Disconnected/bypassed processors are normally skipped, but queued
+    // properties and LV2 worker responses still need run cycles to finish.
+    // Otherwise an unconnected newly added amp can permanently block graph
+    // edits in validateGraphEditChain(). Use its preallocated node buffers
+    // and discard the output; never run its processor twice in one callback.
+    const bool allBypassed = bypassAll_.load(std::memory_order_relaxed);
+    for (auto& node : chain->nodes) {
+        if (!node.slot || !node.slot->plugin) continue;
+        if (node.active && !allBypassed
+            && node.slot->enabled.load(std::memory_order_relaxed)) continue;
+        if (!node.slot->plugin->propertyTransitionPending()) continue;
+        for (unsigned c = 0; c < channels; ++c) {
+            std::fill(node.inputPointers[c], node.inputPointers[c] + frames, 0.0f);
+            std::fill(node.outputPointers[c], node.outputPointers[c] + frames, 0.0f);
+        }
+        node.slot->plugin->process(
+            reinterpret_cast<const float* const*>(node.inputPointers.data()),
+            std::min(node.slot->plugin->audioInputs(), channels),
+            node.outputPointers.data(),
+            std::min(node.slot->plugin->audioOutputs(), channels),
+            frames, nullptr);
     }
 
     // Ramp ordinary output-level changes rather than stepping the fader. The
@@ -1219,11 +1413,15 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 // Chain lifecycle
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::string& error) {
+std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::string& error,
+                                               const Chain* retained,
+                                               const std::string& recreatedSlotId) {
     auto chain = std::make_unique<Chain>();
     const unsigned channels = std::max(1u, std::min(settings_.audio.outputChannels, 2u));
     const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
 
+    chain->presetId = preset.id;
+    chain->rebindOnSwap = retained != nullptr;
     chain->channels = channels;
     chain->outputGain = dbToGain(settings_.audio.outputGainDb + preset.outputGainDb);
     chain->bufferA.assign(channels, std::vector<float>(frames, 0.0f));
@@ -1237,7 +1435,22 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
 
     std::string failures;
     missingPluginFiles_.clear();
-    for (const EffectSlot& slot : preset.chain) {
+    const auto createSlot = [&](const EffectSlot& slot) -> ChainSlot* {
+        if (retained && retained->presetId == preset.id && slot.id != recreatedSlotId) {
+            for (const auto& existing : retained->slots) {
+                if (existing->id != slot.id || !existing->plugin
+                    || existing->plugin->uri() != slot.uri) continue;
+                auto chainSlot = std::make_unique<ChainSlot>();
+                chainSlot->id = slot.id;
+                chainSlot->plugin = existing->plugin;
+                chainSlot->retainedProcessor = true;
+                (void)rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_);
+                chainSlot->enabled.store(slot.enabled, std::memory_order_relaxed);
+                ChainSlot* result = chainSlot.get();
+                chain->slots.push_back(std::move(chainSlot));
+                return result;
+            }
+        }
         std::string slotError;
         std::unique_ptr<PluginInstance> plugin = PluginInstance::create(
             catalog_, slot.uri, sampleRate_.load(std::memory_order_acquire), frames, slotError);
@@ -1247,7 +1460,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             // loads; the missing effect is reported and skipped rather than
             // taking the whole preset down.
             failures += (failures.empty() ? "" : "; ") + slotError;
-            continue;
+            return nullptr;
         }
         plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
         applyManagedNamCalibration(settings_.audio, *plugin);
@@ -1259,23 +1472,221 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
         chainSlot->id = slot.id;
         chainSlot->plugin = std::move(plugin);
         chainSlot->enabled.store(slot.enabled, std::memory_order_relaxed);
+        ChainSlot* result = chainSlot.get();
         chain->slots.push_back(std::move(chainSlot));
+        return result;
+    };
+    const auto allocateBranchBuffers = [&](std::vector<std::vector<float>>& storage,
+                                           std::vector<float*>& pointers) {
+        storage.assign(channels, std::vector<float>(frames, 0.0f));
+        pointers.resize(channels);
+        for (unsigned channel = 0; channel < channels; ++channel) {
+            pointers[channel] = storage[channel].data();
+        }
+    };
+
+    std::vector<std::string> order;
+    if (!routingOrder(preset, preset.routing, order, error)) return nullptr;
+    for (const auto& snapshot : preset.snapshots)
+        if (!routingMixValid(preset, snapshot.routingMix, error)) return nullptr;
+    for (const auto& edge : preset.routing["edges"].items()) {
+        const auto* from = preset.findSlot(edge["from"].asString());
+        const auto* to = preset.findSlot(edge["to"].asString());
+        const auto fromInfo = from && from->kind == "effect" ? catalog_.find(from->uri) : nullptr;
+        const auto toInfo = to && to->kind == "effect" ? catalog_.find(to->uri) : nullptr;
+        if ((fromInfo && fromInfo->audioOutputs == 0) || (toInfo && toInfo->audioInputs == 0)) {
+            error = "Connect audio outputs to audio inputs"; return nullptr;
+        }
+    }
+    std::map<std::string, size_t> indices;
+    for (const auto& id : order) {
+        Chain::Node node;
+        node.id = id;
+        if (const auto* stored = preset.findSlot(id)) {
+            if (stored->kind != "mixer") node.slot = createSlot(*stored);
+            else node.mixBypassed = !stored->enabled;
+        }
+        allocateBranchBuffers(node.input, node.inputPointers);
+        allocateBranchBuffers(node.output, node.outputPointers);
+        indices[id] = chain->nodes.size();
+        chain->nodes.push_back(std::move(node));
+    }
+    for (const auto& stored : preset.routing["edges"].items()) {
+        auto edge = std::make_unique<RoutingEdge>();
+        edge->source = indices.at(stored["from"].asString());
+        edge->destination = indices.at(stored["to"].asString());
+        edge->levelDb.store(stored["levelDb"].asFloat());
+        edge->pan.store(stored["pan"].asFloat());
+        edge->mute.store(stored["mute"].asBool());
+        edge->solo.store(stored["solo"].asBool());
+        const float gain = dbToGain(stored["levelDb"].asFloat());
+        const float pan = stored["pan"].asFloat();
+        edge->left = gain * (pan > 0 ? 1 - pan : 1);
+        edge->right = gain * (pan < 0 ? 1 + pan : 1);
+        chain->nodes[edge->destination].incoming.push_back(edge.get());
+        chain->edges.push_back(std::move(edge));
     }
 
+    for (auto& node : chain->nodes) {
+        bool anySolo = false;
+        for (const auto* edge : node.incoming) anySolo |= edge->solo.load();
+        for (auto* edge : node.incoming) {
+            const float gain = !edge->mute.load() && (!anySolo || edge->solo.load()) ? dbToGain(edge->levelDb.load()) : 0;
+            const float pan = edge->pan.load();
+            edge->left = gain * (channels > 1 && pan > 0 ? 1 - pan : 1);
+            edge->right = gain * (pan < 0 ? 1 + pan : 1);
+        }
+    }
+    chain->nodes[indices.at("output")].active = true;
+    // Input-only meters/analyzers are useful sinks even though they do not
+    // contribute audio to the main output.
+    for (auto& node : chain->nodes)
+        if (node.slot && node.slot->plugin->audioInputs() > 0
+            && node.slot->plugin->audioOutputs() == 0 && !node.incoming.empty()) node.active = true;
+    for (auto it = chain->nodes.rbegin(); it != chain->nodes.rend(); ++it)
+        if (it->active) for (const auto* edge : it->incoming) chain->nodes[edge->source].active = true;
     error = failures;
     return chain;
+}
+
+void Engine::publishEmptyChain() {
+    // Use the normal fade/swap/retirement path, including cancellation of any
+    // older NAM preparation. No saved preset or placeholder is created.
+    Preset empty;
+    empty.id.clear();
+    empty.routing.set("edges", Json::array());
+    std::string error;
+    publishChain(buildChain(empty, error));
 }
 
 void Engine::publishChain(std::unique_ptr<Chain> chain) {
     if (!chain) {
         return;
     }
+    chainPublicationExpected_.store(true, std::memory_order_release);
+
+    std::unique_lock<std::mutex> preparationLock(chainPreparationMutex_);
+    const uint64_t requestGeneration =
+        chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    chainPreparationTimedOut_.store(false, std::memory_order_release);
+    chainAwaitingPreparation_.reset();
+    if (chainNeedsPreparation(*chain) && chainPreparationWorker_.joinable()
+        && !chainPreparationStopping_.load(std::memory_order_acquire)) {
+        chainAwaitingPreparation_ = std::move(chain);
+        preparationLock.unlock();
+        chainPreparationWake_.notify_one();
+        return;
+    }
+
+    (void)requestGeneration;
+    // Publish while holding the preparation mutex so an older preparation
+    // request cannot win the final race and replace this newer chain.
+    publishPreparedChain(std::move(chain));
+}
+
+void Engine::publishPreparedChain(std::unique_ptr<Chain> chain) {
+    if (!chain) return;
+    chain->publicationGeneration =
+        chainPublicationGeneration_.fetch_add(1, std::memory_order_acq_rel) + 1;
     std::lock_guard<std::mutex> lock(chainMutex_);
     // Only the latest unpublished chain matters. Superseded chains have never
     // been visible to the audio thread, so they can be destroyed here.
     pendingChain_.publish(std::move(chain));
-    chainPublicationExpected_.store(false, std::memory_order_release);
     transitionRequested_.store(true, std::memory_order_release);
+}
+
+bool Engine::chainNeedsPreparation(const Chain& chain) const noexcept {
+    for (const std::unique_ptr<ChainSlot>& slot : chain.slots) {
+        if (!slot->retainedProcessor && slot->plugin
+            && slot->plugin->propertyTransitionPending()) return true;
+    }
+    return false;
+}
+
+bool Engine::prepareChainForPublication(Chain& chain, uint64_t requestGeneration) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
+    while (chainNeedsPreparation(chain)) {
+        if (chainPreparationStopping_.load(std::memory_order_acquire)
+            || chainPreparationRequestGeneration_.load(std::memory_order_acquire)
+                != requestGeneration) {
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::lock_guard<std::mutex> preparationLock(chainPreparationMutex_);
+            if (chainPreparationRequestGeneration_.load(std::memory_order_acquire) != requestGeneration) return false;
+            chainPreparationTimedOut_.store(true, std::memory_order_release);
+            logWarn("chain: model loading timed out; reload the saved preset or select another preset");
+            return true;
+        }
+
+        for (auto& buffer : chain.bufferA) std::fill(buffer.begin(), buffer.end(), 0.0f);
+        for (auto& buffer : chain.bufferB) std::fill(buffer.begin(), buffer.end(), 0.0f);
+        for (const std::unique_ptr<ChainSlot>& slot : chain.slots) {
+            if (slot->retainedProcessor || !slot->plugin
+                || !slot->plugin->propertyTransitionPending()) continue;
+            slot->plugin->process(
+                reinterpret_cast<const float* const*>(chain.pointersA.data()),
+                std::min(slot->plugin->audioInputs(), chain.channels),
+                chain.pointersB.data(),
+                std::min(slot->plugin->audioOutputs(), chain.channels),
+                frames, nullptr);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+void Engine::chainPreparationThread() {
+    while (!chainPreparationStopping_.load(std::memory_order_acquire)) {
+        std::unique_ptr<Chain> chain;
+        uint64_t requestGeneration = 0;
+        {
+            std::unique_lock<std::mutex> lock(chainPreparationMutex_);
+            chainPreparationWake_.wait(lock, [&]() {
+                return chainPreparationStopping_.load(std::memory_order_acquire)
+                    || chainAwaitingPreparation_ != nullptr;
+            });
+            if (chainPreparationStopping_.load(std::memory_order_acquire)) break;
+            chain = std::move(chainAwaitingPreparation_);
+            requestGeneration = chainPreparationRequestGeneration_.load(std::memory_order_acquire);
+        }
+
+        metrics_.chainPreparationActive.store(true, std::memory_order_release);
+        const bool publish = chain && prepareChainForPublication(*chain, requestGeneration);
+        metrics_.chainPreparationActive.store(false, std::memory_order_release);
+
+        std::lock_guard<std::mutex> lock(chainPreparationMutex_);
+        if (publish && !chainPreparationStopping_.load(std::memory_order_acquire)
+            && chainPreparationRequestGeneration_.load(std::memory_order_acquire)
+                == requestGeneration) {
+            publishPreparedChain(std::move(chain));
+        }
+    }
+    metrics_.chainPreparationActive.store(false, std::memory_order_release);
+}
+
+void Engine::startChainPreparationThread() {
+    if (chainPreparationWorker_.joinable()) return;
+    chainPreparationStopping_.store(false, std::memory_order_release);
+    chainPreparationWorker_ = std::thread(&Engine::chainPreparationThread, this);
+}
+
+void Engine::stopChainPreparationThread() {
+    {
+        std::lock_guard<std::mutex> lock(chainPreparationMutex_);
+        chainPreparationStopping_.store(true, std::memory_order_release);
+        chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        chainAwaitingPreparation_.reset();
+    }
+    chainPreparationWake_.notify_all();
+    if (chainPreparationWorker_.joinable()) chainPreparationWorker_.join();
+}
+
+void Engine::cancelChainPreparationsLocked() {
+    chainPreparationRequestGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    chainAwaitingPreparation_.reset();
+    metrics_.chainPreparationActive.store(false, std::memory_order_release);
 }
 
 void Engine::collectRetiredChains() {
@@ -1288,6 +1699,10 @@ void Engine::collectRetiredChains() {
     }
     const uint64_t now = audioGeneration_.load(std::memory_order_acquire);
     const bool audioRunning = backend_ && backend_->isRunning();
+
+    if (chainReaders_.load(std::memory_order_acquire) != 0) {
+        return;
+    }
 
     retiredChains_.erase(
         std::remove_if(retiredChains_.begin(), retiredChains_.end(),
@@ -1312,7 +1727,23 @@ bool Engine::swapPendingChainFromAudio() {
         return true;
     }
 
+    if (next->rebindOnSwap) {
+        // The previous callback has completed. Rebind even inactive/bypassed
+        // nodes before their previous buffers can be retired. No plugin runs
+        // and no ownership/allocation changes happen here.
+        for (auto& node : next->nodes) {
+            if (!node.slot || !node.slot->plugin) continue;
+            node.slot->plugin->connectAudioBuffers(
+                reinterpret_cast<const float* const*>(node.inputPointers.data()),
+                std::min(node.slot->plugin->audioInputs(), next->channels),
+                node.outputPointers.data(),
+                std::min(node.slot->plugin->audioOutputs(), next->channels));
+        }
+    }
+
     Chain* previous = activeChain_.exchange(next, std::memory_order_acq_rel);
+    chainPublicationExpected_.store(false, std::memory_order_release);
+    metrics_.chainGeneration.store(next->publicationGeneration, std::memory_order_relaxed);
     targetOutputGain_.store(next->outputGain, std::memory_order_relaxed);
     // Serializing and broadcasting state is not realtime-safe. Let the
     // housekeeping thread publish the newly active chain after this block.
@@ -1326,6 +1757,13 @@ bool Engine::swapPendingChainFromAudio() {
         }
     }
     return true;
+}
+
+bool Engine::activeChainReadyForPreset(const Preset& preset) const noexcept {
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) return false;
+    ActiveChainReadGuard chainGuard(*this);
+    const Chain* chain = chainGuard.get();
+    return chain && chain->presetId == preset.id;
 }
 
 void Engine::beginAudioTransitionBlock() {
@@ -1464,8 +1902,11 @@ const Preset* Engine::effectiveActivePreset() const {
 }
 
 void Engine::captureChainIntoPreset(Preset& preset) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain || preset.activeSnapshot >= 0) return;
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != preset.id || preset.activeSnapshot >= 0) return;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         EffectSlot* working = preset.findSlot(slot->id);
         if (!working || !slot->plugin) continue;
@@ -1474,6 +1915,12 @@ void Engine::captureChainIntoPreset(Preset& preset) {
         working->enabled = pendingEnabled >= 0
             ? pendingEnabled != 0 : slot->enabled.load(std::memory_order_relaxed);
     }
+    Json mix = Json::array();
+    for (const auto& edge : chain->edges)
+        mix.push(Json::object({{"from", chain->nodes[edge->source].id}, {"to", chain->nodes[edge->destination].id},
+            {"levelDb", edge->levelDb.load()}, {"pan", edge->pan.load()},
+            {"mute", edge->mute.load()}, {"solo", edge->solo.load()}}));
+    preset.routing = routingWithMix(preset.routing, mix);
 }
 
 void Engine::captureActiveSessionDraft() {
@@ -1482,6 +1929,81 @@ void Engine::captureActiveSessionDraft() {
 
 void Engine::clearSessionDraft(const std::string& presetId) {
     sessionPresetDrafts_.erase(presetId);
+    if (editorHistoryPresetId_ == presetId) {
+        editorUndo_.clear(); editorRedo_.clear(); editorGesture_.clear();
+    }
+}
+
+// Editor history lives outside the audio callback and is shared by browsers.
+// Keep one checkpoint for a continuous gesture until its final request.
+Json Engine::withEditorHistory(const std::string& key, bool finished, bool& ok,
+                               const std::function<Json()>& work) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const Preset* current = effectiveActivePreset();
+    if (!current || current->activeSnapshot >= 0 || snapshotMode_.load()
+        || chainPublicationExpected_.load(std::memory_order_acquire)) return work();
+    if (editorHistoryPresetId_ != current->id) {
+        editorHistoryPresetId_ = current->id;
+        editorUndo_.clear(); editorRedo_.clear(); editorGesture_.clear();
+    }
+    Preset before = *current;
+    captureChainIntoPreset(before);
+    const Json result = work();
+    current = effectiveActivePreset();
+    if (ok && current && current->id == before.id) {
+        Preset after = *current;
+        captureChainIntoPreset(after);
+        if (before.toJson().dump() != after.toJson().dump()) {
+            if (editorGesture_ != key) {
+                if (editorUndo_.size() == 10) editorUndo_.erase(editorUndo_.begin());
+                editorUndo_.push_back(std::move(before));
+            }
+            editorRedo_.clear();
+            editorGesture_ = finished ? std::string() : key;
+        }
+    }
+    if (finished) editorGesture_.clear();
+    notifyPerformance();
+    return result;
+}
+
+void Engine::resetEditorHistory() {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    editorUndo_.clear(); editorRedo_.clear(); editorGesture_.clear();
+    notifyPerformance();
+}
+
+bool Engine::stepEditorHistory(bool redo, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const Preset* current = effectiveActivePreset();
+    if (!current || current->id != editorHistoryPresetId_ || current->activeSnapshot >= 0
+        || snapshotMode_.load()) { error = "return to the base preset to use undo/redo"; return false; }
+    ActiveChainReadGuard chainGuard(*this);
+    if (!validateGraphEditChain(chainGuard.get(), error)) return false;
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing"; return false;
+    }
+    auto& source = redo ? editorRedo_ : editorUndo_;
+    auto& destination = redo ? editorUndo_ : editorRedo_;
+    if (source.empty()) { error = redo ? "nothing to redo" : "nothing to undo"; return false; }
+    Preset before = *current;
+    captureChainIntoPreset(before);
+    Preset restored = source.back();
+    restored.name = current->name;
+    restored.author = current->author;
+    restored.community = current->community;
+    restored.virtualControlSurface = current->virtualControlSurface;
+    restored.rememberedSnapshotSlot = current->rememberedSnapshotSlot;
+    restored.rememberedSnapshotEnabled = current->rememberedSnapshotEnabled;
+    auto next = buildChain(restored, error);
+    if (!next) return false;
+    if (destination.size() == 10) destination.erase(destination.begin());
+    destination.push_back(std::move(before)); source.pop_back(); editorGesture_.clear();
+    const std::string id = restored.id;
+    sessionPresetDrafts_[id] = std::move(restored);
+    publishChain(std::move(next));
+    refreshLeds(); notify();
+    return true;
 }
 
 void Engine::syncPresetFromChain() {
@@ -1496,9 +2018,10 @@ void Engine::persistBankUnlocked(Bank* bank, bool syncFromChain) {
         }
     }
     if (bank) {
-        storage_.saveBank(*bank);
+        if (storage_.saveBank(*bank)) pendingBankPersistIds_.erase(bank->id);
     }
-    bankPersistPending_.store(false, std::memory_order_relaxed);
+    bankPersistPending_.store(!pendingBankPersistIds_.empty() || settingsPersistPending_,
+                              std::memory_order_relaxed);
 }
 
 void Engine::persistActiveBankUnlocked() {
@@ -1565,41 +2088,55 @@ void Engine::flushPendingBasePresetUnlocked() {
     if (preset && preset->activeSnapshot < 0 && activeSessionDraft()) captureActiveSessionDraft();
 }
 
-void Engine::requestBankPersist(bool immediate) {
-    Preset* preset = activePreset();
-    if (!preset) {
-        return;
-    }
-    if (immediate) {
-        persistActiveBankUnlocked();
-        return;
-    }
+void Engine::requestBankPersist(const std::string& bankId) {
+    if (bankId.empty()) return;
+    pendingBankPersistIds_.insert(bankId);
     const auto due = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count() + 400;
     bankPersistDueMs_.store(due, std::memory_order_relaxed);
     bankPersistPending_.store(true, std::memory_order_relaxed);
 }
 
-void Engine::flushBankPersistIfDue() {
+void Engine::requestSettingsPersist() {
+    settingsPersistPending_ = true;
+    const auto due = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count() + 400;
+    bankPersistDueMs_.store(due, std::memory_order_relaxed);
+    bankPersistPending_.store(true, std::memory_order_relaxed);
+}
+
+void Engine::flushPendingPersistence(bool force) {
     if (!bankPersistPending_.load(std::memory_order_relaxed)) {
         return;
     }
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (now < bankPersistDueMs_.load(std::memory_order_relaxed)) {
+    if (!force && now < bankPersistDueMs_.load(std::memory_order_relaxed)) {
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     if (!bankPersistPending_.load(std::memory_order_relaxed)) {
         return;
     }
-    persistActiveBankUnlocked();
+    std::vector<std::string> bankIds(pendingBankPersistIds_.begin(),
+                                     pendingBankPersistIds_.end());
+    for (const std::string& bankId : bankIds) {
+        Bank* bank = findBank(bankId);
+        if (!bank || storage_.saveBank(*bank)) pendingBankPersistIds_.erase(bankId);
+    }
+    const auto previousError = persistenceError_;
+    if (settingsPersistPending_ && persistSettings()) settingsPersistPending_ = false;
+
+    const bool pending = !pendingBankPersistIds_.empty() || settingsPersistPending_;
+    bankPersistPending_.store(pending, std::memory_order_relaxed);
+    if (pending) bankPersistDueMs_.store(now + 1000, std::memory_order_relaxed);
+    if (previousError != persistenceError_) notifyPerformance();
 }
 
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
 
-    Bank* bank = findBank(bankId.empty() ? activeBankId_ : bankId);
+    Bank* bank = findBank(bankId.empty() ? browseBankId() : bankId);
     if (!bank) {
         error = "no such bank";
         return false;
@@ -1624,13 +2161,14 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
     if (outgoingBank && outgoingBank->id != bank->id) {
         outgoingBank->lastPresetId = activePresetId_;
-        persistBankUnlocked(outgoingBank, false);
+        requestBankPersist(outgoingBank->id);
     }
     if (outgoing && outgoing->id != target->id && outgoingBank && outgoingBank->id == bank->id) {
-        persistActiveBankUnlocked();
+        requestBankPersist(outgoingBank->id);
     }
 
     activeBankId_ = bank->id;
+    browseBankId_ = bank->id;
     activePresetId_ = target->id;
     bank->lastPresetId = target->id;
     // Build the remembered snapshot directly into the unpublished chain. Once
@@ -1646,12 +2184,13 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
     if (target->rememberedSnapshotEnabled && target->rememberedSnapshotSlot >= 0) {
         if (Snapshot* snapshot = findSnapshotBySlot(*target, target->rememberedSnapshotSlot)) {
-            for (EffectSlot& slot : effectivePreset.chain) {
-                if (!snapshot->slots.has(slot.id)) continue;
+            forEachPluginSlot(effectivePreset.chain, [&](EffectSlot& slot) {
+                if (!snapshot->slots.has(slot.id)) return;
                 const Json& state = snapshot->slots[slot.id];
                 slot.state = state;
                 slot.enabled = state["enabled"].asBool(true);
-            }
+            });
+            effectivePreset.routing = routingWithMix(effectivePreset.routing, snapshot->routingMix);
             target->activeSnapshot = snapshot->slot;
         } else {
             forgetRememberedSnapshot(*target);
@@ -1670,8 +2209,8 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
-    persistSettings();
-    persistActiveBankUnlocked();
+    requestSettingsPersist();
+    requestBankPersist(bank->id);
     armAnalogCatchUnlocked();
     refreshLeds();
     notify();
@@ -1679,12 +2218,13 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 }
 
 bool Engine::stepPreset(int delta, std::string& error) {
-    const Bank* bank = activeBank();
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const Bank* bank = findBank(browseBankId());
     if (!bank || bank->presets.empty()) {
         error = "no presets in this bank";
         return false;
     }
-    int index = 0;
+    int index = delta >= 0 ? -1 : 0;
     for (size_t i = 0; i < bank->presets.size(); ++i) {
         if (bank->presets[i].id == activePresetId_) {
             index = static_cast<int>(i);
@@ -1696,44 +2236,29 @@ bool Engine::stepPreset(int delta, std::string& error) {
     return selectPreset(bank->id, bank->presets[static_cast<size_t>(index)].id, error);
 }
 
+std::string Engine::browseBankId() const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    for (const Bank& bank : banks_) {
+        if (bank.id == browseBankId_) return bank.id;
+    }
+    return activeBankId_;
+}
+
 bool Engine::selectBank(const std::string& bankId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Bank* current = activeBank();
-    int slot = 0;
-    if (current) {
-        for (size_t i = 0; i < current->presets.size(); ++i) {
-            if (current->presets[i].id == activePresetId_) {
-                slot = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-    Bank* next = findBank(bankId);
-    if (!next) {
+    if (!findBank(bankId)) {
         error = "no such bank";
         return false;
     }
-    if (next->presets.empty()) {
-        error = "that bank is empty";
-        return false;
-    }
-    std::string presetId;
-    if (!next->lastPresetId.empty()) {
-        for (const Preset& preset : next->presets) {
-            if (preset.id == next->lastPresetId) {
-                presetId = preset.id;
-                break;
-            }
-        }
-    }
-    if (presetId.empty()) {
-        const int index = std::min(slot, static_cast<int>(next->presets.size()) - 1);
-        presetId = next->presets[static_cast<size_t>(std::max(0, index))].id;
-    }
-    return selectPreset(next->id, presetId, error);
+    if (browseBankId() != bankId) sessionPresets_.clear();
+    browseBankId_ = bankId;
+    refreshLeds();
+    notify();
+    return true;
 }
 
 bool Engine::stepBank(int delta, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     std::vector<const Bank*> playable;
     for (const Bank& bank : banks_) {
         if (!bank.communityHolding && !bank.presets.empty()) playable.push_back(&bank);
@@ -1744,7 +2269,7 @@ bool Engine::stepBank(int delta, std::string& error) {
     }
     int index = 0;
     for (size_t i = 0; i < playable.size(); ++i) {
-        if (playable[i]->id == activeBankId_) {
+        if (playable[i]->id == browseBankId()) {
             index = static_cast<int>(i);
             break;
         }
@@ -1806,6 +2331,10 @@ bool Engine::reloadStoredPreset(std::string& error) {
         error = "no active preset";
         return false;
     }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "Effect chain is still preparing";
+        return false;
+    }
     bypassAll_.store(false, std::memory_order_relaxed);
     std::string chainError;
     std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
@@ -1832,6 +2361,10 @@ bool Engine::savePreset(std::string& error) {
         error = "no active preset";
         return false;
     }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "Effect chain is still preparing";
+        return false;
+    }
     if (preset->activeSnapshot >= 0) {
         error = "return to the base preset before saving";
         return false;
@@ -1842,6 +2375,13 @@ bool Engine::savePreset(std::string& error) {
         draft->name = preset->name;
         draft->author = preset->author;
         draft->snapshots = preset->snapshots;
+        for (auto& snapshot : draft->snapshots)
+            for (const auto& previousSlot : preset->chain) {
+                const auto* replacement = draft->findSlot(previousSlot.id);
+                if (replacement && replacement->uri != previousSlot.uri)
+                    snapshot.slots.remove(previousSlot.id);
+            }
+        pruneRoutingSnapshots(*draft);
         draft->community = preset->community;
         draft->rememberedSnapshotSlot = preset->rememberedSnapshotSlot;
         draft->rememberedSnapshotEnabled = preset->rememberedSnapshotEnabled;
@@ -1873,17 +2413,26 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         error = "nothing to save";
         return false;
     }
+    if (!activeChainReadyForPreset(*source) || activeChainTransitionPending()) {
+        error = "wait for the effect chain to finish preparing before Save As";
+        return false;
+    }
+    if (source->activeSnapshot >= 0) { error = "return to the base preset before Save As"; return false; }
 
     Preset copy = activeSessionDraft() ? *activeSessionDraft() : *source;
     captureChainIntoPreset(copy);
     copy.author = source->author;
     copy.snapshots = source->snapshots;
+    pruneRoutingSnapshots(copy);
     copy.community = source->community;
     copy.rememberedSnapshotSlot = -1;
     copy.rememberedSnapshotEnabled = false;
     copy.activeSnapshot = -1;
     copy.id = newId("preset");
     copy.name = name.empty() ? source->name + " copy" : name;
+    ActiveChainReadGuard chainGuard(*this);
+    auto nextChain = buildChain(copy, error, chainGuard.get());
+    if (!nextChain) return false;
     const std::string previousPresetId = activePresetId_;
     bank->presets.push_back(copy);
     activePresetId_ = copy.id;
@@ -1895,7 +2444,8 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         return false;
     }
     settings_.activePresetId = activePresetId_;
-    persistSettings();
+    publishChain(std::move(nextChain));
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -1909,6 +2459,19 @@ bool Engine::createPreset(const std::string& name, const std::string& bankId, st
     persistActiveBankUnlocked();
 
     Bank* bank = bankId.empty() ? activeBank() : findBank(bankId);
+    Bank newBank;
+    if (bankId.empty() && (!bank || bank->communityHolding)) {
+        const auto userBank = std::find_if(banks_.begin(), banks_.end(),
+            [](const Bank& candidate) { return !candidate.communityHolding; });
+        if (userBank != banks_.end()) {
+            bank = &*userBank;
+        } else {
+            newBank.id = newId("bank");
+            newBank.name = "Bank 1";
+            newBank.order = static_cast<int>(banks_.size());
+            bank = &newBank;
+        }
+    }
     if (!bank) {
         error = "no active bank";
         return false;
@@ -1917,18 +2480,25 @@ bool Engine::createPreset(const std::string& name, const std::string& bankId, st
     Preset preset;
     preset.id = newId("preset");
     preset.name = name.empty() ? "Untitled" : name;
-    bank->presets.push_back(preset);
-    activePresetId_ = preset.id;
-
-    if (!storage_.saveBank(*bank)) {
+    Bank updated = *bank;
+    updated.presets.push_back(preset);
+    updated.lastPresetId = preset.id;
+    if (!storage_.saveBank(updated)) {
         error = "could not write the bank file";
         return false;
     }
-
+    if (bank == &newBank) {
+        banks_.push_back(std::move(updated));
+        bank = &banks_.back();
+    } else {
+        *bank = std::move(updated);
+    }
+    activeBankId_ = bank->id;
+    activePresetId_ = preset.id;
     std::string chainError;
     publishChain(buildChain(bank->presets.back(), chainError));
     settings_.activePresetId = activePresetId_;
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -1942,11 +2512,13 @@ bool Engine::renamePreset(const std::string& presetId, const std::string& name, 
     }
     for (Preset& preset : bank->presets) {
         if (preset.id == presetId) {
-            preset.name = name;
+            Bank updated = *bank;
+            for (auto& item : updated.presets) if (item.id == presetId) item.name = name;
+            if (!storage_.saveBank(updated)) { error = "could not save the preset name"; return false; }
+            *bank = std::move(updated);
             if (auto draft = sessionPresetDrafts_.find(presetId); draft != sessionPresetDrafts_.end()) {
                 draft->second.name = name;
             }
-            storage_.saveBank(*bank);
             notify();
             return true;
         }
@@ -1968,17 +2540,28 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
         error = "no such preset";
         return false;
     }
-    if (bank->presets.size() <= 1 && !bank->communityHolding
-        && (!found->community.isObject() || found->community.members().empty())) {
-        error = "a bank must keep at least one preset";
-        return false;
-    }
-
+    Bank updated = *bank;
+    updated.presets.erase(updated.presets.begin() + std::distance(bank->presets.begin(), found));
+    if (updated.lastPresetId == presetId) updated.lastPresetId.clear();
+    if (!storage_.saveBank(updated)) { error = "could not save the bank; preset was not deleted"; return false; }
     const Json removedCommunity = found->community;
     const bool wasActive = presetId == activePresetId_;
-    bank->presets.erase(found);
+    *bank = std::move(updated);
     clearSessionDraft(presetId);
-    storage_.saveBank(*bank);
+
+    ControllerConfig cleaned = controller_.config();
+    Json assignments = Json::object();
+    for (const Json::Member& mapping : cleaned.presetAssignments.members()) {
+        Json entries = Json::object();
+        for (const Json::Member& entry : mapping.second.members())
+            if (entry.second.asString() != presetId) entries.set(entry.first, entry.second);
+        assignments.set(mapping.first, entries);
+    }
+    cleaned.presetAssignments = assignments;
+    for (auto& control : cleaned.controls)
+        if (control.binding.presetId == presetId) control.binding.presetId.clear();
+    controller_.setConfig(cleaned); settings_.controller = cleaned;
+    sessionPresets_.clear();
 
     auto dependencyStillUsed = [&](const std::string& group, const std::string& name) {
         for (const Bank& candidateBank : banks_) {
@@ -2022,11 +2605,14 @@ bool Engine::deletePreset(const std::string& presetId, std::string& error) {
             const Preset& effective = draft == sessionPresetDrafts_.end() ? *next : draft->second;
             if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpmIfStopped(effective.tempo);
             publishChain(buildChain(effective, chainError));
+        } else {
+            publishEmptyChain();
         }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
-        persistSettings();
     }
+    if (!persistSettings(&error)) { notify(); return false; }
+    refreshLeds();
     notify();
     return true;
 }
@@ -2044,11 +2630,14 @@ bool Engine::reorderPreset(const std::string& presetId, int newIndex, std::strin
         error = "no such preset";
         return false;
     }
-    Preset moved = *found;
-    bank->presets.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(bank->presets.size())));
-    bank->presets.insert(bank->presets.begin() + newIndex, std::move(moved));
-    storage_.saveBank(*bank);
+    Bank updated = *bank;
+    const size_t oldIndex = std::distance(bank->presets.begin(), found);
+    Preset moved = updated.presets[oldIndex];
+    updated.presets.erase(updated.presets.begin() + oldIndex);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(updated.presets.size())));
+    updated.presets.insert(updated.presets.begin() + newIndex, std::move(moved));
+    if (!storage_.saveBank(updated)) { error = "could not save the preset order"; return false; }
+    *bank = std::move(updated);
     notify();
     return true;
 }
@@ -2076,23 +2665,19 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
         error = "no such bank";
         return false;
     }
-    if (source->id == target->id) {
-        Preset moved = *found;
-        source->presets.erase(found);
-        newIndex = std::max(0, std::min(newIndex, static_cast<int>(source->presets.size())));
-        source->presets.insert(source->presets.begin() + newIndex, std::move(moved));
-        storage_.saveBank(*source);
-        notify();
-        return true;
+    if (source->id == target->id) return reorderPreset(presetId, newIndex, error);
+    Bank updatedSource = *source, updatedTarget = *target;
+    const size_t oldIndex = std::distance(source->presets.begin(), found);
+    Preset moved = updatedSource.presets[oldIndex];
+    updatedSource.presets.erase(updatedSource.presets.begin() + oldIndex);
+    if (updatedSource.lastPresetId == presetId) updatedSource.lastPresetId.clear();
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(updatedTarget.presets.size())));
+    updatedTarget.presets.insert(updatedTarget.presets.begin() + newIndex, std::move(moved));
+    if (!storage_.saveBanks({updatedSource, updatedTarget})) {
+        error = "could not save the preset move"; return false;
     }
-    if (source->presets.size() < 2 && !source->communityHolding) {
-        error = "a bank must keep at least one preset";
-        return false;
-    }
-    Preset moved = *found;
-    source->presets.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(target->presets.size())));
-    target->presets.insert(target->presets.begin() + newIndex, std::move(moved));
+    *source = std::move(updatedSource);
+    *target = std::move(updatedTarget);
     ControllerConfig config = controller_.config();
     if (config.presetAssignments.has(source->id)) {
         const Json& current = config.presetAssignments[source->id];
@@ -2109,15 +2694,10 @@ bool Engine::movePresetToBank(const std::string& presetId, const std::string& ta
     if (activePresetId_ == presetId) {
         activeBankId_ = target->id;
         settings_.activeBankId = activeBankId_;
-        std::string chainError;
-        const auto draft = sessionPresetDrafts_.find(presetId);
-        const Preset& effective = draft == sessionPresetDrafts_.end()
-            ? target->presets[static_cast<size_t>(newIndex)] : draft->second;
-        publishChain(buildChain(effective, chainError));
+        // Bank membership does not change the preset ID, graph or sound.
+        // Keep the active processors instead of needlessly reloading them.
     }
-    storage_.saveBank(*source);
-    storage_.saveBank(*target);
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -2128,16 +2708,12 @@ bool Engine::createBank(const std::string& name, std::string& error) {
     bank.id = newId("bank");
     bank.name = name.empty() ? "New Bank" : name;
     bank.order = static_cast<int>(banks_.size());
-    Preset preset;
-    preset.id = newId("preset");
-    preset.name = "Preset 1";
-    bank.presets.push_back(std::move(preset));
-
     if (!storage_.saveBank(bank)) {
         error = "could not write the bank file";
         return false;
     }
     banks_.push_back(std::move(bank));
+    if (!activeBank()) return selectBank(banks_.back().id, error);
     notify();
     return true;
 }
@@ -2149,18 +2725,16 @@ bool Engine::renameBank(const std::string& bankId, const std::string& name, std:
         error = "no such bank";
         return false;
     }
-    bank->name = name;
-    storage_.saveBank(*bank);
+    Bank updated = *bank;
+    updated.name = name;
+    if (!storage_.saveBank(updated)) { error = "could not save the bank name"; return false; }
+    *bank = std::move(updated);
     notify();
     return true;
 }
 
 bool Engine::deleteBank(const std::string& bankId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    if (banks_.size() <= 1) {
-        error = "at least one bank has to remain";
-        return false;
-    }
     const auto found = std::find_if(banks_.begin(), banks_.end(),
                                     [&](const Bank& bank) { return bank.id == bankId; });
     if (found == banks_.end()) {
@@ -2168,39 +2742,51 @@ bool Engine::deleteBank(const std::string& bankId, std::string& error) {
         return false;
     }
 
+    if (!storage_.deleteBank(bankId)) { error = "could not delete the bank file"; return false; }
     for (const Preset& preset : found->presets) clearSessionDraft(preset.id);
-    storage_.deleteBank(bankId);
     const bool wasActive = bankId == activeBankId_;
     banks_.erase(found);
 
     ControllerConfig config = controller_.config();
-    if (config.presetAssignments.isObject() && config.presetAssignments.has(bankId)) {
+    for (auto& control : config.controls)
+        if (!control.binding.presetId.empty() && !findPresetAnywhere(control.binding.presetId))
+            control.binding.presetId.clear();
+    sessionPresets_.clear();
+    if (config.presetAssignments.isObject()) {
         Json next = Json::object();
         for (const Json::Member& member : config.presetAssignments.members()) {
             if (member.first != bankId) {
-                next.set(member.first, member.second);
+                Json entries = Json::object();
+                for (const Json::Member& entry : member.second.members())
+                    if (findPresetAnywhere(entry.second.asString())) entries.set(entry.first, entry.second);
+                next.set(member.first, entries);
             }
         }
         config.presetAssignments = next;
-        controller_.setConfig(config);
-        settings_.controller = config;
-        persistSettings();
     }
+    controller_.setConfig(config);
+    settings_.controller = config;
 
     if (wasActive) {
-        activeBankId_ = banks_.front().id;
-        activePresetId_ = banks_.front().presets.empty() ? "" : banks_.front().presets.front().id;
+        auto next = std::find_if(banks_.begin(), banks_.end(), [](const Bank& bank) {
+            return !bank.communityHolding && !bank.presets.empty();
+        });
+        if (next == banks_.end() && !banks_.empty()) next = banks_.begin();
+        activeBankId_ = next == banks_.end() ? "" : next->id;
+        activePresetId_ = next == banks_.end() || next->presets.empty() ? "" : next->presets.front().id;
         if (const Preset* preset = activePreset()) {
             std::string chainError;
             const auto draft = sessionPresetDrafts_.find(preset->id);
             const Preset& effective = draft == sessionPresetDrafts_.end() ? *preset : draft->second;
             if (transportEnabled_.load(std::memory_order_acquire)) transport_.setBpmIfStopped(effective.tempo);
             publishChain(buildChain(effective, chainError));
+        } else {
+            publishEmptyChain();
         }
         settings_.activeBankId = activeBankId_;
         settings_.activePresetId = activePresetId_;
-        persistSettings();
     }
+    if (!persistSettings(&error)) { notify(); return false; }
     notify();
     return true;
 }
@@ -2213,24 +2799,26 @@ bool Engine::reorderBank(const std::string& bankId, int newIndex, std::string& e
         error = "no such bank";
         return false;
     }
-    Bank moved = *found;
-    banks_.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(banks_.size())));
-    banks_.insert(banks_.begin() + newIndex, std::move(moved));
-    for (size_t i = 0; i < banks_.size(); ++i) {
-        banks_[i].order = static_cast<int>(i);
-        storage_.saveBank(banks_[i]);
-    }
+    auto updated = banks_;
+    const size_t oldIndex = std::distance(banks_.begin(), found);
+    Bank moved = updated[oldIndex];
+    updated.erase(updated.begin() + oldIndex);
+    newIndex = std::max(0, std::min(newIndex, static_cast<int>(updated.size())));
+    updated.insert(updated.begin() + newIndex, std::move(moved));
+    for (size_t i = 0; i < updated.size(); ++i) updated[i].order = static_cast<int>(i);
+    if (!storage_.saveBanks(updated)) { error = "could not save the bank order"; return false; }
+    banks_ = std::move(updated);
     notify();
     return true;
 }
 
 Json Engine::exportBank(const std::string& bankId) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     for (const Bank& bank : banks_) {
         if (bank.id == bankId) {
             Json json = bank.toJson();
             json.set("format", "pimfx-bank");
-            json.set("formatVersion", 1);
+            json.set("formatVersion", 2);
             return json;
         }
     }
@@ -2238,7 +2826,7 @@ Json Engine::exportBank(const std::string& bankId) const {
 }
 
 bool Engine::importBank(const Json& json, std::string& error) {
-    if (json["format"].asString() != "pimfx-bank") {
+    if (json["format"].asString() != "pimfx-bank" || json["formatVersion"].asInt() != 2) {
         error = "that file is not a Pi-MFX bank";
         return false;
     }
@@ -2250,10 +2838,10 @@ bool Engine::importBank(const Json& json, std::string& error) {
     bank.id = newId("bank");
     bank.order = static_cast<int>(banks_.size());
     for (Preset& preset : bank.presets) {
+        std::vector<std::string> order;
+        if (!routingOrder(preset, preset.routing, order, error)) return false;
         preset.id = newId("preset");
-        for (EffectSlot& slot : preset.chain) {
-            slot.id = newId("slot");
-        }
+
     }
 
     if (!storage_.saveBank(bank)) {
@@ -2261,6 +2849,48 @@ bool Engine::importBank(const Json& json, std::string& error) {
         return false;
     }
     banks_.push_back(std::move(bank));
+    notify();
+    return true;
+}
+
+Json Engine::exportPreset(const std::string& presetId) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    for (const Bank& bank : banks_) for (const Preset& preset : bank.presets) {
+        if (preset.id != presetId) continue;
+        Json json = preset.toJson();
+        json.set("format", "pimfx-preset");
+        json.set("formatVersion", 2);
+        return json;
+    }
+    return Json();
+}
+
+bool Engine::importPreset(const Json& json, const std::string& bankId, std::string& error) {
+    if (!json.isObject() || json["format"].asString() != "pimfx-preset"
+        || json["formatVersion"].asInt() != 2 || json["routingFormat"].asInt() != 1 || !json["chain"].isArray()
+        || !json["routing"].isObject()) {
+        error = "that file is not a Pi-MFX preset in the current routing format";
+        return false;
+    }
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    Bank* bank = findBank(bankId);
+    if (!bank || bank->communityHolding) {
+        error = "choose a user bank for the imported preset";
+        return false;
+    }
+    Preset preset = Preset::fromJson(json);
+    std::vector<std::string> order;
+    if (!routingOrder(preset, preset.routing, order, error)) return false;
+    for (const auto& snapshot : preset.snapshots)
+        if (!routingMixValid(preset, snapshot.routingMix, error)) return false;
+    preset.id = newId("preset");
+    Bank updated = *bank;
+    updated.presets.push_back(std::move(preset));
+    if (!storage_.saveBank(updated)) {
+        error = "could not write the imported preset";
+        return false;
+    }
+    *bank = std::move(updated);
     notify();
     return true;
 }
@@ -2369,7 +2999,11 @@ bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed
             placeholder.id = newId("preset");
             placeholder.name = "Preset 1";
             bank->presets.push_back(std::move(placeholder));
-            storage_.saveBank(*bank);
+            if (!storage_.saveBank(*bank)) {
+                bank->presets.pop_back();
+                error = "could not prepare the bank for removing its last community preset";
+                return false;
+            }
         }
         if (!deletePreset(presetId, error)) return false;
         ++removed;
@@ -2381,7 +3015,88 @@ bool Engine::uninstallCommunityPreset(const std::string& catalogId, int& removed
 // Chain editing
 // ---------------------------------------------------------------------------
 
-bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error) {
+bool Engine::validateGraphEditChain(const Chain* chain, std::string& error) const {
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || (chain && chain->presetId != activePresetId_)) {
+        error = "Effect chain is still preparing";
+        return false;
+    }
+    // Check every processor, including bypassed and disconnected blocks.
+    if (chain) for (const auto& slot : chain->slots) {
+        if (slot->plugin && slot->plugin->propertyTransitionPending()) {
+            error = "Wait for model and cabinet loading to finish before editing routing";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Engine::editRouting(const Json& values, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (!activePreset()) { error = "No active preset"; return false; }
+    if (!values["presetId"].asString().empty() && values["presetId"].asString() != activePresetId_) {
+        error = "The active preset changed"; return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "Routing is still preparing"; return false;
+    }
+    const bool editingSnapshot = activePreset()->activeSnapshot >= 0;
+    Preset* preset = activeSessionDraft(false);
+    if (!preset) preset = activePreset();
+    if (!editingSnapshot) preset = activeSessionDraft(true);
+    Preset candidate = *preset;
+    if (values["addMixer"].asBool()) {
+        EffectSlot mixer;
+        mixer.id = newId("mix"); mixer.kind = "mixer";
+        const auto count = std::count_if(candidate.chain.begin(), candidate.chain.end(),
+            [](const EffectSlot& slot) { return slot.kind == "mixer"; });
+        mixer.name = "Mixer " + std::to_string(count + 1);
+        candidate.chain.push_back(mixer);
+    }
+    if (values["routing"].isObject()) candidate.routing = values["routing"];
+    if (values["addMixer"].asBool()
+        && !placeRoutingBlock(candidate, candidate.chain.back().id, values["layout"], error)) return false;
+    std::vector<std::string> order;
+    if (!routingOrder(candidate, candidate.routing, order, error)) return false;
+    const auto& before = preset->routing["edges"];
+    const auto& after = candidate.routing["edges"];
+    bool sameConnections = before.size() == after.size() && candidate.chain.size() == preset->chain.size();
+    for (size_t i = 0; sameConnections && i < before.size(); ++i)
+        sameConnections = before.at(i)["from"].asString() == after.at(i)["from"].asString()
+            && before.at(i)["to"].asString() == after.at(i)["to"].asString();
+    if (!sameConnections && (snapshotMode_.load(std::memory_order_relaxed) || activePreset()->activeSnapshot >= 0)) {
+        error = "Leave snapshot editing before changing connections"; return false;
+    }
+    if (sameConnections) {
+        ActiveChainReadGuard guard(*this);
+        if (auto* live = guard.get()) {
+            for (size_t i = 0; i < live->edges.size() && i < after.size(); ++i) {
+                live->edges[i]->levelDb.store(after.at(i)["levelDb"].asFloat());
+                live->edges[i]->pan.store(after.at(i)["pan"].asFloat());
+                live->edges[i]->mute.store(after.at(i)["mute"].asBool());
+                live->edges[i]->solo.store(after.at(i)["solo"].asBool());
+            }
+        }
+        if (!editingSnapshot) *preset = std::move(candidate);
+    } else {
+        // Wiring changes only replace the graph. Keep the running processors
+        // just as block removal does, rather than reloading every NAM/IR.
+        ActiveChainReadGuard retainedGuard(*this);
+        Chain* retained = retainedGuard.get();
+        if (!validateGraphEditChain(retained, error)) return false;
+        captureChainIntoPreset(candidate);
+        pruneRoutingSnapshots(candidate);
+        auto next = buildChain(candidate, error, retained);
+        if (!next) return false;
+        *preset = std::move(candidate);
+        publishChain(std::move(next));
+    }
+    notify();
+    return true;
+}
+
+bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, std::string& error,
+                       const Json& layout) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* stored = activePreset();
     if (!stored) {
@@ -2392,8 +3107,15 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
+    ActiveChainReadGuard retainedGuard(*this);
+    Chain* retained = retainedGuard.get();
+    if (!validateGraphEditChain(retained, error)) return false;
     Preset* preset = activeSessionDraft(true);
-    const PluginInfo* info = catalog_.find(uri);
+    const auto info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
         return false;
@@ -2407,18 +3129,28 @@ bool Engine::addEffect(const std::string& uri, int index, std::string& slotId, s
     slot.name = info->name;
     slot.enabled = true;
 
-    index = index < 0 ? static_cast<int>(preset->chain.size())
-                      : std::min(index, static_cast<int>(preset->chain.size()));
-    preset->chain.insert(preset->chain.begin() + index, slot);
-    slotId = slot.id;
+    const Preset previous = *preset;
+    std::vector<EffectSlot>* destination = &preset->chain;
+    index = index < 0 ? static_cast<int>(destination->size())
+                      : std::min(index, static_cast<int>(destination->size()));
+    destination->insert(destination->begin() + index, slot);
+    if (!placeRoutingBlock(*preset, slot.id, layout, error)) {
+        *preset = previous;
+        return false;
+    }
 
     std::string chainError;
-    std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
-    if (!chainError.empty()) {
-        error = chainError;
+    std::unique_ptr<Chain> chain = buildChain(*preset, chainError, retained);
+    bool loaded = false;
+    if (chain) for (const auto& liveSlot : chain->slots)
+        if (liveSlot->id == slot.id && liveSlot->plugin) loaded = true;
+    if (!loaded) {
+        *preset = previous;
+        error = chainError.empty() ? "could not load that plugin" : chainError;
+        return false;
     }
+    slotId = slot.id;
     publishChain(std::move(chain));
-    notify();
     return true;
 }
 
@@ -2433,33 +3165,44 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
+    ActiveChainReadGuard retainedGuard(*this);
+    Chain* retained = retainedGuard.get();
+    if (!validateGraphEditChain(retained, error)) return false;
     Preset* preset = activeSessionDraft(true);
-    const PluginInfo* info = catalog_.find(uri);
+    const auto info = catalog_.find(uri);
     if (!info) {
         error = "that plugin is not installed";
         return false;
     }
     syncPresetFromChain();
-    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
+    std::vector<EffectSlot>* container = containingLane(preset->chain, slotId);
+    if (!container) { error = "no such effect"; return false; }
+    const auto found = std::find_if(container->begin(), container->end(),
                                     [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (found == preset->chain.end()) {
+    if (found == container->end() || found->kind != "effect") {
         error = "no such effect";
         return false;
     }
-    const int index = static_cast<int>(found - preset->chain.begin());
+    const int index = static_cast<int>(found - container->begin());
     EffectSlot next;
-    next.id = newId("slot");
+    next.id = slotId;
     next.uri = uri;
     next.name = info->name;
     next.enabled = true;
-    preset->chain.insert(preset->chain.begin() + index, next);
+    const EffectSlot previous = *found;
+    *found = next;
     newSlotId = next.id;
 
     std::string chainError;
-    std::unique_ptr<Chain> chain = buildChain(*preset, chainError);
+    // Replace the selected instance even if the new plugin has the same URI.
+    std::unique_ptr<Chain> chain = buildChain(*preset, chainError, retained, slotId);
     if (!chain) {
         error = chainError.empty() ? "could not load that plugin" : chainError;
-        preset->chain.erase(preset->chain.begin() + index);
+        (*container)[index] = previous;
         return false;
     }
     bool loaded = false;
@@ -2471,22 +3214,19 @@ bool Engine::replaceEffect(const std::string& slotId, const std::string& uri, st
     }
     if (!loaded) {
         error = chainError.empty() ? "could not load that plugin" : chainError;
-        preset->chain.erase(preset->chain.begin() + index);
+        (*container)[index] = previous;
         return false;
     }
 
-    const auto old = std::find_if(preset->chain.begin(), preset->chain.end(),
-                                  [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (old != preset->chain.end()) {
-        preset->chain.erase(old);
+    if (previous.uri != uri) {
+        preset->parameterBindings.erase(std::remove_if(preset->parameterBindings.begin(),
+            preset->parameterBindings.end(), [&](const ParameterBinding& binding) {
+                return binding.slotId == slotId && binding.action == "setParameter";
+            }), preset->parameterBindings.end());
+        for (auto& snapshot : preset->snapshots) snapshot.slots.remove(slotId);
     }
-    preset->parameterBindings.erase(
-        std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
-                       [&](const ParameterBinding& binding) { return binding.slotId == slotId; }),
-        preset->parameterBindings.end());
-    chain = buildChain(*preset, chainError);
+
     publishChain(std::move(chain));
-    notify();
     return true;
 }
 
@@ -2501,64 +3241,87 @@ bool Engine::removeEffect(const std::string& slotId, std::string& error) {
         error = "snapshot editing cannot add, remove or reorder effects";
         return false;
     }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)) {
+        error = "effect chain is still preparing";
+        return false;
+    }
+    // Retained processors must not also run on the preparation worker while
+    // the current chain is processing them. Finish file transitions first.
+    ActiveChainReadGuard retainedGuard(*this);
+    Chain* retained = retainedGuard.get();
+    if (!validateGraphEditChain(retained, error)) return false;
     Preset* preset = activeSessionDraft(true);
     syncPresetFromChain();
 
-    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
+    std::vector<EffectSlot>* container = containingLane(preset->chain, slotId);
+    if (!container) { error = "no such effect"; return false; }
+    const auto found = std::find_if(container->begin(), container->end(),
                                     [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (found == preset->chain.end()) {
+    if (found == container->end()) {
         error = "no such effect";
         return false;
     }
-    preset->chain.erase(found);
+    std::vector<std::string> removedIds;
+    collectSlotIds(*found, removedIds);
+    const Preset previous = *preset;
+    container->erase(found);
+    Json edges = Json::array();
+    for (const auto& edge : preset->routing["edges"].items())
+        if (edge["from"].asString() != slotId && edge["to"].asString() != slotId) edges.push(edge);
+    preset->routing.set("edges", edges);
+    Json positions = preset->routing["positions"];
+    positions.remove(slotId);
+    preset->routing.set("positions", positions);
     preset->parameterBindings.erase(
         std::remove_if(preset->parameterBindings.begin(), preset->parameterBindings.end(),
-                       [&](const ParameterBinding& binding) { return binding.slotId == slotId; }),
+                       [&](const ParameterBinding& binding) {
+                           return std::find(removedIds.begin(), removedIds.end(), binding.slotId)
+                               != removedIds.end();
+                       }),
         preset->parameterBindings.end());
 
     std::string chainError;
-    publishChain(buildChain(*preset, chainError));
-    notify();
-    return true;
-}
-
-bool Engine::moveEffect(const std::string& slotId, int newIndex, std::string& error) {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    Preset* stored = activePreset();
-    if (!stored) {
-        error = "no active preset";
-        return false;
-    }
-    if (snapshotMode_.load(std::memory_order_relaxed) || stored->activeSnapshot >= 0) {
-        error = "snapshot editing cannot add, remove or reorder effects";
-        return false;
-    }
-    Preset* preset = activeSessionDraft(true);
-    syncPresetFromChain();
-
-    const auto found = std::find_if(preset->chain.begin(), preset->chain.end(),
-                                    [&](const EffectSlot& slot) { return slot.id == slotId; });
-    if (found == preset->chain.end()) {
-        error = "no such effect";
-        return false;
-    }
-    EffectSlot moved = *found;
-    preset->chain.erase(found);
-    newIndex = std::max(0, std::min(newIndex, static_cast<int>(preset->chain.size())));
-    preset->chain.insert(preset->chain.begin() + newIndex, std::move(moved));
-
-    std::string chainError;
-    publishChain(buildChain(*preset, chainError));
-    notify();
+    for (auto& snapshot : preset->snapshots) snapshot.slots.remove(slotId);
+    pruneRoutingSnapshots(*preset);
+    auto next = buildChain(*preset, chainError, retained);
+    if (!next) { *preset = previous; error = chainError; return false; }
+    publishChain(std::move(next));
     return true;
 }
 
 bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::string& error,
                               bool persist) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     (void)persist; // All sound changes remain in the session draft until Save.
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (const Preset* current = effectiveActivePreset()) {
+        const EffectSlot* block = current->findSlot(slotId);
+        if (block && block->kind == "mixer") {
+            if (current->activeSnapshot >= 0 || snapshotMode_.load()) {
+                error = "return to the base preset before bypassing a mixer"; return false;
+            }
+            if (chainPublicationExpected_.load(std::memory_order_acquire)
+                || !validateGraphEditChain(chain, error)) {
+                if (error.empty()) error = "effect chain is still preparing";
+                return false;
+            }
+            Preset* draft = activeSessionDraft(true);
+            const Preset previous = *draft;
+            draft->findSlot(slotId)->enabled = enabled;
+            auto next = buildChain(*draft, error, chain);
+            if (!next) { *draft = previous; return false; }
+            publishChain(std::move(next));
+            return true;
+        }
+    }
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
@@ -2590,10 +3353,17 @@ bool Engine::setEffectEnabled(const std::string& slotId, bool enabled, std::stri
 
 bool Engine::setControlValue(const std::string& slotId, const std::string& portSymbol,
                              float value, std::string& error, bool persist) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     (void)persist; // Preview and release both update the same live session draft.
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
 
@@ -2634,6 +3404,49 @@ bool Engine::setControlValue(const std::string& slotId, const std::string& portS
     return false;
 }
 
+bool Engine::setControlValues(const std::string& slotId, const Json& controls, std::string& error) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain) { error = "no chain is running"; return false; }
+    if (chainPublicationExpected_.load(std::memory_order_acquire) || chain->presetId != activePresetId_) {
+        error = "preset is still preparing"; return false;
+    }
+    if (!controls.isArray() || controls.size() == 0) { error = "controls must be a non-empty array"; return false; }
+    for (const auto& slot : chain->slots) {
+        if (slot->id != slotId || !slot->plugin) continue;
+        std::vector<std::pair<uint32_t, float>> values;
+        std::vector<const PortInfo*> ports;
+        // Validate the whole group before changing any live or stored value.
+        for (const Json& control : controls.items()) {
+            const std::string symbol = control["port"].asString();
+            const auto& available = slot->plugin->info().ports;
+            const auto port = std::find_if(available.begin(), available.end(), [&](const PortInfo& p) {
+                return p.control && p.input && !p.trigger && p.symbol == symbol;
+            });
+            if (port == available.end() || !control["value"].isNumber() || !std::isfinite(control["value"].asFloat())) {
+                error = "invalid continuous control on this effect"; return false;
+            }
+            if (std::find(ports.begin(), ports.end(), &*port) != ports.end()) { error = "duplicate control"; return false; }
+            ports.push_back(&*port);
+            values.emplace_back(port->index, normalizePortValue(*port, control["value"].asFloat()));
+        }
+        slot->plugin->setControls(values);
+        bool clearedTempoLink = false;
+        for (size_t i = 0; i < ports.size(); ++i) {
+            writeStoredControlUnlocked(slotId, ports[i]->symbol, values[i].second);
+            if (Preset* preset = activeSessionDraft(false); preset && preset->activeSnapshot < 0) {
+                if (EffectSlot* working = preset->findSlot(slotId); working && working->tempoLinks.has(ports[i]->symbol)) {
+                    working->tempoLinks.remove(ports[i]->symbol); clearedTempoLink = true;
+                }
+            }
+        }
+        if (clearedTempoLink) notify(); else notifyPerformance();
+        return true;
+    }
+    error = "no such effect"; return false;
+}
+
 bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymbol,
                           double quarterNoteBeats, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
@@ -2652,9 +3465,15 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
     }
     Preset* preset = activeSessionDraft(true);
     EffectSlot* stored = preset->findSlot(slotId);
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!stored || !chain) {
         error = "no such effect";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
@@ -2686,8 +3505,10 @@ bool Engine::setTempoLink(const std::string& slotId, const std::string& portSymb
 
 void Engine::applyTempoLinksUnlocked(const Preset& preset, bool deferControls) {
     if (!transportEnabled_.load(std::memory_order_acquire)) return;
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) return;
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != preset.id) return;
     const double bpm = transport_.bpm();
     for (size_t slotIndex = 0; slotIndex < chain->slots.size(); ++slotIndex) {
         ChainSlot& live = *chain->slots[slotIndex];
@@ -2708,9 +3529,16 @@ void Engine::applyTempoLinksUnlocked(const Preset& preset, bool deferControls) {
 }
 
 bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& error) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     int delta = request.delta != 0 ? request.delta : (request.value >= 0.0f ? 1 : -1);
@@ -2786,6 +3614,7 @@ bool Engine::nudgeEncoderParameter(const ActionRequest& request, std::string& er
 
 bool Engine::setEffectProperty(const std::string& slotId, const std::string& propertyUri,
                                const std::string& path, std::string& error, bool persist) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     std::string resolved = path;
     if (!path.empty()) {
         resolved = resolvePluginFilePath(storage_, propertyUri, path, error);
@@ -2794,9 +3623,15 @@ bool Engine::setEffectProperty(const std::string& slotId, const std::string& pro
         }
     }
 
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
@@ -2864,8 +3699,10 @@ Snapshot Engine::captureCurrentChain(const std::string& name) const {
     snapshot.id = newId("snap");
     snapshot.name = name.empty() ? "Snapshot" : name;
 
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) {
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
         return snapshot;
     }
     Json slots = Json::object();
@@ -2878,6 +3715,12 @@ Snapshot Engine::captureCurrentChain(const std::string& name) const {
         slots.set(slot->id, state);
     }
     snapshot.slots = slots;
+    for (const auto& edge : chain->edges) {
+        snapshot.routingMix.push(Json::object({
+            {"from", chain->nodes[edge->source].id}, {"to", chain->nodes[edge->destination].id},
+            {"levelDb", edge->levelDb.load()}, {"pan", edge->pan.load()},
+            {"mute", edge->mute.load()}, {"solo", edge->solo.load()}}));
+    }
     return snapshot;
 }
 
@@ -2906,9 +3749,21 @@ const Snapshot* Engine::findSnapshotBySlot(const Preset& preset, int slot) const
 }
 
 void Engine::restoreStoredPresetToChainUnlocked(Preset& preset) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) {
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != preset.id) {
         return;
+    }
+    for (auto& edge : chain->edges) {
+        for (const auto& mix : preset.routing["edges"].items()) {
+            if (mix["from"].asString() != chain->nodes[edge->source].id
+                || mix["to"].asString() != chain->nodes[edge->destination].id) continue;
+            edge->levelDb.store(mix["levelDb"].asFloat());
+            edge->pan.store(mix["pan"].asFloat());
+            edge->mute.store(mix["mute"].asBool());
+            edge->solo.store(mix["solo"].asBool());
+        }
     }
     const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
     bool stateLoaded = false;
@@ -2953,6 +3808,10 @@ void Engine::rememberSnapshot(Preset& preset, int slot, bool enabled) {
 }
 
 bool Engine::toggleRememberedSnapshotUnlocked(Preset& preset, std::string& error) {
+    if (!activeChainReadyForPreset(preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     if (preset.rememberedSnapshotSlot < 0) {
         return true;
     }
@@ -2991,6 +3850,10 @@ bool Engine::applyRememberedSnapshotUnlocked(Preset& preset) {
 }
 
 bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& error) {
+    if (!activeChainReadyForPreset(preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     Snapshot* snapshot = findSnapshotBySlot(preset, slot);
     if (!snapshot) {
         error = "snapshot is empty";
@@ -3009,9 +3872,23 @@ bool Engine::pressSnapshotSlotUnlocked(Preset& preset, int slot, std::string& er
 }
 
 void Engine::applySnapshotToChain(const Snapshot& snapshot) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain) {
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
         return;
+    }
+    const Preset* base = effectiveActivePreset();
+    const Json mixValues = base ? routingWithMix(base->routing, snapshot.routingMix)["edges"] : snapshot.routingMix;
+    for (auto& edge : chain->edges) {
+        for (const auto& mix : mixValues.items()) {
+            if (mix["from"].asString() != chain->nodes[edge->source].id
+                || mix["to"].asString() != chain->nodes[edge->destination].id) continue;
+            edge->levelDb.store(mix["levelDb"].asFloat());
+            edge->pan.store(mix["pan"].asFloat());
+            edge->mute.store(mix["mute"].asBool());
+            edge->solo.store(mix["solo"].asBool());
+        }
     }
     const bool mutedTransition = muteOnChangeEnabled_.load(std::memory_order_acquire);
     bool stateLoaded = false;
@@ -3040,6 +3917,10 @@ bool Engine::captureSnapshot(const std::string& name, int slot, std::string& sna
         error = "no active preset";
         return false;
     }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     int targetSlot = slot;
     if (targetSlot < 0) {
         targetSlot = 0;
@@ -3051,6 +3932,7 @@ bool Engine::captureSnapshot(const std::string& name, int slot, std::string& sna
     captured.slot = targetSlot;
     if (Snapshot* existing = findSnapshotBySlot(*preset, targetSlot)) {
         existing->slots = captured.slots;
+        existing->routingMix = captured.routingMix;
         if (!name.empty()) {
             existing->name = name;
         }
@@ -3063,7 +3945,7 @@ bool Engine::captureSnapshot(const std::string& name, int slot, std::string& sna
     rememberSnapshot(*preset, targetSlot, true);
 
     if (Bank* bank = activeBank()) {
-        storage_.saveBank(*bank);
+        if (!storage_.saveBank(*bank)) { requestBankPersist(bank->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
     }
     notify();
     return true;
@@ -3074,6 +3956,10 @@ bool Engine::selectSnapshot(const std::string& snapshotId, std::string& error) {
     Preset* preset = activePreset();
     if (!preset) {
         error = "no active preset";
+        return false;
+    }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "preset is still preparing";
         return false;
     }
     for (Snapshot& snapshot : preset->snapshots) {
@@ -3100,14 +3986,19 @@ bool Engine::updateSnapshot(const std::string& snapshotId, std::string& error) {
         error = "no active preset";
         return false;
     }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "preset is still preparing";
+        return false;
+    }
     for (Snapshot& snapshot : preset->snapshots) {
         if (snapshot.id != snapshotId) {
             continue;
         }
         const Snapshot captured = captureCurrentChain(snapshot.name);
         snapshot.slots = captured.slots;
+        snapshot.routingMix = captured.routingMix;
         if (Bank* bank = activeBank()) {
-            storage_.saveBank(*bank);
+            if (!storage_.saveBank(*bank)) { requestBankPersist(bank->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
         }
         notify();
         return true;
@@ -3128,7 +4019,7 @@ bool Engine::renameSnapshot(const std::string& snapshotId, const std::string& na
             continue;
         }
         snapshot.name = name.empty() ? snapshot.name : name;
-        storage_.saveBank(*activeBank());
+        if (!storage_.saveBank(*activeBank())) { requestBankPersist(activeBank()->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
         notify();
         return true;
     }
@@ -3148,7 +4039,7 @@ bool Engine::colorSnapshot(const std::string& snapshotId, const std::string& col
             continue;
         }
         snapshot.color = color;
-        storage_.saveBank(*activeBank());
+        if (!storage_.saveBank(*activeBank())) { requestBankPersist(activeBank()->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
         notify();
         return true;
     }
@@ -3166,9 +4057,14 @@ bool Engine::setSnapshotMode(bool enabled) {
 bool Engine::restoreLiveFromStoredPreset(std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Preset* preset = activePreset();
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!preset || !chain) {
         error = "no active preset";
+        return false;
+    }
+    if (!activeChainReadyForPreset(*preset)) {
+        error = "Effect chain is still preparing";
         return false;
     }
     std::string chainError;
@@ -3203,13 +4099,17 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
         forgetRememberedSnapshot(*preset);
     }
     if (preset->activeSnapshot == found->slot) {
+        if (!activeChainReadyForPreset(*preset)) {
+            error = "preset is still preparing";
+            return false;
+        }
         restoreSessionOrStoredPresetToChainUnlocked(*preset);
         forgetRememberedSnapshot(*preset);
         preset->activeSnapshot = -1;
     }
     preset->snapshots.erase(found);
     if (Bank* bank = activeBank()) {
-        storage_.saveBank(*bank);
+        if (!storage_.saveBank(*bank)) { requestBankPersist(bank->id); error = "changes are live but the bank could not be saved"; notify(); return false; }
     }
     notify();
     return true;
@@ -3220,21 +4120,53 @@ bool Engine::deleteSnapshot(const std::string& snapshotId, std::string& error) {
 // ---------------------------------------------------------------------------
 
 bool Engine::applyControllerConfig(const Json& json, std::string& error) {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_) { error = "The controller connection is changing. Wait and retry."; return false; }
+    if (controllerHardware_.busy()) { error = "Finish or cancel hardware setup before editing controls."; return false; }
+    auto nextController = ControllerConfig::fromJson(json);
+    if (controllerHardwareCapable_ && !json["profileLoad"].asBool()) for (const auto& control : settings_.controller.controls) {
+        if (!control.hardware.isObject()) continue;
+        const auto next = std::find_if(nextController.controls.begin(), nextController.controls.end(),
+            [&](const ControllerControl& c) { return c.id == control.id; });
+        if (next == nextController.controls.end()) {
+            error = "Remove this control from Hardware Setup so its saved ESP32 wiring is also removed."; return false;
+        }
+        // Action/layout edits can arrive from a browser snapshot preceding the
+        // verified board save. Only hardware transactions may replace wiring.
+        next->hardware = control.hardware;
+        next->channel = control.channel;
+        next->midiChannel = control.midiChannel;
+        next->useNoteMessages = control.useNoteMessages;
+    }
+    if (controllerHardwareCapable_ && !json["profileLoad"].asBool())
+        nextController.boardHardware = settings_.controller.boardHardware;
     const std::string previousPort = settings_.controller.midiPort;
     const bool wasEnabled = settings_.controller.enabled;
-    settings_.controller = ControllerConfig::fromJson(json);
+    settings_.controller = std::move(nextController);
     migrateHardwareParameterBinds();
     controller_.setConfig(settings_.controller);
 
     const bool portChanged = settings_.controller.midiPort != previousPort;
+    if (portChanged || !settings_.controller.enabled || !wasEnabled) {
+        controller_.cancelLearn();
+        controllerHardware_.reset();
+        controllerHardwareCapable_ = false;
+        controllerFirmwareVersion_.clear();
+    }
 
     if (settings_.controller.enabled) {
         if (!midi_.isRunning() || portChanged || !wasEnabled) {
             std::string midiError;
-            if (!midi_.start(settings_.controller.midiPort, midiError)) {
+            const std::string port = settings_.controller.midiPort;
+            controllerHardware_.reset(); controllerHardwareCapable_ = false; controllerFirmwareVersion_.clear();
+            controllerConnecting_ = true;
+            lock.unlock();
+            const bool started = midi_.start(port, midiError);
+            lock.lock();
+            controllerConnecting_ = false;
+            if (!started) {
                 controllerError_ = midiError;
-                persistSettings();
+                if (!persistSettings(&error)) { notify(); return false; }
                 refreshLeds();
                 notify();
                 error = midiError;
@@ -3246,10 +4178,14 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
             midi_.send(ControllerRuntime::encodeIdentityRequest());
         }
     } else if (midi_.isRunning()) {
+        controllerConnecting_ = true;
+        lock.unlock();
         midi_.stop();
+        lock.lock();
+        controllerConnecting_ = false;
     }
 
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
     armAnalogCatchUnlocked();
     refreshLeds();
     notify();
@@ -3257,9 +4193,65 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
     return true;
 }
 
-bool Engine::connectController(const std::string& port, std::string& error) {
+bool Engine::applyPresetAssignments(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
-    if (!midi_.start(port, error)) {
+    const auto bankId = json["bankId"].asString();
+    const auto* bank = findBank(bankId);
+    if (!bank || !json["changes"].isObject()) { error = "choose a valid bank and assignment changes"; return false; }
+    const auto previous = controller_.config();
+    auto next = previous;
+    Json assignments = next.presetAssignments[bankId];
+    if (!assignments.isObject()) assignments = Json::object();
+    for (const auto& change : json["changes"].members()) {
+        if (change.second.isNull()) assignments.remove(change.first);
+        else {
+            const auto presetId = change.second.asString();
+            const bool exists = std::any_of(bank->presets.begin(), bank->presets.end(),
+                [&](const Preset& preset) { return preset.id == presetId; });
+            if (!change.second.isString() || !exists) { error = "assignment refers to a missing preset"; return false; }
+            assignments.set(change.first, presetId);
+            for (auto& control : next.controls) {
+                const bool switchControl = control.kind == ControlKind::Momentary
+                    || control.kind == ControlKind::Latching || control.kind == ControlKind::EncoderPush;
+                if (control.id == change.first && switchControl
+                    && (control.binding.action.empty() || control.binding.action == "none"))
+                    control.binding.action = "selectPreset";
+            }
+        }
+    }
+    next.presetAssignments.set(bankId, std::move(assignments));
+    controller_.setConfig(next);
+    settings_.controller = next;
+    if (!persistSettings(&error)) {
+        controller_.setConfig(previous);
+        settings_.controller = previous;
+        notify();
+        return false;
+    }
+    refreshLeds();
+    notify();
+    return true;
+}
+
+bool Engine::connectController(const std::string& port, std::string& error) {
+    std::unique_lock<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_) { error = "The controller connection is changing. Wait and retry."; return false; }
+    if (controllerHardware_.phase() == "saving") { error = "Wait for the controller save to finish."; return false; }
+    if (controllerHardware_.busy()) {
+        auto config = controller_.config();
+        controllerHardware_.command("cancel", Json::object(), config,
+            [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+    }
+    controller_.cancelLearn();
+    controllerHardware_.reset();
+    controllerHardwareCapable_ = false;
+    controllerFirmwareVersion_.clear();
+    controllerConnecting_ = true;
+    lock.unlock();
+    const bool started = midi_.start(port, error);
+    lock.lock();
+    controllerConnecting_ = false;
+    if (!started) {
         controllerError_ = error;
         notify();
         return false;
@@ -3268,7 +4260,7 @@ bool Engine::connectController(const std::string& port, std::string& error) {
     settings_.controller.midiPort = midi_.activePort();
     controller_.setConfig(settings_.controller);
     controllerError_.clear();
-    persistSettings();
+    if (!persistSettings(&error)) { notify(); return false; }
 
     midi_.send(ControllerRuntime::encodeIdentityRequest());
     refreshLeds();
@@ -3277,19 +4269,75 @@ bool Engine::connectController(const std::string& port, std::string& error) {
 }
 
 void Engine::disconnectController() {
-    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::unique_lock<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_ || controllerHardware_.phase() == "saving") return;
+    if (controllerHardware_.busy()) {
+        auto config = controller_.config(); std::string error;
+        controllerHardware_.command("cancel", Json::object(), config,
+            [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+    }
+    controller_.cancelLearn();
+    controller_.setConfig(controller_.config());
+    controllerHardware_.reset();
+    controllerHardwareCapable_ = false;
+    controllerFirmwareVersion_.clear();
+    controllerConnecting_ = true;
+    lock.unlock();
     midi_.stop();
+    lock.lock();
+    controllerConnecting_ = false;
     settings_.controller.enabled = false;
     persistSettings();
     notify();
 }
 
-void Engine::beginControlLearn(const std::string& controlId) {
-    controller_.beginLearn(controlId);
+bool Engine::controllerHardwareCommand(const std::string& action, const Json& payload, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controllerConnecting_ || !midi_.isRunning() || !controllerHardwareCapable_) {
+        error = "Select a supported Pi-MFX controller first."; return false;
+    }
+    auto config = controller_.config();
+    if (action == "learn") {
+        const auto target=std::find_if(config.controls.begin(),config.controls.end(),
+            [&](const ControllerControl& c) { return c.id == payload["controlId"].asString(); });
+        if (target!=config.controls.end() && (target->kind==ControlKind::Pot || target->kind==ControlKind::Slider || target->kind==ControlKind::Expression)) {
+            if (!controllerGuidedAnalogCapable_) {
+                error="This controller needs the current firmware for guided pot calibration. Update Controller Firmware in Settings > Updates first.";
+                return false;
+            }
+        }
+    }
+    controller_.cancelLearn();
+    controller_.setConfig(config); // discard outstanding performance holds/taps
+    const bool ok = controllerHardware_.command(action, payload, config,
+        [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+    if (ok && action == "adopt") {
+        controller_.setConfig(config); settings_.controller = config;
+        if (!persistSettings(&error)) { notify(); return false; }
+    }
+    refreshLeds();
     notify();
+    return ok;
+}
+
+bool Engine::beginControlLearn(const std::string& controlId, std::string& error) {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controllerHardwareCapable_) {
+        return controllerHardwareCommand("learn", Json::object({{"controlId", controlId}}), error);
+    }
+    if (!midi_.isRunning()) { error = "Connect a MIDI controller before learning."; return false; }
+    controller_.beginLearn(controlId);
+    if (!controller_.learning()) { error = "Select an existing control."; return false; }
+    notify();
+    return true;
 }
 
 void Engine::cancelControlLearn() {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    if (controllerHardwareCapable_) {
+        std::string error;
+        controllerHardwareCommand("cancel", Json::object(), error);
+    }
     controller_.cancelLearn();
     notify();
 }
@@ -3425,7 +4473,7 @@ bool Engine::bindPresetControl(const Json& json, std::string& error) {
         }
         if (action == "setParameter") {
             const EffectSlot* slot = preset->findSlot(bind.slotId);
-            const PluginInfo* plugin = slot ? catalog_.find(slot->uri) : nullptr;
+            const auto plugin = slot ? catalog_.find(slot->uri) : nullptr;
             if (plugin) {
                 const auto port = std::find_if(plugin->ports.begin(), plugin->ports.end(),
                     [&](const PortInfo& item) {
@@ -3681,9 +4729,16 @@ bool Engine::selectVirtualSurfaceControl(const std::string& controlId, std::stri
 }
 
 bool Engine::toggleBoundParameter(const ParameterBinding& binding, std::string& error) {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     if (!chain) {
         error = "no chain is running";
+        return false;
+    }
+    if (chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) {
+        error = "preset is still preparing";
         return false;
     }
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
@@ -3916,12 +4971,20 @@ bool Engine::turnVirtualEncoder(const std::string& controlId, int delta, std::st
 }
 
 void Engine::handleMidiMessage(const MidiMessage& message) {
+    if (backupPreparing()) return;
+    std::unique_lock<std::recursive_mutex> stateLock(stateMutex_);
+    if (controllerConnecting_) return;
+    if (controllerHardware_.busy()) return;
+    if (controllerHardwareCapable_ && !controllerHardware_.accepts(message, controller_.config())) return;
+    const auto actions = controller_.handleMessage(message);
+    stateLock.unlock();
     bool encoderUi = false;
-    for (const ActionRequest& request : controller_.handleMessage(message)) {
+    for (const ActionRequest& request : actions) {
         if (request.kind == ControlKind::Encoder || request.kind == ControlKind::EncoderPush) {
             encoderUi = true;
         }
         if (request.action == "learned") {
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             // Learning changed the runtime copy of the config; persist it so a
             // reboot does not lose the assignment.
             settings_.controller = controller_.config();
@@ -3937,6 +5000,19 @@ void Engine::handleMidiMessage(const MidiMessage& message) {
 }
 
 void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
+    if (backupPreparing()) return;
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    if (controllerConnecting_) return;
+    bool configChanged = false;
+    auto config = controller_.config();
+    if (controllerHardwareCapable_ && controllerHardware_.receive(sysex, config,
+            [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, configChanged)) {
+        if (configChanged) {
+            controller_.setConfig(config); settings_.controller = config;
+            persistSettings();
+        }
+        refreshLeds(); notify(); return;
+    }
     ControllerRuntime::Identity identity;
     if (!ControllerRuntime::parseIdentity(sysex, identity)) {
         return;
@@ -3947,17 +5023,26 @@ void Engine::handleSysEx(const std::vector<uint8_t>& sysex) {
     {
         std::lock_guard<std::recursive_mutex> lock(stateMutex_);
         controllerFirmwareVersion_ = identity.firmwareVersion;
-        controllerFirmwareUpdateRequired_ = identity.firmwareMajor < kRequiredControllerFirmwareMajor
-            || (identity.firmwareMajor == kRequiredControllerFirmwareMajor
-                && identity.firmwareMinor < kRequiredControllerFirmwareMinor);
+        controllerFirmwareUpdateRequired_ = !identity.hardwareSetup;
+        controllerHardwareCapable_ = identity.hardwareSetup;
+        controllerGuidedAnalogCapable_ = identity.guidedAnalog;
+        if (controllerHardwareCapable_ && !controllerHardware_.ready() && controllerHardware_.phase() == "idle") {
+            std::string error;
+            controllerHardware_.command("read", Json::object(), config,
+                [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);
+        }
     }
     refreshLeds();
     notify();
 }
 
 bool Engine::bindingTargetPosition(const ParameterBinding& binding, float& position) const {
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
-    if (!chain || binding.action != "setParameter") return false;
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
+    if (!chain || binding.action != "setParameter"
+        || chainPublicationExpected_.load(std::memory_order_acquire)
+        || chain->presetId != activePresetId_) return false;
     for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
         if (slot->id != binding.slotId || !slot->plugin) continue;
         for (const PortInfo& port : slot->plugin->info().ports) {
@@ -4175,12 +5260,13 @@ void Engine::runAction(const ActionRequest& incoming) {
         stepBank(encoderDelta != 0 ? -encoderDelta : -1, error);
     } else if (request.action == "selectPreset") {
         const ControllerConfig config = controller_.config();
-        std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
+        std::string bankId = binding.bankId.empty() ? browseBankId() : binding.bankId;
         std::string presetId = binding.presetId;
         sessionPresetForControl(request.controlId, bankId, presetId);
         if (presetId.empty()) {
             presetId = assignedPresetForControl(config, bankId, request.controlId);
         }
+        if (presetId.empty()) return; // An empty switch does not select a fallback sound.
         if (!presetId.empty() && presetId == activePresetId_
             && (bankId.empty() || bankId == activeBankId_)) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
@@ -4211,7 +5297,7 @@ void Engine::runAction(const ActionRequest& incoming) {
         }
     } else if (request.action == "reloadPreset") {
         const ControllerConfig config = controller_.config();
-        std::string bankId = binding.bankId.empty() ? activeBankId_ : binding.bankId;
+        std::string bankId = binding.bankId.empty() ? browseBankId() : binding.bankId;
         std::string presetId = binding.presetId;
         if (presetId.empty()) {
             presetId = assignedPresetForControl(config, bankId, request.controlId);
@@ -4227,16 +5313,19 @@ void Engine::runAction(const ActionRequest& incoming) {
         if (latching) {
             setEffectEnabled(binding.slotId, latchOn(request), error, request.persist);
         } else {
-            Chain* chain = activeChain_.load(std::memory_order_acquire);
             bool enabled = true;
-            if (chain) {
-                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                    if (slot->id == binding.slotId) {
-                        const int pending = slot->pendingEnabled.load(std::memory_order_acquire);
-                        const bool current = pending >= 0
-                            ? pending != 0 : slot->enabled.load(std::memory_order_relaxed);
-                        enabled = !current;
-                        break;
+            {
+                std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+                ActiveChainReadGuard chainGuard(*this);
+                if (Chain* chain = chainGuard.get()) {
+                    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                        if (slot->id == binding.slotId) {
+                            const int pending = slot->pendingEnabled.load(std::memory_order_acquire);
+                            const bool current = pending >= 0
+                                ? pending != 0 : slot->enabled.load(std::memory_order_relaxed);
+                            enabled = !current;
+                            break;
+                        }
                     }
                 }
             }
@@ -4247,21 +5336,26 @@ void Engine::runAction(const ActionRequest& incoming) {
             nudgeEncoderParameter(request, error);
         } else {
             const bool persist = request.persist && !isContinuousKind(request.kind);
-            const PortInfo* boundPort = nullptr;
-            if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
-                for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-                    if (slot->id != binding.slotId || !slot->plugin) continue;
-                    for (const PortInfo& port : slot->plugin->info().ports) {
-                        if (port.control && port.input && port.symbol == binding.portSymbol) {
-                            boundPort = &port;
-                            break;
+            std::optional<PortInfo> boundPort;
+            {
+                std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+                ActiveChainReadGuard chainGuard(*this);
+                if (Chain* chain = chainGuard.get()) {
+                    for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+                        if (slot->id != binding.slotId || !slot->plugin) continue;
+                        for (const PortInfo& port : slot->plugin->info().ports) {
+                            if (port.control && port.input && port.symbol == binding.portSymbol) {
+                                boundPort = port;
+                                break;
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
             }
             setControlValue(binding.slotId, binding.portSymbol,
-                            mappedBindingValue(request, boundPort), error, persist);
+                            mappedBindingValue(request, boundPort ? &*boundPort : nullptr),
+                            error, persist);
             notifyPerformance();
         }
     } else if (request.action == "bypassAll") {
@@ -4359,6 +5453,8 @@ void Engine::runAction(const ActionRequest& incoming) {
 }
 
 void Engine::refreshLeds() {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    if (controllerConnecting_ || controllerHardware_.busy()) return;
     const ControllerConfig config = controller_.config();
     if (!config.enabled || !config.syncLedColours || config.leds.empty()) {
         return;
@@ -4377,7 +5473,8 @@ void Engine::refreshLeds() {
         {"danger", 0xF8, 0x71, 0x71},
     };
 
-    Chain* chain = activeChain_.load(std::memory_order_acquire);
+    ActiveChainReadGuard chainGuard(*this);
+    Chain* chain = chainGuard.get();
     std::vector<LedState> states;
     states.reserve(config.leds.size());
 
@@ -4415,12 +5512,11 @@ void Engine::refreshLeds() {
                     && preset->activeSnapshot == control.binding.snapshotSlot;
                 colourRole = "snapshot";
             } else if (control.binding.action == "selectPreset") {
-                std::string bankId = activeBankId_;
+                std::string bankId = control.binding.bankId.empty() ? browseBankId() : control.binding.bankId;
                 std::string presetId = control.binding.presetId;
                 sessionPresetForControl(control.id, bankId, presetId);
                 if (presetId.empty()) {
-                    presetId = assignedPresetForControl(config, activeBankId_, control.id);
-                    bankId = activeBankId_;
+                    presetId = assignedPresetForControl(config, bankId, control.id);
                 }
                 state.on = !presetId.empty() && presetId == activePresetId_
                     && (bankId.empty() || bankId == activeBankId_);
@@ -4513,7 +5609,18 @@ void Engine::refreshLeds() {
         states.push_back(std::move(state));
     }
 
-    midi_.send(controller_.encodeLedMessage(states, config.ledBrightness));
+    const auto frame = controller_.encodeLedMessage(states, config.ledBrightness);
+    if (controllerHardwareCapable_) {
+        // Complete small SysEx packets fit the firmware/library receive buffer.
+        for (size_t offset=0; offset<states.size(); offset+=24) {
+            const size_t count=std::min<size_t>(24,states.size()-offset);
+            const uint8_t flags=(offset==0 ? 1 : 0) | (offset+count==states.size() ? 2 : 0);
+            std::vector<uint8_t> part={0xF0,0x7D,0x4D,0x46,pimfxhw::LedFrame,frame[5],flags,uint8_t(count)};
+            part.insert(part.end(),frame.begin()+8+offset*4,frame.begin()+8+(offset+count)*4);
+            part.push_back(0xF7);
+            if (!midi_.send(part)) break;
+        }
+    } else midi_.send(frame);
 }
 
 // ---------------------------------------------------------------------------
@@ -4697,10 +5804,13 @@ bool Engine::deleteLibraryFile(const std::string& kind, const std::string& path,
             error = "could not delete that folder";
             return false;
         }
+        if (backing_) { backing_->fileDeleted(path); backing_->refreshPlaylist(); }
         notify();
         return true;
     }
     if (!removeFile(path)) {
+        std::error_code missingError;
+        if (!std::filesystem::exists(path, missingError) && !missingError) return true;
         error = "could not delete the file";
         return false;
     }
@@ -4801,6 +5911,16 @@ bool Engine::libraryMkdir(const std::string& kind, const std::string& directory,
     return true;
 }
 
+bool Engine::libraryPathInUse(const std::string& path) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const auto index = storage_.libraryFileIndex();
+    for (const auto& bank : banks_) for (const auto& preset : bank.presets)
+        if (storage_.referencesLibraryPath(preset.toJson(), path, index)) return true;
+    for (const auto& draft : sessionPresetDrafts_)
+        if (storage_.referencesLibraryPath(draft.second.toJson(), path, index)) return true;
+    return false;
+}
+
 bool Engine::libraryRename(const std::string& kind, const std::string& path,
                            const std::string& newName, std::string& error) {
     const std::string root = libraryRootForKind(storage_.paths(), kind);
@@ -4819,6 +5939,14 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
         return false;
     }
     const std::string dest = joinPath(parentPath(path), safe);
+    if (dest == path) return true;
+    if (libraryPathInUse(path)) {
+        error = "this file or folder is used by a preset; remove its preset references before renaming"; return false;
+    }
+    std::error_code collision;
+    if (std::filesystem::exists(dest, collision) || collision) {
+        error = "that name already exists; renaming never replaces library files"; return false;
+    }
     std::error_code typeEc;
     if (std::filesystem::is_regular_file(path, typeEc)
         && !libraryExtensionAllowed(kind, std::filesystem::path(dest))) {
@@ -4838,7 +5966,7 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
         return false;
     }
     std::error_code ec;
-    std::filesystem::rename(path, dest, ec);
+    renameFileNoReplace(path, dest, ec);
     if (ec) {
         error = "could not rename that";
         return false;
@@ -4851,6 +5979,9 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
 bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                          std::string& error) {
     if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
+    if (libraryPathInUse(path)) {
+        error = "this file or folder is used by a preset; remove its preset references before moving"; return false;
+    }
     if (!storage_.isPathInLibrary(path)) {
         error = "that path is not in the library";
         return false;
@@ -4875,7 +6006,7 @@ bool Engine::libraryMove(const std::string& path, const std::string& kind, const
         return false;
     }
     std::error_code ec;
-    std::filesystem::rename(path, dest, ec);
+    renameFileNoReplace(path, dest, ec);
     if (ec) {
         error = "could not move that";
         return false;
@@ -4933,7 +6064,7 @@ void Engine::tunerThread() {
         const size_t captureCount = extendedRange ? captured.size() : window.size();
         for (size_t i = 0; i < captureCount; ++i) {
             const size_t index = (write + kTunerRingSize - captureCount + i) % kTunerRingSize;
-            captured[i] = tunerRing_[index];
+            captured[i] = tunerRing_[index].load(std::memory_order_relaxed);
         }
         if (extendedRange) {
             for (size_t i = 0; i < window.size(); ++i) {
@@ -4998,9 +6129,52 @@ void Engine::tunerThread() {
 
 void Engine::housekeepingThread() {
     int ticks = 0;
+    unsigned firmwarePollTicks = 0;
+    std::string firmwareReconnectId;
     int audioRetryLog = 0;
+    uint64_t reportedXruns = metrics_.xruns.load(std::memory_order_relaxed);
+    const unsigned logicalProcessors = std::max(1u, std::thread::hardware_concurrency());
+    std::clock_t previousProcessCpu = std::clock();
+    auto previousProcessCpuWall = std::chrono::steady_clock::now();
+    float smoothedEngineCpu = 0.0f;
+    bool engineCpuReady = false;
     while (!shuttingDown_.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
+
+        // USB re-enumeration changes ALSA client IDs. Reconnect only the
+        // controller that was selected before the verified firmware update;
+        // never replace a different MIDI device selected by the user.
+        if (++firmwarePollTicks >= 40) {
+            firmwarePollTicks = 0;
+            std::string contents, parseError;
+            if (readFile(joinPath(storage_.paths().dataRoot, "controller-firmware-reconnect.json"), contents)) {
+                const Json request = Json::parse(contents, &parseError);
+                const std::string id = request["id"].asString();
+                if (parseError.empty() && !id.empty() && id != firmwareReconnectId) {
+                    bool reconnect = false;
+                    std::string port = request["port"].asString();
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                        const auto& selected = settings_.controller.midiPort;
+                        const bool raw = !request["previousRawPort"].asString().empty()
+                            && selected == request["previousRawPort"].asString();
+                        if (raw) port = request["rawPort"].asString();
+                        const double age = std::chrono::duration<double>(
+                            std::chrono::system_clock::now().time_since_epoch()).count()
+                            - request["createdAt"].asDouble();
+                        reconnect = settings_.controller.enabled && !controllerConnecting_
+                            && !controllerHardware_.busy() && age >= 0 && age < 300 && !port.empty()
+                            && (raw || selected == request["previousPort"].asString());
+                    }
+                    if (reconnect) {
+                        std::string error;
+                        if (!connectController(port, error))
+                            logWarn("controller firmware reconnect: " + error);
+                    }
+                    firmwareReconnectId = id;
+                }
+            }
+        }
 
         AudioRealtimeStatus realtimeStatus;
         if (backend_ && backend_->takeRealtimeStatus(realtimeStatus)) {
@@ -5027,14 +6201,49 @@ void Engine::housekeepingThread() {
             audioRetryLog = 0;
         }
 
-        for (const ActionRequest& request : controller_.pollHolds()) {
-            runAction(request);
+        const uint64_t xruns = metrics_.xruns.load(std::memory_order_relaxed);
+        if (xruns < reportedXruns) {
+            reportedXruns = xruns; // the user reset the counters
+        } else if (xruns > reportedXruns) {
+            const uint64_t added = xruns - reportedXruns;
+            reportedXruns = xruns;
+            const uint32_t direction =
+                metrics_.lastXrunDirection.load(std::memory_order_relaxed);
+            const uint32_t transition =
+                metrics_.lastXrunTransitionPhase.load(std::memory_order_relaxed);
+            const int errorCode = metrics_.lastXrunError.load(std::memory_order_relaxed);
+            const char* directionName = direction == static_cast<uint32_t>(
+                AudioXrunDirection::Capture) ? "capture" : "playback";
+            const char* transitionName = transition == static_cast<uint32_t>(
+                MasterOutputSafety::TransitionState::FadingOut) ? "fading-out"
+                : transition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::Muted)
+                ? "muted"
+                : transition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::FadingIn)
+                ? "fading-in" : "running";
+            logWarn("audio: " + std::to_string(added) + " xrun(s), last="
+                + directionName + ", transition=" + transitionName
+                + ", chain=" + std::to_string(
+                    metrics_.lastXrunChainGeneration.load(std::memory_order_relaxed))
+                + ", workers=" + std::to_string(
+                    metrics_.lastXrunWorkerTransitions.load(std::memory_order_relaxed))
+                + ", preparing=" + (metrics_.lastXrunChainPreparationActive.load(
+                    std::memory_order_relaxed) ? "yes" : "no")
+                + (errorCode != 0 ? ", error=" + std::string(std::strerror(errorCode)) : ""));
         }
+
+        std::vector<ActionRequest> heldActions;
+        {
+            std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+            if (controllerHardware_.tick([this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); })) notify();
+            if (!controllerHardware_.busy()) heldActions = controller_.pollHolds();
+        }
+        for (const ActionRequest& request : heldActions) runAction(request);
         collectRetiredChains();
         if (chainStateDirty_.exchange(false, std::memory_order_acq_rel)) {
+            refreshLeds();
             notify();
         }
-        flushBankPersistIfDue();
+        flushPendingPersistence();
         if (recorderOwnsTransport_.load(std::memory_order_acquire) && recorder_
             && !recorder_->recording() && !recorder_->playing()) {
             transport_.stop();
@@ -5049,21 +6258,48 @@ void Engine::housekeepingThread() {
         // Meters update several times a second; the full state only changes
         // when something actually changes, so it is not sent on a timer.
         if (++ticks % 4 == 0) {
-            std::lock_guard<std::mutex> lock(listenerMutex_);
-            if (listener_) {
-                listener_(meterState());
+            const std::clock_t processCpu = std::clock();
+            const auto processCpuWall = std::chrono::steady_clock::now();
+            if (processCpu != static_cast<std::clock_t>(-1)
+                && previousProcessCpu != static_cast<std::clock_t>(-1)
+                && processCpu >= previousProcessCpu) {
+                const double cpuSeconds = static_cast<double>(processCpu - previousProcessCpu)
+                    / static_cast<double>(CLOCKS_PER_SEC);
+                const double wallSeconds = std::chrono::duration<double>(
+                    processCpuWall - previousProcessCpuWall).count();
+                if (wallSeconds > 0.0) {
+                    const float measured = static_cast<float>(std::max(0.0,
+                        std::min(1.0, cpuSeconds / wallSeconds / logicalProcessors)));
+                    smoothedEngineCpu = engineCpuReady
+                        ? smoothedEngineCpu * 0.8f + measured * 0.2f
+                        : measured;
+                    engineCpuReady = true;
+                    engineCpuLoad_.store(smoothedEngineCpu, std::memory_order_relaxed);
+                    engineCpuLoadAvailable_.store(true, std::memory_order_release);
+                }
+            }
+            previousProcessCpu = processCpu;
+            previousProcessCpuWall = processCpuWall;
+
+            StateListener listener;
+            {
+                std::lock_guard<std::mutex> lock(listenerMutex_);
+                listener = listener_;
+            }
+            if (listener) {
+                listener(meterState());
                 if (transportEnabled_.load(std::memory_order_acquire)) {
-                    listener_(transportState());
+                    listener(transportState());
                 }
                 if (backingEnabled_.load(std::memory_order_acquire)) {
-                    listener_(backing_->state());
+                    listener(backing_->state());
                 }
-                listener_(looperState());
+                listener(looperState(ticks % 40 == 0));
                 if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) {
-                    listener_(recorderState());
+                    listener(recorderState(ticks % 40 == 0));
                 }
                 if (drumsEnabled_.load(std::memory_order_acquire) && drums_) {
-                    listener_(drumState());
+                    listener(drumState(ticks % 40 == 0));
                 }
             }
             if (transportEnabled_.load(std::memory_order_acquire)
@@ -5100,14 +6336,77 @@ void Engine::housekeepingThread() {
 // State reporting
 // ---------------------------------------------------------------------------
 
-bool Engine::persistSettings() {
+bool Engine::persistSettings(std::string* error) {
     settings_.activeBankId = activeBankId_;
     settings_.activePresetId = activePresetId_;
     ControllerConfig config = controller_.config();
     config.enabled = settings_.controller.enabled;
     config.midiPort = midi_.isRunning() ? midi_.activePort() : settings_.controller.midiPort;
     settings_.controller = std::move(config);
-    return storage_.saveSettings(settings_);
+    const bool saved = storage_.saveSettings(settings_);
+    persistenceError_ = saved ? "" : "could not save settings; check free space and storage permissions";
+    if (!saved) {
+        requestSettingsPersist();
+        if (error) *error = persistenceError_;
+    }
+    return saved;
+}
+
+Json Engine::captureBackupSession() {
+    Json drafts = Json::array();
+    for (const auto& entry : sessionPresetDrafts_) drafts.push(entry.second.toJson());
+    Json session = Json::object({{"version", 1}, {"drafts", drafts},
+        {"loopFile", looper_ && looper_->state(false)["hasLoop"].asBool() ? fileName(looper_->savedPath()) : ""},
+        {"bypassAll", bypassAll_.load(std::memory_order_relaxed)}});
+    if (const Preset* preset = effectiveActivePreset()) {
+        Preset audible = recoveryLivePreset_ && recoveryLivePreset_->id == activePresetId_ ? *recoveryLivePreset_ : *preset;
+        audible.activeSnapshot = -1;
+        captureChainIntoPreset(audible);
+        session.set("livePreset", audible.toJson());
+        session.set("activeSnapshot", activePreset() ? activePreset()->activeSnapshot : -1);
+    }
+    return session;
+}
+
+bool Engine::prepareBackup(bool includeLoop, std::string& error) {
+    std::lock_guard<std::recursive_mutex> mediaLock(mediaMutex_);
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    if (backupPreparing_.exchange(true, std::memory_order_acq_rel)) {
+        error = "a recovery operation is already preparing";
+        return false;
+    }
+    auto fail = [&](const std::string& message) {
+        error = message;
+        releaseBackupPreparation();
+        return false;
+    };
+    if (chainPublicationExpected_.load(std::memory_order_acquire) || activeChainTransitionPending())
+        return fail("wait for the preset or model to finish loading before backup/restore");
+    if (recorder_) {
+        const std::string status = recorder_->state(false)["status"].asString();
+        if (status == "recording" || status == "finalizing")
+            return fail("stop recording and wait for its files to finish before backup/restore");
+    }
+    if (looper_) {
+        const Json loop = looper_->state(false);
+        const std::string mode = loop["status"].asString();
+        if (mode == "recording" || mode == "armed" || mode == "overdubbing" || looper_->fileOperationPending())
+            return fail("finish loop recording, overdubbing and file operations before backup/restore");
+        if (includeLoop && loop["hasLoop"].asBool()) {
+            if (!looper_->save("Backup current loop", true, error)) return fail(error);
+            for (int i = 0; i < 300 && looper_->fileOperationPending(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            const Json saved = looper_->state();
+            if (looper_->fileOperationPending() || !saved["saveError"].asString().empty())
+                return fail("current loop could not be saved for recovery; save it in Looper and retry");
+        }
+    }
+    if (activeSessionDraft()) captureActiveSessionDraft();
+    const Json session = captureBackupSession();
+    if (!persistSettings(&error) || !writeFileAtomic(joinPath(storage_.paths().dataRoot,
+            "backup-session.pending.json"), session.dump(), true))
+        return fail("could not flush settings and unsaved presets for backup; check storage");
+    return true;
 }
 
 void Engine::notify() {
@@ -5115,13 +6414,16 @@ void Engine::notify() {
     // before that swap would serialize the outgoing chain alongside the new
     // preset metadata. The swap marks chainStateDirty_, and housekeeping sends
     // one coherent state as soon as the new chain is active.
-    if (pendingChain_.peek() != nullptr) {
+    if (pendingChain_.peek() != nullptr
+        || chainPublicationExpected_.load(std::memory_order_acquire)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (listener_) {
-        listener_(fullState());
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
     }
+    if (listener) listener(fullState());
 }
 
 void Engine::publishState() {
@@ -5129,20 +6431,25 @@ void Engine::publishState() {
 }
 
 void Engine::notifyPerformance() {
-    if (pendingChain_.peek() != nullptr) {
+    if (pendingChain_.peek() != nullptr
+        || chainPublicationExpected_.load(std::memory_order_acquire)) {
         return;
     }
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (listener_) {
-        listener_(performanceState());
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
     }
+    if (listener) listener(performanceState());
 }
 
 void Engine::notifyUiNav(int delta, bool select, const std::string& virtualControlAction) {
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (!listener_) {
-        return;
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
     }
+    if (!listener) return;
     Json json = Json::object();
     json.set("type", "uiNav");
     if (!virtualControlAction.empty()) json.set("virtualControlAction", virtualControlAction);
@@ -5151,13 +6458,18 @@ void Engine::notifyUiNav(int delta, bool select, const std::string& virtualContr
     } else {
         json.set("delta", delta);
     }
-    listener_(json);
+    listener(json);
 }
 
 Json Engine::fullState() const {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Json json = Json::object();
     json.set("type", "state");
+    json.set("persistenceError", persistenceError_);
+    json.set("stateEpoch", stateEpoch_);
+    json.set("revision", static_cast<int64_t>(++stateRevision_));
+    json.set("chainPreparationError", chainPreparationTimedOut_.load(std::memory_order_acquire)
+        ? "Model loading timed out. Reload the saved preset or select another preset." : "");
     json.set("version", PIMFX_VERSION);
 #ifdef PIMFX_GIT_SHA
     json.set("gitSha", PIMFX_GIT_SHA);
@@ -5169,7 +6481,13 @@ Json Engine::fullState() const {
     }
     json.set("banks", bankArray);
     json.set("activeBankId", activeBankId_);
+    json.set("browseBankId", browseBankId());
     json.set("activePresetId", activePresetId_);
+
+    Json editorBindings = Json::array();
+    if (const Preset* current = effectiveActivePreset())
+        for (const auto& binding : current->parameterBindings) editorBindings.push(binding.toJson());
+    json.set("editorBindings", editorBindings);
 
     json.set("audio", audioSettingsToJson(settings_.audio));
     if (backend_) json.set("actualAudio", audioSettingsToJson(backend_->actualSettings()));
@@ -5183,14 +6501,13 @@ Json Engine::fullState() const {
     if (backingEnabled_.load(std::memory_order_acquire)) json.set("backing", backing_->state());
     json.set("looper", looperState());
     json.set("recorderFeatureEnabled", recorderEnabled_.load(std::memory_order_acquire));
-    if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState());
+    // Frequent engine publications carry nonblocking recorder status; detailed
+    // project/waveform data has its own worker request and periodic publication.
+    if (recorderEnabled_.load(std::memory_order_acquire) && recorder_) json.set("recorder", recorderState(false));
     json.set("drumFeatureEnabled", drumsEnabled_.load(std::memory_order_acquire));
     if (drumsEnabled_.load(std::memory_order_acquire) && drums_) json.set("drums", drumState());
-#if defined(PIMFX_ENABLE_COMMUNITY_CATALOG)
     json.set("communityCatalogFeatureEnabled", true);
-#else
-    json.set("communityCatalogFeatureEnabled", false);
-#endif
+
     json.set("controller", describeControllerRuntime());
     json.set("virtualControls", effectiveVirtualControlsConfig().toJson());
     json.set("sharedVirtualControls", settings_.virtualControls.toJson());
@@ -5203,7 +6520,16 @@ Json Engine::fullState() const {
     json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));
     json.set("virtualControlFine", proxyFineMode_);
     json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
+    json.set("chainGeneration", static_cast<int64_t>(
+        metrics_.chainGeneration.load(std::memory_order_relaxed)));
+    // Editor controls read state, not the independently published meters.
+    json.set("chainPreparing",
+        chainPublicationExpected_.load(std::memory_order_acquire)
+            || pendingChain_.peek() != nullptr
+            || metrics_.chainPreparationActive.load(std::memory_order_relaxed));
     json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
+    json.set("editorUndoCount", editorHistoryPresetId_ == activePresetId_ ? static_cast<int>(editorUndo_.size()) : 0);
+    json.set("editorRedoCount", editorHistoryPresetId_ == activePresetId_ ? static_cast<int>(editorRedo_.size()) : 0);
     Json dirtyPresetIds = Json::array();
     for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
     json.set("sessionPresetDirtyIds", std::move(dirtyPresetIds));
@@ -5220,21 +6546,56 @@ Json Engine::fullState() const {
         json.set("controllerError", controllerError_);
     }
     json.set("lv2Available", catalog_.available());
-    json.set("pluginCount", static_cast<int>(catalog_.plugins().size()));
+    json.set("pluginCount", static_cast<int>(catalog_.pluginCount()));
 
-    // Live chain contents, which can differ from the stored preset when a
-    // plugin named by the preset is not installed.
+    // Keep `chain` as the flat live-plugin list consumed by Performance,
+    // snapshots, and control layout editors. `chainLayout` adds the flat
+    // routing description used by the preset editor.
     Json chainArray = Json::array();
-    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
-        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
-            if (!slot->plugin) {
-                continue;
+    Json chainLayout = Json::array();
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
+        json.set("activeChainPresetId", chain->presetId);
+        const Preset* preset = effectiveActivePreset();
+        const auto findLive = [&](const std::string& id) -> ChainSlot* {
+            for (const std::unique_ptr<ChainSlot>& live : chain->slots) {
+                if (live->id == id) return live.get();
             }
+            return nullptr;
+        };
+        const auto describe = [&](const EffectSlot& stored) -> Json {
+            Json slotJson = Json::object();
+            slotJson.set("id", stored.id);
+            slotJson.set("name", stored.name);
+            slotJson.set("enabled", stored.enabled);
+            if (stored.kind == "mixer") {
+                slotJson.set("kind", "mixer");
+                slotJson.set("state", stored.state);
+                return slotJson;
+            }
+            ChainSlot* live = findLive(stored.id);
+            slotJson.set("uri", stored.uri);
+            slotJson.set("tempoLinks", stored.tempoLinks);
+            if (!live || !live->plugin) {
+                slotJson.set("missing", true);
+                slotJson.set("state", stored.state);
+                return slotJson;
+            }
+            slotJson.set("enabled", live->enabled.load(std::memory_order_relaxed));
+            slotJson.set("plugin", live->plugin->info().toJson(true));
+            slotJson.set("state", live->plugin->saveState());
+            return slotJson;
+        };
+        if (preset) {
+            for (const EffectSlot& slot : preset->chain) chainLayout.push(describe(slot));
+        }
+        for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
+            if (!slot->plugin) continue;
             Json slotJson = Json::object();
             slotJson.set("id", slot->id);
             slotJson.set("uri", slot->plugin->uri());
             slotJson.set("enabled", slot->enabled.load(std::memory_order_relaxed));
-            if (const Preset* preset = effectiveActivePreset()) {
+            if (preset) {
                 if (const EffectSlot* stored = preset->findSlot(slot->id)) {
                     slotJson.set("name", stored->name);
                     slotJson.set("tempoLinks", stored->tempoLinks);
@@ -5242,10 +6603,19 @@ Json Engine::fullState() const {
             }
             slotJson.set("plugin", slot->plugin->info().toJson(true));
             slotJson.set("state", slot->plugin->saveState());
-            chainArray.push(slotJson);
+            chainArray.push(std::move(slotJson));
         }
     }
     json.set("chain", chainArray);
+    json.set("chainLayout", chainLayout);
+    if (const auto* preset = effectiveActivePreset()) {
+        Json routing = preset->routing, mix = Json::array();
+        if (auto* live = chainGuard.get()) for (const auto& edge : live->edges)
+            mix.push(Json::object({{"from", live->nodes[edge->source].id}, {"to", live->nodes[edge->destination].id},
+                {"levelDb", edge->levelDb.load()}, {"pan", edge->pan.load()},
+                {"mute", edge->mute.load()}, {"solo", edge->solo.load()}}));
+        json.set("routing", routingWithMix(routing, mix));
+    }
 
     Json missing = Json::array();
     for (const std::string& item : missingPluginFiles_) {
@@ -5267,9 +6637,14 @@ Json Engine::fullState() const {
 }
 
 Json Engine::performanceState() const {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "performance");
+    json.set("persistenceError", persistenceError_);
+    json.set("stateEpoch", stateEpoch_);
+    json.set("revision", static_cast<int64_t>(++stateRevision_));
     json.set("activeBankId", activeBankId_);
+    json.set("browseBankId", browseBankId());
     json.set("activePresetId", activePresetId_);
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
@@ -5279,6 +6654,8 @@ Json Engine::performanceState() const {
     json.set("virtualControlFine", proxyFineMode_);
     json.set("sessionPresetDirty", sessionPresetDrafts_.find(activePresetId_) != sessionPresetDrafts_.end());
     json.set("sessionPresetDirtyCount", static_cast<int>(sessionPresetDrafts_.size()));
+    json.set("editorUndoCount", editorHistoryPresetId_ == activePresetId_ ? static_cast<int>(editorUndo_.size()) : 0);
+    json.set("editorRedoCount", editorHistoryPresetId_ == activePresetId_ ? static_cast<int>(editorRedo_.size()) : 0);
     Json dirtyPresetIds = Json::array();
     for (const auto& entry : sessionPresetDrafts_) dirtyPresetIds.push(Json(entry.first));
     json.set("sessionPresetDirtyIds", std::move(dirtyPresetIds));
@@ -5291,7 +6668,8 @@ Json Engine::performanceState() const {
     }
 
     Json slotArray = Json::array();
-    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
         for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
             Json slotJson = Json::object();
             slotJson.set("id", slot->id);
@@ -5303,6 +6681,15 @@ Json Engine::performanceState() const {
         }
     }
     json.set("slots", slotArray);
+    if (const Preset* preset = effectiveActivePreset()) {
+        Json mix = Json::array();
+        if (Chain* chain = chainGuard.get()) for (const auto& edge : chain->edges)
+            mix.push(Json::object({{"from", chain->nodes[edge->source].id},
+                {"to", chain->nodes[edge->destination].id},
+                {"levelDb", edge->levelDb.load()}, {"pan", edge->pan.load()},
+                {"mute", edge->mute.load()}, {"solo", edge->solo.load()}}));
+        json.set("routing", routingWithMix(preset->routing, mix));
+    }
 
     Json positions = Json::object();
     for (const auto& entry : controller_.controlPositions()) {
@@ -5317,12 +6704,16 @@ Json Engine::transportState() const {
 }
 
 void Engine::notifyUiView(const std::string& view) {
-    std::lock_guard<std::mutex> lock(listenerMutex_);
-    if (!listener_) return;
+    StateListener listener;
+    {
+        std::lock_guard<std::mutex> lock(listenerMutex_);
+        listener = listener_;
+    }
+    if (!listener) return;
     Json json = Json::object();
     json.set("type", "uiView");
     json.set("view", view);
-    listener_(json);
+    listener(json);
 }
 
 Json Engine::backingState() const { return backing_ ? backing_->state() : Json::object(); }
@@ -5355,8 +6746,8 @@ bool Engine::backingCommand(const std::string& command, const Json& payload, std
     return true;
 }
 
-Json Engine::looperState() const {
-    Json state = looper_->state();
+Json Engine::looperState(bool includeDetails) const {
+    Json state = looper_->state(includeDetails);
     const double bpm = transport_.bpm();
     const double beatSeconds = 60.0 / bpm * 4.0 / std::max(1, settings_.transport.beatUnit);
     const double beats = state["duration"].asDouble(0.0) / beatSeconds;
@@ -5379,6 +6770,8 @@ bool Engine::applyLooperSettings(const Json& json, std::string& error) {
 }
 
 bool Engine::looperCommand(const std::string& command, const Json& payload, std::string& error) {
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     std::string resolved = command;
     if (resolved == "toggle") {
         const Json current = looper_->state();
@@ -5449,14 +6842,14 @@ bool Engine::looperExport(const std::string& requestedName, std::string& content
     return true;
 }
 
-Json Engine::recorderState() const {
+Json Engine::recorderState(bool includeDetails) const {
     if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
         Json state = Json::object();
         state.set("type", "recorder");
         state.set("status", "disabled");
         return state;
     }
-    Json state = recorder_->state();
+    Json state = recorder_->state(includeDetails);
     if (backingEnabled_.load(std::memory_order_acquire) && backing_) {
         const Json backing = backing_->state();
         state.set("backingAvailable", backing["available"]);
@@ -5468,6 +6861,8 @@ Json Engine::recorderState() const {
 }
 
 bool Engine::recorderCommand(const std::string& command, const Json& payload, std::string& error) {
+    std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
+    if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
         error = "multitrack recorder is disabled";
         return false;
@@ -5524,11 +6919,11 @@ bool Engine::recorderExport(const std::string& kind, const std::string& trackId,
     return recorder_->exportFile(kind, trackId, path, name, error);
 }
 
-Json Engine::drumState() const {
+Json Engine::drumState(bool includeDetails) const {
     if (!drumsEnabled_.load(std::memory_order_acquire) || !drums_) {
         Json state = Json::object(); state.set("type", "drums"); state.set("available", false); return state;
     }
-    return drums_->state();
+    return drums_->state(includeDetails);
 }
 
 bool Engine::drumImport(unsigned voice, const std::string& name,
@@ -5570,17 +6965,32 @@ bool Engine::drumCommand(const std::string& command, const Json& payload, std::s
 }
 
 Json Engine::meterState() const {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "meters");
+    json.set("chainPreparationError", chainPreparationTimedOut_.load(std::memory_order_acquire)
+        ? "Model loading timed out. Reload the saved preset or select another preset." : "");
     json.set("xruns", static_cast<int64_t>(metrics_.xruns.load(std::memory_order_relaxed)));
+    json.set("captureXruns", static_cast<int64_t>(
+        metrics_.captureXruns.load(std::memory_order_relaxed)));
+    json.set("playbackXruns", static_cast<int64_t>(
+        metrics_.playbackXruns.load(std::memory_order_relaxed)));
+    json.set("shortCaptureTransfers", static_cast<int64_t>(
+        metrics_.shortCaptureTransfers.load(std::memory_order_relaxed)));
+    json.set("shortPlaybackTransfers", static_cast<int64_t>(
+        metrics_.shortPlaybackTransfers.load(std::memory_order_relaxed)));
     json.set("dspLoad", metrics_.dspLoad.load(std::memory_order_relaxed));
     json.set("dspLoadPeak", metrics_.dspLoadPeak.load(std::memory_order_relaxed));
+    json.set("engineCpuLoad", engineCpuLoad_.load(std::memory_order_relaxed));
+    json.set("engineCpuLoadAvailable",
+        engineCpuLoadAvailable_.load(std::memory_order_acquire));
     json.set("inputPeak", metrics_.inputPeak.load(std::memory_order_relaxed));
     json.set("outputPeak", metrics_.outputPeak.load(std::memory_order_relaxed));
     json.set("guitarInputPeak", guitarInputPeak_.load(std::memory_order_relaxed));
     json.set("guitarInputRms", guitarInputRms_.load(std::memory_order_relaxed));
     Json effectMeters = Json::array();
-    if (Chain* chain = activeChain_.load(std::memory_order_acquire)) {
+    ActiveChainReadGuard chainGuard(*this);
+    if (Chain* chain = chainGuard.get()) {
         for (const std::unique_ptr<ChainSlot>& slot : chain->slots) {
             Json meter = Json::object();
             meter.set("slotId", slot->id);
@@ -5591,6 +7001,35 @@ Json Engine::meterState() const {
     }
     json.set("effects", std::move(effectMeters));
     json.set("running", metrics_.running.load(std::memory_order_relaxed));
+    json.set("chainPreparing",
+        chainPublicationExpected_.load(std::memory_order_acquire)
+            || pendingChain_.peek() != nullptr
+            || metrics_.chainPreparationActive.load(std::memory_order_relaxed));
+
+    const uint32_t lastDirection = metrics_.lastXrunDirection.load(std::memory_order_relaxed);
+    const uint32_t lastTransition =
+        metrics_.lastXrunTransitionPhase.load(std::memory_order_relaxed);
+    Json lastXrun = Json::object();
+    lastXrun.set("direction", lastDirection == static_cast<uint32_t>(AudioXrunDirection::Capture)
+        ? "capture" : lastDirection == static_cast<uint32_t>(AudioXrunDirection::Playback)
+        ? "playback" : "none");
+    lastXrun.set("error", metrics_.lastXrunError.load(std::memory_order_relaxed));
+    lastXrun.set("period", static_cast<int64_t>(
+        metrics_.lastXrunPeriod.load(std::memory_order_relaxed)));
+    lastXrun.set("transition", lastTransition == static_cast<uint32_t>(
+        MasterOutputSafety::TransitionState::FadingOut) ? "fadingOut"
+        : lastTransition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::Muted)
+        ? "muted"
+        : lastTransition == static_cast<uint32_t>(MasterOutputSafety::TransitionState::FadingIn)
+        ? "fadingIn" : "running");
+    lastXrun.set("workerTransitions", static_cast<int>(
+        metrics_.lastXrunWorkerTransitions.load(std::memory_order_relaxed)));
+    lastXrun.set("chainPreparing",
+        metrics_.lastXrunChainPreparationActive.load(std::memory_order_relaxed));
+    lastXrun.set("chainGeneration", static_cast<int64_t>(
+        metrics_.lastXrunChainGeneration.load(std::memory_order_relaxed)));
+    lastXrun.set("dspLoad", metrics_.lastXrunDspLoad.load(std::memory_order_relaxed));
+    json.set("lastXrun", std::move(lastXrun));
 
     const unsigned rate = sampleRate_.load(std::memory_order_acquire);
     const uint32_t hardwareFrames = metrics_.roundTripFrames.load(std::memory_order_relaxed);
@@ -5604,6 +7043,8 @@ Json Engine::meterState() const {
     json.set("safetyLookaheadMs", rate > 0 ? (1000.0 * lookaheadFrames) / rate : 0.0);
     json.set("roundTripMs", rate > 0 ? (1000.0 * totalFrames) / rate : 0.0);
     json.set("bufferMs", settings_.audio.bufferMs());
+    json.set("separateClockDomains", !settings_.audio.captureDevice.empty()
+        && settings_.audio.captureDevice != settings_.audio.device);
 
     const TunerReading reading = tuner();
     Json tunerJson = Json::object();
@@ -5726,6 +7167,12 @@ Json Engine::describeControllerRuntime() const {
     json.set("activePort", midi_.activePort());
     json.set("learning", controller_.learning());
     json.set("learningControlId", controller_.learningControlId());
+    json.set("universalFirmware", controllerHardwareCapable_);
+    json.set("boardSetup", controllerHardware_.state());
+    if (controllerHardware_.busy()) {
+        json.set("learning", true);
+        json.set("learningControlId", controllerHardware_.target());
+    }
     if (!controllerFirmwareVersion_.empty()) {
         json.set("firmwareVersion", controllerFirmwareVersion_);
         json.set("requiredFirmwareVersion", kRequiredControllerFirmwareVersion);

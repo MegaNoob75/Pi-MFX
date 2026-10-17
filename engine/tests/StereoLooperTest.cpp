@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <future>
 #include <thread>
 #include <vector>
 
@@ -27,6 +28,15 @@ int main() {
     transport.framesPerBeat = 50.0;
     transport.beatsPerBar = 4.0;
 
+    // File/edit admission now waits for an audio-block ownership acknowledgment.
+    // A zero-frame callback exercises that handoff without altering test audio.
+    const auto control = [&](auto operation) {
+        auto result = std::async(std::launch::async, operation);
+        while (result.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready)
+            looper.process(inputs, 2, outputs, 2, 0, &transport);
+        return result.get();
+    };
+
     std::string error;
     assert(looper.enqueue(StereoLooper::Action::Record, error));
     looper.process(inputs, 2, outputs, 2, 25, &transport);
@@ -43,7 +53,7 @@ int main() {
     assert(std::abs(outLeft[0] - 0.25f) < 0.0001f);
     assert(std::abs(outRight[0] + 0.125f) < 0.0001f);
 
-    assert(looper.enqueue(StereoLooper::Action::Overdub, error));
+    assert(control([&] { return looper.enqueue(StereoLooper::Action::Overdub, error); }));
     looper.process(inputs, 2, outputs, 2, 25, &transport);
     assert(looper.state()["status"].asString() == "overdubbing");
     assert(looper.state()["canUndo"].asBool());
@@ -54,7 +64,7 @@ int main() {
     looper.process(inputs, 2, outputs, 2, 1, &transport);
     assert(looper.state()["canRedo"].asBool());
 
-    assert(looper.save("take", false, error));
+    assert(control([&] { return looper.save("take", false, error); }));
     for (int attempt = 0; attempt < 100 && looper.state()["status"].asString() == "saving"; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -63,7 +73,7 @@ int main() {
     assert(looper.state()["savedLoops"].items().size() == 1);
     assert(!looper.save("take", false, error));
     error.clear();
-    assert(looper.save("take", true, error));
+    assert(control([&] { return looper.save("take", true, error); }));
     for (int attempt = 0; attempt < 100 && looper.state()["status"].asString() == "saving"; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -75,7 +85,7 @@ int main() {
     assert(looper.enqueue(StereoLooper::Action::Clear, error));
     looper.process(inputs, 2, outputs, 2, 1, &transport);
     assert(!looper.state()["hasLoop"].asBool());
-    assert(looper.load("renamed.wav", error));
+    assert(control([&] { return looper.load("renamed.wav", error); }));
     looper.process(inputs, 2, outputs, 2, 1, &transport);
     assert(looper.state()["hasLoop"].asBool());
     assert(looper.deleteSaved("renamed.wav", error));
@@ -103,7 +113,23 @@ int main() {
     transport.timelineFrame = 100;
     looper.process(inputs, 2, outputs, 2, 1, &transport);
     assert(std::abs(looper.state()["duration"].asDouble() - 0.5) < 0.0001);
+
+    // A scheduled overdub still appears as Playing. Save/Load must reject it
+    // rather than reading/writing buffers when the boundary begins overdub.
+    assert(looper.enqueue(StereoLooper::Action::Play, error));
+    looper.process(inputs, 2, outputs, 2, 0, &transport);
+    looper.configure("bar", false, 1.0f, 1.0f);
+    transport.timelineFrame = 125;
+    assert(control([&] { return looper.enqueue(StereoLooper::Action::Overdub, error); }));
+    looper.process(inputs, 2, outputs, 2, 0, &transport);
+    assert(!control([&] { return looper.save("pending-overdub", false, error); }));
+    assert(!looper.fileOperationPending());
+    assert(!control([&] { return looper.load("missing.wav", error); }));
+    assert(!looper.fileOperationPending());
     looper.stop();
+    looper.prepare(100, 2);
+    looper.process(inputs, 2, outputs, 2, 1, &transport);
+    assert(!looper.state()["hasLoop"].asBool());
     std::filesystem::remove_all(root);
     return 0;
 }

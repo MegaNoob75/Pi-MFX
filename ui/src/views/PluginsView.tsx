@@ -483,7 +483,10 @@ export function PluginsView({
                         hidden={hidden}
                         onRescan={() => work("Rescanning LV2…", async () => {
                             await engine.client.request("plugins/rescan");
-                            await refreshStatus();
+                            const next = await refreshStatus();
+                            if (bool(next.helperAvailable)) {
+                                await refreshAptInstalled();
+                            }
                         })}
                         onHide={(uri, name) => work(`Hiding ${name}…`, async () => {
                             await engine.client.request("plugins/hide", { uri, name });
@@ -561,12 +564,12 @@ export function PluginsView({
                     />
                 )}
             </div>
-            {pendingRemove && <ConfirmDialog title="REMOVE PLUGIN?"
-                body={`Remove “${pendingRemove.label}” from this Pi?`}
-                confirmLabel="REMOVE" danger onCancel={() => setPendingRemove(null)} onConfirm={() => {
+            {pendingRemove && <ConfirmDialog title="UNINSTALL PLUGIN?"
+                body={`Uninstall “${pendingRemove.label}” from this Pi?`}
+                confirmLabel="UNINSTALL" danger onCancel={() => setPendingRemove(null)} onConfirm={() => {
                     const pending = pendingRemove;
                     setPendingRemove(null);
-                    work(`Removing ${pending.label}…`, async () => {
+                    work(`Uninstalling ${pending.label}…`, async () => {
                         if (pending.kind === "apt") {
                             await engine.client.request("plugins/apt/remove", { package: pending.id });
                             await refreshAptInstalled();
@@ -723,11 +726,11 @@ function InstalledTab({
                         </div>
                         {str(item.name) === "toobamp" ? (
                             <button type="button" className="btn btn-danger" onClick={() => onRemoveGithub("toobamp", "ToobAmp")}>
-                                REMOVE
+                                UNINSTALL
                             </button>
                         ) : (
                             <button type="button" className="btn btn-danger" onClick={() => onRemoveApt(str(item.name))}>
-                                REMOVE
+                                UNINSTALL
                             </button>
                         )}
                     </div>
@@ -751,7 +754,7 @@ function InstalledTab({
                                 </div>
                             </div>
                             <button type="button" className="btn btn-danger" onClick={() => onRemoveBundle(directory)}>
-                                REMOVE
+                                UNINSTALL
                             </button>
                         </div>
                     ));

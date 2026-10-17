@@ -14,6 +14,8 @@ import { MarqueeText } from "./MarqueeText";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { GainMeter } from "./GainMeter";
 import { SetupProfilesView } from "./SetupProfilesView";
+import { AccessSettings } from "./AccessSettings";
+import { ControllerBoardSetup } from "./ControllerBoardSetup";
 
 export type SettingsPage =
     | "audio"
@@ -42,7 +44,8 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
                 <HubCard title="VIRTUAL CONTROLS" subtitle="Build the touchscreen control surface and its preset bindings" onClick={() => onOpen("virtualLayout")} />
                 <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
-                <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel, backup and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel and interface options" onClick={() => onOpen("ui")} />
+                <HubCard title="BACKUP & RESTORE" subtitle="Export the complete rig or selected content; recover after a fresh OS install" onClick={() => onOpen("backup")} />
                 <HubCard title="SETUP PROFILES" subtitle="Save or load the complete rig setup at once" onClick={() => onOpen("profiles")} />
                 <HubCard title="MODEL LIBRARY" subtitle="TONE3000 hosted browser and API key" onClick={() => onOpen("tone3000")} />
                 <HubCard title="SYSTEM" subtitle="Audio, Wi-Fi / hotspot, realtime threads and diagnostics" onClick={() => onOpen("system")} />
@@ -127,6 +130,7 @@ function SystemHub({
                 <HubCard title="WIFI / HOTSPOT" subtitle="Join a home network or host a tablet access point" onClick={() => onOpen?.("hotspot")} />
                 <HubCard title="UPDATES" subtitle="Check git and rebuild Pi-MFX on this Pi" onClick={() => onOpen?.("updates")} />
                 <HubCard title="REALTIME" subtitle="Audio thread, memory lock and diagnostics" onClick={() => openRealtime(true)} />
+                <AccessSettings />
                 <div className="system-power">
                     <button
                         type="button"
@@ -415,7 +419,10 @@ export function SettingsPage({
     if (page === "keyboard") {
         return <KeyboardSettingsView engine={engine} />;
     }
-    if (page === "ui" || page === "backup") {
+    if (page === "backup") {
+        return <BackupView engine={engine} run={run} />;
+    }
+    if (page === "ui") {
         return <UiSettings engine={engine} run={run} />;
     }
     if (page === "tone3000") {
@@ -496,6 +503,7 @@ function AudioSettings({
     const { client, state, connected } = engine;
     const meters = useMeters(client);
     const audio = obj(state.audio);
+    const actualAudio = obj(state.actualAudio);
     const [devices, setDevices] = useState<JsonObject[]>([]);
     const [draft, setDraft] = useState(audio);
     const [deviceError, setDeviceError] = useState("");
@@ -968,12 +976,20 @@ function AudioSettings({
                 <div className="audio-help">Use this page after changing buffer settings. Reset XRuns, play the heaviest preset for several minutes, and confirm the counter remains at zero.</div>
                 <div className="audio-status-grid">
                     <div><span>Interface</span><strong>{str(state.audioInterface, str(draft.device, "None"))}</strong></div>
-                    <div><span>Requested buffer</span><strong>{formatMs(num(draft.bufferMs))}</strong></div>
+                    <div><span>Active buffer</span><strong>{formatMs(num(meters.bufferMs, num(actualAudio.bufferMs, num(audio.bufferMs))))} · {num(actualAudio.periodFrames, num(audio.periodFrames, 0))} × {num(actualAudio.periodCount, num(audio.periodCount, 0))}</strong></div>
                     <div><span>Measured round trip</span><strong>{formatMs(num(meters.roundTripMs))}</strong></div>
                     <div><span>Limiter look-ahead</span><strong>{formatMs(num(meters.safetyLookaheadMs))}</strong></div>
-                    <div><span>DSP load</span><strong>{(num(meters.dspLoad) * 100).toFixed(0)}%</strong></div>
+                    <div><span>Audio callback load</span><strong>{(num(meters.dspLoad) * 100).toFixed(0)}%</strong></div>
+                    <div><span>Engine CPU</span><strong>{bool(meters.engineCpuLoadAvailable) ? `${(num(meters.engineCpuLoad) * 100).toFixed(0)}%` : "—"}</strong></div>
                     <div><span>XRuns</span><strong>{num(meters.xruns)}</strong></div>
+                    <div><span>Capture / playback</span><strong>{num(meters.captureXruns)} / {num(meters.playbackXruns)}</strong></div>
+                    <div><span>Preset preparation</span><strong>{bool(meters.chainPreparing) ? "PREPARING" : "READY"}</strong></div>
+                    {num(meters.shortCaptureTransfers) + num(meters.shortPlaybackTransfers) > 0 && <div><span>Short transfers</span><strong>{num(meters.shortCaptureTransfers)} / {num(meters.shortPlaybackTransfers)}</strong></div>}
+                    {num(meters.xruns) > 0 && <div><span>Last XRun</span><strong>{str(obj(meters.lastXrun).direction, "unknown")} · {str(obj(meters.lastXrun).transition, "running")}</strong></div>}
+                    {num(meters.xruns) > 0 && <div><span>XRun context</span><strong>chain {num(obj(meters.lastXrun).chainGeneration)} · workers {num(obj(meters.lastXrun).workerTransitions)} · {(num(obj(meters.lastXrun).dspLoad) * 100).toFixed(0)}%</strong></div>}
                 </div>
+                <div className="audio-help">Audio callback load shows how much of each real-time deadline is being used. Engine CPU shows the whole Pi-MFX process, including plugin helper and LV2 worker threads; 100% means every Pi CPU core is fully occupied.</div>
+                {bool(meters.separateClockDomains) && <div className="audio-help">Separate capture and playback devices use independent hardware clocks. For dependable live latency, use one duplex interface.</div>}
                 <button type="button" className="btn" onClick={() => void run(() => client.request("meters/reset"))}>RESET XRUNS</button>
             </section>}
         </div>
@@ -1064,7 +1080,7 @@ function ControllerHub({
                     <div className="list-item"><span>Firmware</span><strong>{str(controller.firmwareVersion, "UNKNOWN")}</strong></div>
                     {connected && bool(controller.firmwareUpdateRequired) && (
                         <div className="danger">
-                            New controller firmware {str(controller.requiredFirmwareVersion)} is available. Flash it manually for the controller to function properly.
+                            New controller firmware {str(controller.requiredFirmwareVersion)} is required. Open Settings → Updates for controller update and first-install instructions.
                         </div>
                     )}
                     <div className="list-item"><span>Switches & pots</span><strong>{objects(controller.controls).length}</strong></div>
@@ -1088,7 +1104,7 @@ function ControllerHub({
                 </div>
                 {connected && bool(controller.firmwareUpdateRequired) && (
                     <div className="danger" style={{ marginTop: 10 }}>
-                        Controller firmware {str(controller.firmwareVersion)} is outdated. Flash version {str(controller.requiredFirmwareVersion)} manually for the controller to function properly.
+                        Controller firmware {str(controller.firmwareVersion)} is outdated. Flash version {str(controller.requiredFirmwareVersion)} using the first-install instructions in Settings → Updates.
                     </div>
                 )}
             </div>
@@ -1166,18 +1182,25 @@ function ControllerSettings({
     const [ports, setPorts] = useState<JsonObject[]>([]);
     const [selectedId, setSelectedId] = useState("");
     const [removeControlId, setRemoveControlId] = useState("");
+    const [removeLedId, setRemoveLedId] = useState("");
     const [profilePicker, setProfilePicker] = useState<"load" | "save" | null>(null);
     const [pendingProfile, setPendingProfile] = useState<JsonObject | null>(null);
     const [profileNotice, setProfileNotice] = useState("");
-    const selected = grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
+    const selectedLed = leds.find((item) => str(item.id) === selectedId);
+    const selected = selectedLed ? undefined : grouped.find((item) => str(item.id) === selectedId) ?? grouped[0];
+    const patchLed = (nextLed: JsonObject) => {
+        const next = ledsRef.current.map((item) => str(item.id) === str(nextLed.id) ? nextLed : item);
+        ledsRef.current = next;
+        save({ ...controllerRef.current, leds: next });
+    };
 
     useEffect(() => {
         const sharedId = str(obj(engine.uiSession.settings).controllerSelectedId);
-        if (sharedId && grouped.some((item) => str(item.id) === sharedId)) {
+        if (sharedId && [...grouped, ...leds].some((item) => str(item.id) === sharedId)) {
             setSelectedId(sharedId);
         }
         setRemoveControlId(str(obj(engine.uiSession.settings).removeControlId));
-    }, [engine.uiSession.settings, grouped]);
+    }, [engine.uiSession.settings, grouped, leds]);
 
     const selectControl = (id: string) => {
         setSelectedId(id);
@@ -1194,6 +1217,11 @@ function ControllerSettings({
             return;
         }
         const id = str(target.id);
+        const pairedTarget = controlsRef.current.find((item) => str(item.id) === str(target.pairId));
+        if (bool(controllerRef.current.universalFirmware) && (obj(target.hardware).device || obj(pairedTarget?.hardware).device)) {
+            void run(() => client.request("controller/hardware", { action: "delete", controlId: id }));
+            return;
+        }
         const pairId = str(target.pairId);
         const next = groupedControls(controlsRef.current.filter((item) => {
             const itemId = str(item.id);
@@ -1241,14 +1269,14 @@ function ControllerSettings({
     const snapshotSlots = snapshotLayoutSlots(obj(controller.performanceLayout));
     const profileContents = () => {
         const hardware = { ...controller };
-        for (const key of ["connected", "activePort", "learning", "learningControlId", "firmwareVersion",
+        for (const key of ["connected", "activePort", "learning", "learningControlId", "firmwareVersion", "boardSetup", "universalFirmware",
             "requiredFirmwareVersion", "firmwareUpdateRequired", "performanceLayout", "layoutDefaults"]) {
             delete hardware[key];
         }
         const ui = obj(state.ui);
         return JSON.stringify({
             format: "pimfx-controller-profile",
-            version: 1,
+            version: 2,
             hardware,
             feel: {
                 encoderStepsPerDetent: num(ui.encoderStepsPerDetent, 1),
@@ -1258,7 +1286,7 @@ function ControllerSettings({
         }, null, 2);
     };
     const loadProfile = (profile: JsonObject) => {
-        if (str(profile.format) !== "pimfx-controller-profile" || num(profile.version) !== 1) {
+        if (str(profile.format) !== "pimfx-controller-profile" || ![1, 2].includes(num(profile.version))) {
             setProfileNotice("That is not a Pi-MFX controller profile.");
             return;
         }
@@ -1273,6 +1301,7 @@ function ControllerSettings({
         void run(async () => {
             await client.request("controller/config", {
                 ...hardware,
+                profileLoad: true,
                 performanceLayout: obj(controllerRef.current.performanceLayout),
                 layoutDefaults: obj(controllerRef.current.layoutDefaults)
             });
@@ -1396,12 +1425,16 @@ function ControllerSettings({
                             selectControl(encId);
                             save({ ...controller, controls: next });
                         }}>ADD ENCODER</button>
-                        <button type="button" className="btn" onClick={() => {
+                        <button type="button" className="btn" disabled={leds.length >= 127} onClick={() => {
                             const current = ledsRef.current;
+                            const ledId = `led-${Date.now().toString(36)}-${current.length}`;
+                            let pixelIndex = 0;
+                            while (current.some((led) => num(led.pixelIndex) === pixelIndex)) pixelIndex++;
                             const next = [
                                 ...current,
                                 {
-                                    id: `led-${Date.now().toString(36)}-${current.length}`,
+                                    id: ledId,
+                                    pixelIndex,
                                     label: nextLedLabel(current),
                                     rgb: true,
                                     role: "preset",
@@ -1409,6 +1442,7 @@ function ControllerSettings({
                                 }
                             ];
                             ledsRef.current = next;
+                            selectControl(ledId);
                             save({ ...controller, leds: next });
                         }}>ADD LED</button>
                     </div>
@@ -1427,13 +1461,33 @@ function ControllerSettings({
                                 />
                             </button>
                         ))}
-                        {grouped.length === 0 && <div className="muted">Add a switch, pot or encoder to edit it here.</div>}
+                        {leds.map((led) => <button key={str(led.id)} type="button"
+                            className={`split-row${str(led.id) === selectedId ? " selected" : ""}`}
+                            onClick={() => selectControl(str(led.id))}>
+                            <MarqueeText text={`${str(led.label, "LED")} · LED`} align="left" fontWeight={800} />
+                        </button>)}
+                        {grouped.length === 0 && leds.length === 0 && <div className="muted">Add a switch, pot or encoder to edit it here.</div>}
                     </div>
                 </section>
                 <section className="split-pane">
-                    <div className="split-pane-title">{selected ? (str(selected.label).trim() || "CONTROL") : "DETAIL"}</div>
+                    <div className="split-pane-title">{selectedLed ? str(selectedLed.label, "LED") : selected ? (str(selected.label).trim() || "CONTROL") : "DETAIL"}</div>
                     <div className="hardware-setup-detail" data-mfx-sync-scroll="settings-controller-detail">
-                        {selected ? (
+                        {selectedLed ? <div className="stack">
+                            <label className="field"><span>Name</span><KeyboardCommitInput className="input"
+                                defaultValue={str(selectedLed.label)} key={str(selectedLed.id)}
+                                onCommit={(label) => patchLed({ ...selectedLed, label })} /></label>
+                            <div className="hardware-field-grid">
+                                <label className="field"><span>Pixel index (starts at 0)</span><input type="number" min={0} max={126}
+                                    value={num(selectedLed.pixelIndex)} onChange={(e) => patchLed({ ...selectedLed, pixelIndex: Math.max(0, Math.min(126, Number(e.target.value))) })} /></label>
+                                <label className="field"><span>Theme role</span><select value={str(selectedLed.role, "preset")}
+                                    onChange={(e) => patchLed({ ...selectedLed, role: e.target.value })}>
+                                    {["preset", "navigation", "utility", "snapshot", "bypass", "danger"].map((role) => <option key={role} value={role}>{role}</option>)}
+                                </select></label>
+
+                            </div>
+                            <p className="muted">Assign this LED from a control’s LED selector. The pixel index identifies its position in the saved LED strip.</p>
+                            <button type="button" className="btn btn-danger" onClick={() => setRemoveLedId(str(selectedLed.id))}>REMOVE LED</button>
+                        </div> : selected ? (
                             <HardwareControlDetail
                                 control={selected}
                                 controller={controller}
@@ -1479,6 +1533,11 @@ function ControllerSettings({
                                     const next = groupedControls(current
                                         .filter((item) => str(item.id) !== pairId)
                                         .map((item) => str(item.id) === encoderId ? { ...item, pairId: "" } : item));
+                                    const pairedControl = current.find((item) => str(item.id) === pairId);
+                                    if (bool(controller.universalFirmware) && obj(pairedControl?.hardware).device) {
+                                        void run(() => client.request("controller/hardware", { action: "delete", controlId: pairId }));
+                                        return;
+                                    }
                                     controlsRef.current = next;
                                     save({ ...controller, controls: next });
                                 }}
@@ -1486,9 +1545,21 @@ function ControllerSettings({
                         ) : (
                             <div className="muted">Select a control from the list.</div>
                         )}
+                        {bool(controller.universalFirmware) && <ControllerBoardSetup controller={controller} selected={selected}
+                            ledSelected={!!selectedLed} client={client} run={run} />}
                     </div>
                 </section>
             </div>
+            {removeLedId && <ConfirmDialog title="REMOVE LED?" body="Remove this LED entry and its control assignments? The physical strip configuration stays unchanged."
+                confirmLabel="REMOVE" danger onCancel={() => setRemoveLedId("")} onConfirm={() => {
+                    const next = ledsRef.current.filter((led) => str(led.id) !== removeLedId);
+                    const nextControls = controlsRef.current.map((control) => str(control.ledId) === removeLedId ? { ...control, ledId: "" } : control);
+                    ledsRef.current = next;
+                    controlsRef.current = nextControls;
+                    selectControl(str(next[0]?.id, str(grouped[0]?.id)));
+                    setRemoveLedId("");
+                    save({ ...controllerRef.current, leds: next, controls: nextControls });
+                }} />}
             {removeControlId && (
                 <ConfirmDialog
                     title="REMOVE CONTROL?"
@@ -1512,7 +1583,7 @@ function ControllerSettings({
             />}
             {pendingProfile && <ConfirmDialog
                 title="LOAD CONTROLLER PROFILE?"
-                body="This replaces the physical controls, MIDI assignments, LEDs and floorboard feel. The current theme and Performance layout stay in place."
+                body="This replaces Pi-MFX control mappings, LEDs and floorboard feel. Board wiring is not changed. For a universal controller, use Review Saved Wiring afterwards to apply the profile’s connections. The current theme and Performance layout stay in place."
                 confirmLabel="LOAD PROFILE"
                 onCancel={() => setPendingProfile(null)}
                 onConfirm={applyProfile}
@@ -1612,7 +1683,7 @@ function HardwareControlDetail({
                 </label>
                 <label className="field">
                     <span>Type</span>
-                    <select value={kind} onChange={(event) => {
+                    <select value={kind} disabled={bool(controller.universalFirmware) && Boolean(obj(control.hardware).device)} onChange={(event) => {
                         const nextKind = event.target.value;
                         const others = objects(controller.controls).filter((item) => str(item.id) !== str(control.id));
                         const label = isDefaultControlLabel(kind, str(control.label))
@@ -1740,6 +1811,7 @@ function HardwareControlDetail({
                         type="number"
                         min={-1}
                         max={127}
+                        disabled={bool(controller.universalFirmware)}
                         value={num(control.channel, -1)}
                         onChange={(event) => onPatch({ ...control, channel: Number(event.target.value) })}
                     />
@@ -1755,7 +1827,8 @@ function HardwareControlDetail({
                             : "Bind pots and effect toggles from the editor: hold a parameter name, or hold an effect LED."}
             </div>
             <div className="row">
-                <button type="button" className="btn" onClick={onLearn}>
+                <button type="button" className="btn" disabled={bool(controller.universalFirmware) &&
+                    (!bool(obj(controller.boardSetup).ready) || ["reading", "searching", "proposing", "review", "saving"].includes(str(obj(controller.boardSetup).phase)))} onClick={onLearn}>
                     {learningThis
                         ? "LISTENING…"
                         : encoder ? "LEARN ROTATION" : encoderPush ? "LEARN BUTTON" : "LEARN"}
@@ -1907,7 +1980,6 @@ function UiSettings({
                 </label>
                 <div className="muted">Added on top of the firmware debounce. Leave at 0 unless a switch or encoder click double-fires.</div>
             </div>
-            <BackupView engine={engine} run={run} embedded />
         </div>
     );
 }

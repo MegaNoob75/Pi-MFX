@@ -14,6 +14,8 @@
 #include <mutex>
 #include <thread>
 #include <unordered_set>
+#include <chrono>
+#include <exception>
 
 namespace pimfx {
 namespace {
@@ -35,39 +37,17 @@ Json envelope(bool ok, const std::string& error, const Json& payload) {
     return json;
 }
 
-bool sameOrInsidePath(const std::string& candidate, const std::string& target) {
-    std::error_code candidateError;
-    std::error_code targetError;
-    const auto candidatePath = std::filesystem::weakly_canonical(candidate, candidateError);
-    const auto targetPath = std::filesystem::weakly_canonical(target, targetError);
-    if (candidateError || targetError) return false;
-    if (candidatePath == targetPath) return true;
-    auto candidateIt = candidatePath.begin();
-    for (auto targetIt = targetPath.begin(); targetIt != targetPath.end(); ++targetIt, ++candidateIt) {
-        if (candidateIt == candidatePath.end() || *candidateIt != *targetIt) return false;
-    }
-    return true;
-}
-
-bool jsonReferencesLibraryTarget(const Json& value, Storage& storage,
-                                 const std::vector<std::string>& targets) {
-    if (value.isString()) {
-        const std::string resolved = storage.resolveLibraryFile(value.asString());
-        if (resolved.empty()) return false;
-        return std::any_of(targets.begin(), targets.end(), [&](const std::string& target) {
-            return sameOrInsidePath(resolved, target);
-        });
-    }
-    if (value.isArray()) {
-        for (const Json& child : value.items()) {
-            if (jsonReferencesLibraryTarget(child, storage, targets)) return true;
-        }
-    } else if (value.isObject()) {
-        for (const Json::Member& child : value.members()) {
-            if (jsonReferencesLibraryTarget(child.second, storage, targets)) return true;
-        }
-    }
-    return false;
+bool slowApiCommand(const std::string& command) {
+    return command.rfind("backup/", 0) == 0 || command == "catalog" || command == "library" || command.rfind("plugins/", 0) == 0 || command.rfind("community/", 0) == 0
+        || command.rfind("library/", 0) == 0 || command == "backing/import"
+        || command == "drums/library/import" || command == "drums/library/audio" || command == "drums/sample/import"
+        || command == "looper/load" || command == "looper/save" || command == "looper/export"
+        || command == "looper/rename" || command == "looper/delete"
+        || (command.rfind("recorder/", 0) == 0 && command != "recorder/record/stop"
+            && command != "recorder/playback/stop" && command != "recorder/playback/pause")
+        || command == "audio/settings" || command == "system/settings"
+        || command.rfind("controller/firmware/", 0) == 0
+        || (command.rfind("tone3000/", 0) == 0 && command != "tone3000/download-job/status");
 }
 
 std::array<int, 3> versionParts(const std::string& value) {
@@ -118,13 +98,61 @@ ApiRouter::ApiRouter(Engine& engine, Tone3000Client& tone3000, PluginStore& plug
     uiSession_.set("performancePicker", "");
 }
 
-ApiRouter::~ApiRouter() {
-    for (auto& thread : toneDownloadThreads_) {
-        if (thread.joinable()) thread.join();
+ApiRouter::~ApiRouter() { stop(); }
+
+bool ApiRouter::queueWork(std::function<void()> work, size_t bytes) {
+    std::lock_guard<std::mutex> lock(workMutex_);
+    constexpr size_t maximumBytes = 128 * 1024 * 1024;
+    if (stopping_ || workQueue_.size() >= 16 || bytes > maximumBytes - queuedWorkBytes_) return false;
+    queuedWorkBytes_ += bytes;
+    workQueue_.emplace_back(std::move(work), bytes);
+    workWake_.notify_one();
+    return true;
+}
+
+void ApiRouter::workLoop() {
+    for (;;) {
+        std::function<void()> work;
+        {
+            std::unique_lock<std::mutex> lock(workMutex_);
+            workWake_.wait(lock, [&] { return stopping_ || !workQueue_.empty(); });
+            if (workQueue_.empty()) return;
+            work = std::move(workQueue_.front().first);
+            queuedWorkBytes_ -= workQueue_.front().second;
+            workQueue_.pop_front();
+        }
+        try { work(); }
+        catch (const std::exception& exception) { logWarn(std::string("background operation: ") + exception.what()); }
+    }
+}
+
+void ApiRouter::stop() {
+    {
+        std::lock_guard<std::mutex> lock(workMutex_);
+        stopping_ = true;
+    }
+    workWake_.notify_all();
+    if (workThread_.joinable()) workThread_.join();
+    std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+    for (auto& entry : toneDownloadJobs_) if (entry.second->thread.joinable()) entry.second->thread.join();
+}
+
+void ApiRouter::reapToneDownloads() {
+    // Caller holds the jobs mutex. Join only after the worker has finished.
+    for (auto& entry : toneDownloadJobs_)
+        if (entry.second->done.load() && entry.second->thread.joinable()) entry.second->thread.join();
+    while (toneDownloadJobs_.size() > 16) {
+        auto oldest = toneDownloadJobs_.end();
+        for (auto it = toneDownloadJobs_.begin(); it != toneDownloadJobs_.end(); ++it)
+            if (it->second->done.load() && (oldest == toneDownloadJobs_.end()
+                || it->second->sequence < oldest->second->sequence)) oldest = it;
+        if (oldest == toneDownloadJobs_.end()) break;
+        toneDownloadJobs_.erase(oldest);
     }
 }
 
 void ApiRouter::attach() {
+    workThread_ = std::thread(&ApiRouter::workLoop, this);
     server_.setRequestHandler([this](const HttpRequest& request, HttpResponse& response) {
         return handleRequest(request, response);
     });
@@ -142,16 +170,94 @@ void ApiRouter::attach() {
             }
             return;
         }
-        server_.broadcast(state.dump());
+        const std::string serialized = state.dump();
+        const std::string type = state["type"].asString();
+        if (type == "state") {
+            std::lock_guard<std::mutex> lock(mediaMessagesMutex_);
+            lastMediaMessages_.clear();
+        }
+        if (type == "looper" || type == "recorder" || type == "drums") {
+            std::lock_guard<std::mutex> lock(mediaMessagesMutex_);
+            const std::string key = type + (state["partial"].asBool() ? ":status" : ":details");
+            auto& previous = lastMediaMessages_[key];
+            if (previous == serialized) return;
+            previous = serialized;
+        }
+        server_.broadcast(serialized);
     });
 }
 
 bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response) {
+    if (request.path.rfind("/api/", 0) != 0) return false;
+    const auto command = request.path.substr(5);
+    static const std::set<std::string> readable = {
+        "state", "catalog", "audio/devices", "midi/ports", "library", "diagnostics", "meters",
+        "transport/state", "backing/state", "looper/state", "recorder/state", "drums/state",
+        "library/list", "library/tree", "library/read", "looper/export", "recorder/export",
+        "drums/library/audio", "system/update/status", "plugins/status", "tone3000/status", "backup/download"
+    };
+    if (request.method != "POST" && !(request.method == "GET" && readable.count(command))) {
+        response.extraHeaders.emplace_back("Allow", readable.count(command) ? "GET, POST" : "POST");
+        response.error(405, "use POST for state-changing API commands");
+        return true;
+    }
+    // Move binary handlers as well as JSON commands off the socket thread.
+    // Count queued bodies so a few large uploads cannot exhaust Pi memory.
+    if (slowApiCommand(command)) {
+        if (!queueWork([this, request] {
+            HttpResponse reply;
+            try { handleRequestNow(request, reply); }
+            catch (const std::exception& exception) { reply.error(500, exception.what()); }
+            server_.completeResponse(request.clientId, std::move(reply));
+        }, request.body.size())) response.error(503, "another operation is still finishing; please try again");
+        else response.deferred = true;
+        return true;
+    }
+    return handleRequestNow(request, response);
+}
+
+bool ApiRouter::handleRequestNow(const HttpRequest& request, HttpResponse& response) {
     if (request.path.rfind("/api/", 0) != 0) {
         return false; // static files
     }
 
     const std::string command = request.path.substr(5);
+    if (command == "backup/upload/chunk" && request.method == "POST") {
+        if (request.body.empty() || request.body.size() > 512u * 1024u) {
+            response.error(400, "invalid recovery upload chunk"); return true;
+        }
+        std::string error;
+        const std::string offset = request.header("x-pimfx-offset");
+        char* end = nullptr;
+        const long long position = std::strtoll(offset.c_str(), &end, 10);
+        if (offset.empty() || !end || *end || position < 0) {
+            response.error(400, "invalid recovery upload position"); return true;
+        }
+        const Json reply = plugins_.backupCommand("upload-chunk", Json::object({
+            {"id", request.header("x-pimfx-job")}, {"offset", Json(static_cast<int64_t>(position))},
+            {"data", base64Encode(request.body)}}), error);
+        response.json(envelope(error.empty(), error, reply).dump(), error.empty() ? 200 : 400);
+        return true;
+    }
+    if (command == "backup/download" && request.method == "GET") {
+        std::string error;
+        if (request.local) {
+            response.error(400, "use Export to USB on the Pi; download the backup from another computer"); return true;
+        }
+        const Json reply = plugins_.backupCommand("download", Json::object({{"id", request.queryValue("id")}}), error);
+        if (!error.empty()) response.error(400, error);
+        else {
+            response.filePath = reply["path"].asString();
+            response.fileSize = static_cast<uint64_t>(reply["bytes"].asInt64());
+            response.contentType = "application/octet-stream";
+            response.extraHeaders.emplace_back("Cache-Control", "no-store");
+            response.extraHeaders.emplace_back("Content-Disposition", "attachment; filename=\"" + reply["name"].asString() + "\"");
+        }
+        return true;
+    }
+    if (engine_.backupPreparing() && command.rfind("backup/", 0) != 0 && command != "state") {
+        response.error(409, "backup/restore is preparing; wait for the engine to reconnect"); return true;
+    }
     if (command == "drums/library/import" && request.method == "POST") {
         Json result = Json::object(); std::string error;
         const bool ok = engine_.drumLibraryImport(urlDecode(request.header("x-pimfx-relative")), request.body, result, error);
@@ -225,7 +331,7 @@ bool ApiRouter::handleRequest(const HttpRequest& request, HttpResponse& response
     }
 
     Json payload;
-    if (request.method == "GET" || request.method == "DELETE") {
+    if (request.method == "GET") {
         payload = queryToJson(request);
     } else if (!request.body.empty()) {
         std::string parseError;
@@ -256,12 +362,12 @@ void ApiRouter::handleSocketOpen(uint64_t clientId) {
     // A new client gets everything it needs to render, in one burst, rather
     // than making five requests before it can draw anything.
     server_.sendTo(clientId, engine_.fullState().dump());
-    server_.sendTo(clientId, visibleCatalog(false).dump());
-    server_.sendTo(clientId, engine_.libraryState().dump());
+    queueWork([this, clientId] {
+        server_.sendTo(clientId, visibleCatalog(false).dump());
+        server_.sendTo(clientId, engine_.libraryState().dump());
+    });
     server_.sendTo(clientId, engine_.meterState().dump());
-    if (engine_.settings().system.sharedTransportEnabled) {
-        server_.sendTo(clientId, engine_.transportState().dump());
-    }
+    server_.sendTo(clientId, engine_.transportState().dump());
     server_.sendTo(clientId, engine_.looperState().dump());
     {
         std::lock_guard<std::mutex> lock(uiSessionMutex_);
@@ -305,6 +411,20 @@ void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& messag
         return;
     }
 
+    if (slowApiCommand(command)) {
+        const Json payload = json["payload"], id = json["id"];
+        if (queueWork([this, clientId, command, payload, id] {
+            bool ok = true; std::string error; Json result;
+            try { result = dispatch(command, payload, ok, error); }
+            catch (const std::exception& exception) { ok = false; error = exception.what(); }
+            Json reply = envelope(ok, error, result);
+            reply.set("type", "result"); reply.set("id", id); reply.set("command", command);
+            server_.sendTo(clientId, reply.dump());
+        }, message.size())) return;
+        Json reply = envelope(false, "another operation is still finishing; please try again", Json::object());
+        reply.set("type", "result"); reply.set("id", id); reply.set("command", command);
+        server_.sendTo(clientId, reply.dump()); return;
+    }
     bool ok = true;
     std::string error;
     const Json result = dispatch(command, json["payload"], ok, error);
@@ -318,8 +438,54 @@ void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& messag
 
 Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                          bool& ok, std::string& error) {
+    static const std::set<std::string> edits = {"chain/add", "chain/replace", "chain/remove",
+        "chain/enable", "chain/control", "chain/controls", "chain/tempo-link", "chain/property",
+        "routing/edit", "preset/bind"};
+    if (edits.count(command) && !engine_.backupPreparing()) {
+        return engine_.withEditorHistory(command + ":" + payload["slotId"].asString()
+            + ":" + payload["port"].asString() + ":" + payload["property"].asString(),
+            payload["persist"].asBool(true), ok,
+            [&] { return dispatchCommand(command, payload, ok, error); });
+    }
+    const Json result = dispatchCommand(command, payload, ok, error);
+    // Saved snapshot metadata has its own lifecycle; do not let an older
+    // graph checkpoint overwrite captures, names, or colors made afterwards.
+    if (ok && command.rfind("snapshot/", 0) == 0) engine_.resetEditorHistory();
+    return result;
+}
+
+Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
+                                bool& ok, std::string& error) {
     ok = true;
     error.clear();
+
+    if (command.rfind("backup/", 0) == 0) {
+        const std::string action = command.substr(7);
+        if (action == "release") { engine_.releaseBackupPreparation(); return Json::object(); }
+        static const std::set<std::string> actions = {"options", "status", "create", "upload-begin", "inspect", "files", "restore", "discard", "exported", "legacy", "usb-files", "import-usb", "prepare", "rollback"};
+        if (!actions.count(action)) { ok = false; error = "unknown recovery command"; return Json(); }
+        Json args = payload;
+        if (action == "prepare" && engine_.backupPreparing()) return Json::object();
+        if (action == "create" || action == "restore" || action == "prepare" || action == "rollback") {
+            {
+                std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+                for (const auto& entry : toneDownloadJobs_) if (!entry.second->done.load()) {
+                    ok = false; error = "finish model downloads before backup/restore"; return Json();
+                }
+            }
+            if (!engine_.prepareBackup(true, error)) { ok = false; return Json(); }
+            args.set("port", server_.port());
+            args.set("application", Json::object({{"version", PIMFX_VERSION}}));
+        }
+        if (action == "prepare") return args;
+        const Json reply = plugins_.backupCommand(action, args, error);
+        ok = error.empty();
+        if (!ok && (action == "create" || action == "restore" || action == "rollback")) engine_.releaseBackupPreparation();
+        return reply;
+    }
+    if (engine_.backupPreparing() && command != "state") {
+        ok = false; error = "backup/restore is preparing; wait for the engine to reconnect"; return Json();
+    }
 
     // --- reads ------------------------------------------------------------
     if (command == "state") {
@@ -362,6 +528,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
+    if (command == "controller/firmware/status" || command == "controller/firmware/install") {
+        const Json result = plugins_.controllerFirmware(command == "controller/firmware/install", payload, error);
+        ok = error.empty();
+        return result.isObject() ? result : Json::object();
+    }
     if (command == "system/update/install") {
         const Json result = plugins_.updateInstall(payload, error);
         ok = error.empty();
@@ -391,6 +562,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- presets and banks -------------------------------------------------
+    if (command == "preset/undo" || command == "preset/redo") {
+        ok = engine_.stepEditorHistory(command == "preset/redo", error);
+        return Json::object();
+    }
     if (command == "preset/bind") {
         ok = engine_.bindPresetControl(payload, error);
         return Json::object();
@@ -473,6 +648,21 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.reorderBank(payload["bankId"].asString(), payload["index"].asInt(0), error);
         return Json::object();
     }
+    if (command == "preset/export") {
+        const Json preset = engine_.exportPreset(payload["presetId"].asString());
+        if (preset.isNull()) {
+            ok = false;
+            error = "no such preset";
+            return Json::object();
+        }
+        Json result = Json::object();
+        result.set("preset", preset);
+        return result;
+    }
+    if (command == "preset/import") {
+        ok = engine_.importPreset(payload["preset"], payload["bankId"].asString(), error);
+        return Json::object();
+    }
     if (command == "bank/export") {
         const Json bank = engine_.exportBank(payload["bankId"].asString());
         if (bank.isNull()) {
@@ -497,9 +687,13 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- chain ------------------------------------------------------------
+    if (command == "routing/edit") {
+        ok = engine_.editRouting(payload, error);
+        return Json::object();
+    }
     if (command == "chain/add") {
         std::string slotId;
-        ok = engine_.addEffect(payload["uri"].asString(), payload["index"].asInt(-1), slotId, error);
+        ok = engine_.addEffect(payload["uri"].asString(), payload["index"].asInt(-1), slotId, error, payload["layout"]);
         Json result = Json::object();
         result.set("slotId", slotId);
         return result;
@@ -515,10 +709,6 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         ok = engine_.removeEffect(payload["slotId"].asString(), error);
         return Json::object();
     }
-    if (command == "chain/move") {
-        ok = engine_.moveEffect(payload["slotId"].asString(), payload["index"].asInt(0), error);
-        return Json::object();
-    }
     if (command == "chain/enable") {
         ok = engine_.setEffectEnabled(payload["slotId"].asString(),
                                       payload["enabled"].asBool(true), error);
@@ -529,6 +719,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
                                      payload["port"].asString(),
                                      payload["value"].asFloat(0.0f), error,
                                      payload["persist"].asBool(true));
+        return Json::object();
+    }
+    if (command == "chain/controls") {
+        ok = engine_.setControlValues(payload["slotId"].asString(), payload["controls"], error);
         return Json::object();
     }
     if (command == "chain/tempo-link") {
@@ -588,6 +782,10 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     }
 
     // --- controller --------------------------------------------------------
+    if (command == "controller/assignments") {
+        ok = engine_.applyPresetAssignments(payload, error);
+        return Json::object();
+    }
     if (command == "controller/config") {
         ok = engine_.applyControllerConfig(payload, error);
         return Json::object();
@@ -601,7 +799,11 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "controller/learn") {
-        engine_.beginControlLearn(payload["controlId"].asString());
+        ok = engine_.beginControlLearn(payload["controlId"].asString(), error);
+        return Json::object();
+    }
+    if (command == "controller/hardware") {
+        ok = engine_.controllerHardwareCommand(payload["action"].asString(), payload, error);
         return Json::object();
     }
     if (command == "controller/cancelLearn") {
@@ -696,13 +898,16 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
             if (!path.empty() && engine_.storage().isPathInLibrary(path)) targets.push_back(path);
         }
         Json affected = Json::array();
+        const auto index = engine_.storage().libraryFileIndex();
         if (!targets.empty()) {
             const Json state = engine_.fullState();
             for (const Json& bank : state["banks"].items()) {
                 for (const Json& preset : bank["presets"].items()) {
                     const Json& community = preset["community"];
                     if (!community.isObject() || community.members().empty()) continue;
-                    if (!jsonReferencesLibraryTarget(preset, engine_.storage(), targets)) continue;
+                    if (!std::any_of(targets.begin(), targets.end(), [&](const std::string& target) {
+                        return engine_.storage().referencesLibraryPath(preset, target, index);
+                    })) continue;
                     Json item = Json::object();
                     item.set("bankId", bank["id"]);
                     item.set("bankName", bank["name"]);
@@ -793,7 +998,8 @@ Json ApiRouter::dispatch(const std::string& command, const Json& payload,
     if (command == "recorder/state") return engine_.recorderState();
     if (command.rfind("recorder/", 0) == 0) {
         ok = engine_.recorderCommand(command.substr(9), payload, error);
-        return engine_.recorderState();
+        const bool immediate = command == "recorder/record/stop" || command.rfind("recorder/playback/", 0) == 0;
+        return engine_.recorderState(!immediate);
     }
     if (command == "drums/state") return engine_.drumState();
     if (command.rfind("drums/", 0) == 0) {
@@ -921,112 +1127,45 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         ok = error.empty();
         return result.isObject() ? result : Json::object();
     }
-    if (command == "download") {
-        std::string url = payload["url"].asString();
-        std::string name = payload["name"].asString();
-        const std::string modelId = payload["modelId"].asString();
-        if (!modelId.empty()) {
+    // Preserve older API clients through the same download implementation.
+    if (command == "download" || command == "download-batch") {
+        Json item = payload;
+        if (command == "download" && !payload["modelId"].asString().empty()) {
             std::string modelError;
-            const Json model = tone3000_.model(modelId, modelError);
-            if (modelError.empty()) {
-                std::string fresh = model["model_url"].asString();
-                if (fresh.empty()) {
-                    fresh = model["url"].asString();
-                }
-                if (fresh.empty()) {
-                    fresh = model["download_url"].asString();
-                }
-                if (!fresh.empty()) {
-                    url = fresh;
-                }
-                if (name.empty()) {
-                    name = model["name"].asString();
-                }
-            } else if (url.empty()) {
-                ok = false;
-                error = modelError;
-                return Json::object();
-            }
+            const Json model = tone3000_.model(payload["modelId"].asString(), modelError);
+            std::string fresh = model["model_url"].asString();
+            if (fresh.empty()) fresh = model["url"].asString();
+            if (fresh.empty()) fresh = model["download_url"].asString();
+            if (!fresh.empty()) item.set("url", fresh);
+            if (item["name"].asString().empty()) item.set("name", model["name"]);
+            if (!modelError.empty() && item["url"].asString().empty()) { ok = false; error = modelError; return Json::object(); }
         }
-        std::string storedPath;
-        Json provenance = Json::object();
-        for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                                "creator", "sourceLicense", "sourceUrl"}) {
-            const std::string value = payload[key].asString();
-            if (!value.empty()) provenance.set(key, value);
+        const Json items = command == "download" ? Json::array({item}) : payload["items"];
+        const Json started = tone3000Command("download-job/start", Json::object({{"items", items}}), ok, error);
+        if (!ok) return Json::object();
+        Json status;
+        do {
+            status = tone3000Command("download-job/status", Json::object({{"jobId", started["jobId"]}}), ok, error);
+            if (!ok) return Json::object();
+            if (!status["done"].asBool()) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        } while (!status["done"].asBool());
+        if (command == "download") {
+            const Json& file = status["files"].at(0);
+            ok = file["state"].asString() != "failed";
+            error = file["error"].asString();
+            return Json::object({{"path", file["path"]}});
         }
-        ok = tone3000_.downloadModel(url, name, payload["kind"].asString("model"),
-                                     payload["directory"].asString(),
-                                     storedPath, error, std::string(), provenance);
-        Json result = Json::object();
-        result.set("path", storedPath);
-        return result;
-    }
-    if (command == "download-batch") {
-        const Json& items = payload["items"];
-        if (!items.isArray() || items.size() == 0) {
-            ok = false;
-            error = "no models were selected";
-            return Json::object();
+        Json saved = Json::array(), failed = Json::array();
+        for (const Json& file : status["files"].items()) {
+            if (file["state"].asString() == "failed") failed.push(file);
+            else saved.push(file);
         }
-
-        struct BatchResult {
-            bool ok = false;
-            std::string path;
-            std::string error;
-            std::string name;
-        };
-        std::vector<BatchResult> results(items.size());
-        std::atomic<size_t> next{0};
-        const size_t workerCount = std::min<size_t>(3, items.size());
-        std::vector<std::thread> workers;
-        workers.reserve(workerCount);
-        for (size_t worker = 0; worker < workerCount; ++worker) {
-            workers.emplace_back([&]() {
-                while (true) {
-                    const size_t index = next.fetch_add(1);
-                    if (index >= items.size()) break;
-                    const Json& item = items.at(index);
-                    BatchResult& result = results[index];
-                    result.name = item["name"].asString("TONE3000 model");
-                    Json provenance = Json::object();
-                    for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                                            "creator", "sourceLicense", "sourceUrl"}) {
-                        const std::string value = item[key].asString();
-                        if (!value.empty()) provenance.set(key, value);
-                    }
-                    result.ok = tone3000_.downloadModel(
-                        item["url"].asString(), result.name,
-                        item["kind"].asString("model"), item["directory"].asString(),
-                        result.path, result.error, std::string(), provenance);
-                }
-            });
-        }
-        for (auto& worker : workers) worker.join();
-
-        Json saved = Json::array();
-        Json failed = Json::array();
-        for (const BatchResult& result : results) {
-            Json entry = Json::object();
-            entry.set("name", result.name);
-            if (result.ok) {
-                entry.set("path", result.path);
-                saved.push(entry);
-            } else {
-                entry.set("error", result.error);
-                failed.push(entry);
-            }
-        }
-        Json response = Json::object();
-        response.set("saved", saved);
-        response.set("failed", failed);
-        response.set("concurrency", static_cast<int>(workerCount));
-        return response;
+        return Json::object({{"saved", saved}, {"failed", failed}, {"concurrency", static_cast<int>(std::min<size_t>(3, items.size()))}});
     }
     if (command == "download-job/start") {
         const Json items = payload["items"];
-        if (!items.isArray() || items.size() == 0) {
-            ok = false; error = "no models were selected"; return Json::object();
+        if (!items.isArray() || items.size() == 0 || items.size() > 128) {
+            ok = false; error = "select between 1 and 128 files"; return Json::object();
         }
 
         // The UI filters installed files before starting a job, but enforce
@@ -1041,8 +1180,10 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (!modelId.empty()) installedPaths[modelId] = asset["path"].asString();
         }
-        const std::string jobId = "tone-download-" + std::to_string(nextToneDownloadJob_.fetch_add(1));
+        const uint64_t sequence = nextToneDownloadJob_.fetch_add(1);
+        const std::string jobId = "tone-download-" + std::to_string(sequence);
         auto job = std::make_shared<ToneDownloadJob>();
+        job->sequence = sequence;
         job->files.reserve(items.size());
         for (const Json& item : items.items()) {
             ToneDownloadFile file;
@@ -1060,49 +1201,67 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         }
         {
             std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+            reapToneDownloads();
+            size_t active = 0;
+            for (const auto& entry : toneDownloadJobs_) if (!entry.second->done.load()) ++active;
+            if (active >= 4 || items.size() > 128) { ok = false; error = "too many pending downloads"; return Json::object(); }
             toneDownloadJobs_[jobId] = job;
         }
-        toneDownloadThreads_.emplace_back([this, job, items]() {
-            std::atomic<size_t> next{0};
-            const size_t workerCount = std::min<size_t>(3, items.size());
-            std::vector<std::thread> workers;
-            for (size_t worker = 0; worker < workerCount; ++worker) {
-                workers.emplace_back([this, job, &items, &next]() {
-                    while (true) {
-                        const size_t index = next.fetch_add(1);
-                        if (index >= items.size()) break;
-                        const Json& item = items.at(index);
-                        {
-                            std::lock_guard<std::mutex> lock(job->mutex);
-                            if (job->files[index].state == "installed") continue;
-                            job->files[index].state = "downloading";
-                        }
-                        Json provenance = Json::object();
-                        for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
-                                                "creator", "sourceLicense", "sourceUrl"}) {
-                            const std::string value = item[key].asString();
-                            if (!value.empty()) provenance.set(key, value);
-                        }
-                        std::string path;
-                        std::string downloadError;
-                        const bool saved = tone3000_.downloadModel(
-                            item["url"].asString(), item["name"].asString(),
-                            item["kind"].asString("model"), item["directory"].asString(),
-                            path, downloadError, std::string(), provenance);
-                        {
-                            std::lock_guard<std::mutex> lock(job->mutex);
-                            ToneDownloadFile& file = job->files[index];
-                            file.state = saved ? "saved" : "failed";
-                            file.path = path;
-                            file.error = downloadError;
-                        }
-                        job->completed.fetch_add(1);
+        std::lock_guard<std::mutex> jobsLock(toneDownloadJobsMutex_);
+        try {
+            job->thread = std::thread([this, job, items]() {
+                std::atomic<size_t> next{0};
+                std::vector<std::thread> workers;
+                std::string startupError;
+                try {
+                    workers.reserve(std::min<size_t>(3, items.size()));
+                    for (size_t worker = 0; worker < std::min<size_t>(3, items.size()); ++worker) {
+                        workers.emplace_back([this, job, &items, &next]() {
+                            for (;;) {
+                                const size_t index = next.fetch_add(1);
+                                if (index >= items.size()) break;
+                                {
+                                    std::lock_guard<std::mutex> lock(job->mutex);
+                                    if (job->files[index].state == "installed") continue;
+                                    job->files[index].state = "downloading";
+                                }
+                                std::string path, downloadError;
+                                bool saved = false;
+                                try {
+                                    const Json& item = items.at(index);
+                                    Json provenance = Json::object();
+                                    for (const char* key : {"toneId", "modelId", "architecture", "toneTitle",
+                                                           "creator", "sourceLicense", "sourceUrl"}) {
+                                        const std::string value = item[key].asString();
+                                        if (!value.empty()) provenance.set(key, value);
+                                    }
+                                    saved = tone3000_.downloadModel(item["url"].asString(), item["name"].asString(),
+                                        item["kind"].asString("model"), item["directory"].asString(),
+                                        path, downloadError, std::string(), provenance);
+                                } catch (const std::exception& exception) { downloadError = exception.what(); }
+                                {
+                                    std::lock_guard<std::mutex> lock(job->mutex);
+                                    auto& file = job->files[index];
+                                    file.state = saved ? "saved" : "failed";
+                                    file.path = path; file.error = downloadError;
+                                }
+                                job->completed.fetch_add(1);
+                            }
+                        });
                     }
-                });
-            }
-            for (auto& worker : workers) worker.join();
-            job->done.store(true);
-        });
+                } catch (const std::exception& exception) { startupError = exception.what(); }
+                for (auto& worker : workers) if (worker.joinable()) worker.join();
+                if (!startupError.empty()) {
+                    std::lock_guard<std::mutex> lock(job->mutex);
+                    for (auto& file : job->files) if (file.state == "queued" || file.state == "downloading") {
+                        file.state = "failed"; file.error = startupError; job->completed.fetch_add(1);
+                    }
+                }
+                job->done.store(true);
+            });
+        } catch (const std::exception& exception) {
+            toneDownloadJobs_.erase(jobId); ok = false; error = exception.what(); return Json::object();
+        }
         Json result = Json::object();
         result.set("jobId", jobId);
         return result;
@@ -1111,6 +1270,7 @@ Json ApiRouter::tone3000Command(const std::string& command, const Json& payload,
         std::shared_ptr<ToneDownloadJob> job;
         {
             std::lock_guard<std::mutex> lock(toneDownloadJobsMutex_);
+            reapToneDownloads();
             const auto found = toneDownloadJobs_.find(payload["jobId"].asString());
             if (found != toneDownloadJobs_.end()) job = found->second;
         }
@@ -1185,7 +1345,7 @@ Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
                                bool& ok, std::string& error) {
     if (command == "status") {
         Json json = plugins_.status();
-        json.set("pluginCount", static_cast<int>(engine_.catalog().plugins().size()));
+        json.set("pluginCount", static_cast<int>(engine_.catalog().pluginCount()));
         json.set("lv2Available", engine_.catalog().available());
         return json;
     }
@@ -1315,7 +1475,7 @@ Json ApiRouter::pluginsCommand(const std::string& command, const Json& payload,
         const std::string uri = payload["uri"].asString();
         std::string name = payload["name"].asString();
         if (name.empty()) {
-            const auto* info = engine_.catalog().find(uri);
+            const auto info = engine_.catalog().find(uri);
             if (info) {
                 name = info->name;
             }
@@ -1440,11 +1600,6 @@ Json ApiRouter::communityPlan(const Json& manifest, std::string& error) const {
 
 Json ApiRouter::communityCommand(const std::string& command, const Json& payload,
                                  bool& ok, std::string& error) {
-#if !defined(PIMFX_ENABLE_COMMUNITY_CATALOG)
-    (void)command; (void)payload;
-    ok = false; error = "community catalog is disabled in this build";
-    return Json::object();
-#else
     if (command == "status") return community_.status();
     if (command == "catalog") {
         Json catalog = community_.index(payload["refresh"].asBool(false), error);
@@ -1626,7 +1781,7 @@ Json ApiRouter::communityCommand(const std::string& command, const Json& payload
     }
     ok = false; error = "unknown command";
     return Json::object();
-#endif
+
 }
 
 } // namespace pimfx

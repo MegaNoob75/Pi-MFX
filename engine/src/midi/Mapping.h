@@ -93,6 +93,8 @@ public:
         int controlCount = 0;
         int ledCount = 0;
         bool rgbLeds = false;
+        bool hardwareSetup = false;
+        bool guidedAnalog = false;
     };
     static bool parseIdentity(const std::vector<uint8_t>& sysex, Identity& identity);
 

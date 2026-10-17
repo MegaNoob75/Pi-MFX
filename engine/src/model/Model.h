@@ -26,6 +26,8 @@ struct EffectSlot {
     /// remains in its native millisecond/second mode.
     Json tempoLinks = Json::object();
 
+    std::string kind = "effect"; ///< effect or built-in mixer
+
     Json toJson() const;
     static EffectSlot fromJson(const Json& json);
 };
@@ -37,6 +39,7 @@ struct Snapshot {
     std::string id;
     std::string name;
     Json slots = Json::object();
+    Json routingMix = Json::array();
     std::string color;
     /// Layout slot (Snapshot 1 = 0). Empty holes stay empty instead of shifting.
     int slot = -1;
@@ -77,6 +80,9 @@ struct Preset {
     float outputGainDb = 0.0f;
 
     std::vector<EffectSlot> chain;
+    /// Flat blocks and explicit stereo-bus edges. Position is presentation only.
+    Json routing = Json::object({{"version", 1}, {"positions", Json::object()},
+        {"edges", Json::array({Json::object({{"from", "input"}, {"to", "output"}})})}});
     std::vector<Snapshot> snapshots;
     std::vector<ParameterBinding> parameterBindings;
     /// Optional preset-owned touchscreen surface. Missing or mode=shared uses
@@ -176,6 +182,8 @@ struct ControllerControl {
     /// Where the firmware reads it. `module` names an expander board when the
     /// user has more controls than the ESP32 has pins.
     std::string module;
+    /// Verified physical wiring, including board identity and firmware slot.
+    Json hardware;
     int channel = -1;       ///< MIDI CC or note number assigned by Learn
     int midiChannel = 0;
     bool useNoteMessages = false;
@@ -225,7 +233,7 @@ struct ControllerConfig {
     bool enabled = false;
     std::string name = "My Controller";
 
-    /// Always freeform. Older controller.json may still say "grid"; the UI
+    /// Always freeform. Older controller settings may still say "grid"; the UI
     /// ignores that and packs with rects.
     std::string layoutMode = "freeform";
     int gridRows = 2;
@@ -246,6 +254,8 @@ struct ControllerConfig {
 
     std::vector<ControllerControl> controls;
     std::vector<ControllerLed> leds;
+    /// Last explicitly saved/adopted board wiring, retained by profiles/backups.
+    Json boardHardware;
 
     /// Freeform status widgets, unplaced ids, and layout defaults. Opaque JSON
     /// so the UI can grow without a protocol bump.
@@ -307,6 +317,8 @@ struct VirtualControlsConfig {
 /// UI preferences that live on the Pi rather than in the browser, so every
 /// device that connects sees the same rig.
 struct UiSettings {
+    /// Persistent rig preferences formerly stored only in the kiosk browser.
+    Json browserPreferences = Json::object();
     std::string themeId = "Pi-MFX Purple";
     Json customThemes = Json::array();
     Json ledColors = Json::object();
@@ -352,10 +364,6 @@ struct SystemSettings {
     int workerThreadPriority = 70;
     bool lockMemory = true;
     bool holdCpuLatency = true;
-    /// Retained in the settings schema for backward compatibility. Completed
-    /// workstation services are enabled automatically rather than by debug UI.
-    bool sharedTransportEnabled = true;
-    bool backingTracksEnabled = true;
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
 };

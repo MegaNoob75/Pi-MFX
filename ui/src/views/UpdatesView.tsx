@@ -12,6 +12,12 @@ function normalizeBranch(value: string) {
     return value === "main" ? "main" : "dev";
 }
 
+function firmwareVersionNumber(value: string): number | undefined {
+    const match = /^(\d+)\.(\d+)$/.exec(value);
+    if (!match || Number(match[1]) > 127 || Number(match[2]) > 127) return undefined;
+    return Number(match[1]) * 128 + Number(match[2]);
+}
+
 export function UpdatesView({
     engine,
     run
@@ -28,6 +34,8 @@ export function UpdatesView({
     const [confirmInstall, setConfirmInstall] = useState(false);
     const [confirmPluginInstall, setConfirmPluginInstall] = useState(false);
     const [message, setMessage] = useState("");
+    const [copyMessage, setCopyMessage] = useState("");
+    const [firmware, setFirmware] = useState(obj({}));
     const [pluginStatus, setPluginStatus] = useState(obj({}));
     const [pluginInstalling, setPluginInstalling] = useState(false);
     const [pluginLog, setPluginLog] = useState<string[]>([]);
@@ -173,6 +181,39 @@ export function UpdatesView({
         });
     };
 
+    useEffect(() => {
+        let stopped = false;
+        const poll = async () => {
+            try {
+                const next = obj(await engine.client.request("controller/firmware/status", { branch: effectiveBranch }));
+                if (!stopped) setFirmware(next);
+            } catch (error) {
+                if (!stopped) setFirmware({ state: "unavailable", message: error instanceof Error ? error.message : String(error) });
+            }
+        };
+        void poll();
+        const timer = window.setInterval(() => void poll(), POLL_MS);
+        return () => { stopped = true; window.clearInterval(timer); };
+    }, [engine.client, effectiveBranch]);
+    const firmwareBusy = ["preparing", "building", "flashing", "verifying"].includes(str(firmware.state));
+    const installedFirmware = str(obj(engine.state.controller).firmwareVersion, str(firmware.installedVersion, "Unknown"));
+    const latestFirmware = str(firmware.latestVersion);
+    const installedFirmwareNumber = firmwareVersionNumber(installedFirmware);
+    const latestFirmwareNumber = firmwareVersionNumber(latestFirmware);
+    const firmwareUpToDate = installedFirmwareNumber !== undefined && latestFirmwareNumber !== undefined
+        && installedFirmwareNumber >= latestFirmwareNumber;
+    const latestReady = str(firmware.latestBranch) === effectiveBranch && Boolean(str(firmware.latestCommit))
+        && !str(firmware.latestError) && !bool(firmware.latestChecking);
+    const checkFirmware = () => void run(async () => {
+        setFirmware(obj(await engine.client.request("controller/firmware/status", { branch: effectiveBranch, refresh: true })));
+    });
+    const retryFirmware = () => {
+        void run(async () => {
+            const next = obj(await engine.client.request("controller/firmware/install", { branch: effectiveBranch }));
+            setFirmware(next);
+        });
+    };
+
     const refreshPluginUpdates = useCallback(async (force = false) => {
         const next = obj(await engine.client.request("plugins/updates/status", {
             refresh: true,
@@ -236,14 +277,57 @@ export function UpdatesView({
             }
         });
     };
-    const progressLines = [...logLines, ...pluginLog];
+    const progressLines = [...logLines, ...str(firmware.log).split(/\r?\n/).filter(Boolean), ...pluginLog];
     const progressText = progressLines.join("\n");
+
+    const copyLog = async () => {
+        try {
+            if (navigator.clipboard?.writeText) {
+                try {
+                    await navigator.clipboard.writeText(progressText);
+                    setCopyMessage("Log copied.");
+                    return;
+                } catch { /* Fall back for HTTP or denied clipboard access. */ }
+            }
+            const field = document.createElement("textarea");
+            const focused = document.activeElement;
+            const selection = window.getSelection();
+            const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+            field.value = progressText;
+            field.readOnly = true;
+            field.style.cssText = "position:fixed;left:0;top:0;opacity:0;pointer-events:none";
+            document.body.appendChild(field);
+            try {
+                field.focus({ preventScroll: true });
+                field.select();
+                if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+            } finally {
+                field.remove();
+                if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+                if (selection) {
+                    selection.removeAllRanges();
+                    for (const range of ranges) selection.addRange(range);
+                }
+            }
+            setCopyMessage("Log copied.");
+        } catch {
+            setCopyMessage("Could not copy automatically. Select the log text and use Copy.");
+        }
+    };
+
+    useEffect(() => {
+        if (!copyMessage) return;
+        const timer = window.setTimeout(() => setCopyMessage(""), 4000);
+        return () => window.clearTimeout(timer);
+    }, [copyMessage]);
 
     useEffect(() => {
         if (!followProgressRef.current) return;
         const frame = window.requestAnimationFrame(() => {
             const progress = progressRef.current;
-            if (progress) progress.scrollTop = progress.scrollHeight;
+            const selection = window.getSelection();
+            if (progress && !(selection && !selection.isCollapsed && progress.contains(selection.anchorNode)))
+                progress.scrollTop = progress.scrollHeight;
         });
         return () => window.cancelAnimationFrame(frame);
     }, [progressText]);
@@ -311,7 +395,7 @@ export function UpdatesView({
                         <button
                             type="button"
                             className="btn btn-accent updates-install-action"
-                            disabled={checking || installing || fetching}
+                            disabled={checking || installing || fetching || firmwareBusy}
                             onClick={() => showInstallConfirmation(true)}
                         >
                             {installing ? "UPDATING..." : `UPDATE TO ${latestCommit || effectiveBranch.toUpperCase()}`}
@@ -364,21 +448,50 @@ export function UpdatesView({
                         </button>
                     </div>
                 </section>
+                <section className="panel stack updates-card" style={{ gridColumn: "1 / -1" }}>
+                    <h2>CONTROLLER FIRMWARE</h2>
+                    <div className="muted">Latest firmware is checked on GitHub ({effectiveBranch}). Update the controller here without updating Pi-MFX. Keep it connected until verified.</div>
+                    <div className="updates-version-grid">
+                        <span>Installed</span><strong>{installedFirmware}</strong>
+                        <span>Latest</span><strong>{str(firmware.latestBranch) !== effectiveBranch ? "Checking GitHub…"
+                            : latestFirmware || (bool(firmware.latestChecking) ? "Checking GitHub…" : "Unavailable")}</strong>
+                    </div>
+                    {str(firmware.latestError) && <div className="danger" role="status">{str(firmware.latestError)}{latestFirmware ? ` Last checked version: ${latestFirmware}.` : ""}</div>}
+                    <div className="updates-status" role="status">{firmwareBusy || ["failed", "pending", "bootstrap", "unavailable"].includes(str(firmware.state))
+                        ? str(firmware.message) : bool(firmware.latestChecking) ? "Checking GitHub for controller firmware…"
+                        : !latestReady ? "Check GitHub to find the latest installable firmware."
+                        : firmwareUpToDate ? "Controller firmware is up to date."
+                        : `Controller firmware ${latestFirmware} is available from GitHub.`}</div>
+                    {str(firmware.state) === "flashing" && <progress max={100} value={num(firmware.progress)} aria-label="Controller firmware transfer" />}
+                    {str(firmware.state) === "bootstrap" && <div className="muted">Older firmware needs one Arduino upload to enable MIDI updates. Use an OTA partition scheme; saved wiring is kept when NVS is retained.</div>}
+                    <div className="row updates-actions">
+                    <button type="button" className="btn" disabled={installing || firmwareBusy || bool(firmware.latestChecking)} onClick={checkFirmware}>CHECK GITHUB</button>
+                    <button type="button" className="btn btn-accent" disabled={installing || firmwareBusy || !latestReady || firmwareUpToDate || str(firmware.state) === "unavailable"}
+                        onClick={retryFirmware}>{str(firmware.state) === "preparing" ? "CHECKING CONTROLLER…"
+                            : firmwareBusy ? "UPDATING CONTROLLER…" : latestReady && !firmwareUpToDate ? `UPDATE CONTROLLER TO ${latestFirmware}` : "UPDATE CONTROLLER FIRMWARE"}</button>
+                    </div>
+                </section>
                 </div>
                 {progressLines.length > 0 && (
-                    <pre ref={progressRef} className="updates-progress" aria-live="polite"
+                    <>
+                    <div className="row updates-log-actions">
+                        <button type="button" className="btn" onClick={() => void copyLog()}>COPY LOG</button>
+                        <span className="muted" role="status">{copyMessage}</span>
+                    </div>
+                    <pre ref={progressRef} className="updates-progress" data-mfx-selectable="true" aria-label="Update log" tabIndex={0} aria-live="polite"
                         onScroll={(event) => {
                             const console = event.currentTarget;
                             followProgressRef.current = console.scrollHeight - console.scrollTop - console.clientHeight <= 12;
                         }}>
                         {progressText}
                     </pre>
+                    </>
                 )}
             </div>
             {confirmInstall && (
                 <ConfirmDialog
                     title={`UPDATE ${effectiveBranch.toUpperCase()}?`}
-                    body={`The update takes several minutes. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes.${unsavedPresetCount > 0 ? ` ${unsavedPresetCount} preset${unsavedPresetCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.` : ""}`}
+                    body={`The update takes several minutes. Newer controller firmware is also built and flashed automatically; leave the controller connected and powered. If disconnected, its update waits until connection. Audio stops during the rebuild, and the Pi-MFX service restarts when it finishes.${unsavedPresetCount > 0 ? ` ${unsavedPresetCount} preset${unsavedPresetCount === 1 ? " has" : "s have"} unsaved live changes that will be lost.` : ""}`}
                     confirmLabel="UPDATE"
                     danger
                     onCancel={() => showInstallConfirmation(false)}

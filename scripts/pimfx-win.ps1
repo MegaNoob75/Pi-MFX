@@ -1,5 +1,6 @@
 # Windows front end for Pi-MFX setup. SSH login is asked and saved locally
 # in .pimfx-remote (gitignored). Pi work is always scripts/pimfx.sh on the Pi.
+# Prefer pi-mfx.local so changing between Ethernet and Wi-Fi does not require a new IP.
 #
 #   .\pimfx.cmd
 #   .\scripts\pimfx-win.ps1
@@ -41,6 +42,7 @@ function Get-SshOpts {
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
         "-o", "NumberOfPasswordPrompts=1",
+        "-o", "ConnectTimeout=10",
         "-o", "StrictHostKeyChecking=accept-new"
     )
 }
@@ -82,7 +84,10 @@ function Ask-Login([switch]$Force) {
     $hostName = ""
     $userName = ""
     while (-not $hostName) {
-        $hostName = (Read-Host "Pi hostname or IP (for example pimfx.local)").Trim()
+        $hostName = (Read-Host "Pi hostname or IP [pi-mfx.local] (hostname follows IP changes)").Trim()
+        if (-not $hostName) {
+            $hostName = "pi-mfx.local"
+        }
     }
     while (-not $userName) {
         $userName = (Read-Host "Pi username").Trim()
@@ -213,6 +218,11 @@ function Copy-LocalTree([string]$Mode) {
 #!/bin/bash
 set -euo pipefail
 DEST="$RemotePath"
+if [[ "`$DEST" == "~" ]]; then
+  DEST="`$HOME"
+elif [[ "`$DEST" == "~/"* ]]; then
+  DEST="`$HOME/`${DEST:2}"
+fi
 mkdir -p "`$DEST"
 tar -xzf /tmp/pimfx-sync.tgz -C "`$DEST"
 rm -f /tmp/pimfx-sync.tgz
@@ -237,6 +247,59 @@ rm -f /tmp/pimfx-apply.sh
     }
     if ($Mode -eq "rebuild") {
         Reload-PiKiosk
+    }
+}
+
+function Update-ControllerFirmware([string]$Source, [string]$Branch = "dev") {
+    Ensure-Login
+    Enable-Askpass
+    $jobId = [guid]::NewGuid().ToString("N")
+    $archive = Join-Path $env:TEMP "pimfx-controller-$jobId.tgz"
+    $remoteArchive = "/tmp/pimfx-controller-$jobId.tgz"
+    try {
+        $paths = @("scripts/controller-update.sh", "scripts/controller_firmware.py")
+        if ($Source -eq "local") {
+            $paths += @("firmware")
+        }
+        Write-Host "==> Preparing controller firmware update ($Source)"
+        & tar -czf $archive --exclude=build --exclude=__pycache__ --exclude=*.pyc --exclude=*.bin -C $Repo @paths
+        if ($LASTEXITCODE -ne 0) { throw "Could not pack controller firmware source" }
+        Invoke-SshTool scp ((Get-SshOpts) + @("-O", $archive, "$($script:Target):$remoteArchive"))
+        $quotedPass = Escape-BashSingle $script:Password
+        $quotedArchive = Escape-BashSingle $remoteArchive
+        $quotedSource = Escape-BashSingle $Source
+        $quotedBranch = Escape-BashSingle $Branch
+        $remote = @"
+set -eu
+stage=`$(mktemp -d)
+trap 'rm -rf -- "`$stage"; rm -f -- $quotedArchive' EXIT
+tar -xzf $quotedArchive -C "`$stage"
+sed -i 's/\r$//' "`$stage/scripts/controller-update.sh"
+chmod 755 "`$stage"
+source_arg=$quotedBranch
+if [ $quotedSource = local ]; then source_arg="`$stage"; fi
+printf '%s\n' $quotedPass | sudo -S -p '' bash "`$stage/scripts/controller-update.sh" $quotedSource "`$source_arg"
+"@
+        Write-Host "==> Keep the controller connected until firmware verification finishes"
+        Invoke-SshTool ssh ((Get-SshOpts) + @("-n", $script:Target, ($remote -replace "`r`n", "`n")))
+    } finally {
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+        Disable-Askpass
+    }
+}
+
+function Show-ControllerFirmwareMenu {
+    Write-Host ""
+    Write-Host "  Controller firmware from GitHub"
+    Write-Host "  1) Main"
+    Write-Host "  2) Dev"
+    Write-Host "  3) Workstation"
+    Write-Host "  4) Back"
+    $choice = Read-Host "Choose [1-4]"
+    switch ($choice) {
+        "1" { Update-ControllerFirmware "github" "main" }
+        "2" { Update-ControllerFirmware "github" "dev" }
+        "3" { Update-ControllerFirmware "github" "workstation" }
     }
 }
 
@@ -296,24 +359,22 @@ function Invoke-MenuAction([string]$Choice) {
         $userName = $Matches[1]
     }
     switch ($Choice) {
-        "0" { Copy-LocalTree "rebuild" }
+        "C" { Copy-LocalTree "rebuild" }
         "1" { Invoke-Pimfx ("complete -y --display-user " + $userName) }
         "2" { Invoke-Pimfx "install -y" }
         "3" { Show-UpdateBranchMenu }
         "4" { Invoke-Pimfx "rebuild -y"; Reload-PiKiosk }
-        "5" { Invoke-Pimfx ("display -y --display-user " + $userName) }
-        "5r" { Invoke-Pimfx "display-refresh -y" }
-        "6" { Invoke-Pimfx "display-remove -y" }
-        "7" { Show-BootScreenMenu }
-        "7.1" { Invoke-Pimfx "splash -y" }
-        "7.2" { Invoke-Pimfx "splash-remove -y" }
-        "8" { Show-FasterBootMenu }
-        "8.1" { Invoke-Pimfx "boot-speed -y" }
-        "8.2" { Invoke-Pimfx "boot-speed-unused -y" }
-        "8.3" { Invoke-Pimfx "boot-speed-restore -y" }
-        "9" { Invoke-Pimfx "hotspot -y" }
-        "10" { Invoke-Pimfx "status" }
-        "11" {
+        "5" { Show-ControllerFirmwareMenu }
+        "6" { Update-ControllerFirmware "local" }
+        "7" { Invoke-Pimfx ("display -y --display-user " + $userName) }
+        "8" { Invoke-Pimfx "display-refresh -y" }
+        "9" { Invoke-Pimfx "display-remove -y" }
+        "10" { Show-BootScreenMenu }
+        "11" { Show-FasterBootMenu }
+        "12" { Invoke-Pimfx "hotspot -y" }
+        "13" { Invoke-Pimfx "status" }
+        "14" { Invoke-Pimfx "reboot -y" }
+        "15" {
             $purge = Read-Host "Also delete /var/lib/pimfx (banks, models, IRs)? [y/N]"
             if ($purge -match "^[yY]") {
                 Invoke-Pimfx "remove -y --purge"
@@ -321,9 +382,7 @@ function Invoke-MenuAction([string]$Choice) {
                 Invoke-Pimfx "remove -y"
             }
         }
-        "12" { Invoke-Pimfx "reboot -y" }
         "L" { Ask-Login -Force }
-        "l" { Ask-Login -Force }
         default { Write-Host "pick a listed item" }
     }
 }
@@ -341,33 +400,35 @@ function Show-Menu {
         Write-Host "  +--------------------------------------------------+"
         Write-Host ("  Login  {0}" -f $script:Target)
         Write-Host ""
-        Write-Host "  This PC"
-        Write-Host "  0) Copy this PC to the Pi and rebuild  (no git push)"
-        Write-Host "  L) Change saved SSH login"
-        Write-Host ""
-        Write-Host "  Same as scripts/pimfx.sh on the Pi"
+        Write-Host "  Install and update Pi-MFX"
         Write-Host "  1) Complete setup  (install + touchscreen)"
         Write-Host "  2) Install / first-time setup"
         Write-Host "  3) Update from GitHub  (choose main, dev or workstation)"
-        Write-Host "  4) Rebuild local files  (no git pull)"
-        Write-Host "  5) Set up touchscreen display"
-        Write-Host "  5r) Refresh touchscreen (hard-refresh kiosk, hide pointer)"
-        Write-Host "  6) Remove touchscreen display"
-        Write-Host "  7) Boot screen  (PI-MFX logo, hide boot text)"
-        Write-Host "       7.1) Install PI-MFX logo and hide boot / shutdown text"
-        Write-Host "       7.2) Remove logo and restore console messages"
-        Write-Host "  8) Faster boot  (skip network wait, unused services)"
-        Write-Host "       8.1) Skip waiting for a network connection at boot"
-        Write-Host "       8.2) Disable unused printer, modem, VNC and file-share services"
-        Write-Host "       8.3) Restore those boot-speed changes"
-        Write-Host "  9) Wi-Fi hotspot support"
-        Write-Host "  10) Status"
-        Write-Host "  11) Remove Pi-MFX"
-        Write-Host "  12) Reboot now"
-        Write-Host "  13) Exit"
+        Write-Host "  4) Rebuild files already on the Pi  (no git pull)"
+        Write-Host "  C) Copy this PC to the Pi and rebuild  (includes local edits)"
+        Write-Host ""
+        Write-Host "  Controller firmware only (builds on the Pi)"
+        Write-Host "  5) Update firmware from GitHub  (choose branch)"
+        Write-Host "  6) Update firmware from this PC  (includes local edits)"
+        Write-Host ""
+        Write-Host "  Display and system setup"
+        Write-Host "  7) Set up touchscreen display"
+        Write-Host "  8) Refresh touchscreen display"
+        Write-Host "  9) Remove touchscreen display"
+        Write-Host "  10) Boot screen  (PI-MFX logo, hide boot text)"
+        Write-Host "  11) Faster boot  (network wait, unused services)"
+        Write-Host "  12) Wi-Fi hotspot support"
+        Write-Host ""
+        Write-Host "  Maintenance and recovery"
+        Write-Host "  13) Status"
+        Write-Host "  14) Reboot now"
+        Write-Host "  15) Remove Pi-MFX"
+        Write-Host "  L) Change saved SSH login"
+        Write-Host ""
+        Write-Host "  0) Exit"
         Write-Host ""
         $choice = (Read-Host "Choose").Trim()
-        if ($choice -eq "13" -or $choice -eq "q" -or $choice -eq "Q") {
+        if ($choice -eq "0" -or $choice -eq "q" -or $choice -eq "Q") {
             return
         }
         try {
@@ -396,6 +457,10 @@ if (-not $Action) {
     Copy-LocalTree "rebuild"
 } elseif ($Action -eq "CopyOnly") {
     Copy-LocalTree "copy"
+} elseif ($Action -eq "ControllerFirmwareGitHub") {
+    Show-ControllerFirmwareMenu
+} elseif ($Action -eq "ControllerFirmwareLocal") {
+    Update-ControllerFirmware "local"
 } else {
     Invoke-Pimfx $Action
 }
