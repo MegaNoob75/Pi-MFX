@@ -35,7 +35,7 @@ behaviour for each row. The following rows are all **NOT RUN**.
 
 | Check | Expected result |
 | --- | --- |
-| Fresh firmware / erased NVS | USB-MIDI enumerates; identity 2.0; no inputs or outputs assigned; Read Board succeeds |
+| Fresh firmware / erased NVS | USB-MIDI enumerates; identity matches current source (1.1), including wiring/guided-analog capability bits; no inputs or outputs assigned; Read Board succeeds |
 | Existing NVS after power cycle | Same pins, CCs, calibration and LED setup without a Pi configuration upload |
 | Add Momentary → Learn | Wait one second, press/hold; only correct GPIO is proposed; no preset/action during setup |
 | Cancel discovery and cancel candidate | Active configuration and host mapping remain unchanged |
@@ -73,7 +73,7 @@ behaviour for each row. The following rows are all **NOT RUN**.
 | Power interruption during NVS write | Current complete record, previous valid record, or safe empty mode; USB setup always accessible |
 | Clear Board Wiring | Confirmation required; inputs and LEDs cleared; USB setup and application presets remain available |
 | Generic commercial MIDI controller | Existing CC/note Learn still works; physical GPIO controls are not offered |
-| Old firmware 1.1 | Existing MIDI Learn still works; firmware upgrade notice explains need for 2.0 GPIO discovery |
+| Legacy 1.x firmware without capability bits | Existing MIDI Learn still works; firmware notice explains that physical GPIO discovery requires the current universal image; option 5 or Arduino IDE provisions its receiver |
 | 7-inch touchscreen and browser together | Large usable targets, shared setup state/confirmation, scrollable review and advanced settings |
 
 Do not claim universal/controller completion from protocol tests alone. If Learn

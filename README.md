@@ -81,6 +81,16 @@ cd Pi-MFX
 sudo bash ./scripts/pimfx.sh
 ```
 
+Choose **1) Complete setup** for an attached touchscreen, or **2) Install /
+first-time setup** for the engine and browser UI. For an optional blank
+ESP32-S3 controller, follow with **5) First-time ESP32-S3 installation over USB**,
+then configure controls in **Settings → Controller → Hardware Setup**. Connect
+the board to the Pi, including when using the Windows menu. A single matching
+Espressif download port is detected automatically; Arduino IDE is optional.
+See [first-time controller setup](docs/DIY_CONTROLLER.md#flash-once) for
+BOOT/RESET, confirmation and verification steps. This new USB installation path
+still needs physical validation.
+
 Then open `http://pimfx.local:8080` (or `http://<pi-address>:8080`) from any
 browser on the network. Full instructions, including audio HAT overlays and
 kiosk mode, are in [docs/INSTALL.md](docs/INSTALL.md).

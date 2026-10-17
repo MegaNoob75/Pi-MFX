@@ -58,28 +58,43 @@ Write down the Pi’s IP (`hostname -I` on the Pi) so you can reuse it if mDNS i
 
 First run asks for **hostname or IP**, **username**, and **password** (shown as you type). Those are saved in **`.pimfx-remote` in this clone only**. That file is gitignored — never commit it. Later runs offer the saved login; press Enter to keep it, or **L** in the menu to change it.
 
-The numbered items match **`scripts/pimfx.sh` on the Pi**. The Windows script only SSHs and runs that file (plus item 0, which is PC-only). If you change install/update/display behaviour, change `pimfx.sh` (and the scripts it calls), not a second copy of the logic.
+Most numbered items match **`scripts/pimfx.sh` on the Pi**. The Windows menu runs
+work over SSH; firmware choices stage source and call the controller helper on
+the Pi. Builds and flashing happen on the Pi. Keep both menus aligned when
+changing their entries; maintenance numbering differs as noted below.
 
 | Windows `pimfx.cmd` | What it runs on the Pi |
 | --- | --- |
-| 0 | Copy this PC’s tree over SSH, then `pimfx.sh rebuild` (no git pull, no push) |
+| C | Copy this PC’s tree over SSH, then `pimfx.sh rebuild` (no git pull, no push) |
 | 1 | `pimfx.sh complete` (install + touchscreen) |
 | 2 | `pimfx.sh install` |
-| 3 | Choose `dev` for current development or `main` for a release, then run the matching update |
+| 3 | Choose `dev` for development or `main` for a release, then update |
 | 4 | `pimfx.sh rebuild` |
-| 5 | `pimfx.sh display` |
-| 5r | `pimfx.sh display-refresh` |
-| 6 | `pimfx.sh display-remove` |
-| 7.1 / 7.2 | Boot logo install / remove (`splash`) |
-| 8.1 / 8.2 / 8.3 | Faster boot skip-wait / unused / restore |
-| 9 | Hotspot helper |
-| 10 | Status |
-| 11 | Remove Pi-MFX (asks before deleting `/var/lib/pimfx`) |
-| 12 | Reboot the Pi |
+| 5 | First-time ESP32-S3 USB installation; source selection, automatic detection, confirmation and verification |
+| 6 | Update controller firmware from GitHub; choose Main, Dev or Workstation |
+| 7 | Update controller firmware from this PC, including local edits |
+| 8 | `pimfx.sh display` |
+| 9 | `pimfx.sh display-refresh` |
+| 10 | `pimfx.sh display-remove` |
+| 11 | Boot logo install / remove (`splash`) |
+| 12 | Faster boot skip-wait / unused / restore |
+| 13 | Hotspot helper |
+| 14 | Status |
+| 15 | Reboot the Pi |
+| 16 | Remove Pi-MFX; the Pi menu instead uses 16 for backup restore and 17 for removal |
 | L | Change saved SSH login |
-| 13 | Exit |
+| 0 | Exit |
 
-**`sync-to-pi.cmd`** is only item 0 (copy + rebuild). Use it for a tight edit/test loop after the Pi is already installed.
+**`sync-to-pi.cmd`** performs the copy + rebuild operation available as **C**.
+Use it for a tight edit/test loop after the Pi is already installed.
+
+For a blank controller, the sequence is **1 (or 2) → 5 → Hardware Setup**.
+Connect the ESP32-S3 to the Pi, hold BOOT, tap RESET and release BOOT when
+prompted. A single matching Espressif download port is selected automatically;
+otherwise choose the Pi port from the list. Check the target and type `INSTALL`.
+No Arduino IDE is required. Options 6/7 remain updates for controllers that already
+have a compatible receiver. See [Flash once](DIY_CONTROLLER.md#flash-once).
+Initial USB provisioning still needs physical validation on the Pi and controller.
 
 ```powershell
 .\pimfx.cmd

@@ -153,7 +153,9 @@ If power fails before the data transaction commits, a boot guard restores the
 previous data before the engine opens the rig. A committed restore interrupted
 during OS setup is reported for review instead of remaining stuck as running.
 
-The installer menu also has **14) Restore an exported backup**. It prompts for
+The installer menu running directly on the Pi has **16) Restore an exported backup**.
+The Windows menu's item 16 removes Pi-MFX; use the app's Backup & Restore screen
+or run the Pi menu for recovery. The Pi restore option prompts for
 the archive path and password, verifies it, shows the contents, and requires
 typing `RESTORE`. The same workflow is available from:
 

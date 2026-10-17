@@ -99,12 +99,14 @@ export function PerformanceControl({
     tile,
     switchStyle: _switchStyle,
     bypassed,
-    renderMenu = true
+    renderMenu = true,
+    showControlLabel = true
 }: {
     tile: PerformanceTile;
     switchStyle: string;
     bypassed: boolean;
     renderMenu?: boolean;
+    showControlLabel?: boolean;
 }) {
     void _switchStyle;
     const analog = tile.analog || isAnalogKind(tile.kind ?? "") || isEncoderKind(tile.kind ?? "");
@@ -675,6 +677,8 @@ export function PerformanceControl({
             data-control-kind={tile.kind ?? "pot"}
             data-assigned={assigned ? "true" : "false"}
             data-adjustable="true"
+            data-show-control-label={showControlLabel ? undefined : "false"}
+            aria-label={showControlLabel ? undefined : `${tile.analogSource || tile.switchLabel}: ${tile.analogFunction || tile.valueText}`}
             data-mfx-encoder-selected={tile.encoderSelected ? "true" : undefined}
             style={{
                 position: "relative",
@@ -704,7 +708,7 @@ export function PerformanceControl({
                 schedulePopoutClose();
             }}
         >
-            {(tile.analogSource || tile.switchLabel).trim() ? (
+            {showControlLabel && (tile.analogSource || tile.switchLabel).trim() ? (
                 <MarqueeText className="mfx-performance-control__source" text={tile.analogSource || tile.switchLabel} />
             ) : null}
             <div className="mfx-performance-control__graphic">
@@ -755,7 +759,7 @@ export function PerformanceControl({
         tile.doubleLabel ? `DBL: ${tile.doubleLabel}` : ""
     ].filter(Boolean).join(" · ") || undefined;
     const hasMenu = Boolean(tile.onMenu);
-    const named = Boolean(tile.switchLabel.trim());
+    const named = showControlLabel && Boolean(tile.switchLabel.trim());
     return (
         <div
             className="mfx-performance-switch-wrap"
@@ -769,6 +773,8 @@ export function PerformanceControl({
             className="mfx-performance-switch"
             data-mfx-role={displayRole}
             data-control-kind={tile.kind || undefined}
+            data-show-control-label={showControlLabel ? undefined : "false"}
+            aria-label={showControlLabel ? undefined : `${tile.switchLabel}: ${tile.valueText}`}
             data-mfx-active={visualActive ? "true" : "false"}
             data-mfx-modified={tile.lightState === "modified" ? "true" : "false"}
             data-mfx-light-state={bypassed && displayRole === "preset" && tile.active ? "bypass" : tile.lightState}

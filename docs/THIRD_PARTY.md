@@ -85,8 +85,9 @@ release time.
 ### ESP-IDF / Arduino-ESP32 (Apache-2.0) and Control Surface (GPL-3.0)
 
 The optional controller firmware toolchain. USB MIDI uses the Control Surface
-library. Pi-MFX distributes firmware **source** only; Arduino IDE supplies the
-ESP32 core and libraries.
+library. Pi-MFX distributes firmware **source** only; the setup scripts' pinned
+Arduino CLI toolchain downloads the ESP32 core and libraries and builds on the
+Pi. Arduino IDE is an alternative for manual builds and initial upload.
 The sketch also includes Adafruit NeoPixel for RGB LEDs. Its upstream
 [COPYING](https://github.com/adafruit/Adafruit_NeoPixel/blob/master/COPYING)
 contains the LGPL-3.0 text. Collect the exact installed firmware-library

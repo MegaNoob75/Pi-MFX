@@ -4,13 +4,39 @@ Flash the supplied universal firmware once, then configure the controller in
 **Settings → Controller → Hardware Setup**. Rewiring or adding supported inputs
 requires no firmware source edits or reflash.
 
-The current image is **2.1**, for **ESP32-S3 DevKitC-1 with direct wiring**. Other
+The current source reports firmware **1.1**, for **ESP32-S3 DevKitC-1 with direct wiring**.
+Firmware numbering restarted after the earlier 2.x images; capabilities identify
+the current universal image separately from legacy 1.x firmware. Other
 ESP32 families, expansion modules, plain LED outputs and arbitrary displays need
 additional drivers/images. Firmware updates may still be necessary for fixes or
 new component support. See [protocol](CONTROLLER_PROTOCOL.md) and
 [validation checklist](CONTROLLER_VALIDATION.md).
 
 ## Flash once
+
+After installing Pi-MFX, use **option 5 — First-time ESP32-S3 installation over
+USB** in `pimfx.cmd` on Windows or `sudo bash ./scripts/pimfx.sh` on the Pi.
+Arduino IDE is not required for this path. The sequence for a new rig is
+**option 1 (or 2 without a touchscreen) → option 5 → Hardware Setup**.
+
+1. Choose Main, Dev, Workstation, or your local firmware source.
+2. Connect the target ESP32-S3 DevKitC-1 to the **Pi**, using a USB data cable
+   and the board's native USB port. Hold BOOT, tap RESET, then release BOOT.
+3. The script lists the Pi's USB serial ports and automatically selects a single
+   matching Espressif download port. If there are multiple matches or a generic
+   USB-to-serial adapter, select the controller's port from the list.
+4. Check the selected port and type `INSTALL` to confirm. This replaces firmware
+   and writes the bootloader and OTA partition layout. Existing board configuration
+   may be incompatible; use options 6/7 for routine updates.
+5. Wait for the build, USB upload and controller verification. First use needs
+   internet and space for the ESP32 tools. If prompted, tap RESET or reconnect
+   native USB to leave download mode. Then open Hardware Setup.
+
+This new initial-install path still needs validation on a Pi and physical board.
+It does not retry flashing automatically. A completed USB upload without the
+expected MIDI identity, version and OTA capacity is reported as unverified/failed.
+
+### Arduino IDE alternative
 
 1. Install Arduino IDE 2 and Espressif's ESP32 board package.
 2. Install **Control Surface** (Pieter P) and **Adafruit NeoPixel**.

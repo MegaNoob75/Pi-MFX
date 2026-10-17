@@ -17,6 +17,7 @@ import queue
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -385,11 +386,34 @@ def readable_build_source(repo):
         yield source
 
 
-def build(repo, cache):
+def first_install_port(port):
+    """Only an explicitly selected, existing USB serial character device."""
+    path = Path(port).resolve(strict=True)
+    if not re.fullmatch(r"/dev/tty(?:ACM|USB)\d+", str(path)) or not stat.S_ISCHR(path.stat().st_mode):
+        raise ValueError("Select an ESP32-S3 USB serial port on the Pi (/dev/ttyACM… or /dev/ttyUSB…)")
+    return path
+
+
+def first_install_recipe(config):
+    if (config.get("protocol"), config.get("board")) != (1, 1) or not config["fqbn"].startswith("esp32:esp32:esp32s3:"):
+        raise ValueError("First-time installation supports only the Pi-MFX ESP32-S3 image")
+    options = dict(item.split("=", 1) for item in config["fqbn"].split(":", 3)[3].split(","))
+    if options.get("PartitionScheme") != "min_spiffs" or options.get("FlashSize") != "4M":
+        raise ValueError("First-time installation requires the supported 4MB OTA partition layout")
+    if options.get("EraseFlash", "none") != "none" or options.get("USBMode", "default") != "default" or options.get("CDCOnBoot", "default") != "default":
+        raise ValueError("First-time installation requires native USB-MIDI with full-flash erase disabled")
+
+
+def build(repo, cache, upload_port=""):
     """Runs as the service user, never root. All dependency versions are pinned."""
     if os.geteuid() == 0:
         raise RuntimeError("Firmware builds must run as the unprivileged Pi-MFX user")
     config = build_recipe(repo)
+    port_identity = None
+    if upload_port:
+        first_install_recipe(config)
+        port = first_install_port(upload_port)
+        port_identity = (port, port.stat().st_rdev, port.stat().st_ino)
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     cli = cache / ("arduino-cli-" + config["arduinoCli"])
@@ -446,6 +470,82 @@ def build(repo, cache):
     if not image.is_file():
         raise RuntimeError("Arduino did not produce the application firmware image")
     print(f"==> Firmware build complete ({image.stat().st_size:,} bytes)", flush=True)
+    if upload_port:
+        port = first_install_port(upload_port)
+        if (port, port.stat().st_rdev, port.stat().st_ino) != port_identity:
+            raise RuntimeError("The selected USB port changed during the build. Select the controller again.")
+        for suffix in ("bootloader.bin", "partitions.bin"):
+            if not (out / f"PiMFX_Controller.ino.{suffix}").is_file():
+                raise RuntimeError(f"Build is missing the initial-install {suffix}; nothing was flashed")
+        print(f"==> Writing initial ESP32-S3 firmware to {port} (keep USB connected)", flush=True)
+        # The pinned ESP32 core supplies esptool, the chip check, all image
+        # offsets and OTA initialization. Do not hard-code these or erase NVS.
+        command(["upload", "--verbose", "--fqbn", config["fqbn"], "--port", str(port),
+                 "--protocol", "serial", "--input-dir", str(out), "--verify", str(sketch)], 300)
+
+
+def first_install(repo, root, user, port):
+    """Explicit CLI-only provisioning; never called by the background updater."""
+    import pwd
+    root = Path(root)
+    log_path = root / "controller-firmware.log"
+    log_path.write_text("")
+    version = target_version(repo)
+
+    def report(state, message, **extra):
+        atomic_json(root / "controller-firmware-status.json", {
+            "state": state, "message": message, "updatedAt": time.time(),
+            "targetVersion": ".".join(map(str, version)), **extra})
+        with log_path.open("a") as log:
+            log.write(message + "\n")
+        print(message, flush=True)
+
+    try:
+        first_install_recipe(build_recipe(repo))
+        first_install_port(port)
+        state = engine_request("state")
+        controller = state.get("controller", {})
+        if controller.get("learning") or controller.get("boardSetup", {}).get("phase") in {"reading", "searching", "proposing", "review", "saving"}:
+            raise RuntimeError("Finish or cancel Hardware Setup before installing controller firmware")
+        account = pwd.getpwnam(user)
+        if account.pw_uid == 0:
+            raise RuntimeError("Pi-MFX service user must not be root")
+        cache = root / "controller-build"
+        cache.mkdir(exist_ok=True)
+        os.chown(cache, account.pw_uid, account.pw_gid)
+        report("building", "Building the initial controller image; first use downloads the ESP32 tools")
+        with readable_build_source(repo) as source:
+            run_logged_build(["runuser", "-u", user, "--", sys.executable, "-u", str(Path(__file__).resolve()),
+                              "--build", "--upload-port", port, "--repo", str(source), "--data", str(cache)], log_path)
+        report("verifying", "USB flash completed. Waiting for the controller; tap RESET or reconnect native USB if needed.")
+        # Firmware's ESP.getEfuseMac() is formatted as a little-endian uint64.
+        macs = re.findall(r"\bMAC:\s*((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", log_path.read_text())
+        if not macs:
+            raise RuntimeError("USB upload completed, but its chip identity was not reported; controller operation is not verified. Review the log.")
+        expected_id = "".join(reversed(macs[-1].split(":"))).upper()
+        mido = midi_backend()
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            names = candidates(mido)
+            share_controller_port(root, names, report)
+            for name in names:
+                try:
+                    link = Link(mido, name)
+                    try:
+                        info = link.info()
+                    finally:
+                        link.close()
+                    if info["deviceId"] == expected_id and info["version"] == version and info["capacity"] > 0:
+                        report("current", "First-time controller installation verified. Open Hardware Setup to configure controls.",
+                               installedVersion=".".join(map(str, version)))
+                        return
+                except (OSError, RuntimeError, TimeoutError):
+                    continue
+            time.sleep(1)
+        raise RuntimeError("USB upload completed, but the flashed controller did not reply with the expected identity, version and OTA capacity. Reconnect its native USB port and check Hardware Setup.")
+    except Exception as exc:
+        report("failed", str(exc))
+        raise
 
 
 def run_logged_build(command, log_path, timeout=2400):
@@ -752,11 +852,16 @@ def main():
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--arm", action="store_true")
+    parser.add_argument("--first-install-port", default="")
+    parser.add_argument("--confirm-first-install", action="store_true")
+    parser.add_argument("--upload-port", default="")
     parser.add_argument("--github-ref", default="")
     args = parser.parse_args()
     if args.build:
-        build(args.repo, args.data)
+        build(args.repo, args.data, args.upload_port)
         return
+    if args.first_install_port and not args.confirm_first_install:
+        parser.error("First-time installation requires explicit --confirm-first-install")
     import fcntl
     root = Path(args.data)
     root.mkdir(parents=True, exist_ok=True)
@@ -768,12 +873,19 @@ def main():
         try:
             fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if args.first_install_port:
+                raise RuntimeError("Another update is running. Wait and retry first-time installation.")
             return
     # Shared across CLI updater, helper restarts, and pending-update monitor.
     with (root / "controller-firmware.lock").open("w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if args.first_install_port:
+                raise RuntimeError("Another controller operation is running. Wait and retry first-time installation.")
+            return
+        if args.first_install_port:
+            first_install(args.repo, root, args.user, args.first_install_port)
             return
         if args.arm:
             atomic_json(root / "controller-firmware-policy.json", {"enabled": True, "sourceRepo": args.repo})

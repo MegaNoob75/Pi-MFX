@@ -739,11 +739,13 @@ Pi-MFX does not impose a stock count of switches, pots, sliders, expression peda
 or encoders. Add as many logical controls as your hardware and unique MIDI
 addresses support. The stock board's eight switches, four pots, and one encoder
 are a wiring example, not an application limit. Generic MIDI controllers use
-MIDI Learn. With universal ESP32-S3 firmware 2.0, Learn discovers the physical
+MIDI Learn. With current universal ESP32-S3 firmware, Learn discovers the physical
 GPIO connection for the control type you selected.
 
-1. Wire the controls and flash universal firmware 2.0 onto a supported ESP32-S3
-   DevKitC-1 once. Configure subsequent wiring changes in Hardware Setup. A fresh
+1. Wire the controls and install universal firmware onto a supported ESP32-S3
+   DevKitC-1 once, using **option 5 — First-time ESP32-S3 installation over USB**
+   in the setup script menu (see [Flash once](DIY_CONTROLLER.md#flash-once)).
+   Configure subsequent wiring changes in Hardware Setup. A fresh
    board starts empty. Other MIDI controllers need firmware that already emits
    distinct messages for their controls.
 2. Select the actual USB-MIDI input under Hardware Setup and enable the controller.

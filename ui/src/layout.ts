@@ -20,6 +20,10 @@ export const STATUS_WIDGET_IDS = [
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
 
+export function isScalableStatusWidget(id: string): boolean {
+    return ["currentBank", "activePreset", "xruns", "tuner", "audioStatus", "cpuUsage"].includes(id);
+}
+
 export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     currentBank: "Current Bank",
     activePreset: "Active Preset",

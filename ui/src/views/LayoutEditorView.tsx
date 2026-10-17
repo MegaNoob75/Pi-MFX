@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { findPreset, isAnalogKind, isEncoderKind, isEncoderPushKind, normalizeControlKind, type EngineSnapshot } from "../api";
+import { findBank, findPreset, isAnalogKind, isEncoderKind, isEncoderPushKind, normalizeControlKind, type EngineSnapshot } from "../api";
 import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import {
     STATUS_WIDGET_IDS,
@@ -12,6 +12,7 @@ import {
     fitRectInEmptySpace,
     gridCellRect,
     isMeterWidget,
+    isScalableStatusWidget,
     layoutGroupsToJson,
     newLayoutGroupId,
     readLayoutGroups,
@@ -32,6 +33,8 @@ import {
     type MeterOrientation
 } from "../layout";
 import { GainMeter } from "./GainMeter";
+import { AutoFitStatusWidget } from "./AutoFitStatusWidget";
+import { LiveAudioWidget } from "./PerformanceView";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
 import { LibraryJsonPicker, utf8ToBase64 } from "./LibraryManager";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -111,8 +114,6 @@ export function LayoutEditorView({
     const [message, setMessage] = useState("");
     const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
     const [dirty, setDirty] = useState(false);
-    const [newControlKind, setNewControlKind] = useState("encoder");
-    const [addingControl, setAddingControl] = useState(false);
     const [picker, setPicker] = useState<"load" | "save" | null>(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [meterOrientationTarget, setMeterOrientationTarget] = useState("");
@@ -175,6 +176,20 @@ export function LayoutEditorView({
             if (typeof sharedDraft.dirty === "boolean") {
                 setDirty(sharedDraft.dirty);
             }
+        } else if (!sharedDraftJson && lastSharedDraft.current) {
+            // A confirmed Leave discards the shared draft on every screen.
+            lastSharedDraft.current = "";
+            applyingSharedDraft.current = true;
+            setWidgets(readStatusWidgets(layout));
+            setSnapshotWidgets(readSnapshotWidgets(layout));
+            setHiddenIds(unplacedIds(layout));
+            setDraftRects({});
+            setGroups(readLayoutGroups(layout));
+            setSnapshotGroups(readLayoutGroups({ groups: layout.snapshotGroups }));
+            setLoadedLayoutName(str(layout.layoutName));
+            setDirty(false);
+            setMeasurement(null);
+            setMessage("");
         }
     }, [engine.uiSession.layoutEditor]);
     const syncLayoutUi = (patch: JsonObject) => updateUiSessionSection(engine.client, "layoutEditor", patch);
@@ -725,37 +740,6 @@ export function LayoutEditorView({
         placedEntries().filter((item) => item.id !== id).map((item) => item.rect)
     );
 
-    const addHardwareControl = () => {
-        if (addingControl) return;
-        setAddingControl(true);
-        void run(async () => {
-            const current = obj(engine.client.snapshot.state.controller);
-            const existing = objects(current.controls);
-            const id = `ctl-${Date.now().toString(36)}-${existing.length}-${Math.random().toString(36).slice(2, 8)}`;
-            const encoder = newControlKind === "encoder";
-            const labels: Record<string, string> = { momentary: "SWITCH", latching: "LATCH", pot: "POT", slider: "SLIDER", expression: "EXP", encoder: "ENC" };
-            const prefix = labels[newControlKind];
-            let number = 1;
-            while (existing.some(control => str(control.label) === `${prefix} ${number}`)) number++;
-            const label = `${prefix} ${number}`;
-            const minimum = analogMinSize(normalizeControlKind(newControlKind));
-            const rect = fitRectInEmptySpace({ x: 0, y: 0, width: Math.max(.16, minimum.width), height: Math.max(.2, minimum.height) },
-                placedEntries().map(item => item.rect), minimum);
-            const additions: JsonObject[] = [{ id, label, kind: newControlKind, channel: -1,
-                ...(rect ?? {}), pairId: encoder ? `${id}-btn` : "",
-                binding: { action: encoder ? "navigate" : "none", min: 0, max: 1, inverted: false } }];
-            if (encoder) additions.push({ id: `${id}-btn`, label: `${label} BTN`, kind: "encoderPush", channel: -1,
-                pairId: id, binding: { action: "select", min: 0, max: 1, inverted: false } });
-            await engine.client.request("controller/config", { ...current, controls: [...existing, ...additions],
-                performanceLayout: { ...obj(current.performanceLayout),
-                    unplacedControlIds: [...unplacedIds(obj(current.performanceLayout)), ...additions.map(control => str(control.id))] } });
-            if (rect) setDraftRects(previous => ({ ...previous, [id]: rect }));
-            else setHiddenIds(previous => [...previous, id]);
-            setSelectedId(id); markDirty();
-            setMessage(`${label} added. Save Layout, then select it in Hardware Setup and Learn its MIDI input.${rect ? "" : " Make space, then show the control to place it."}`);
-        }).finally(() => setAddingControl(false));
-    };
-
     const toggleHidden = (id: string) => {
         if (hidden.has(id)) {
             const control = controls.find((item) => str(item.id) === id);
@@ -1298,11 +1282,6 @@ export function LayoutEditorView({
                     </div>
                     <div className="layout-palette">
                     <div className="field-label">CONTROLS</div>
-                    <label className="field"><span>New hardware control</span><select aria-label="New hardware control type" value={newControlKind} disabled={addingControl} onChange={event => setNewControlKind(event.target.value)}>
-                        <option value="momentary">Momentary switch</option><option value="latching">Latching switch</option>
-                        <option value="pot">Pot</option><option value="slider">Slider</option><option value="expression">Expression pedal</option><option value="encoder">Encoder</option>
-                    </select></label>
-                    <button type="button" className="btn btn-accent" disabled={addingControl} onClick={addHardwareControl}>ADD CONTROL</button>
                     {controls.filter((control) => !isEncoderPushKind(normalizeControlKind(str(control.kind, "momentary")))).map((control) => (
                         <button
                             key={str(control.id)}
@@ -1373,7 +1352,7 @@ export function LayoutEditorView({
                                     }
                                 }}
                             >
-                                <div className={`layout-item-preview layout-item-preview--status${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}>
+                                <AutoFitStatusWidget enabled={isScalableStatusWidget(id)} className={`layout-item-preview layout-item-preview--status${isScalableStatusWidget(id) ? " scalable-status-widget" : ""}${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}>
                                     {isMeterWidget(id) ? (
                                         <GainMeter
                                             label={id === "inputMeter" ? "In" : "Out"}
@@ -1381,17 +1360,23 @@ export function LayoutEditorView({
                                             orientation={widget.orientation}
                                             preview
                                         />
+                                    ) : id === "audioStatus" ? (
+                                        <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : (
                                         <>
                                             {widget.showLabel && id !== "cpuUsage" && (
                                                 <div className="mfx-performance-ui-label">{STATUS_WIDGET_LABELS[id]}</div>
                                             )}
                                             <strong className={`mfx-performance-ui-value${id === "cpuUsage" ? " cpu-load-readings" : ""}`}>
-                                                {id === "cpuUsage" ? "AUDIO 38%\nCPU 22%" : STATUS_WIDGET_LABELS[id]}
+                                                {id === "cpuUsage" ? "AUDIO 38%\nCPU 22%"
+                                                    : id === "xruns" ? "0"
+                                                        : id === "currentBank" ? `${str(obj(findBank(engine.state)).name, "No Bank")} ▾`
+                                                            : id === "activePreset" ? `${str(obj(findPreset(engine.state)).name, "No Preset")} ▾`
+                                                                : id === "tuner" ? "A +0¢" : STATUS_WIDGET_LABELS[id]}
                                             </strong>
                                         </>
                                     )}
-                                </div>
+                                </AutoFitStatusWidget>
                                 {resizeHandles(id, widget.rect)}
                             </div>
                         );

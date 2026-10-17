@@ -8,6 +8,15 @@ PREFIX="${PREFIX:-/usr/local}"
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mode="${1:-}"
 source_arg="${2:-}"
+bootstrap_port=""
+if [[ "${3:-}" == --first-install ]]; then
+    bootstrap_port="${4:-}"
+    [[ -n "$bootstrap_port" && "${5:-}" == --confirm-first-install ]] || {
+        echo "First-time installation needs a selected Pi USB port and --confirm-first-install." >&2; exit 1;
+    }
+elif [[ $# -gt 2 ]]; then
+    echo "Unknown controller update arguments." >&2; exit 1;
+fi
 [[ "$mode" == github || "$mode" == local ]] || { echo "Use github BRANCH or local SOURCE_FOLDER." >&2; exit 1; }
 id "$PIMFX_USER" >/dev/null
 install -d /run/pimfx "$DATA_ROOT"
@@ -38,6 +47,9 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
 fi
+if [[ -n "$bootstrap_port" ]]; then
+    usermod -aG dialout "$PIMFX_USER"
+fi
 # Retain the selected source so a disconnected controller can update later.
 destination="$DATA_ROOT/controller-source"
 install -d -m 755 "$destination/firmware" "$destination/scripts"
@@ -47,5 +59,9 @@ chmod -R a+rX "$destination"
 # The helper must understand the retained source when retrying a pending job.
 install -Dm644 "$destination/scripts/controller_firmware.py" "$PREFIX/libexec/pimfx/controller_firmware.py"
 systemctl try-restart pimfx-plugin-helper.service
-python3 "$destination/scripts/controller_firmware.py" --arm --repo "$destination" \
+extra_args=()
+if [[ -n "$bootstrap_port" ]]; then
+    extra_args+=(--first-install-port "$bootstrap_port" --confirm-first-install)
+fi
+python3 "$destination/scripts/controller_firmware.py" --arm "${extra_args[@]}" --repo "$destination" \
     --data "$DATA_ROOT" --user "$PIMFX_USER"

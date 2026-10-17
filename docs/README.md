@@ -13,7 +13,7 @@ the Pi. Markdown is the editable source; the web edition is generated with the U
 | [Development](DEV_FLOW.md) | Windows editing and maintainer-run Pi builds/tests |
 | [Technical](TECHNICAL.md) | Data paths/formats, ownership, thread and persistence contracts |
 | [Low latency](LOW_LATENCY.md) | Driver estimates, limiter lookahead, DSP/CPU metrics, tuning |
-| [DIY controller](DIY_CONTROLLER.md) | Firmware 1.1 wiring/flash workflow and device checks |
+| [DIY controller](DIY_CONTROLLER.md) | First-time USB installation (option 5), automatic detection, wiring and device checks |
 | [Controller protocol](CONTROLLER_PROTOCOL.md) | MIDI/SysEx identity, controls, and LEDs |
 | [Screenshots](SCREENSHOTS.md) | Representative UI fixture gallery |
 | [Roadmap](ROADMAP.md) | 1.0 stabilization priority and deferred feature work |

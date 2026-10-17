@@ -168,10 +168,12 @@ and restarts `pimfx.service`. Data under `/var/lib/pimfx`, including banks and
 `settings.json`, stays put. Format compatibility still matters on development
 upgrades; retain a backup before crossing a format break.
 
-The engine currently declares version `0.6.0`, the UI package `0.1.0`, and the
-controller firmware `2.0`. About uses the engine's version and build commit.
-Align application release metadata intentionally when the 1.0 candidate is
-approved; controller and data-format versions can remain independent.
+About shows the running engine's version and build commit. Application,
+controller and data-format versions are independent. The current controller
+source declares firmware `1.1` in
+`firmware/esp32s3/PiMFX_Controller/Protocol.h`, with capability bits distinguishing
+it from legacy 1.x images. Blank boards use the script menu's option 5 for
+initial USB installation; options 6/7 use the installed MIDI update receiver.
 
 ## Related
 

@@ -1233,6 +1233,12 @@ export function App() {
                     onCancel={() => setLeaveLayout(null)}
                     onConfirm={() => {
                         const pending = leaveLayout;
+                        if (view === "layout") {
+                            updateUiSessionSection(engine.client, "layoutEditor", {
+                                draft: {}, selectedId: "", activeGroupId: "", groupMode: false,
+                                picker: "", confirmDelete: false
+                            });
+                        }
                         setLeaveLayout(null);
                         setLayoutDirty(false);
                         setVirtualLayoutDirty(false);

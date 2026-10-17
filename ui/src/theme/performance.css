@@ -1133,6 +1133,88 @@ html[data-mfx-indicator-style="ring"][data-mfx-indicator-animation="spin"]
 }
 @keyframes mfx-bar-chase { to { background-position: -220% 0; } }
 
+/* Live Performance omits hardware identifiers and gives their space to the graphic. */
+.mfx-performance-control[data-show-control-label="false"] {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    gap: 2px;
+    padding: 4px;
+}
+
+.mfx-performance-control[data-show-control-label="false"] > .mfx-performance-control__graphic {
+    position: relative;
+    left: auto;
+    top: auto;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    transform: none;
+    container-type: size;
+}
+
+.mfx-performance-control[data-show-control-label="false"] > .mfx-performance-control__function,
+.mfx-performance-control[data-show-control-label="false"] > .mfx-performance-control__value {
+    position: relative;
+    inset: auto;
+}
+
+.mfx-performance-control[data-show-control-label="false"] .mfx-hardware-knob {
+    width: min(70cqw, 70cqh);
+    max-width: none;
+    max-height: none;
+}
+
+.mfx-performance-control[data-show-control-label="false"] .mfx-hardware-slider {
+    width: min(18cqw, 22px);
+    height: calc(100% - 12px);
+}
+
+.mfx-performance-control[data-show-control-label="false"] .mfx-hardware-slider[data-orientation="horizontal"] {
+    width: calc(100% - 12px);
+    height: min(18cqh, 22px);
+}
+
+.mfx-performance-switch[data-show-control-label="false"] > .mfx-footswitch-hardware,
+.mfx-performance-switch[data-show-control-label="false"] > .mfx-arcade-hardware {
+    top: 28%;
+    width: min(84cqw, 50cqh);
+}
+
+html[data-mfx-switch-style="footswitch"] .mfx-performance-switch[data-show-control-label="false"],
+html[data-mfx-switch-style="arcade"] .mfx-performance-switch[data-show-control-label="false"] {
+    --mfx-hardware-label-radius: min(42cqw, 25cqh);
+}
+
+html[data-mfx-switch-style="footswitch"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__value-row,
+html[data-mfx-switch-style="arcade"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__value-row {
+    top: calc(28% + var(--mfx-hardware-label-radius) + .25em);
+}
+
+html[data-mfx-switch-style="footswitch"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__hold-row,
+html[data-mfx-switch-style="arcade"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__hold-row {
+    top: auto;
+    bottom: 2px;
+}
+
+.mfx-performance-switch[data-show-control-label="false"] .mfx-toggle-hardware {
+    --mfx-toggle-track-width: min(72cqw, 104cqh);
+    --mfx-toggle-track-height: min(34cqh, 36cqw);
+    position: absolute;
+    top: 38%;
+    width: 88%;
+}
+
+.mfx-performance-switch[data-show-control-label="false"] .mfx-toggle-hardware__track {
+    width: var(--mfx-toggle-track-width);
+    height: var(--mfx-toggle-track-height);
+    min-height: 0;
+}
+
+.mfx-performance-switch[data-show-control-label="false"] .mfx-toggle-hardware[data-active="true"] .mfx-toggle-hardware__thumb {
+    transform: translateX(calc(var(--mfx-toggle-track-width) - var(--mfx-toggle-track-height) - 6px));
+}
+
 @media (prefers-reduced-motion: reduce) {
     html[data-mfx-respect-reduced-motion="true"] .mfx-performance-indicator,
     html[data-mfx-respect-reduced-motion="true"] .mfx-footswitch-hardware__led-ring,

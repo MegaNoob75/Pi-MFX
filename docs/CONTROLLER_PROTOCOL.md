@@ -1,8 +1,9 @@
 # Pi-MFX controller protocol
 
 USB-MIDI connects the Pi engine to the optional floorboard. Normal performance
-input remains CC messages. Universal ESP32-S3 firmware **2.0** adds physical-input
-Learn and persistent wiring setup. Application and firmware versions are separate.
+input remains CC messages. Current universal ESP32-S3 firmware **1.1** supports
+physical-input Learn and persistent wiring setup (introduced in the earlier
+2.0 sequence). Application and firmware versions are separate.
 The authoritative shared wire definitions and validation rules are in
 `firmware/esp32s3/PiMFX_Controller/HardwareProtocol.h`.
 
@@ -21,10 +22,11 @@ remain compatible with firmware 1.1. Identity reply payload is:
 
 `major minor controlCountLo controlCountHi ledCountLo ledCountHi rgbFlag`
 
-Firmware 2.0 reports its actual configured counts (zero on a fresh board), not
-fixed wiring. The Pi requests identity when connecting and on engine startup.
-A recognized firmware major of 2 enables the new handshake; unsupported protocol
-or board identifiers are rejected before configuration is accepted.
+Universal firmware reports its actual configured counts (zero on a fresh board),
+not fixed wiring. The Pi requests identity when connecting and on engine startup.
+Current images advertise setup capabilities in their extended identity; older
+2.x images retain the historical compatibility path. Unsupported protocol or
+board identifiers are rejected before configuration is accepted.
 
 Legacy set-LED payload: `brightness countLo countHi {index r g b}*`.
 RGB and brightness are 0–127. Values scale to 0–255 at the output. Legacy
@@ -180,7 +182,7 @@ Version-2 controller profiles carry wiring; version-1 profiles still import.
 Connect, Read, profile load and application restore never push GPIO settings
 silently. Use Board Controls explicitly recovers logical controls; Review Saved
 Wiring explicitly stages stored connections for a replacement board. Generic
-MIDI devices and firmware 1.1 retain ordinary MIDI Learn, including notes and
+MIDI devices and legacy 1.x images without capability bits retain ordinary MIDI Learn, including notes and
 channels. They do not gain GPIO discovery without compatible firmware.
 
 No extension-module scanning/drivers are advertised by this board profile.

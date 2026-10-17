@@ -250,7 +250,7 @@ rm -f /tmp/pimfx-apply.sh
     }
 }
 
-function Update-ControllerFirmware([string]$Source, [string]$Branch = "dev") {
+function Update-ControllerFirmware([string]$Source, [string]$Branch = "dev", [string]$FirstInstallPort = "") {
     Ensure-Login
     Enable-Askpass
     $jobId = [guid]::NewGuid().ToString("N")
@@ -269,6 +269,10 @@ function Update-ControllerFirmware([string]$Source, [string]$Branch = "dev") {
         $quotedArchive = Escape-BashSingle $remoteArchive
         $quotedSource = Escape-BashSingle $Source
         $quotedBranch = Escape-BashSingle $Branch
+        $firstInstallArgs = ""
+        if ($FirstInstallPort) {
+            $firstInstallArgs = " --first-install " + (Escape-BashSingle $FirstInstallPort) + " --confirm-first-install"
+        }
         $remote = @"
 set -eu
 stage=`$(mktemp -d)
@@ -278,7 +282,7 @@ sed -i 's/\r$//' "`$stage/scripts/controller-update.sh"
 chmod 755 "`$stage"
 source_arg=$quotedBranch
 if [ $quotedSource = local ]; then source_arg="`$stage"; fi
-printf '%s\n' $quotedPass | sudo -S -p '' bash "`$stage/scripts/controller-update.sh" $quotedSource "`$source_arg"
+printf '%s\n' $quotedPass | sudo -S -p '' bash "`$stage/scripts/controller-update.sh" $quotedSource "`$source_arg"$firstInstallArgs
 "@
         Write-Host "==> Keep the controller connected until firmware verification finishes"
         Invoke-SshTool ssh ((Get-SshOpts) + @("-n", $script:Target, ($remote -replace "`r`n", "`n")))
@@ -301,6 +305,52 @@ function Show-ControllerFirmwareMenu {
         "2" { Update-ControllerFirmware "github" "dev" }
         "3" { Update-ControllerFirmware "github" "workstation" }
     }
+}
+
+function Show-ControllerFirstInstallMenu {
+    Write-Host "First-time ESP32-S3 controller installation"
+    Write-Host "  1) Main  2) Dev  3) Workstation  4) This PC's source (includes local edits)  0) Back"
+    $source = "github"
+    $branch = switch ((Read-Host "Firmware source [0-4]").Trim()) {
+        "1" { "main" }; "2" { "dev" }; "3" { "workstation" }
+        "4" { $source = "local"; "dev" }
+        "0" { return }
+        default { Write-Host "Pick a number from 0 to 4"; return }
+    }
+    Write-Host "Connect only the target ESP32-S3 DevKitC-1 to the Pi using a USB data cable."
+    Write-Host "Hold BOOT, tap RESET, then release BOOT. Use its native USB port."
+    Read-Host "Press Enter when the board is in download mode" | Out-Null
+    Ensure-Login
+    Enable-Askpass
+    try {
+        $discoveryFile = Join-Path $PSScriptRoot "controller_ports.py"
+        $discoverySource = [Convert]::ToBase64String([IO.File]::ReadAllBytes($discoveryFile))
+        $discoveryCommand = "python3 -c " + (Escape-BashSingle ("import base64; exec(base64.b64decode('" + $discoverySource + "'))"))
+        $discoveryJson = Invoke-SshTool ssh ((Get-SshOpts) + @("-n", $script:Target, $discoveryCommand))
+        $ports = ($discoveryJson -join "`n") | ConvertFrom-Json
+    } finally {
+        Disable-Askpass
+    }
+    if (-not $ports.ports) {
+        throw "No USB serial port found on the Pi. Check the data cable and BOOT/RESET sequence, then retry."
+    }
+    foreach ($device in $ports.ports) { Write-Host ("  {0}  {1}" -f $device.device, $device.description) }
+    $port = [string]$ports.suggested
+    if ($port) {
+        Write-Host "Automatically selected Espressif USB port: $port"
+    } else {
+        Write-Host "No single Espressif download port was identified. Select the controller."
+        $port = (Read-Host "Controller port ON THE PI, e.g. /dev/ttyACM0 (blank cancels)").Trim()
+    }
+    if (-not $port) { return }
+    if ($port -notmatch '^/dev/(tty(ACM|USB)[0-9]+|serial/by-id/[A-Za-z0-9_.:-]+)$') {
+        throw "Select a USB serial device on the Pi, not a Windows COM port."
+    }
+    Write-Host "This writes the bootloader, OTA partition layout and firmware to $port."
+    Write-Host "Existing firmware will be replaced; existing board configuration may be incompatible."
+    Write-Host "Use options 6 or 7 for routine updates. First use downloads build tools on the Pi."
+    if ((Read-Host "Type INSTALL to flash this controller (anything else cancels)") -cne "INSTALL") { return }
+    Update-ControllerFirmware $source $branch $port
 }
 
 function Show-BootScreenMenu {
@@ -364,17 +414,18 @@ function Invoke-MenuAction([string]$Choice) {
         "2" { Invoke-Pimfx "install -y" }
         "3" { Show-UpdateBranchMenu }
         "4" { Invoke-Pimfx "rebuild -y"; Reload-PiKiosk }
-        "5" { Show-ControllerFirmwareMenu }
-        "6" { Update-ControllerFirmware "local" }
-        "7" { Invoke-Pimfx ("display -y --display-user " + $userName) }
-        "8" { Invoke-Pimfx "display-refresh -y" }
-        "9" { Invoke-Pimfx "display-remove -y" }
-        "10" { Show-BootScreenMenu }
-        "11" { Show-FasterBootMenu }
-        "12" { Invoke-Pimfx "hotspot -y" }
-        "13" { Invoke-Pimfx "status" }
-        "14" { Invoke-Pimfx "reboot -y" }
-        "15" {
+        "5" { Show-ControllerFirstInstallMenu }
+        "6" { Show-ControllerFirmwareMenu }
+        "7" { Update-ControllerFirmware "local" }
+        "8" { Invoke-Pimfx ("display -y --display-user " + $userName) }
+        "9" { Invoke-Pimfx "display-refresh -y" }
+        "10" { Invoke-Pimfx "display-remove -y" }
+        "11" { Show-BootScreenMenu }
+        "12" { Show-FasterBootMenu }
+        "13" { Invoke-Pimfx "hotspot -y" }
+        "14" { Invoke-Pimfx "status" }
+        "15" { Invoke-Pimfx "reboot -y" }
+        "16" {
             $purge = Read-Host "Also delete /var/lib/pimfx (banks, models, IRs)? [y/N]"
             if ($purge -match "^[yY]") {
                 Invoke-Pimfx "remove -y --purge"
@@ -408,21 +459,22 @@ function Show-Menu {
         Write-Host "  C) Copy this PC to the Pi and rebuild  (includes local edits)"
         Write-Host ""
         Write-Host "  Controller firmware only (builds on the Pi)"
-        Write-Host "  5) Update firmware from GitHub  (choose branch)"
-        Write-Host "  6) Update firmware from this PC  (includes local edits)"
+        Write-Host "  5) First-time ESP32-S3 installation over USB"
+        Write-Host "  6) Update firmware from GitHub  (choose branch)"
+        Write-Host "  7) Update firmware from this PC  (includes local edits)"
         Write-Host ""
         Write-Host "  Display and system setup"
-        Write-Host "  7) Set up touchscreen display"
-        Write-Host "  8) Refresh touchscreen display"
-        Write-Host "  9) Remove touchscreen display"
-        Write-Host "  10) Boot screen  (PI-MFX logo, hide boot text)"
-        Write-Host "  11) Faster boot  (network wait, unused services)"
-        Write-Host "  12) Wi-Fi hotspot support"
+        Write-Host "  8) Set up touchscreen display"
+        Write-Host "  9) Refresh touchscreen display"
+        Write-Host "  10) Remove touchscreen display"
+        Write-Host "  11) Boot screen  (PI-MFX logo, hide boot text)"
+        Write-Host "  12) Faster boot  (network wait, unused services)"
+        Write-Host "  13) Wi-Fi hotspot support"
         Write-Host ""
         Write-Host "  Maintenance and recovery"
-        Write-Host "  13) Status"
-        Write-Host "  14) Reboot now"
-        Write-Host "  15) Remove Pi-MFX"
+        Write-Host "  14) Status"
+        Write-Host "  15) Reboot now"
+        Write-Host "  16) Remove Pi-MFX"
         Write-Host "  L) Change saved SSH login"
         Write-Host ""
         Write-Host "  0) Exit"
@@ -461,6 +513,8 @@ if (-not $Action) {
     Show-ControllerFirmwareMenu
 } elseif ($Action -eq "ControllerFirmwareLocal") {
     Update-ControllerFirmware "local"
+} elseif ($Action -eq "ControllerFirstInstall") {
+    Show-ControllerFirstInstallMenu
 } else {
     Invoke-Pimfx $Action
 }

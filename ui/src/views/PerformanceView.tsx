@@ -22,12 +22,14 @@ import {
     clampRect,
     gridCellRect,
     isMeterWidget,
+    isScalableStatusWidget,
     readSnapshotWidgets,
     readStatusWidgets,
     snapshotAtSlot,
     unplacedIds
 } from "../layout";
 import { GainMeter } from "./GainMeter";
+import { AutoFitStatusWidget } from "./AutoFitStatusWidget";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
     analogFeedback,
@@ -1341,9 +1343,10 @@ export function PerformanceView({
                     const pickerOpen = (id === "currentBank" && bankMenuOpen)
                         || (id === "activePreset" && presetMenuOpen);
                     return (
-                        <div
+                        <AutoFitStatusWidget
                             key={id}
-                            className={`status-widget${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}
+                            enabled={isScalableStatusWidget(id)}
+                            className={`status-widget${isScalableStatusWidget(id) ? " scalable-status-widget" : ""}${isMeterWidget(id) ? ` is-meter is-${widget.orientation}` : ""}${id === "cpuUsage" ? " is-cpu-load" : ""}`}
                             style={{
                                 ...rectStyle(widget.rect, isMeterWidget(id) && widget.orientation === "vertical"),
                                 zIndex: pickerOpen ? 50 : undefined
@@ -1389,7 +1392,7 @@ export function PerformanceView({
                                             <strong className="marquee mfx-performance-ui-value">{widgetText(id, widgetValues)}</strong>
                                         </>
                                     )}
-                        </div>
+                        </AutoFitStatusWidget>
                     );
                 })}
 
@@ -1399,7 +1402,7 @@ export function PerformanceView({
                         className="freeform-slot"
                         style={tile.rect ? { ...rectStyle(tile.rect), zIndex: slotZIndex(tile) } : undefined}
                     >
-                        <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} />
+                        <PerformanceControl tile={tile} switchStyle={switchStyle} bypassed={bypassAll} showControlLabel={false} />
                     </div>
                 ))}
             </div>
@@ -1861,7 +1864,7 @@ function LiveMeterText({
     });
 }
 
-function LiveAudioWidget({
+export function LiveAudioWidget({
     engine,
     showLabel
 }: {

@@ -9,7 +9,8 @@ Firmware numbering restarted at **1.0**; the current image is **1.1**, retaining
 the features developed in the earlier 2.x images. Its extended identity advertises wiring and guided analog
 capabilities independently of release numbers. Install the updated Pi-MFX host
 alongside it. Existing 2.x controllers are not automatically downgraded to 1.0;
-use one manual Arduino upload to move to this numbering sequence.
+use option 5 (initial USB installation) or one manual Arduino upload to move
+to this numbering sequence. This replaces firmware; review saved wiring afterward.
 
 Settings → Updates shows **Installed** and **Latest** for Controller Firmware.
 Latest is checked against GitHub using the app's selected Main or Dev channel;
@@ -58,14 +59,34 @@ downgraded when switching Pi-MFX branches.
 
 ## One-time receiver installation
 
+Use **option 5 — First-time ESP32-S3 installation over USB** in either script
+menu after installing Pi-MFX. Connect the board to the Pi in download mode;
+the Windows menu also flashes through the Pi. A single Espressif download port
+is selected automatically. Multiple matches and generic adapters require a port
+selection. Check the target and type `INSTALL` before anything is written.
+
+This provisions bootloader, OTA partition layout and application through the
+pinned Arduino CLI/ESP32 upload recipe. Builds and USB upload run as the Pi-MFX
+service user with dialout access. The target USB device must remain present
+throughout the build; the updater checks the port again before writing. A chip
+other than ESP32-S3 is rejected by the upload recipe. No full-flash erase is
+requested. USB upload completion alone is not success: MIDI must report the
+flashed chip's identity, expected version and an inactive OTA slot. A verification
+failure requires attention; it never triggers automatic initial-flash retries.
+
+Options **6/7** retain their existing MIDI update behavior. They cannot provision
+a blank board. Arduino IDE remains an alternative for the one-time upload.
+See [the step-by-step setup](DIY_CONTROLLER.md#flash-once). Initial USB flashing,
+USB re-enumeration and verification are **not yet tested on physical hardware**.
+
 ### Firmware-only menus
 
-Run `pimfx.cmd` and choose **5** to download firmware from GitHub (Main,
-Dev or Workstation), or **6** to copy firmware from this PC, including local
+Run `pimfx.cmd` and choose **6** to download firmware from GitHub (Main,
+Dev or Workstation), or **7** to copy firmware from this PC, including local
 edits. Both build on the Pi and use the same version check, MIDI transfer and
 verification as the combined updater. They do not rebuild the Pi-MFX application.
-On the Pi, `sudo bash ./scripts/pimfx.sh` uses the same **5** and **6**
-choices; option 6 uses the source checkout already on that Pi.
+On the Pi, `sudo bash ./scripts/pimfx.sh` uses the same **6** and **7**
+choices; option 7 uses the source checkout already on that Pi.
 Both firmware-only paths stream the build/download output into the terminal,
 followed by transfer percentages and verification. Quiet build periods print an
 elapsed-time message every 15 seconds. Output is also retained in
@@ -76,16 +97,16 @@ Older branches without the updater show an error without flashing.
 
 The selected source is retained in `/var/lib/pimfx/controller-source` so a pending
 update can finish when the controller connects. A later combined Pi-MFX update
-selects the app checkout's bundled firmware again. First-time Arduino setup below
-is still required. The Pi must already have Pi-MFX and its helper installed.
+selects the app checkout's bundled firmware again. A blank controller first needs
+option 5 or the Arduino setup below. The Pi must already have Pi-MFX and its helper installed.
 
-Legacy images without the MIDI update receiver need a manual upload. Upload the current
-sketch once in Arduino IDE, with all sketch-folder files present, including
+Legacy images without the MIDI update receiver need option 5 or a manual upload.
+For the Arduino alternative, upload the current sketch once, with all sketch-folder files present, including
 FirmwareUpdate.h. Select ESP32S3 Dev Module, USB-OTG (TinyUSB), CDC on Boot
 disabled, and **Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)** on a board with
 at least 4MB flash. Keep Erase All Flash disabled to retain NVS wiring. Confirm
 the controller reports the current version and Hardware Setup reads its saved wiring.
-A device without a second OTA application partition needs this manual setup.
+A device without a second OTA application partition needs initial setup by either method.
 
 ## Maintaining firmware source
 
@@ -112,12 +133,21 @@ Run host regression checks without downloading or flashing:
 
 ```sh
 python3 -B -m unittest discover -s scripts/tests -p test_controller_firmware.py
+python3 -B -m unittest discover -s scripts/tests -p test_controller_first_install.py
 ```
 
 Then build the application/UI and Arduino sketch on the Pi using your normal
 validation workflow. Use a spare controller and retain an Arduino recovery path.
 For the upgrade test, bootstrap the receiver with a lower firmware version,
 then restore the bundled target version before running the combined update.
+
+For initial installation, use a spare blank ESP32-S3 and test option 5 from
+both the Windows and Pi menus. Check automatic selection with one Espressif
+download port, manual selection with generic adapters/multiple matches, no-port
+and cancellation paths, wrong-chip rejection, build/upload failures and USB
+re-enumeration. Success must match the flashed chip's identity, firmware version
+and OTA capacity. Confirm Hardware Setup works afterward. Record results before
+claiming this path validated; the host regression checks mock devices and tools.
 
 1. Same/newer controller: no build, no flash, version unchanged.
 2. Older receiver: source build, progress, checksum validation, reboot and same

@@ -50,6 +50,7 @@ Actions:
   rebuild          Rebuild from files already on the Pi (no git pull)
   firmware-update  Controller firmware from GitHub (--branch, default dev)
   firmware-local   Controller firmware from this Pi's source checkout
+  firmware-install First-time ESP32-S3 USB installation (interactive)
   display          Fullscreen touchscreen (Labwc + Chromium)
   display-refresh  Re-apply Chromium flags, hide the pointer, hide the system keyboard, hard-refresh
   kiosk-reload     Hard-refresh the attached Chromium kiosk (no Chromium restart)
@@ -133,7 +134,7 @@ parse_args() {
         esac
     done
     case "$ACTION" in
-        menu|complete|install|update|rebuild|firmware-update|firmware-local|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|restore|reboot|remove) ;;
+        menu|complete|install|update|rebuild|firmware-update|firmware-local|firmware-install|display|display-refresh|kiosk-reload|display-remove|splash|splash-remove|boot-speed|boot-speed-unused|boot-speed-restore|hotspot|status|restore|reboot|remove) ;;
         *) die "unknown action: $ACTION" ;;
     esac
 }
@@ -539,6 +540,48 @@ MENU
     fi
 }
 
+first_controller_install() {
+    local choice source=github source_arg="${UPDATE_BRANCH:-}" port answer ports_json suggested
+    [[ -t 0 ]] || die "First-time installation requires the interactive menu and a selected USB port."
+    if [[ -z "$source_arg" ]]; then
+        echo "First-time controller installation: select firmware source"
+        echo "  1) Main  2) Dev  3) Workstation  4) This Pi's source checkout  0) Back"
+        read -r -p "Choose [0-4]: " choice
+        case "$choice" in
+            1) source_arg=main ;; 2) source_arg=dev ;; 3) source_arg=workstation ;;
+            4) source=local; source_arg="$REPO_DIR" ;; 0) return 0 ;;
+            *) warn "Pick a number from 0 to 4"; return 0 ;;
+        esac
+    fi
+    echo "Connect only the target ESP32-S3 DevKitC-1 to this Pi using a USB data cable."
+    echo "Hold BOOT, tap RESET, then release BOOT. Use the board's native USB port."
+    read -r -p "Press Enter when the board is in download mode..." answer
+    ports_json=$(python3 "$SCRIPT_DIR/controller_ports.py") || return 1
+    if ! printf '%s' "$ports_json" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)["ports"] else 1)'; then
+        warn "No USB serial port found. Check the data cable and BOOT/RESET sequence, then retry."
+        return 1
+    fi
+    printf '%s' "$ports_json" | python3 -c 'import json,sys; p=json.load(sys.stdin); [print("  " + d["device"] + "  " + d["description"]) for d in p["ports"]]'
+    suggested=$(printf '%s' "$ports_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["suggested"])')
+    if [[ -n "$suggested" ]]; then
+        port="$suggested"
+        echo "Automatically selected Espressif USB port: $port"
+    else
+        echo "No single Espressif download port was identified. Select the controller below."
+        read -r -p "Controller port on the Pi (for example /dev/ttyACM0; blank cancels): " port
+    fi
+    [[ -n "$port" ]] || return 0
+    [[ "$port" =~ ^/dev/tty(ACM|USB)[0-9]+$ || "$port" =~ ^/dev/serial/by-id/[A-Za-z0-9_.:-]+$ ]] || {
+        warn "Select a USB serial device on this Pi."; return 1;
+    }
+    echo "This writes the bootloader, OTA partition layout and firmware to $port."
+    echo "Existing firmware will be replaced; existing board configuration may be incompatible."
+    echo "Use options 6 or 7 for routine firmware updates. First use downloads build tools."
+    read -r -p "Type INSTALL to flash this controller (anything else cancels): " answer
+    [[ "$answer" == INSTALL ]] || return 0
+    run_script controller-update.sh "$source" "$source_arg" --first-install "$port" --confirm-first-install
+}
+
 do_reboot() {
     if confirm "Reboot this Pi now?"; then
         log "Rebooting"
@@ -558,52 +601,54 @@ show_menu() {
   4) Rebuild local files  (no git pull)
 
   Controller firmware only
-  5) Update firmware from GitHub  (choose branch)
-  6) Update firmware from this Pi's source checkout
+  5) First-time ESP32-S3 installation over USB
+  6) Update firmware from GitHub  (choose branch)
+  7) Update firmware from this Pi's source checkout
 
   Display and system setup
-  7) Set up touchscreen display
-  8) Refresh touchscreen display
-  9) Remove touchscreen display
-  10) Boot screen  (PI-MFX logo, hide boot text)
-  11) Faster boot  (network wait, unused services)
-  12) Wi-Fi hotspot support
+  8) Set up touchscreen display
+  9) Refresh touchscreen display
+  10) Remove touchscreen display
+  11) Boot screen  (PI-MFX logo, hide boot text)
+  12) Faster boot  (network wait, unused services)
+  13) Wi-Fi hotspot support
 
   Maintenance and recovery
-  13) Status
-  14) Reboot now
-  15) Restore an exported backup
-  16) Remove Pi-MFX
+  14) Status
+  15) Reboot now
+  16) Restore an exported backup
+  17) Remove Pi-MFX
 
   0) Exit
 MENU
         echo
-        read -r -p "Choose [0-16]: " choice
+        read -r -p "Choose [0-17]: " choice
         case "$choice" in
             1) do_complete || warn "complete setup did not finish" ;;
             2) do_install || warn "install did not finish" ;;
             3) update_branch_menu || warn "update did not finish" ;;
             4) do_rebuild || warn "rebuild did not finish" ;;
-            5) update_branch_menu controller || warn "controller update did not finish" ;;
-            6) run_script controller-update.sh local "$REPO_DIR" || warn "controller update did not finish" ;;
-            7) configure_touchscreen || warn "touchscreen setup did not finish" ;;
-            8) refresh_touchscreen_session || warn "touchscreen refresh did not finish" ;;
-            9) remove_touchscreen || warn "touchscreen remove did not finish" ;;
-            10) boot_screen_menu || warn "boot screen change did not finish" ;;
-            11) faster_boot_menu || warn "boot-speed change did not finish" ;;
-            12) do_hotspot || warn "hotspot install did not finish" ;;
-            13) do_status || warn "status failed" ;;
-            16)
+            5) first_controller_install || warn "first-time controller installation did not finish" ;;
+            6) update_branch_menu controller || warn "controller update did not finish" ;;
+            7) run_script controller-update.sh local "$REPO_DIR" || warn "controller update did not finish" ;;
+            8) configure_touchscreen || warn "touchscreen setup did not finish" ;;
+            9) refresh_touchscreen_session || warn "touchscreen refresh did not finish" ;;
+            10) remove_touchscreen || warn "touchscreen remove did not finish" ;;
+            11) boot_screen_menu || warn "boot screen change did not finish" ;;
+            12) faster_boot_menu || warn "boot-speed change did not finish" ;;
+            13) do_hotspot || warn "hotspot install did not finish" ;;
+            14) do_status || warn "status failed" ;;
+            15) do_reboot ;;
+            16) do_restore_backup || warn "restore did not finish" ;;
+            17)
                 PURGE="no"
                 if confirm "Also delete /var/lib/pimfx (banks, models, IRs)?"; then
                     PURGE="yes"
                 fi
                 do_remove confirmed || warn "remove did not finish"
                 ;;
-            14) do_reboot ;;
             0|q|Q) return 0 ;;
-            15) do_restore_backup || warn "restore did not finish" ;;
-            *) warn "pick a number from 0 to 16"; pause_for_menu; continue ;;
+            *) warn "pick a number from 0 to 17"; pause_for_menu; continue ;;
         esac
         offer_reboot
         pause_for_menu
@@ -626,6 +671,7 @@ main() {
         rebuild) do_rebuild ;;
         firmware-update) run_script controller-update.sh github "${UPDATE_BRANCH:-dev}" ;;
         firmware-local) run_script controller-update.sh local "$REPO_DIR" ;;
+        firmware-install) first_controller_install ;;
         display) configure_touchscreen ;;
         display-refresh) refresh_touchscreen_session ;;
         kiosk-reload)

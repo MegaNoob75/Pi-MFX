@@ -135,13 +135,39 @@ the full navigation drawer.
 
 ## 7. Optional: foot controller
 
-**Settings → Controller**. See [DIY_CONTROLLER.md](DIY_CONTROLLER.md) to build
-one. You do not need one — the browser is a complete control surface, and the
-Performance screen gives you on-screen switches.
+For a blank **ESP32-S3 DevKitC-1**, install Pi-MFX first using option **1**
+(with touchscreen) or **2** (browser UI only). Then choose **5) First-time
+ESP32-S3 installation over USB** in the same menu. This option is also available
+in the Windows `pimfx.cmd` menu; the board connects to the **Pi**, not the PC.
+
+1. Choose the firmware source. Use **Dev** for the current development source,
+   Main for a release, or local source to include your uncommitted changes.
+2. Connect the board's native USB port to the Pi with a data cable. Hold **BOOT**,
+   tap **RESET**, then release **BOOT** when the script prompts you.
+3. The script automatically selects a single matching Espressif download port.
+   If several devices match, or the board uses a generic USB-to-serial adapter,
+   select its Pi port from the list. If none appear, check the cable and boot mode.
+4. Check the selected port and type **INSTALL**. The Pi downloads any required
+   build tools, builds the image, and writes the bootloader, OTA partition layout
+   and firmware. Keep USB and power connected. First use needs internet and
+   space for the ESP32 tools.
+5. Wait for verification. If prompted, tap RESET or reconnect native USB so the
+   controller starts its firmware. Open **Settings → Controller → Hardware Setup**
+   to add/configure controls and Learn their connections.
+
+Arduino IDE is an alternative, not a prerequisite. Options **6/7** update a
+controller that already has compatible firmware; they cannot flash a blank
+board. Option 5 replaces existing firmware and may make old board configuration
+incompatible, so use 6/7 for routine updates. This initial USB installation path
+still needs Pi/ESP32 validation; upload completion alone is not verified success.
+
+See [DIY_CONTROLLER.md](DIY_CONTROLLER.md#flash-once) for details and recovery.
+A controller is optional: the browser and on-screen switches provide a complete
+control surface.
 
 ## Optional: touchscreen on the Pi
 
-From the setup menu pick **7) Set up touchscreen display**, or:
+From the setup menu pick **8) Set up touchscreen display**, or:
 
 ```bash
 sudo bash ./scripts/pimfx.sh display
@@ -167,14 +193,14 @@ The attached screen uses the loopback address, so its URL needs no hostname
 change. Other devices can use `http://pi-mfx.local:8080`; the separately
 published `http://pimfx.local:8080` alias remains available as well.
 
-To undo just the screen session: menu item **6**, or
+To undo just the screen session: menu item **10**, or
 `sudo bash ./scripts/pimfx.sh display-remove`.
 
 ## Optional: boot logo and quiet boot
 
 The attached screen can show only the **PI-MFX** logo while the Pi boots and
 shuts down, with kernel and systemd text kept in the journal. This is original
-Pi-MFX artwork. From the setup menu pick **10) Boot screen**,
+Pi-MFX artwork. From the setup menu pick **11) Boot screen**,
 or:
 
 ```bash
@@ -186,7 +212,7 @@ kernel options without removing `threadirqs` or USB autosuspend. Encrypted-root
 cards are skipped so an unlock prompt cannot be hidden. Reboot after it
 finishes. Undo from the same menu, or `sudo bash ./scripts/pimfx.sh splash-remove`.
 
-**11) Faster boot** is separate:
+**12) Faster boot** is separate:
 
 - skip waiting for a network connection at boot (often several seconds)
 - optionally disable unused printer, modem, VNC, and file-share services
@@ -209,7 +235,7 @@ at once. A tablet using the PI-MFX hotspot will drop unless it is also on that
 home network.
 
 Join the hotspot from the tablet, then open `http://10.42.0.1:8080` (or the
-URL shown on the page). Menu item **9** reinstalls the helper if needed:
+URL shown on the page). Menu item **13** reinstalls the helper if needed:
 
 ```bash
 sudo bash ./scripts/pimfx.sh hotspot
@@ -236,7 +262,9 @@ system packages or want to re-apply tuning.
 Export a recovery archive before release upgrades using **Settings → Backup &
 Restore**. Full archives contain the complete Pi-MFX rig and require a backup
 password. After installing a fresh OS and Pi-MFX, restore the exported file from
-that screen or choose **15) Restore an exported backup** in the installer menu.
+that screen or choose **16) Restore an exported backup** in the installer menu
+running directly on the Pi. In the Windows menu, item 16 removes Pi-MFX;
+use the app's Backup & Restore screen or run the Pi menu for recovery.
 See [BACKUP_RESTORE.md](BACKUP_RESTORE.md) for required free space, compatibility,
 selective restore, rollback and pending Pi validation.
 

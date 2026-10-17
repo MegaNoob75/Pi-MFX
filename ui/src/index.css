@@ -3563,6 +3563,71 @@ button.list-item {
     text-align: center;
 }
 
+/* Fixed text rows let the fitter use all available space without text changing the layout. */
+.scalable-status-widget {
+    container-type: size;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    align-content: stretch;
+    justify-items: stretch;
+    gap: 2px;
+    padding: 4px 6px;
+}
+
+.scalable-status-widget:has(> .mfx-performance-ui-label) {
+    grid-template-rows: minmax(0, .3fr) minmax(0, 1fr);
+}
+
+.scalable-status-widget .performance-picker-freeform {
+    min-height: 0;
+    grid-template-rows: minmax(0, .3fr) minmax(0, 1fr);
+}
+
+.scalable-status-widget .mfx-performance-ui-label,
+.scalable-status-widget .mfx-performance-ui-value,
+.scalable-status-widget .audio-widget-detail > strong,
+.scalable-status-widget .audio-widget-detail > span {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-size: inherit;
+    line-height: 1.08;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: pre;
+}
+
+.layout-item-preview--status.scalable-status-widget .mfx-performance-ui-label,
+.layout-item-preview--status.scalable-status-widget .mfx-performance-ui-value,
+.scalable-status-widget.is-cpu-load .cpu-load-readings {
+    justify-content: center;
+    text-align: center;
+}
+
+.scalable-status-widget .audio-widget-detail {
+    display: grid;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, .8fr) minmax(0, 1.2fr) repeat(3, minmax(0, 1fr));
+    justify-content: stretch;
+}
+
+.scalable-status-widget .audio-widget-heading {
+    min-width: 0;
+    min-height: 0;
+}
+
+.scalable-status-widget .audio-widget-heading .mfx-performance-ui-label {
+    flex: 1;
+}
+
 .plugin-row.selected {
     border-color: var(--mfx-cyan);
     background: var(--mfx-cyan-surface);
