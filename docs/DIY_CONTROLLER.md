@@ -39,13 +39,15 @@ Never feed 5 V into an ESP32 input. Check the actual board's schematic before
 wiring; software cannot make an electrically incompatible circuit safe.
 
 1. Select the actual ESP32 USB-MIDI device in Hardware Setup and enable it.
-   The board should report firmware 2.1 and READY after configuration readback.
+   The board should report firmware 2.3 or newer and READY after configuration readback.
 2. Add Momentary, Latching, Pot, Slider, Expression or Encoder. Choose the correct
    type first; Learn discovers its connection rather than guessing the type.
 3. Select the control and press Learn. Keep everything still for one second.
 4. Operate only the selected control:
-   - Switch: press and hold for half a second. Latching: change its position.
-   - Analog: slowly sweep the complete range and back, then stop.
+   - Switch: press and release. Latching: change its position.
+   - Analog: turn to 0/minimum and tap **Set Minimum**. Slowly turn to maximum
+     and tap **Set Maximum**. Keep other controls still. Each step allows three
+     minutes, and pausing does not automatically finish discovery.
    - Encoder: turn clockwise at least four clicks, then stop. Learn Button
      separately if a push switch is fitted.
 5. Review the proposed GPIOs and choose **Save on Controller**. Pi-MFX waits for

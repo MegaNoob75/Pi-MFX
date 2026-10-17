@@ -112,6 +112,46 @@ static void learnAndPersist() {
     require(reboot.command("learn",Json::object({{"controlId","switch"}})),"relearn failed");
     require(reboot.command("cancel"),"cancel failed");
     require(reboot.hardware.phase()=="idle" && reboot.config.toJson().dump()==saved.toJson().dump(),"cancel altered persisted settings");
+
+    Rig lost; lost.config=saved;
+    lost.config.controls[0].hardware=Json(); lost.config.boardHardware=Json();
+    lost.read(proposed,1);
+    const auto unbound=lost.config.toJson().dump();
+    require(lost.command("learn",Json::object({{"controlId","switch"}})),"relearn with missing wiring metadata failed");
+    require(lost.sent.back()[9]==slot,"relearn allocated a new slot instead of recovering existing wiring");
+    require(lost.config.toJson().dump()==unbound,"relearn mutated mapping before confirmation");
+    auto relearned=proposed;
+    relearned.controls[slot]=hw::decode(lost.sent.back().data()+10);
+    relearned.controls[slot].pinA=6;
+    lost.snapshot(relearned,1,true);
+    require(lost.hardware.phase()=="review","relearn did not propose its original pin");
+    require(lost.command("confirm"),"relearn confirmation failed"); lost.snapshot(relearned,2);
+    require(lost.config.controls[0].hardware["slot"].asInt(-1)==slot,"relearn failed to restore wiring metadata");
+}
+static void guidedAnalogCalibration() {
+    Rig r; r.control("pot",ControlKind::Pot); r.read();
+    const auto before=r.config.toJson().dump();
+    require(r.command("learn",Json::object({{"controlId","pot"}})),"guided learn did not start");
+    require(r.sent.back()[4]==hw::GuidedLearn,"analog used automatic sweep instead of guided Learn");
+    const int slot=r.sent.back()[9];
+    auto entry=hw::decode(r.sent.back().data()+10);
+    r.receive(hw::LearnProgress,{0,hw::Ok});
+    require(r.hardware.state()["learnStage"].asString()=="minimum","minimum prompt missing");
+    require(r.command("capture"),"minimum capture failed");
+    require(r.sent.back()[4]==hw::Capture && r.sent.back()[7]==0,"minimum capture had wrong stage");
+    require(!r.command("capture"),"duplicate minimum capture accepted before board acknowledgement");
+    r.receive(hw::LearnProgress,{1,hw::Ok});
+    require(r.hardware.state()["learnStage"].asString()=="maximum","maximum prompt missing");
+    require(r.command("capture"),"maximum capture failed");
+    r.receive(hw::LearnProgress,{1,hw::RangeTooSmall});
+    require(r.hardware.phase()=="searching" && r.hardware.state()["learnStage"].asString()=="maximum","small range aborted instead of allowing another maximum capture");
+    require(r.config.toJson().dump()==before,"calibration changed saved host config before confirmation");
+    require(r.command("capture"),"maximum retry failed");
+    hw::Config calibrated; entry.pinA=8; entry.minimum=100; entry.maximum=3900; calibrated.controls[slot]=entry;
+    r.snapshot(calibrated,0,true);
+    require(r.hardware.phase()=="review","calibration did not reach review");
+    require(r.command("confirm"),"calibration confirm failed"); r.snapshot(calibrated,1);
+    require(r.config.controls[0].hardware["minimum"].asInt()==100 && r.config.controls[0].hardware["maximum"].asInt()==3900,"calibration endpoints were not saved");
 }
 static void failuresAndRecovery() {
     Rig corrupt; require(corrupt.command("read"),"read failed"); corrupt.snapshot(hw::Config{},0,false,true);
@@ -166,7 +206,7 @@ static void templateRestoreDelete() {
 }
 int main() {
     try {
-        validation(); learnAndPersist(); failuresAndRecovery(); templateRestoreDelete();
+        validation(); learnAndPersist(); guidedAnalogCalibration(); failuresAndRecovery(); templateRestoreDelete();
         std::cout << "Controller hardware protocol tests passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

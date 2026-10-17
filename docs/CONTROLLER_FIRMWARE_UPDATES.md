@@ -11,6 +11,25 @@ version is built and flashed. Arduino IDE is not needed for subsequent updates.
 The controller temporarily stops sending input while its firmware is written.
 Keep the USB connection and power connected until the version is verified.
 
+**Update Controller Firmware** also starts this process on its own, without a
+Pi-MFX application rebuild or update. Checking is shown separately from writing
+firmware. Bundled reads the selected source version, rather than the target saved
+by a previous attempt.
+
+If Pi-MFX uses the controller's exclusive raw-MIDI address, the updater moves
+that same device to its shared ALSA sequencer connection before probing. Other
+selected devices are left alone. Finish or cancel Hardware Setup first. A failed
+connection change attempts to restore the original address; the audio engine is
+not restarted. A visible MIDI port that fails identification is reported as such,
+rather than claiming the controller is unplugged.
+
+RtMidi ports must be opened as physical connections. Passing `client_name` to
+Mido's RtMidi backend creates virtual ports, even when a hardware port name is
+provided; the worker must not pass that option. Discovery excludes software ports
+such as Pi-MFX's own controller endpoint. A read-only query on the user's Pi
+confirmed that the physical connection receives the 2.1 receiver reply and OTA
+capacity. This does not validate firmware compilation, transfer or reboot.
+
 When disconnected, the update remains pending. The helper checks for connection
 every 30 seconds after the first combined update or Check / Retry action enables
 automatic updates. Failures stop automatic retries; use Check / Retry after
@@ -28,6 +47,11 @@ edits. Both build on the Pi and use the same version check, MIDI transfer and
 verification as the combined updater. They do not rebuild the Pi-MFX application.
 On the Pi, `sudo bash ./scripts/pimfx.sh` uses the same **5** and **6**
 choices; option 6 uses the source checkout already on that Pi.
+Both firmware-only paths stream the build/download output into the terminal,
+followed by transfer percentages and verification. Quiet build periods print an
+elapsed-time message every 15 seconds. Output is also retained in
+`/var/lib/pimfx/controller-firmware.log` and displayed on the Updates page.
+The Arduino CLI download timeout is set to 600 seconds for large ESP32 packages.
 Only newer firmware is flashed; increment the firmware version for local changes.
 Older branches without the updater show an error without flashing.
 
@@ -95,6 +119,13 @@ then restore the bundled target version before running the combined update.
     and controller builds/transfers must serialize, including CLI updates.
 11. Restart the helper during transfer: status must report interruption and wait
     for Retry, rather than repeatedly reflashing on connection.
+12. With the ESP32 selected through `hw:CARD=ESP32S3DEV,DEV=0`, start a firmware-only
+    update. Confirm it switches to the matching shared port, identifies 2.1,
+    updates to 2.2, verifies readback and retains wiring. Repeat with Hardware
+    Setup active and with a different selected MIDI device: neither may be changed.
+13. Seed an old attempt status with target 1.1 while the source is 2.2. Bundled
+    must show 2.2. Confirm checks say Checking Controller and a standalone firmware
+    update never starts an application build.
 
 The transfer is local USB-MIDI. Its checksum detects corruption; it is not a
 firmware signature or an authentication mechanism. Only use trusted Pi-MFX source.

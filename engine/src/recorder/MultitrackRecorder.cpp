@@ -970,7 +970,7 @@ void MultitrackRecorder::worker() {
 
 Json MultitrackRecorder::state(bool includeDetails) const {
     std::unique_lock<std::mutex> lock(stateMutex_, std::defer_lock);
-    if (includeDetails) lock.lock(); else lock.try_lock();
+    if (includeDetails) lock.lock(); else static_cast<void>(lock.try_lock()); // Checked by owns_lock() below.
     Json out = Json::object(); out.set("type", "recorder");
     out.set("status", recording() ? "recording" : finalizing_.load() ? "finalizing" : "stopped");
     out.set("sampleRate", sampleRate_.load());

@@ -9,6 +9,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <cstdlib>
 #include <cstring>
@@ -4125,7 +4126,7 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
     std::unique_lock<std::recursive_mutex> lock(stateMutex_);
     if (controllerConnecting_) { error = "The controller connection is changing. Wait and retry."; return false; }
     if (controllerHardware_.busy()) { error = "Finish or cancel hardware setup before editing controls."; return false; }
-    const auto nextController = ControllerConfig::fromJson(json);
+    auto nextController = ControllerConfig::fromJson(json);
     if (controllerHardwareCapable_ && !json["profileLoad"].asBool()) for (const auto& control : settings_.controller.controls) {
         if (!control.hardware.isObject()) continue;
         const auto next = std::find_if(nextController.controls.begin(), nextController.controls.end(),
@@ -4133,10 +4134,18 @@ bool Engine::applyControllerConfig(const Json& json, std::string& error) {
         if (next == nextController.controls.end()) {
             error = "Remove this control from Hardware Setup so its saved ESP32 wiring is also removed."; return false;
         }
+        // Action/layout edits can arrive from a browser snapshot preceding the
+        // verified board save. Only hardware transactions may replace wiring.
+        next->hardware = control.hardware;
+        next->channel = control.channel;
+        next->midiChannel = control.midiChannel;
+        next->useNoteMessages = control.useNoteMessages;
     }
+    if (controllerHardwareCapable_ && !json["profileLoad"].asBool())
+        nextController.boardHardware = settings_.controller.boardHardware;
     const std::string previousPort = settings_.controller.midiPort;
     const bool wasEnabled = settings_.controller.enabled;
-    settings_.controller = ControllerConfig::fromJson(json);
+    settings_.controller = std::move(nextController);
     migrateHardwareParameterBinds();
     controller_.setConfig(settings_.controller);
 
@@ -4290,8 +4299,19 @@ bool Engine::controllerHardwareCommand(const std::string& action, const Json& pa
     if (controllerConnecting_ || !midi_.isRunning() || !controllerHardwareCapable_) {
         error = "Select a Pi-MFX universal firmware 2.0 controller first."; return false;
     }
-    controller_.cancelLearn();
     auto config = controller_.config();
+    if (action == "learn") {
+        const auto target=std::find_if(config.controls.begin(),config.controls.end(),
+            [&](const ControllerControl& c) { return c.id == payload["controlId"].asString(); });
+        if (target!=config.controls.end() && (target->kind==ControlKind::Pot || target->kind==ControlKind::Slider || target->kind==ControlKind::Expression)) {
+            int major=0, minor=0;
+            if (std::sscanf(controllerFirmwareVersion_.c_str(),"%d.%d",&major,&minor)!=2 || major<2 || (major==2 && minor<3)) {
+                error="Guided pot calibration needs controller firmware 2.3 or newer. Update Controller Firmware in Settings > Updates first.";
+                return false;
+            }
+        }
+    }
+    controller_.cancelLearn();
     controller_.setConfig(config); // discard outstanding performance holds/taps
     const bool ok = controllerHardware_.command(action, payload, config,
         [this](const std::vector<uint8_t>& bytes) { return midi_.send(bytes); }, error);

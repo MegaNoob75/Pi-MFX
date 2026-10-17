@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { EngineClient } from "../api";
 import { arr, bool, num, obj, objects, str, type JsonObject } from "../json";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -21,7 +21,27 @@ export function ControllerBoardSetup({ controller, selected, client, run }: {
     const busy = busyPhases.has(phase);
     const ready = bool(board.ready) && bool(board.storageReady) && bool(controller.connected);
     const [expanded, setExpanded] = useState(false);
+    const [section, setSection] = useState<"control" | "leds" | "wiring" | "recovery">("control");
+    const advancedRef = useRef<HTMLDivElement>(null);
     const advancedId = useId();
+    const advancedTitleId = useId();
+    useEffect(() => {
+        if (!expanded) return;
+        const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        advancedRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+        const keydown = (event: KeyboardEvent) => {
+            if (document.querySelector(".mfx-overlay")) return;
+            if (event.key === "Escape") { event.preventDefault(); setExpanded(false); }
+            if (event.key !== "Tab") return;
+            const fields = Array.from(advancedRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)") ?? []);
+            if (!fields.length) return;
+            const index = fields.indexOf(document.activeElement as HTMLElement);
+            const next = event.shiftKey ? (index <= 0 ? fields.length - 1 : index - 1) : (index + 1) % fields.length;
+            event.preventDefault(); fields[next].focus();
+        };
+        document.addEventListener("keydown", keydown, true);
+        return () => { document.removeEventListener("keydown", keydown, true); if (previous?.isConnected) previous.focus(); };
+    }, [expanded]);
     const [targetId, setTargetId] = useState("");
     const selectedId = str(selected?.id);
     useEffect(() => setTargetId(selectedId), [selectedId]);
@@ -70,11 +90,27 @@ export function ControllerBoardSetup({ controller, selected, client, run }: {
     const searching = phase === "searching";
     const searchingControl = controls.find((c) => str(c.id) === str(board.target));
     const searchingKind = str(searchingControl?.kind);
+    const learningAnalog = ["pot", "slider", "expression"].includes(searchingKind);
+    const learnStage = str(board.learnStage);
     const instruction = searchingKind === "encoder"
         ? "Wait one second, turn only this encoder clockwise at least four clicks, then stop."
-        : ["pot", "slider", "expression"].includes(searchingKind)
-            ? "Keep still for one second. Slowly sweep only this control through its full range and back, then stop."
+        : learningAnalog
+            ? learnStage === "minimum" ? "Step 1 of 2: Turn this control to its 0 / minimum position. Keep it still, then tap SET MINIMUM. You have three minutes."
+                : learnStage === "maximum" ? "Step 2 of 2: Slowly turn only this control all the way to maximum. Keep it still, then tap SET MAXIMUM. You have three minutes."
+                : learnStage === "starting" ? "Starting calibration. Keep the other controls still."
+                : "Reading the position. Keep this control still…"
             : "Wait one second, then press and release only this switch. For a latching switch, change its position.";
+    const calibration = <>
+        {str(board.message) && str(board.message) !== "Controller wiring read successfully." && <div role="status" className={phase === "error" ? "danger" : "muted"}>{str(board.message)}</div>}
+        {searching && <div role="status">{instruction}</div>}
+        {searching && learningAnalog && <div className="row">
+            <button type="button" className="btn btn-accent" disabled={learnStage !== "minimum" && learnStage !== "maximum"}
+                onClick={() => request("capture")}>
+                {learnStage === "minimum" ? "SET MINIMUM" : learnStage === "maximum" ? "SET MAXIMUM" : "READING POSITION…"}
+            </button>
+        </div>}
+        {phase === "saving" && <div role="status">Saving on controller and checking the result…</div>}
+    </>;
     return <section className="controller-board-setup" aria-label="ESP32 wiring setup">
         <div className="row">
             <strong>ESP32-S3 · {busy ? phase.toUpperCase() : ready ? "READY" : "READ BOARD TO SET UP"}</strong>
@@ -83,14 +119,23 @@ export function ControllerBoardSetup({ controller, selected, client, run }: {
             {busy && phase !== "review" && phase !== "saving" &&
                 <button type="button" className="btn" onClick={() => request("cancel")}>CANCEL SETUP</button>}
         </div>
-        {str(board.message) && str(board.message) !== "Controller wiring read successfully." && <div role="status" className={phase === "error" ? "danger" : "muted"}>{str(board.message)}</div>}
-        {searching && <div role="status">{instruction}</div>}
-        {phase === "saving" && <div role="status">Saving on controller and checking the result…</div>}
-        <div id={advancedId} hidden={!expanded}>
+        {!expanded && calibration}
+        {expanded && <div id={advancedId} ref={advancedRef} className="controller-wiring-overlay" role="dialog" aria-modal="true" aria-labelledby={advancedTitleId}>
+            <div className="controller-wiring-header">
+                <strong id={advancedTitleId}>WIRING &amp; RECOVERY</strong>
+                <button type="button" className="btn" disabled={busy} onClick={() => request("read")}>READ BOARD</button>
+                <button type="button" className="btn" onClick={() => setExpanded(false)}>DONE</button>
+            </div>
+            <div className="controller-wiring-tabs" aria-label="Wiring sections">
+                {([ ["control", "CONTROL"], ["leds", "LEDs"], ["wiring", "SAVED WIRING"], ["recovery", "RECOVERY"] ] as const).map(([key, label]) =>
+                    <button key={key} type="button" className={`btn${section === key ? " btn-active" : ""}`} aria-pressed={section === key} onClick={() => setSection(key)}>{label}</button>)}
+            </div>
             <div className="stack controller-board-advanced">
-                <p className="muted">ESP32-S3 DevKitC-1 direct wiring only. Switches and encoders connect to ground; analog controls use 3.3 V and ground. Learn scans available input pins. Expansion modules and other boards need their own supported drivers/profile.</p>
-                {selected && <fieldset disabled={!ready || busy} className="stack">
-                    <legend>Advanced wiring</legend>
+                {calibration}
+                {busy && phase !== "review" && phase !== "saving" && <button type="button" className="btn" onClick={() => request("cancel")}>CANCEL SETUP</button>}
+                {section === "control" && <p className="muted">ESP32-S3 direct wiring: switches and encoders connect to ground; pots use 3.3 V and ground. Select a control in Hardware Setup to edit its connection.</p>}
+                {section === "control" && selected && <fieldset disabled={!ready || busy} className="stack">
+                    <legend>{str(control?.label, "Control")} · connection</legend>
                     {paired && <label className="field"><span>Control</span><select value={id} onChange={(e) => setTargetId(e.target.value)}>
                         <option value={selectedId}>{str(selected.label, "Encoder")}</option>
                         <option value={str(paired.id)}>{str(paired.label, "Push button")}</option>
@@ -112,7 +157,7 @@ export function ControllerBoardSetup({ controller, selected, client, run }: {
                     </div>
                     <span className="muted">{str(wiring.device) === str(active.device) ? pinText(wiring) : "No wiring confirmed on this controller."}</span>
                 </fieldset>}
-                <fieldset disabled={!ready || busy} className="stack">
+                {section === "leds" && <fieldset disabled={!ready || busy} className="stack">
                     <legend>NeoPixel / WS2812 LEDs</legend>
                     <div className="hardware-field-grid">
                         <label className="field"><span>Data pin</span><select value={ledPin} onChange={(e) => setLedPin(e.target.value)}>{options(arr(board.outputPins).map((p) => num(p)))}</select></label>
@@ -124,23 +169,23 @@ export function ControllerBoardSetup({ controller, selected, client, run }: {
                         <label className="field"><span>Test saved pixel (index)</span><input type="number" min={0} max={126} value={testPixel} onChange={(e) => setTestPixel(e.target.value)} /></label>
                         <button type="button" className="btn" disabled={num(active.ledCount) === 0} onClick={() => request("test-led", { index: numeric(testPixel) })}>TEST PIXEL</button>
                     </div>
-                </fieldset>
-                <div className="row">
+                </fieldset>}
+                {section === "recovery" && <><div className="controller-recovery-actions">
                     <button type="button" className="btn" disabled={!ready || busy} onClick={() => request("adopt")}>USE BOARD CONTROLS</button>
                     <button type="button" className="btn" disabled={!ready || busy || !controller.boardHardware} onClick={() => request("restore")}>REVIEW SAVED WIRING</button>
                     <button type="button" className="btn" disabled={!ready || busy} onClick={() => request("default")}>DEFAULT WIRING TEMPLATE</button>
                     <button type="button" className="btn btn-danger" disabled={!ready || busy} onClick={() => request("clear")}>CLEAR BOARD WIRING</button>
                 </div>
-                <span className="muted">Profiles and backups retain wiring. Loading them never changes a connected board automatically. Use Review Saved Wiring to apply them. Use Board Controls adds missing controls to Pi-MFX without changing the board.</span>
-                {objects(active.controls).length > 0 && <div className="controller-wiring-summary"><table>
+                <span className="muted">Profiles and backups retain wiring. Loading them never changes a connected board automatically. Use Review Saved Wiring to apply them. Use Board Controls adds missing controls to Pi-MFX without changing the board. Expansion modules require their own supported driver.</span></>}
+                {section === "wiring" && (objects(active.controls).length > 0 ? <div className="controller-wiring-summary"><table>
                     <thead><tr><th>Control</th><th>Connection</th><th>MIDI</th></tr></thead>
                     <tbody>{objects(active.controls).map((e) => <tr key={num(e.slot)}>
                         <td>{str(controls.find((c) => str(obj(c.hardware).device) === str(active.device) && num(obj(c.hardware).slot, -1) === num(e.slot))?.label, `Slot ${num(e.slot) + 1}`)}</td>
                         <td>{pinText(e)}</td><td>Ch {num(e.channel)} CC {num(e.cc)}</td>
                     </tr>)}</tbody>
-                </table></div>}
+                </table></div> : <p className="muted">No saved controls on this board. Read Board to refresh the list.</p>)}
             </div>
-        </div>
+        </div>}
         {phase === "review" && <ConfirmDialog title={operation === "learn" ? "CONNECTION DETECTED" : "APPLY BOARD WIRING?"}
             body={`${summary} ${["restore", "default", "clear"].includes(operation) ? "This replaces the board’s wiring configuration. Check your physical connections first. " : ""}Confirm to save on the ESP32. Performance controls are paused until setup finishes.`}
             confirmLabel="SAVE ON CONTROLLER" danger={["clear", "delete"].includes(operation)}

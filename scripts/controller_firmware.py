@@ -21,6 +21,7 @@ import sys
 import tarfile
 import threading
 import time
+import urllib.error
 import urllib.request
 
 PREFIX = (0x7D, 0x4D, 0x46)
@@ -76,7 +77,9 @@ class Link:
     def __init__(self, mido, name):
         self.mido = mido
         self.messages = queue.Queue(maxsize=512)
-        self.port = mido.open_ioport(name, callback=self.receive, client_name="Pi-MFX firmware updater")
+        # In Mido's RtMidi backend client_name implies virtual=True: that makes
+        # disconnected virtual ports instead of subscribing to the USB device.
+        self.port = mido.open_ioport(name, callback=self.receive, virtual=False)
         self.token = secrets.randbelow(16383) + 1
 
     def receive(self, message):
@@ -147,7 +150,8 @@ def midi_backend():
 
 def candidates(mido):
     return [name for name in mido.get_ioport_names()
-            if any(word in name.lower() for word in ("pi-mfx", "pimfx", "esp32", "espressif", "tinyusb"))]
+            if any(word in name.lower() for word in ("pi-mfx", "pimfx", "esp32", "espressif", "tinyusb"))
+            and raw_port(name)]  # Kernel card only, never Pi-MFX's own software port.
 
 
 def seq_port(name):
@@ -187,6 +191,76 @@ def raw_port(name):
         alsa.snd_seq_close(seq)
 
 
+def canonical_raw_port(port):
+    """Compare a saved ALSA card-name address with the sequencer's card number."""
+    match = re.fullmatch(r"hw:(?:CARD=)?([^,]+),(?:DEV=)?0(?:,(?:SUBDEV=)?0)?", port)
+    if not match:
+        return ""
+    card = match[1]
+    if card.isdecimal():
+        return f"hw:{int(card)},0,0"
+    import ctypes
+    alsa = ctypes.CDLL("libasound.so.2")
+    alsa.snd_card_get_index.argtypes = [ctypes.c_char_p]
+    alsa.snd_card_get_index.restype = ctypes.c_int
+    index = alsa.snd_card_get_index(card.encode())
+    return f"hw:{index},0,0" if index >= 0 else ""
+
+
+def engine_request(command, payload=None):
+    port = os.environ.get("PIMFX_PORT", "")
+    if not port:
+        try:
+            unit = Path("/etc/systemd/system/pimfx.service").read_text()
+            match = re.search(r"--port\s+(\d+)", unit)
+            port = match[1] if match else "8080"
+        except OSError:
+            port = "8080"
+    request = urllib.request.Request(f"http://127.0.0.1:{int(port)}/api/{command}",
+        data=json.dumps(payload or {}).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        value = json.load(response)
+    if not value.get("ok", False):
+        raise RuntimeError(value.get("error", "Pi-MFX refused the MIDI connection change"))
+    return value
+
+
+def share_controller_port(root, names, report):
+    # Raw MIDI is exclusive. The engine and firmware worker must both use the
+    # same ALSA sequencer device, never competing raw/sequencer handles.
+    saved = read_json(Path(root) / "settings.json").get("controller", {}).get("midiPort", "")
+    if not saved.startswith("hw:") or not names:
+        return
+    raw = canonical_raw_port(saved)
+    matches = [name for name in names if raw and raw_port(name) == raw]
+    if len(matches) != 1:
+        return
+    try:
+        ports = engine_request("midi/ports")
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ConnectionRefusedError):
+            # A stopped engine owns no raw-MIDI handle (e.g. a CLI-only update).
+            return
+        raise RuntimeError("Could not prepare the controller connection through Pi-MFX") from exc
+    if not ports.get("connected") or ports.get("activePort") != saved:
+        return
+    state = engine_request("state")
+    controller = state.get("controller", {})
+    phase = controller.get("boardSetup", {}).get("phase")
+    if controller.get("learning") or phase in {"reading", "searching", "proposing", "review", "saving"}:
+        raise RuntimeError("Finish or cancel Hardware Setup before updating controller firmware")
+    target = seq_port(matches[0])
+    if not any(p.get("id") == target and p.get("input") and p.get("output") for p in ports.get("ports", [])):
+        raise RuntimeError("The controller's shared MIDI connection is unavailable")
+    report("preparing", "Preparing the controller's shared MIDI connection")
+    try:
+        engine_request("controller/connect", {"port": target})
+    except Exception:
+        with contextlib.suppress(Exception):
+            engine_request("controller/connect", {"port": saved})
+        raise
+
+
 def build(repo, cache):
     """Runs as the service user, never root. All dependency versions are pinned."""
     if os.geteuid() == 0:
@@ -196,6 +270,7 @@ def build(repo, cache):
     cache.mkdir(parents=True, exist_ok=True)
     cli = cache / ("arduino-cli-" + config["arduinoCli"])
     if not cli.exists():
+        print("==> Downloading Arduino CLI", flush=True)
         arch = {"aarch64": "ARM64", "armv7l": "ARMv7", "x86_64": "64bit"}.get(platform.machine())
         if not arch:
             raise RuntimeError("No Arduino CLI package configured for this Pi architecture")
@@ -218,7 +293,8 @@ def build(repo, cache):
     env = os.environ.copy()
     env.update(ARDUINO_DIRECTORIES_DATA=str(cache / "data"),
                ARDUINO_DIRECTORIES_DOWNLOADS=str(cache / "downloads"),
-               ARDUINO_DIRECTORIES_USER=str(cache / "user"))
+               ARDUINO_DIRECTORIES_USER=str(cache / "user"),
+               ARDUINO_NETWORK_CONNECTION_TIMEOUT="600s")
     base = [str(cli), "--additional-urls", config["index"]]
 
     def command(args, timeout=1200):
@@ -226,18 +302,60 @@ def build(repo, cache):
 
     stamp = cache / "dependencies.json"
     if read_json(stamp) != config:
+        print("==> Refreshing board package index", flush=True)
         command(["core", "update-index"])
+        print("==> Installing ESP32 build tools (first download can be several hundred MB)", flush=True)
         command(["core", "install", config["core"]])
+        print("==> Refreshing library index", flush=True)
         command(["lib", "update-index"])
+        print("==> Installing controller libraries", flush=True)
         command(["lib", "install", *config["libraries"]])
         atomic_json(stamp, config)
+    else:
+        print("==> Reusing installed ESP32 tools and controller libraries", flush=True)
     sketch = Path(repo) / "firmware/esp32s3/PiMFX_Controller"
     out = cache / "output"
-    command(["compile", "--fqbn", config["fqbn"], "--jobs", "2",
+    print("==> Compiling controller firmware", flush=True)
+    command(["compile", "--verbose", "--fqbn", config["fqbn"], "--jobs", "2",
              "--output-dir", str(out), str(sketch)], 1800)
     image = out / "PiMFX_Controller.ino.bin"
     if not image.is_file():
         raise RuntimeError("Arduino did not produce the application firmware image")
+    print(f"==> Firmware build complete ({image.stat().st_size:,} bytes)", flush=True)
+
+
+def run_logged_build(command, log_path, timeout=2400):
+    """Keep the durable/UI log while forwarding build output live over SSH."""
+    stopped = threading.Event()
+    started = time.monotonic()
+    with Path(log_path).open("a") as log, Path(log_path).open("r", errors="replace") as reader:
+        reader.seek(0, os.SEEK_END)
+        def follow():
+            last_output = time.monotonic()
+            while True:
+                output = reader.read()
+                if output:
+                    print(output, end="", flush=True)
+                    last_output = time.monotonic()
+                elif time.monotonic()-last_output >= 15:
+                    print(f"==> Firmware build still running ({int(time.monotonic()-started)}s elapsed)", flush=True)
+                    last_output = time.monotonic()
+                if stopped.is_set():
+                    # Process has exited and its output handle has been closed.
+                    output = reader.read()
+                    if output: print(output, end="", flush=True)
+                    return
+                stopped.wait(0.2)
+        worker = threading.Thread(target=follow, daemon=True, name="controller-build-output")
+        worker.start()
+        try:
+            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=timeout)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"Controller firmware build failed (exit {exc.returncode}). Review the build output above and retry.") from exc
+        finally:
+            log.flush()
+            stopped.set()
+            worker.join()
 
 
 def transfer(link, image, info, version, report):
@@ -295,6 +413,7 @@ def perform(repo, root, user):
             raise RuntimeError("This Pi-MFX updater does not support the bundled firmware protocol/board")
         mido = midi_backend()
         names = candidates(mido)
+        share_controller_port(root, names, report)
         found = []
         legacy = False
         for name in names:
@@ -318,7 +437,8 @@ def perform(repo, root, user):
                 link.close()
         if not found:
             report("bootstrap" if legacy else "pending", "Upload firmware 2.1 or newer once with Arduino IDE and an OTA partition scheme."
-                   if legacy else "Controller update pending. Connect a supported Pi-MFX USB-MIDI controller.")
+                   if legacy else "The controller MIDI port is present, but its firmware updater did not reply. Finish Hardware Setup or reconnect the controller and retry."
+                   if names else "Controller update pending. Connect a supported Pi-MFX USB-MIDI controller.")
             return
         if len(found) != 1:
             raise RuntimeError("Connect only one Pi-MFX controller while updating firmware")
@@ -341,10 +461,8 @@ def perform(repo, root, user):
         cache = root / "controller-build"
         cache.mkdir(exist_ok=True)
         os.chown(cache, account.pw_uid, account.pw_gid)
-        with log_path.open("a") as log:
-            subprocess.run(["runuser", "-u", user, "--", sys.executable, str(Path(__file__).resolve()),
-                            "--build", "--repo", str(repo), "--data", str(cache)],
-                           stdout=log, stderr=subprocess.STDOUT, check=True, timeout=2400)
+        run_logged_build(["runuser", "-u", user, "--", sys.executable, "-u", str(Path(__file__).resolve()),
+                          "--build", "--repo", str(repo), "--data", str(cache)], log_path)
         # Re-query after the long build. Never use a stale card/port identity.
         link = Link(mido, name)
         try:
@@ -405,6 +523,11 @@ class Manager:
                     atomic_json(self.root / "controller-firmware-status.json", value)
         policy = read_json(self.root / "controller-firmware-policy.json")
         value["automatic"] = bool(policy.get("enabled"))
+        repo = policy.get("sourceRepo") or self.repo()
+        try:
+            value["bundledVersion"] = ".".join(map(str, target_version(repo))) if repo else "Unknown"
+        except (OSError, ValueError, TypeError):
+            value["bundledVersion"] = "Unknown"
         value.setdefault("state", "idle")
         value.setdefault("message", "Controller firmware is built and updated automatically with Pi-MFX.")
         try:
@@ -494,4 +617,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        sys.exit(f"Controller firmware update failed: {exc}")

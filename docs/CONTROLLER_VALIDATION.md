@@ -41,8 +41,12 @@ behaviour for each row. The following rows are all **NOT RUN**.
 | Cancel discovery and cancel candidate | Active configuration and host mapping remain unchanged |
 | Confirm candidate | Saved on Controller appears only after NVS verification and matching readback |
 | Relearn same switch | Its own pins can be rediscovered; other configured inputs remain untouched |
+| Relearn after host wiring metadata was lost | A unique matching board MIDI address reuses the original slot and pin; cancel preserves host settings; confirm restores the wiring record |
+| Edit actions/layout after a verified board save | A stale browser snapshot cannot clear saved wiring or replace board-assigned MIDI addresses |
 | Add Latching | Toggle input learns; subsequent on/off follows physical state; inspect initial/reconnect state |
-| Add Pot / Slider / Expression | Sweep slowly full range and back; correct ADC pin/range; verify live 0–127 endpoints and smooth movement after save |
+| Add Pot / Slider / Expression (firmware 2.3+) | Set Minimum, slowly turn to maximum, Set Maximum, review, save; verify live 0–127 endpoints and smooth movement |
+| Guided calibration timing and retry | Pause at either position without auto-finishing; each step allows three minutes; too-small range stays on maximum with retry; Cancel leaves all saved wiring unchanged |
+| 7-inch Wiring & Recovery | Full-area Control/LEDs/Saved Wiring/Recovery sections; several wiring rows visible; one main scroller; calibration prompts/capture and cancel remain reachable |
 | Analog noise / floating inputs | Keep other controls still; no spurious candidate; ambiguity/timeouts produce useful messages; manual fallback works |
 | Add Encoder | Turn clockwise at least four detents then stop; both correct A/B pins proposed; one menu step per detent in both directions |
 | Encoder push | Learn Button separately; press/hold/double behaviour and paired Select work |

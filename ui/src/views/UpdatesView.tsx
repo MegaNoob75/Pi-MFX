@@ -28,6 +28,7 @@ export function UpdatesView({
     const [confirmInstall, setConfirmInstall] = useState(false);
     const [confirmPluginInstall, setConfirmPluginInstall] = useState(false);
     const [message, setMessage] = useState("");
+    const [copyMessage, setCopyMessage] = useState("");
     const [firmware, setFirmware] = useState(obj({}));
     const [pluginStatus, setPluginStatus] = useState(obj({}));
     const [pluginInstalling, setPluginInstalling] = useState(false);
@@ -262,11 +263,54 @@ export function UpdatesView({
     const progressLines = [...logLines, ...str(firmware.log).split(/\r?\n/).filter(Boolean), ...pluginLog];
     const progressText = progressLines.join("\n");
 
+    const copyLog = async () => {
+        try {
+            if (navigator.clipboard?.writeText) {
+                try {
+                    await navigator.clipboard.writeText(progressText);
+                    setCopyMessage("Log copied.");
+                    return;
+                } catch { /* Fall back for HTTP or denied clipboard access. */ }
+            }
+            const field = document.createElement("textarea");
+            const focused = document.activeElement;
+            const selection = window.getSelection();
+            const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+            field.value = progressText;
+            field.readOnly = true;
+            field.style.cssText = "position:fixed;left:0;top:0;opacity:0;pointer-events:none";
+            document.body.appendChild(field);
+            try {
+                field.focus({ preventScroll: true });
+                field.select();
+                if (!document.execCommand("copy")) throw new Error("Copy unavailable");
+            } finally {
+                field.remove();
+                if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+                if (selection) {
+                    selection.removeAllRanges();
+                    for (const range of ranges) selection.addRange(range);
+                }
+            }
+            setCopyMessage("Log copied.");
+        } catch {
+            setCopyMessage("Could not copy automatically. Select the log text and use Copy.");
+        }
+    };
+
+    useEffect(() => {
+        if (!copyMessage) return;
+        const timer = window.setTimeout(() => setCopyMessage(""), 4000);
+        return () => window.clearTimeout(timer);
+    }, [copyMessage]);
+
     useEffect(() => {
         if (!followProgressRef.current) return;
         const frame = window.requestAnimationFrame(() => {
             const progress = progressRef.current;
-            if (progress) progress.scrollTop = progress.scrollHeight;
+            const selection = window.getSelection();
+            if (progress && !(selection && !selection.isCollapsed && progress.contains(selection.anchorNode)))
+                progress.scrollTop = progress.scrollHeight;
         });
         return () => window.cancelAnimationFrame(frame);
     }, [progressText]);
@@ -389,26 +433,33 @@ export function UpdatesView({
                 </section>
                 <section className="panel stack updates-card" style={{ gridColumn: "1 / -1" }}>
                     <h2>CONTROLLER FIRMWARE</h2>
-                    <div className="muted">Newer firmware builds and installs automatically with Pi-MFX updates. Keep the controller connected until verified.</div>
+                    <div className="muted">Update controller firmware here without updating Pi-MFX. Newer firmware is also checked with Pi-MFX updates. Keep the controller connected until verified.</div>
                     <div className="updates-version-grid">
                         <span>Installed</span><strong>{str(firmware.installedVersion, str(obj(engine.state.controller).firmwareVersion, "Unknown"))}</strong>
-                        <span>Bundled</span><strong>{str(firmware.targetVersion, "Checked during update")}</strong>
+                        <span>Bundled</span><strong>{str(firmware.bundledVersion, str(firmware.targetVersion, "Unknown"))}</strong>
                     </div>
                     <div className="updates-status" role="status">{str(firmware.message, "Checking controller updater…")}</div>
                     {str(firmware.state) === "flashing" && <progress max={100} value={num(firmware.progress)} aria-label="Controller firmware transfer" />}
                     {str(firmware.state) === "bootstrap" && <div className="muted">Older firmware needs one Arduino upload to enable MIDI updates. Use an OTA partition scheme; saved wiring is kept when NVS is retained.</div>}
                     <button type="button" className="btn" disabled={installing || firmwareBusy || str(firmware.state) === "unavailable"}
-                        onClick={retryFirmware}>{firmwareBusy ? "UPDATING CONTROLLER…" : "CHECK / RETRY CONTROLLER UPDATE"}</button>
+                        onClick={retryFirmware}>{str(firmware.state) === "preparing" ? "CHECKING CONTROLLER…"
+                            : firmwareBusy ? "UPDATING CONTROLLER…" : "UPDATE CONTROLLER FIRMWARE"}</button>
                 </section>
                 </div>
                 {progressLines.length > 0 && (
-                    <pre ref={progressRef} className="updates-progress" aria-live="polite"
+                    <>
+                    <div className="row updates-log-actions">
+                        <button type="button" className="btn" onClick={() => void copyLog()}>COPY LOG</button>
+                        <span className="muted" role="status">{copyMessage}</span>
+                    </div>
+                    <pre ref={progressRef} className="updates-progress" data-mfx-selectable="true" aria-label="Update log" tabIndex={0} aria-live="polite"
                         onScroll={(event) => {
                             const console = event.currentTarget;
                             followProgressRef.current = console.scrollHeight - console.scrollTop - console.clientHeight <= 12;
                         }}>
                         {progressText}
                     </pre>
+                    </>
                 )}
             </div>
             {confirmInstall && (

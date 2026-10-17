@@ -25,6 +25,8 @@ uint32_t transactionAt = 0, lastIdentityAt = 0;
 uint32_t ledTestUntil = 0;
 uint8_t ledSaved[127 * 3] = {}, ledSavedBrightness = 0;
 bool candidate = false, discovering = false, storageReady = false;
+bool guidedAnalog = false, captureMaximum = false;
+uint8_t analogStage = 0;
 uint8_t learnSlot = 0, identityBursts = 8;
 char deviceId[13] = {};
 const int8_t quadrature[] = {0,-1,1,0,1,0,0,-1,-1,0,0,1,0,1,-1,0};
@@ -104,7 +106,13 @@ void configureInputs() {
     pixels.updateType((active.ledOrder ? NEO_RGB : NEO_GRB) + NEO_KHZ800);
     if (active.ledCount) { pixels.begin(); pixels.clear(); pixels.show(); }
 }
-void cancelTransaction() { transaction = 0; candidate = discovering = false; configureInputs(); }
+void cancelTransaction() {
+    transaction = 0; candidate = discovering = guidedAnalog = captureMaximum = false; configureInputs();
+}
+void learnProgress(uint8_t stage, hw::Error error = hw::Ok) {
+    const uint8_t payload[] = {stage, uint8_t(error)};
+    packet(hw::LearnProgress,transaction,payload,sizeof payload);
+}
 bool usedPin(int p, int exceptSlot) {
     if (active.ledCount && active.ledPin == p) return true;
     for (unsigned i = 0; i < hw::Slots; ++i) if (int(i) != exceptSlot) {
@@ -141,7 +149,8 @@ void pollProbe() {
             auto& s = probes[p]; int value = 0;
             for (int n = 0; n < 4; ++n) value += analogRead(p);
             value /= 4; pinMode(p,INPUT_PULLDOWN); // weak bias rejects floating unused ADC inputs
-            if (elapsed < 700) {
+            if (guidedAnalog && analogStage == 0) { s.last = value; continue; }
+            if (!guidedAnalog && elapsed < 700) {
                 if (elapsed > 200) {
                     if (value < s.baselineLow) s.baselineLow = value;
                     if (value > s.baselineHigh) s.baselineHigh = value;
@@ -154,14 +163,23 @@ void pollProbe() {
             const int delta = abs(value-s.last);
             if (delta >= 8 && delta <= 400) ++s.smooth;
             s.last = value;
-            if (s.baselineHigh-s.baselineLow < 150 && s.high-s.low >= 700 && s.smooth >= 8) {
+            if (s.baselineHigh-s.baselineLow < 150 && s.high-s.low >= 700 && s.smooth >= 8
+                && (!guidedAnalog || abs(value-s.baselineLow) >= 700)) {
                 ++moving; detected = p;
             }
         }
+        if (guidedAnalog && !captureMaximum) return;
         if (moving > 1) { status(transaction,hw::Ambiguous); cancelTransaction(); return; }
-        if (moving == 1 && now-probes[detected].extremeAt > 800) {
+        if (guidedAnalog && !moving) {
+            captureMaximum=false; learnProgress(1,hw::RangeTooSmall); return;
+        }
+        if (moving == 1 && now-probes[detected].extremeAt > (guidedAnalog ? 300u : 800u)) {
             e.pinA = detected; e.pinB = hw::None;
-            e.minimum = probes[detected].low; e.maximum = probes[detected].high; propose();
+            if (guidedAnalog) {
+                const int first=probes[detected].baselineLow, last=probes[detected].last;
+                e.minimum=first<last ? first : last; e.maximum=first>last ? first : last;
+            } else { e.minimum = probes[detected].low; e.maximum = probes[detected].high; }
+            propose();
         }
         return;
     }
@@ -252,7 +270,7 @@ void handleIncomingSysEx(SysExMessage message) {
         snapshot(token,active,false); return;
     }
     if (command == hw::Cancel && !len && token == transaction) { cancelTransaction(); return; }
-    if (command == hw::Begin || command == hw::Learn) {
+    if (command == hw::Begin || command == hw::Learn || command == hw::GuidedLearn) {
         if (len != (command == hw::Begin ? 3u : 3u+hw::EntryBytes)) { status(token,hw::Invalid); return; }
         if (transaction) { status(token,hw::Busy); return; }
         if (hw::read14(p) != revision) { status(token,hw::Stale); return; }
@@ -267,9 +285,26 @@ void handleIncomingSysEx(SysExMessage message) {
             || e.steps < 1 || e.steps > 8 || e.debounce < 5 || e.debounce > 80) {
             status(token,hw::Invalid); cancelTransaction(); return;
         }
-        startProbe(); return;
+        if (command == hw::GuidedLearn && e.kind != hw::Analog) { status(token,hw::Invalid); cancelTransaction(); return; }
+        guidedAnalog=command==hw::GuidedLearn; analogStage=0; captureMaximum=false;
+        startProbe();
+        if (guidedAnalog) learnProgress(0);
+        return;
     }
     if (!transaction || token != transaction) { status(token,hw::Stale); return; }
+    if (command == hw::Capture && len == 1 && discovering && guidedAnalog && p[0] == analogStage) {
+        transactionAt=millis();
+        if (analogStage == 0) {
+            for (int pin=0;pin<49;++pin) if (hw::analogPin(pin) && !usedPin(pin,learnSlot)) {
+                int value=0; for (int n=0;n<16;++n) value+=analogRead(pin);
+                value/=16; pinMode(pin,INPUT_PULLDOWN);
+                auto& s=probes[pin]; s.low=s.high=s.last=s.baselineLow=s.baselineHigh=value;
+                s.smooth=0; s.extremeAt=millis();
+            }
+            analogStage=1; learnProgress(1);
+        } else captureMaximum=true;
+        return;
+    }
     transactionAt = millis();
     if (command == hw::Set && len == 1+hw::EntryBytes && !candidate && !discovering && p[0] < hw::Slots) {
         draft.controls[p[0]] = hw::decode(p+1); return;
@@ -337,7 +372,9 @@ void pimfxControllerLoop() {
         if (pixels.getPixels()) memcpy(pixels.getPixels(),ledSaved,size_t(active.ledCount)*3);
         pixels.show();
     }
-    if (transaction && millis()-transactionAt > 90000) { status(transaction,hw::TimedOut); cancelTransaction(); }
+    if (transaction && millis()-transactionAt > (guidedAnalog && discovering ? 180000u : 90000u)) {
+        status(transaction,hw::TimedOut); cancelTransaction();
+    }
     if (discovering) pollProbe(); else if (!transaction) pollInputs();
     if (identityBursts && millis()-lastIdentityAt >= 500) { sendIdentityReply(); --identityBursts; }
 }

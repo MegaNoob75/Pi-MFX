@@ -2,8 +2,12 @@
 Run: python3 -B -m unittest discover -s scripts/tests -p test_controller_firmware.py
 """
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
+import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -33,6 +37,63 @@ class FirmwareTests(unittest.TestCase):
                 group = encoded[offset:offset + 8]
                 decoded.extend(v | (((group[0] >> i) & 1) << 7) for i, v in enumerate(group[1:]))
             self.assertEqual(bytes(decoded), chunk)
+
+    def test_receiver_query_uses_connected_not_virtual_ports(self):
+        backend = Mock()
+        def open_port(name, **options):
+            self.assertNotIn("client_name", options)  # RtMidi turns this into a virtual port.
+            self.assertFalse(options.get("virtual"))
+            port = Mock()
+            def reply(message):
+                payload = (1, 1, 2, 1, *fw.number(1966080), *b"012345ABCDEF", 0)
+                options["callback"](Mock(type="sysex", data=(*fw.PREFIX, fw.INFO, *message.data[4:6], *payload)))
+            port.send.side_effect = reply
+            return port
+        backend.open_ioport.side_effect = open_port
+        backend.Message.side_effect = lambda kind, data: Mock(type=kind, data=data)
+        link = fw.Link(backend, "ESP32 28:0")
+        try:
+            info = link.info()
+        finally:
+            link.close()
+        self.assertEqual(info["version"], (2, 1))
+        self.assertEqual(info["capacity"], 1966080)
+
+    def test_discovery_excludes_engine_and_virtual_ports(self):
+        backend = Mock()
+        backend.get_ioport_names.return_value = ["ESP32 28:0", "Pi-MFX:controller 128:0", "Midi Through 14:0"]
+        with patch.object(fw, "raw_port", side_effect=lambda name: "hw:3,0,0" if name.startswith("ESP32") else ""):
+            self.assertEqual(fw.candidates(backend), ["ESP32 28:0"])
+
+    def test_build_output_streams_before_exit_and_keeps_failure_log(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                seen = threading.Event()
+                class Console(io.StringIO):
+                    def write(self, text):
+                        count = super().write(text)
+                        if "downloading tools" in text: seen.set()
+                        return count
+                console = Console()
+                log_path = self.root / "build.log"
+                log_path.write_text("previous status\n")
+                def run(command, **options):
+                    options["stdout"].write("downloading tools\n")
+                    options["stdout"].flush()
+                    self.assertTrue(seen.wait(2), "build output was withheld until process exit")
+                    options["stdout"].write("build failed\n" if failed else "build complete\n")
+                    options["stdout"].flush()
+                    if failed: raise subprocess.CalledProcessError(1, command)
+                with contextlib.redirect_stdout(console), patch.object(fw.subprocess, "run", side_effect=run):
+                    if failed:
+                        with self.assertRaisesRegex(RuntimeError, "build failed"):
+                            fw.run_logged_build(["fake-build"], log_path)
+                    else:
+                        fw.run_logged_build(["fake-build"], log_path)
+                expected = "build failed" if failed else "build complete"
+                self.assertIn(expected, console.getvalue())
+                self.assertNotIn("previous status", console.getvalue())
+                self.assertIn(expected, log_path.read_text())
 
     def test_bad_image_or_capacity_never_starts_flash(self):
         link = Mock()
@@ -86,6 +147,50 @@ class FirmwareTests(unittest.TestCase):
         command = launch.call_args.args[0]
         self.assertEqual(command[command.index("--repo") + 1], selected)
         self.assertEqual(fw.read_json(self.root / "controller-firmware-policy.json")["sourceRepo"], selected)
+
+    def raw_controller(self):
+        fw.atomic_json(self.root / "settings.json", {"controller": {"midiPort": "hw:3,0,0"}})
+        return {"connected": True, "activePort": "hw:3,0,0",
+                "ports": [{"id": "seq:28:0", "input": True, "output": True}]}
+
+    def test_raw_controller_moves_to_matching_shared_port(self):
+        ports = self.raw_controller()
+        with patch.object(fw, "raw_port", return_value="hw:3,0,0"), \
+             patch.object(fw, "engine_request", side_effect=[ports, {"controller": {}}, {}]) as request:
+            fw.share_controller_port(self.root, ["ESP32 28:0"], Mock())
+        request.assert_called_with("controller/connect", {"port": "seq:28:0"})
+
+    def test_other_raw_controller_is_not_changed(self):
+        self.raw_controller()
+        with patch.object(fw, "raw_port", return_value="hw:4,0,0"), \
+             patch.object(fw, "engine_request") as request:
+            fw.share_controller_port(self.root, ["ESP32 28:0"], Mock())
+        request.assert_not_called()
+
+    def test_hardware_setup_prevents_connection_change(self):
+        ports = self.raw_controller()
+        state = {"controller": {"boardSetup": {"phase": "review"}}}
+        with patch.object(fw, "raw_port", return_value="hw:3,0,0"), \
+             patch.object(fw, "engine_request", side_effect=[ports, state]) as request:
+            with self.assertRaisesRegex(RuntimeError, "Hardware Setup"):
+                fw.share_controller_port(self.root, ["ESP32 28:0"], Mock())
+        self.assertEqual(request.call_count, 2)
+
+    def test_failed_shared_connection_restores_raw_port(self):
+        ports = self.raw_controller()
+        with patch.object(fw, "raw_port", return_value="hw:3,0,0"), \
+             patch.object(fw, "engine_request", side_effect=[ports, {"controller": {}}, RuntimeError("connect failed"), {}]) as request:
+            with self.assertRaisesRegex(RuntimeError, "connect failed"):
+                fw.share_controller_port(self.root, ["ESP32 28:0"], Mock())
+        request.assert_called_with("controller/connect", {"port": "hw:3,0,0"})
+
+    def test_bundled_version_is_read_from_source_not_old_status(self):
+        fw.atomic_json(self.root / "controller-firmware-status.json", {"state": "pending", "targetVersion": "1.1"})
+        manager = fw.Manager(lambda: "app-checkout", self.root, "pimfx")
+        with patch.object(fw, "target_version", return_value=(2, 2)):
+            status = manager.status()
+        self.assertEqual(status["bundledVersion"], "2.2")
+        self.assertEqual(status["targetVersion"], "1.1")
 
     def test_newer_installed_version_is_never_downgraded(self):
         link = Mock()

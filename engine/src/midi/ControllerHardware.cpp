@@ -53,10 +53,10 @@ const char* errorText(int code) {
     switch (code) {
     case Conflict: return "Pins or MIDI addresses are already in use. Remove the old wiring assignment first.";
     case Storage: return "The ESP32 could not verify its saved configuration. Power-cycle the board and read it again before retrying.";
-    case TimedOut: return "Learn timed out. Keep controls still for one second, then operate only the selected control.";
+    case TimedOut: return "Setup timed out. Start Learn again. Guided analog calibration allows three minutes for each position.";
     case Ambiguous: return "More than one input moved. Keep other controls still and retry, or choose pins in Advanced wiring.";
     case Stale: return "The board configuration changed. Read the board again before applying changes.";
-    case Busy: return "The board has another setup operation in progress. Cancel it or wait 90 seconds, then read the board.";
+    case Busy: return "The board has another setup operation in progress. Cancel it or wait for its timeout, then read the board.";
     default: return "The board rejected this wiring configuration.";
     }
 }
@@ -67,7 +67,7 @@ ControllerHardware::ControllerHardware() {
 }
 void ControllerHardware::reset() {
     // Keep tokens advancing across reconnects so delayed replies cannot match.
-    ready_=storageReady_=assembling_=false; device_.clear(); target_.clear(); operation_.clear();
+    ready_=storageReady_=assembling_=false; device_.clear(); target_.clear(); operation_.clear(); learnStage_.clear();
     phase_="idle"; message_.clear(); slot_=-1; active_=pimfxhw::Config{};
 }
 bool ControllerHardware::sendPacket(uint8_t command, const std::vector<uint8_t>& payload, const Sender& send) {
@@ -102,7 +102,7 @@ Json ControllerHardware::state() const {
         if (pimfxhw::outputPin(p)) outputs.push(p);
     }
     Json j=Json::object({{"ready",ready_},{"storageReady",storageReady_},{"phase",phase_},
-        {"message",message_},{"target",target_},{"operation",operation_},{"slot",slot_},
+        {"message",message_},{"target",target_},{"operation",operation_},{"slot",slot_},{"learnStage",learnStage_},
         {"boardName","ESP32-S3 DevKitC-1 (direct wiring)"},{"inputPins",pins},
         {"analogPins",analog},{"outputPins",outputs},{"maxControls",int(pimfxhw::Slots)},
         {"active",describe(active_)}});
@@ -115,7 +115,7 @@ bool ControllerHardware::command(const std::string& action, const Json& payload,
     using namespace pimfxhw;
     if (action=="cancel") {
         if (phase_=="saving") { error="Wait for the controller save to finish before cancelling."; return false; }
-        sendPacket(Cancel,{},send); phase_="idle"; target_.clear(); assembling_=false;
+        sendPacket(Cancel,{},send); phase_="idle"; target_.clear(); assembling_=false; learnStage_.clear();
         message_="Setup cancelled. Saved wiring was not changed."; return true;
     }
     if (action=="confirm") {
@@ -123,6 +123,18 @@ bool ControllerHardware::command(const std::string& action, const Json& payload,
         phase_="saving"; deadline_=std::chrono::steady_clock::now()+std::chrono::seconds(10);
         std::vector<uint8_t> crc(2); write14(crc.data(),checksum(proposed_));
         if (!sendPacket(Commit,crc,send)) { fail("Could not send configuration to the board.",send); error=message_; return false; }
+        return true;
+    }
+    if (action=="capture") {
+        if (phase_!="searching" || (learnStage_!="minimum" && learnStage_!="maximum")) {
+            error="Wait for the next calibration step before setting its position."; return false;
+        }
+        const bool minimum=learnStage_=="minimum";
+        if (!sendPacket(Capture,{uint8_t(minimum ? 0 : 1)},send)) {
+            fail("Could not send the calibration position to the controller.",send); error=message_; return false;
+        }
+        learnStage_=minimum ? "capturingMinimum" : "capturingMaximum";
+        deadline_=std::chrono::steady_clock::now()+std::chrono::seconds(10);
         return true;
     }
     if (busy()) { error="Finish or cancel the current hardware setup operation first."; return false; }
@@ -199,6 +211,22 @@ bool ControllerHardware::command(const std::string& action, const Json& payload,
         if (!it->module.empty()) { error="Expansion modules require a supported firmware driver; direct GPIO Learn cannot scan them."; return false; }
         if (it->hardware["device"].asString()==device_) slot_=it->hardware["slot"].asInt(-1);
         if (slot_<0 || slot_>=Slots) slot_=-1;
+        if (slot_<0 && it->hardware.isNull() && !it->useNoteMessages && it->channel>=0) {
+            // Older/stale settings may retain the learned MIDI address but lose
+            // its wiring record. Recover only an unambiguous, unclaimed match.
+            for (int i=0;i<Slots;++i) {
+                const auto& e=active_.controls[i];
+                if (!e.kind || e.kind!=wireKind(it->kind) || e.cc!=it->channel
+                    || (it->midiChannel!=0 && e.channel!=it->midiChannel)) continue;
+                const bool claimed=std::any_of(config.controls.begin(),config.controls.end(),[&](const ControllerControl& c) {
+                    return c.id!=target_ && c.hardware["device"].asString()==device_
+                        && c.hardware["slot"].asInt(-1)==i;
+                });
+                if (claimed) continue;
+                if (slot_>=0) { error="More than one board input matches this control. Use Board Controls to recover its wiring."; return false; }
+                slot_=i;
+            }
+        }
         if (action=="remove" || action=="delete") {
             if (slot_<0 && action=="remove") { error="This control has no wiring assignment on this board."; return false; }
             if (slot_>=0) expected_.controls[slot_]=Control{};
@@ -263,11 +291,14 @@ bool ControllerHardware::command(const std::string& action, const Json& payload,
     }
     if (action!="learn" && validate(expected_)!=Ok) { error="Invalid or conflicting pins, calibration, or MIDI addresses."; return false; }
     start(action=="learn" ? "searching" : "proposing",send);
+    learnStage_.clear();
     std::vector<uint8_t> begin(3); write14(begin.data(),revision_); begin[2]=action=="learn" ? slot_ : 1;
     bool sent=true;
     if (action=="learn") {
         begin.resize(3+EntryBytes); encode(expected_.controls[slot_],begin.data()+3);
-        sent=sendPacket(Learn,begin,send);
+        const bool guided=expected_.controls[slot_].kind==Analog;
+        if (guided) learnStage_="starting";
+        sent=sendPacket(guided ? GuidedLearn : Learn,begin,send);
     } else {
         sent=sendPacket(Begin,begin,send);
         for (int i=0;i<Slots && sent;++i) if (expected_.controls[i].kind) {
@@ -310,10 +341,21 @@ bool ControllerHardware::receive(const std::vector<uint8_t>& b, ControllerConfig
     const Sender& send, bool& configChanged) {
     using namespace pimfxhw;
     if (b.size()<8 || b.front()!=0xF0 || b.back()!=0xF7 || b[1]!=0x7D || b[2]!=0x4D || b[3]!=0x46
-        || b[4]<Header || b[4]>Status) return false;
+        || b[4]<Header || b[4]>LearnProgress) return false;
     for (size_t i=1;i+1<b.size();++i) if (b[i]>127) return false;
     if (read14(b.data()+5)!=token_ || !busy()) return false;
     const auto* p=b.data()+7; const size_t n=b.size()-8;
+    if (b[4]==LearnProgress) {
+        if (phase_!="searching" || slot_<0 || expected_.controls[slot_].kind!=Analog || learnStage_.empty()
+            || n!=2 || p[0]>1 || (p[1]!=Ok && p[1]!=RangeTooSmall) || (p[0]==0 && p[1]!=Ok)) {
+            fail("Invalid calibration progress reply.",send); return true;
+        }
+        if ((p[0]==0 && learnStage_!="starting") || (p[0]==1 && learnStage_!="capturingMinimum" && learnStage_!="capturingMaximum")) return true;
+        learnStage_=p[0]==0 ? "minimum" : "maximum";
+        deadline_=std::chrono::steady_clock::now()+std::chrono::seconds(180);
+        message_=p[1]==RangeTooSmall ? "The range was too small. Slowly turn this control all the way to maximum, then tap Set Maximum again." : "";
+        return true;
+    }
     if (b[4]==Status) { if (n==1) fail(errorText(p[0]),send); return true; }
     if (b[4]==Header) {
         if (n!=22 || p[0]!=Version || p[1]!=Board || p[2]>1 || p[20]>Slots || p[21]>1) {
@@ -344,6 +386,7 @@ bool ControllerHardware::receive(const std::vector<uint8_t>& b, ControllerConfig
         || read14(p)!=checksum(incoming_)) { fail("Board configuration checksum or validation failed.",send); return true; }
     assembling_=false;
     if (incomingPreview_) {
+        if (!learnStage_.empty() && learnStage_!="capturingMaximum") { fail("The controller proposed calibration before both positions were set.",send); return true; }
         if (incomingRevision_!=revision_) { fail("Board wiring changed during setup. Read it again.",send); return true; }
         Config expected=expected_;
         if (operation_=="learn" && slot_>=0) {

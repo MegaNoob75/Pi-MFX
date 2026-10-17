@@ -39,7 +39,7 @@ private:
     bool seen_[pimfxhw::Slots] = {};
     int slot_ = -1;
     pimfxhw::Config active_, proposed_, incoming_, expected_;
-    std::string device_, incomingDevice_, phase_ = "idle", message_, target_, operation_;
+    std::string device_, incomingDevice_, phase_ = "idle", message_, target_, operation_, learnStage_;
     std::chrono::steady_clock::time_point deadline_;
 };
 } // namespace pimfx

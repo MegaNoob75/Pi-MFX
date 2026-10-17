@@ -6,11 +6,16 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 export function blockNativeBrowserChrome(): void {
+    const allowsSelection = (target: EventTarget | null) => {
+        const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+        return Boolean(element?.closest("[data-mfx-selectable]"));
+    };
     const onContextMenu = (event: Event) => {
+        if (allowsSelection(event.target)) return;
         event.preventDefault();
     };
     const onSelectStart = (event: Event) => {
-        if (isEditableTarget(event.target)) {
+        if (isEditableTarget(event.target) || allowsSelection(event.target)) {
             return;
         }
         event.preventDefault();

@@ -369,7 +369,7 @@ function Invoke-MenuAction([string]$Choice) {
         "12" { Invoke-Pimfx "hotspot -y" }
         "13" { Invoke-Pimfx "status" }
         "14" { Invoke-Pimfx "reboot -y" }
-        "16" {
+        "15" {
             $purge = Read-Host "Also delete /var/lib/pimfx (banks, models, IRs)? [y/N]"
             if ($purge -match "^[yY]") {
                 Invoke-Pimfx "remove -y --purge"
@@ -417,8 +417,7 @@ function Show-Menu {
         Write-Host "  Maintenance and recovery"
         Write-Host "  13) Status"
         Write-Host "  14) Reboot now"
-        Write-Host "      Restore backups: use Settings > Backup & Restore, or Pi menu 15"
-        Write-Host "  16) Remove Pi-MFX"
+        Write-Host "  15) Remove Pi-MFX"
         Write-Host "  L) Change saved SSH login"
         Write-Host ""
         Write-Host "  0) Exit"

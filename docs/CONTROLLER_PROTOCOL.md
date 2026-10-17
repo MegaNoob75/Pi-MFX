@@ -42,10 +42,13 @@ struct layout, JSON parsing in the ESP32, or multipart SysEx callbacks.
 | `26` LEDs | Pi → board | pin, count, colourOrder |
 | `27` Preview | Pi → board | None |
 | `28` Test LED | Pi → board | configured pixel index |
+| `2A` Capture (2.3+) | Pi → board | guided stage: 0 minimum / 1 maximum |
+| `2B` Guided Learn (2.3+) | Pi → board | expectedRevisionLo/Hi, slot, analog control record |
 | `30` Header | board → Pi | described below |
 | `31` Entry | board → Pi | slot, control record |
 | `32` End | board → Pi | complete configuration checksumLo/Hi |
 | `33` Status | board → Pi | error code |
+| `34` Learn Progress (2.3+) | board → Pi | stage (0 minimum / 1 maximum), error (0 OK / 8 range too small) |
 
 Header is exactly 22 payload bytes:
 
@@ -108,6 +111,16 @@ a weak pulldown while scanning unassigned ADC pins to reduce floating-input
 candidates. It still requires physical validation; manual selection is provided
 for noisy, high-impedance or ambiguous circuits.
 
+Firmware 2.3 adds button-driven analog calibration. Guided Learn prompts for the
+minimum position; Capture 0 samples the eligible ADC pins and advances to the
+maximum prompt. Movement is qualified without automatically proposing a result
+when the user pauses. Capture 1 identifies the unique moving input and proposes
+the two endpoint readings after settling. An insufficient range returns progress
+error 8 and leaves the maximum step available for retry. Multiple qualifying
+inputs still fail safely. Each position allows 180 seconds; each capture reply
+has a 10-second host deadline. No host or board configuration is saved before
+the usual review/Commit/readback. Legacy Learn retains the older sweep protocol.
+
 A proposed connection is not saved merely because it was detected. Pi-MFX checks
 the proposed snapshot, shows the before/after wiring, and sends Commit only after
 confirmation. Commit requires the same token and the reviewed configuration CRC.
@@ -121,7 +134,8 @@ record falls back to the previous valid record or empty setup. USB/boot/memory
 pins are never configured; a new/empty board remains reachable for setup.
 
 Performance input and normal LED updates pause during setup. Firmware abandons
-transactions after 90 seconds without activity; Pi-MFX bounds reply/discovery/
+transactions after 90 seconds without activity (180 seconds per guided analog
+position); Pi-MFX bounds reply/discovery/
 review waits. Errors invalidate host readiness until another Read. A missing
 Commit reply is ambiguous: the board may have saved, so always Read before
 retrying. Read also recovers an abandoned transaction after the Pi restarts.

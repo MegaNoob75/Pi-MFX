@@ -17,7 +17,7 @@ constexpr uint8_t kCommandSetLeds = 0x02;
 constexpr uint8_t kCommandIdentityReply = 0x10;
 
 constexpr uint8_t kFirmwareMajor = 2;
-constexpr uint8_t kFirmwareMinor = 2;
+constexpr uint8_t kFirmwareMinor = 4;
 
 constexpr uint8_t kMidiChannel = 0; // USB / MIDI channel 1
 

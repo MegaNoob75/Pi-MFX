@@ -11,13 +11,13 @@ constexpr size_t EntryBytes = 11, ConfigBytes = 4 + Slots * EntryBytes;
 enum Command : uint8_t {
     Read = 0x20, Learn = 0x21, Cancel = 0x22, Commit = 0x23,
     Begin = 0x24, Set = 0x25, Leds = 0x26, Preview = 0x27,
-    TestLed = 0x28, LedFrame = 0x29,
-    Header = 0x30, Entry = 0x31, End = 0x32, Status = 0x33
+    TestLed = 0x28, LedFrame = 0x29, Capture = 0x2A, GuidedLearn = 0x2B,
+    Header = 0x30, Entry = 0x31, End = 0x32, Status = 0x33, LearnProgress = 0x34
 };
 enum Kind : uint8_t { Empty = 0, Switch = 1, Analog = 2, Encoder = 3 };
 enum Error : uint8_t {
     Ok = 0, Invalid = 1, Conflict = 2, Storage = 3, TimedOut = 4,
-    Ambiguous = 5, Stale = 6, Busy = 7
+    Ambiguous = 5, Stale = 6, Busy = 7, RangeTooSmall = 8
 };
 struct Control {
     uint8_t kind = Empty, pinA = None, pinB = None, cc = 0, channel = 1;
