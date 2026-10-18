@@ -277,7 +277,9 @@ export function UpdatesView({
             }
         });
     };
-    const progressLines = [...logLines, ...str(firmware.log).split(/\r?\n/).filter(Boolean), ...pluginLog];
+    // Firmware status retains its previous job's log. Keep it in the controller
+    // card so old messages cannot appear after the current Pi-MFX build output.
+    const progressLines = [...logLines, ...pluginLog];
     const progressText = progressLines.join("\n");
 
     const copyLog = async () => {
@@ -470,6 +472,12 @@ export function UpdatesView({
                         onClick={retryFirmware}>{str(firmware.state) === "preparing" ? "CHECKING CONTROLLER…"
                             : firmwareBusy ? "UPDATING CONTROLLER…" : latestReady && !firmwareUpToDate ? `UPDATE CONTROLLER TO ${latestFirmware}` : "UPDATE CONTROLLER FIRMWARE"}</button>
                     </div>
+                    {str(firmware.log).trim() && <details>
+                        <summary>{firmwareBusy ? "Controller update log" : "Last controller check / update log"}</summary>
+                        <pre className="updates-progress" data-mfx-selectable="true" aria-label="Controller firmware log" tabIndex={0}>
+                            {str(firmware.log)}
+                        </pre>
+                    </details>}
                 </section>
                 </div>
                 {progressLines.length > 0 && (
