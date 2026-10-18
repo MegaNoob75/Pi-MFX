@@ -295,6 +295,9 @@ struct MidiMessage {
 } // namespace
 
 struct Lv2Catalog::Impl {
+    // Lilv's shared library bookkeeping is shared by foreground loads, bank
+    // preloading, and retired-instance cleanup. Never lock this from run().
+    std::recursive_mutex instanceMutex;
     LilvWorld* world = nullptr;
     const LilvPlugins* plugins = nullptr;
     std::vector<PluginInfo> metadata;
@@ -749,6 +752,7 @@ struct PluginInstance::Impl {
     std::condition_variable workerSignal;
     std::atomic<bool> workerRunning{false};
     std::atomic<bool> workerBusy{false};
+    std::atomic<bool> preloadedIdle{false};
 
     LV2_URID_Map uridMap{};
     LV2_URID_Unmap uridUnmap{};
@@ -794,6 +798,7 @@ struct PluginInstance::Impl {
     ~Impl() {
         stopWorker();
         if (instance) {
+            std::lock_guard<std::recursive_mutex> lock(world->instanceMutex);
             if (active) {
                 lilv_instance_deactivate(instance);
             }
@@ -802,8 +807,9 @@ struct PluginInstance::Impl {
     }
 
     void stopWorker() {
-        if (!workerRunning.exchange(false)) {
-            return;
+        {
+            std::lock_guard<std::mutex> lock(workerMutex);
+            if (!workerRunning.exchange(false)) return;
         }
         workerSignal.notify_all();
         if (workerThread.joinable()) {
@@ -877,6 +883,7 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
     }
 
     Lv2Catalog::Impl& world = *catalogWorld;
+    std::lock_guard<std::recursive_mutex> instanceLock(world.instanceMutex);
     LilvNode* uriNode = lilv_new_uri(world.world, uri.c_str());
     const LilvPlugin* plugin = lilv_plugins_get_by_uri(world.plugins, uriNode);
     lilv_node_free(uriNode);
@@ -1050,8 +1057,15 @@ std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog& catalog,
             while (raw->workerRunning.load()) {
                 {
                     std::unique_lock<std::mutex> lock(raw->workerMutex);
-                    raw->workerSignal.wait_for(lock, std::chrono::milliseconds(20));
+                    if (raw->preloadedIdle.load(std::memory_order_acquire)) {
+                        raw->workerSignal.wait(lock, [&] {
+                            return !raw->preloadedIdle.load(std::memory_order_acquire)
+                                || !raw->workerRunning.load(std::memory_order_acquire);
+                        });
+                    } else raw->workerSignal.wait_for(lock, std::chrono::milliseconds(20));
                 }
+                if (!raw->workerRunning.load(std::memory_order_acquire)) break;
+                if (raw->preloadedIdle.load(std::memory_order_acquire)) continue;
                 raw->workerBusy.store(true, std::memory_order_release);
                 while (raw->workRequests.read(request)) {
                     raw->workerInterface->work(lilv_instance_get_handle(raw->instance),
@@ -1193,6 +1207,17 @@ bool PluginInstance::propertyTransitionPending() const {
         // begin() precedes staging and active stays set until staging drains.
         // pendingPropertyCount itself belongs exclusively to the audio thread.
         || impl.propertyTransition.active();
+}
+
+bool PluginInstance::preloadPending() const {
+    return propertyTransitionPending() || impl_->workerBusy.load(std::memory_order_acquire)
+        || !impl_->workRequests.empty() || !impl_->workResponses.empty();
+}
+
+void PluginInstance::setPreloadedIdle(bool idle) {
+    std::lock_guard<std::mutex> lock(impl_->workerMutex);
+    impl_->preloadedIdle.store(idle, std::memory_order_release);
+    impl_->workerSignal.notify_all();
 }
 
 void PluginInstance::beginDeferredStateChanges() {
@@ -1473,6 +1498,8 @@ struct PluginInstance::Impl {};
 
 PluginInstance::PluginInstance() : impl_(std::make_unique<Impl>()) {}
 PluginInstance::~PluginInstance() = default;
+bool PluginInstance::preloadPending() const { return false; }
+void PluginInstance::setPreloadedIdle(bool) {}
 
 std::unique_ptr<PluginInstance> PluginInstance::create(Lv2Catalog&, const std::string&,
                                                        unsigned, unsigned, std::string& error) {

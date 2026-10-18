@@ -814,6 +814,7 @@ Json SystemSettings::toJson() const {
     json.set("workerThreadPriority", workerThreadPriority);
     json.set("lockMemory", lockMemory);
     json.set("holdCpuLatency", holdCpuLatency);
+    json.set("preloadBanks", preloadBanks);
     return json;
 }
 
@@ -825,6 +826,7 @@ SystemSettings SystemSettings::fromJson(const Json& json) {
     settings.workerThreadPriority = std::max(1, std::min(94, json["workerThreadPriority"].asInt(70)));
     settings.lockMemory = json["lockMemory"].asBool(true);
     settings.holdCpuLatency = json["holdCpuLatency"].asBool(true);
+    settings.preloadBanks = json["preloadBanks"].asBool(true);
     return settings;
 }
 

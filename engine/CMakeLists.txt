@@ -23,6 +23,7 @@ target_include_directories(pimfx PRIVATE src)
 target_sources(pimfx PRIVATE
     src/main.cpp
     src/Engine.cpp
+    src/BankPreload.cpp
     src/core/Log.cpp
     src/core/Json.cpp
     src/core/Crypto.cpp
@@ -208,6 +209,24 @@ if(BUILD_TESTING)
         target_link_libraries(pimfx_access_control_test PRIVATE ws2_32)
     endif()
     add_test(NAME access_control COMMAND pimfx_access_control_test)
+
+    add_executable(pimfx_bank_preload_memory_test tests/BankPreloadMemoryTest.cpp)
+    target_include_directories(pimfx_bank_preload_memory_test PRIVATE src)
+    target_compile_options(pimfx_bank_preload_memory_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    add_test(NAME bank_preload_memory COMMAND pimfx_bank_preload_memory_test)
+
+    add_executable(pimfx_bank_preload_targets_test tests/BankPreloadTargetsTest.cpp
+        src/model/Model.cpp src/core/Json.cpp src/core/Crypto.cpp)
+    target_include_directories(pimfx_bank_preload_targets_test PRIVATE src)
+    target_link_libraries(pimfx_bank_preload_targets_test PRIVATE OpenSSL::Crypto)
+    target_compile_options(pimfx_bank_preload_targets_test PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>
+    )
+    add_test(NAME bank_preload_targets COMMAND pimfx_bank_preload_targets_test)
 
     add_executable(pimfx_audio_safety_transition_test
         tests/AudioSafetyTransitionTest.cpp

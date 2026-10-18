@@ -819,6 +819,11 @@ Drag and resize status widgets and hardware controls. Toggle visibility, group
 items, match sizes, and choose the snap grid. **Save Layout**, **Save As**, and
 **Load** update the named file and the live controller layout.
 
+The optional **Memory** widget shows Linux-reported installed, used, and free
+RAM (free includes reclaimable cache). **Bank Preload** shows preparation status,
+prepared/total preset counts, estimated cache memory, and whether the last preset
+selection used a prepared chain. Both widgets can be resized and saved normally.
+
 ![Snapshot layout](images/layout-snapshots.png)
 
 The Snapshots stage separately arranges snapshot tiles. It changes appearance,
@@ -1050,6 +1055,38 @@ connected while the job runs; the service restarts when the build finishes.
 Shows audio-thread scheduling, CPU/memory-lock controls, and diagnostic state.
 Use it with the live meters and service logs when diagnosing XRuns; desktop
 screenshots cannot validate Pi scheduling or audio stability.
+
+**Bank Preloading · Experimental** prepares fresh LV2 instances, settings, models,
+and IRs only for presets currently assigned to switches in the active bank.
+The target count is dynamic (8, 15, or any other configured count), duplicate
+assignments share one target, and unassigned presets are excluded. Session switch
+assignments take priority over saved assignments. Reassignment updates the cache,
+retaining compatible prepared instances and releasing obsolete targets.
+It is enabled by default for this experiment and can
+be switched off here without restarting audio. It does not reserve a fixed RAM
+block: only prepared chains occupy extra memory. The ceiling is the smaller of
+half the installed RAM and startup available RAM minus the safety reserve. That
+reserve is the larger of 512 MiB and 20% of installed RAM. The startup baseline is
+measured after audio/media buffers exist, before the startup preset is loaded;
+Pi-MFX never unloads your sound just to measure memory.
+
+Live available RAM and estimated/measured allocation growth are checked as the
+assigned set is prepared. If that entire set cannot fit, its extra chains are discarded
+and ordinary loading continues. A plugin's allocations cannot be predicted
+exactly, so this is a conservative experimental policy, not a hard memory sandbox.
+Preloading runs outside audio, pauses for high audio load or recording, and stops
+the bank attempt if an XRun occurs during preparation. Cached instances do not
+process audio, and their host LV2 worker threads sleep until selected.
+
+Once the bank is ready, selecting a preset consumes its fresh prepared instance;
+the cache prepares a fresh copy of the sound you left in the background. The
+currently selected chain counts toward the prepared total; there is no extra
+cached copy of that sound. Played instances are not recycled,
+avoiding old delay/reverb tails on recall. Browsing a bank does not preload it or
+change the current sound; selecting a preset in another bank releases the old
+bank cache and begins preparing the new one. Edits, remembered snapshots, tempo,
+audio settings, catalog updates, and library-file changes invalidate incompatible
+prepared chains. Toggle preloading off and on to retry a rejected bank.
 
 ## About
 

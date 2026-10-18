@@ -2052,8 +2052,47 @@ function SystemSettings({
                         : ""}
                 </pre>
             </div>
+            <BankPreloadSettings engine={engine} run={run} />
         </div>
     );
+}
+
+function BankPreloadSettings({ engine, run }: {
+    engine: EngineSnapshot & { client: import("../api").EngineClient };
+    run: (work: () => Promise<unknown>) => Promise<void>;
+}) {
+    const meters = useMeters(engine.client);
+    const preload = obj(meters.bankPreload);
+    const system = obj(engine.state.system);
+    const gib = (value: number) => `${(value / 1024 ** 3).toFixed(2)} GiB`;
+    return <div className="panel stack">
+        <h2>BANK PRELOADING · EXPERIMENTAL</h2>
+        <div className="muted">
+            Prepare effects, models, and settings for presets assigned to switches in the active bank.
+            The assigned count is dynamic. Memory is allocated only as needed. If that set cannot fit safely,
+            extra chains are released and presets load normally. Browsing banks keeps your current sound.
+        </div>
+        <div className="row">
+            <button type="button" className={`btn ${bool(system.preloadBanks, true) ? "btn-active" : ""}`}
+                aria-pressed={bool(system.preloadBanks, true)}
+                onClick={() => void run(() => engine.client.request("system/settings", {
+                    ...system, preloadBanks: !bool(system.preloadBanks, true)
+                }))}>
+                {bool(system.preloadBanks, true) ? "PRELOADING ON" : "PRELOADING OFF"}
+            </button>
+        </div>
+        <div>{str(preload.status, "Waiting for engine")} · {num(preload.prepared)} / {num(preload.total)} prepared</div>
+        <div className="muted">
+            Cache estimate {gib(num(preload.estimatedBytes))} · ceiling {gib(num(preload.budgetBytes))}
+            <br />Available before startup preset {gib(num(preload.baselineAvailableBytes))}
+            {" · "}minimum free reserve {gib(num(preload.reserveBytes))}
+            <br />Last selection: {str(preload.lastSelection, "—")} · preloaded selections: {num(preload.hits)}
+        </div>
+        <div className="muted">
+            Enable the Bank Preload widget in Layout Editor to monitor this while playing.
+            Turn preloading off and on to retry a bank that exceeded its budget or failed preparation.
+        </div>
+    </div>;
 }
 
 function UiBehaviorEditor({

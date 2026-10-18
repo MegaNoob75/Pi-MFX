@@ -16,13 +16,14 @@ export const STATUS_WIDGET_IDS = [
     "looperControl",
     "recorderControl",
     "drumMachine",
-    "memoryUsage"
+    "memoryUsage",
+    "bankPreload"
 ] as const;
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
 
 export function isScalableStatusWidget(id: string): boolean {
-    return ["currentBank", "activePreset", "xruns", "tuner", "audioStatus", "cpuUsage", "memoryUsage"].includes(id);
+    return ["currentBank", "activePreset", "xruns", "tuner", "audioStatus", "cpuUsage", "memoryUsage", "bankPreload"].includes(id);
 }
 
 export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
@@ -30,6 +31,7 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     activePreset: "Active Preset",
     cpuUsage: "Load",
     memoryUsage: "Memory",
+    bankPreload: "Bank Preload",
     xruns: "XRuns",
     audioStatus: "Audio",
     chainBypassStatus: "Bypass",
@@ -58,6 +60,7 @@ export function statusWidgetMinSize(id: string, orientation: MeterOrientation = 
     }
     if (id === "audioStatus") return { width: 0.20, height: 0.18 };
     if (id === "memoryUsage") return { width: 0.20, height: 0.18 };
+    if (id === "bankPreload") return { width: 0.22, height: 0.20 };
     if (isMeterWidget(id)) {
         return orientation === "horizontal"
             ? { width: 0.22, height: METER_WIDGET_HEIGHT }

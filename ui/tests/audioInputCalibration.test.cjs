@@ -23,7 +23,7 @@ assert.match(model, /json\["instrumentProfiles"\]\.items\(\)[\s\S]*settings\.ins
 
 assert.match(engine, /selectedInput = inputs\[guitar\][\s\S]*guitarInputPeak_\.store[\s\S]*guitarInputRms_\.store/,
     'the wizard must measure the selected raw guitar channel');
-assert.match(engine, /applyManagedNamCalibration\(settings_\.audio, \*plugin\)/,
+assert.match(engine, /plugin->loadState[\s\S]*applyManagedNamCalibration\(audio, \*plugin\)/,
     'managed calibration must be applied after loading each TooB NAM state');
 assert.match(engine, /rebuildForCalibration[\s\S]*buildChain\(\*currentPreset/,
     'changing or disabling managed calibration must rebuild the live chain');

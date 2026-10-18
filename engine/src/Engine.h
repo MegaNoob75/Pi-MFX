@@ -5,6 +5,7 @@
 #include "audio/RtPriority.h"
 #include "core/Json.h"
 #include "core/LatestPointerMailbox.h"
+#include "core/PreloadMemory.h"
 #include "core/SpscQueue.h"
 #include "host/Lv2Host.h"
 #include "midi/Mapping.h"
@@ -269,8 +270,8 @@ private:
         std::atomic<float> outputPeak{0.0f};
     };
 
-    /// A whole signal chain. Chains are built on the control thread and handed
-    /// to the audio thread by pointer swap, never edited in place.
+    /// A whole signal chain. Chains are built on control/preload workers and
+    /// handed to audio by pointer swap, never edited in place.
     struct Chain {
         ~Chain() {
             // A plugin may still reference its last connected audio buffers
@@ -352,9 +353,25 @@ private:
     void applyMasterOutputSafety(float* const* outputs, unsigned outputChannels,
                                  unsigned frames, const float* dryInput, float dryGain);
     void configureAudioSafety(const AudioSettings& settings);
+    struct ChainBuildContext {
+        AudioSettings audio;
+        unsigned rate = 48000, frames = 64;
+        bool tempoEnabled = false;
+        double bpm = 120;
+        std::function<bool()> canContinue;
+    };
     std::unique_ptr<Chain> buildChain(const Preset& preset, std::string& error,
                                     const Chain* retained = nullptr,
-                                    const std::string& recreatedSlotId = "");
+                                    const std::string& recreatedSlotId = "",
+                                    const ChainBuildContext* background = nullptr);
+    Preset recalledPresetUnlocked(const Preset& preset) const;
+    ChainBuildContext preloadContextUnlocked(const Preset& preset) const;
+    std::string preloadKey(const Preset& preset, const ChainBuildContext& context) const;
+    void refreshBankPreload();
+    void bankPreloadThread();
+    void invalidateBankPreload();
+    std::unique_ptr<Chain> takePreloadedChain(const Preset& preset);
+    Json bankPreloadState() const;
     void publishEmptyChain();
     bool validateGraphEditChain(const Chain* chain, std::string& error) const;
     void applySnapshotToChain(const Snapshot& snapshot);
@@ -474,6 +491,35 @@ private:
     std::unique_ptr<Chain> chainAwaitingPreparation_;
     std::atomic<bool> chainPreparationStopping_{false};
     std::atomic<uint64_t> chainPreparationRequestGeneration_{0};
+
+    struct PreloadEntry {
+        std::string key;
+        std::unique_ptr<Chain> chain;
+        int64_t bytes = 0;
+    };
+    struct BankPreloadRequest {
+        std::string bankId, key, activePresetId;
+        std::vector<Preset> presets;
+        std::vector<ChainBuildContext> contexts;
+        std::vector<std::string> keys;
+        std::shared_ptr<Lv2Catalog::Impl> catalogWorld;
+    };
+    // No audio callback touches the cache. Worker builds from immutable copies;
+    // selection moves ownership through the existing chain publication path.
+    std::thread bankPreloadWorker_;
+    mutable std::mutex bankPreloadMutex_;
+    BankPreloadRequest bankPreloadRequest_;
+    std::unordered_map<std::string, PreloadEntry> bankPreloadedChains_;
+    std::atomic<uint64_t> bankPreloadGeneration_{0};
+    std::atomic<uint64_t> bankPreloadAssetRevision_{0};
+    PreloadMemory bankPreloadBaseline_;
+    int64_t bankPreloadBudget_ = 0, bankPreloadBytes_ = 0;
+    std::string bankPreloadStatus_ = "Waiting for audio";
+    std::string bankPreloadLastSelection_;
+    int bankPreloadHits_ = 0;
+    bool bankPreloadReady_ = false;
+    std::atomic<bool> bankPreloadAllowed_{false};
+    std::atomic<bool> bankPreloadForeground_{false};
 
     std::atomic<bool> bypassAll_{false};
     std::atomic<int> pendingBypassAll_{-1};

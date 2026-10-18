@@ -365,6 +365,7 @@ struct SystemSettings {
     int workerThreadPriority = 70;
     bool lockMemory = true;
     bool holdCpuLatency = true;
+    bool preloadBanks = true;
     Json toJson() const;
     static SystemSettings fromJson(const Json& json);
 };

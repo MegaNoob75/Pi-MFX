@@ -1376,6 +1376,8 @@ export function PerformanceView({
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : id === "memoryUsage" ? (
                                         <LiveMemoryWidget client={client} showLabel={widget.showLabel} />
+                                    ) : id === "bankPreload" ? (
+                                        <LiveBankPreloadWidget client={client} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
                                         <>
                                             {widget.showLabel && id !== "cpuUsage" && (
@@ -1823,6 +1825,20 @@ function formatWidgetTime(seconds: number): string {
 
 function isLiveMeterText(id: string): boolean {
     return id === "cpuUsage" || id === "xruns" || id === "audioStatus" || id === "tuner";
+}
+
+export function LiveBankPreloadWidget({ client, showLabel }: {
+    client: import("../api").EngineClient;
+    showLabel: boolean;
+}) {
+    const meters = useMeters(client);
+    const preload = obj(meters.bankPreload);
+    return <>
+        {showLabel && <div className="field-label mfx-performance-ui-label">BANK PRELOAD</div>}
+        <strong className="mfx-performance-ui-value memory-readings">
+            {`${str(preload.status, "Waiting for engine")}\nASSIGNED ${num(preload.prepared)} / ${num(preload.total)} READY\nCACHE ≈ ${(num(preload.estimatedBytes) / 1024 ** 2).toFixed(0)} MiB\nLAST: ${str(preload.lastSelection, "—")}`}
+        </strong>
+    </>;
 }
 
 export function LiveMemoryWidget({ client, showLabel }: {

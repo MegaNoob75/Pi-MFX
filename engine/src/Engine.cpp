@@ -704,6 +704,7 @@ bool Engine::start(std::string& error, bool recoverStartup) {
     armAnalogCatchUnlocked();
 
     shuttingDown_.store(false);
+    bankPreloadWorker_ = std::thread(&Engine::bankPreloadThread, this);
     tunerThread_ = std::thread(&Engine::tunerThread, this);
     housekeepingThread_ = std::thread(&Engine::housekeepingThread, this);
 
@@ -713,6 +714,8 @@ bool Engine::start(std::string& error, bool recoverStartup) {
 
 void Engine::stop() {
     shuttingDown_.store(true);
+    bankPreloadGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    if (bankPreloadWorker_.joinable()) bankPreloadWorker_.join();
     logInfo("shutdown: stopping MIDI");
     midi_.stop();
     logInfo("shutdown: stopping chain preparation");
@@ -754,6 +757,12 @@ void Engine::stop() {
         delete retired.chain;
     }
     retiredChains_.clear();
+    {
+        std::lock_guard<std::mutex> preloadLock(bankPreloadMutex_);
+        bankPreloadedChains_.clear();
+        bankPreloadBytes_ = 0;
+        bankPreloadReady_ = false;
+    }
     latencyGuard_.reset();
     logInfo("shutdown: engine stopped");
 }
@@ -771,6 +780,7 @@ bool Engine::restartAudio(std::string& error) {
     }
 
     if (!canRestartAudio(settings_.audio.sampleRate, error)) return false;
+    invalidateBankPreload();
     // Reopen the device using the audible working state. Explicit Reload is
     // the only preset operation here that intentionally discards its draft.
     std::optional<Preset> livePreset;
@@ -842,6 +852,15 @@ bool Engine::restartAudio(std::string& error) {
     }
     guitarInputChannel_.store(settings_.audio.inputChannelOffset, std::memory_order_relaxed);
 
+    // Capture after device/media buffers exist, before the startup preset is
+    // instantiated. Never unload a playing preset just to remeasure a baseline.
+    {
+        std::lock_guard<std::mutex> preloadLock(bankPreloadMutex_);
+        if (!bankPreloadBaseline_.valid()) {
+            bankPreloadBaseline_ = PreloadMemory::read();
+            bankPreloadBudget_ = bankPreloadBaseline_.budget();
+        }
+    }
     if (livePreset) {
         std::string chainError;
         if (std::unique_ptr<Chain> chain = buildChain(*livePreset, chainError)) {
@@ -941,9 +960,16 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
     if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
-    if (!canRestartAudio(settings_.audio.sampleRate, error)) return false;
+    Json previousSystem = settings_.system.toJson();
+    const SystemSettings requested = SystemSettings::fromJson(json);
+    Json nextSystem = requested.toJson();
+    previousSystem.remove("preloadBanks");
+    nextSystem.remove("preloadBanks");
+    const bool restartNeeded = previousSystem.dump() != nextSystem.dump();
+    if (restartNeeded && !canRestartAudio(settings_.audio.sampleRate, error)) return false;
     const bool wasBackingEnabled = backingEnabled_.load(std::memory_order_acquire);
-    settings_.system = SystemSettings::fromJson(json);
+    settings_.system = requested;
+    invalidateBankPreload();
     transportEnabled_.store(true, std::memory_order_release);
     backingEnabled_.store(backing_->available(), std::memory_order_release);
     if (recorder_) recorder_->setSourceAvailable(MultitrackRecorder::Source::Backing,
@@ -963,7 +989,7 @@ bool Engine::applySystemSettings(const Json& json, std::string& error) {
     // Thread priority and affinity are read when the audio thread starts, so
     // changing them means restarting the stream.
     std::string restartError;
-    if (!restartAudio(restartError)) {
+    if (restartNeeded && !restartAudio(restartError)) {
         error = restartError;
     }
     if (!persistSettings()) error = "system settings are live but could not be saved";
@@ -1435,15 +1461,20 @@ void Engine::processAudio(const float* const* inputs, unsigned inputChannels,
 
 std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::string& error,
                                                const Chain* retained,
-                                               const std::string& recreatedSlotId) {
+                                               const std::string& recreatedSlotId,
+                                               const ChainBuildContext* background) {
+    const AudioSettings audio = background ? background->audio : settings_.audio;
+    const unsigned rate = background ? background->rate : sampleRate_.load(std::memory_order_acquire);
+    const bool tempoEnabled = background ? background->tempoEnabled : transportEnabled_.load(std::memory_order_acquire);
+    const double bpm = background ? background->bpm : transport_.bpm();
     auto chain = std::make_unique<Chain>();
-    const unsigned channels = std::max(1u, std::min(settings_.audio.outputChannels, 2u));
-    const unsigned frames = std::max(1u, maxFrames_.load(std::memory_order_acquire));
+    const unsigned channels = std::max(1u, std::min(audio.outputChannels, 2u));
+    const unsigned frames = std::max(1u, background ? background->frames : maxFrames_.load(std::memory_order_acquire));
 
     chain->presetId = preset.id;
     chain->rebindOnSwap = retained != nullptr;
     chain->channels = channels;
-    chain->outputGain = dbToGain(settings_.audio.outputGainDb + preset.outputGainDb);
+    chain->outputGain = dbToGain(audio.outputGainDb + preset.outputGainDb);
     chain->bufferA.assign(channels, std::vector<float>(frames, 0.0f));
     chain->bufferB.assign(channels, std::vector<float>(frames, 0.0f));
     chain->pointersA.resize(channels);
@@ -1454,7 +1485,9 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     }
 
     std::string failures;
-    missingPluginFiles_.clear();
+    std::vector<std::string> backgroundMissing;
+    auto* missing = background ? &backgroundMissing : &missingPluginFiles_;
+    missing->clear();
     const auto createSlot = [&](const EffectSlot& slot) -> ChainSlot* {
         if (retained && retained->presetId == preset.id && slot.id != recreatedSlotId) {
             for (const auto& existing : retained->slots) {
@@ -1464,7 +1497,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
                 chainSlot->id = slot.id;
                 chainSlot->plugin = existing->plugin;
                 chainSlot->retainedProcessor = true;
-                (void)rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_);
+                (void)rewritePluginStateFiles(storage_, slot.state, missing);
                 chainSlot->enabled.store(slot.enabled, std::memory_order_relaxed);
                 ChainSlot* result = chainSlot.get();
                 chain->slots.push_back(std::move(chainSlot));
@@ -1473,7 +1506,7 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
         }
         std::string slotError;
         std::unique_ptr<PluginInstance> plugin = PluginInstance::create(
-            catalog_, slot.uri, sampleRate_.load(std::memory_order_acquire), frames, slotError);
+            catalog_, slot.uri, rate, frames, slotError);
 
         if (!plugin) {
             // A preset that names a plugin the user has not installed still
@@ -1482,10 +1515,10 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
             failures += (failures.empty() ? "" : "; ") + slotError;
             return nullptr;
         }
-        plugin->loadState(rewritePluginStateFiles(storage_, slot.state, &missingPluginFiles_));
-        applyManagedNamCalibration(settings_.audio, *plugin);
-        if (transportEnabled_.load(std::memory_order_acquire)) {
-            applyTempoLinksToPlugin(slot, *plugin, transport_.bpm());
+        plugin->loadState(rewritePluginStateFiles(storage_, slot.state, missing));
+        applyManagedNamCalibration(audio, *plugin);
+        if (tempoEnabled) {
+            applyTempoLinksToPlugin(slot, *plugin, bpm);
         }
 
         auto chainSlot = std::make_unique<ChainSlot>();
@@ -1520,6 +1553,10 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     }
     std::map<std::string, size_t> indices;
     for (const auto& id : order) {
+        if (background && background->canContinue && !background->canContinue()) {
+            error = "Bank preparation interrupted";
+            return nullptr;
+        }
         Chain::Node node;
         node.id = id;
         if (const auto* stored = preset.findSlot(id)) {
@@ -1566,6 +1603,10 @@ std::unique_ptr<Engine::Chain> Engine::buildChain(const Preset& preset, std::str
     for (auto it = chain->nodes.rbegin(); it != chain->nodes.rend(); ++it)
         if (it->active) for (const auto* edge : it->incoming) chain->nodes[edge->source].active = true;
     error = failures;
+    if (background && !backgroundMissing.empty()) {
+        error = "A preset needs missing model or impulse-response files";
+        return nullptr;
+    }
     return chain;
 }
 
@@ -2175,6 +2216,27 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
         return false;
     }
 
+    struct PausePreloading {
+        std::atomic<bool>& flag;
+        explicit PausePreloading(std::atomic<bool>& value) : flag(value) { flag.store(true, std::memory_order_release); }
+        ~PausePreloading() { flag.store(false, std::memory_order_release); }
+    } pausePreloading(bankPreloadForeground_);
+
+    // Release the previous bank's unused instances before a cold bank load,
+    // rather than retaining both banks during the foreground allocation peak.
+    decltype(bankPreloadedChains_) previousBankCache;
+    {
+        std::lock_guard<std::mutex> preloadLock(bankPreloadMutex_);
+        if (bankPreloadRequest_.bankId != bank->id) {
+            bankPreloadRequest_ = {};
+            bankPreloadReady_ = false;
+            previousBankCache.swap(bankPreloadedChains_);
+            bankPreloadBytes_ = 0;
+            bankPreloadGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        }
+    }
+    previousBankCache.clear();
+
     const Preset* outgoing = activePreset();
     Bank* outgoingBank = activeBank();
     if (outgoing && activeSessionDraft()) {
@@ -2222,7 +2284,8 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     }
 
     std::string chainError;
-    std::unique_ptr<Chain> chain = buildChain(effectivePreset, chainError);
+    std::unique_ptr<Chain> chain = takePreloadedChain(effectivePreset);
+    if (!chain) chain = buildChain(effectivePreset, chainError);
     if (chain) {
         chain->presetSelection = true;
     }
@@ -2235,6 +2298,7 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     settings_.activePresetId = activePresetId_;
     requestSettingsPersist();
     requestBankPersist(bank->id);
+    refreshBankPreload();
     armAnalogCatchUnlocked();
     refreshLeds();
     notifyPresetSelection();
@@ -4254,6 +4318,7 @@ bool Engine::applyPresetAssignments(const Json& json, std::string& error) {
         notify();
         return false;
     }
+    refreshBankPreload();
     refreshLeds();
     notify();
     return true;
@@ -5776,6 +5841,7 @@ bool Engine::applySessionPresets(const Json& json, std::string& error) {
             }
         }
     }
+    refreshBankPreload();
     refreshLeds();
     error.clear();
     return true;
@@ -5839,6 +5905,7 @@ bool Engine::storeLibraryFile(const std::string& kind, const std::string& name,
         error = "could not write the file";
         return false;
     }
+    invalidateBankPreload();
     notify();
     return true;
 }
@@ -5863,6 +5930,7 @@ Json Engine::readLibraryFile(const std::string& kind, const std::string& path, s
 }
 
 bool Engine::deleteLibraryFile(const std::string& kind, const std::string& path, std::string& error) {
+    invalidateBankPreload();
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     if (!pathInsideRoot(path, root)) {
         error = "that path is outside this file-manager location";
@@ -6003,6 +6071,7 @@ bool Engine::libraryPathInUse(const std::string& path) const {
 
 bool Engine::libraryRename(const std::string& kind, const std::string& path,
                            const std::string& newName, std::string& error) {
+    invalidateBankPreload();
     const std::string root = libraryRootForKind(storage_.paths(), kind);
     if (!pathInsideRoot(path, root)) {
         error = "that path is outside this file-manager location"; return false;
@@ -6058,6 +6127,7 @@ bool Engine::libraryRename(const std::string& kind, const std::string& path,
 
 bool Engine::libraryMove(const std::string& path, const std::string& kind, const std::string& directory,
                          std::string& error) {
+    invalidateBankPreload();
     if (drums_ && !drums_->canEditLibraryPath(path, error)) return false;
     if (libraryPathInUse(path)) {
         error = "this file or folder is used by a preset; remove its preset references before moving"; return false;
@@ -6394,6 +6464,7 @@ void Engine::housekeepingThread() {
                 memoryTotalBytes_ = valid ? totalKb * 1024 : 0;
                 memoryFreeBytes_ = valid ? availableKb * 1024 : 0;
             }
+            if (ticks % 40 == 0) refreshBankPreload();
 
             StateListener listener;
             {
@@ -6565,6 +6636,7 @@ void Engine::notifyState(bool allowPresetSwitch) {
 }
 
 void Engine::publishState() {
+    invalidateBankPreload();
     notify();
 }
 
@@ -6934,6 +7006,7 @@ bool Engine::applyLooperSettings(const Json& json, std::string& error) {
 }
 
 bool Engine::looperCommand(const std::string& command, const Json& payload, std::string& error) {
+    bankPreloadAllowed_.store(false, std::memory_order_release);
     std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
     if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     std::string resolved = command;
@@ -7025,6 +7098,7 @@ Json Engine::recorderState(bool includeDetails) const {
 }
 
 bool Engine::recorderCommand(const std::string& command, const Json& payload, std::string& error) {
+    bankPreloadAllowed_.store(false, std::memory_order_release);
     std::unique_lock<std::recursive_mutex> mediaLock(mediaMutex_, std::try_to_lock);
     if (!mediaLock.owns_lock()) { error = "a media operation is still finishing; please try again"; return false; }
     if (!recorderEnabled_.load(std::memory_order_acquire) || !recorder_) {
@@ -7152,6 +7226,7 @@ Json Engine::meterState() const {
     json.set("memoryTotalBytes", memoryTotalBytes_);
     json.set("memoryUsedBytes", memoryTotalBytes_ - memoryFreeBytes_);
     json.set("memoryFreeBytes", memoryFreeBytes_);
+    json.set("bankPreload", bankPreloadState());
     json.set("inputPeak", metrics_.inputPeak.load(std::memory_order_relaxed));
     json.set("outputPeak", metrics_.outputPeak.load(std::memory_order_relaxed));
     json.set("guitarInputPeak", guitarInputPeak_.load(std::memory_order_relaxed));

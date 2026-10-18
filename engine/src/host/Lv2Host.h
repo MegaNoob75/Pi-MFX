@@ -143,9 +143,9 @@ private:
 
 /// A live plugin.
 ///
-/// Instantiation, activation, and property changes happen on the control
-/// thread. `process()` is audio-thread-only; `setControl()` is a wait-free
-/// atomic handoff and may also be called by the control thread.
+/// Instantiation, activation, and property changes happen off audio.
+/// `process()` has one owner: the audio thread for a published instance, or
+/// preparation for an unpublished instance. `setControl()` is an atomic handoff.
 class PluginInstance {
 public:
     ~PluginInstance();
@@ -181,6 +181,10 @@ public:
     void holdPropertyChanges();
     void releasePropertyChanges();
     bool propertyTransitionPending() const;
+    /// Unpublished bank-cache instances only: drain host work before parking
+    /// their worker. Resume on the control thread before publishing for audio.
+    bool preloadPending() const;
+    void setPreloadedIdle(bool idle);
 
     /// Stages snapshot/base-preset controls until the engine master reaches
     /// silence. applyDeferredStateChanges is audio-thread-only.
