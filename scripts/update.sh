@@ -219,9 +219,11 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
         [[ -f "$CMDLINE.pimfx-backup" ]] || cp "$CMDLINE" "$CMDLINE.pimfx-backup"
         sed -i '1 s/$/ usbcore.autosuspend=-1/' "$CMDLINE"
     fi
-    log "Building and updating newer controller firmware (or leaving it pending until connected)"
+    log "Checking controller firmware; details are shown under Controller Firmware"
+    # The firmware worker maintains its own log and status for the Updates UI.
+    # Do not duplicate its routine progress in the main Pi-MFX update log.
     if ! python3 "$PREFIX/libexec/pimfx/controller_firmware.py" --arm \
-        --repo "$REPO_DIR" --data "$DATA_ROOT" --user "$PIMFX_USER"; then
+        --repo "$REPO_DIR" --data "$DATA_ROOT" --user "$PIMFX_USER" >/dev/null; then
         warn "Pi-MFX was installed, but controller firmware needs attention. Open Settings > Updates to retry."
         CONTROLLER_UPDATE_FAILED=1
     fi
