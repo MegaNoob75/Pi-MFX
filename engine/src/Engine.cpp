@@ -2135,6 +2135,7 @@ void Engine::flushPendingPersistence(bool force) {
 
 bool Engine::selectPreset(const std::string& bankId, const std::string& presetId, std::string& error) {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    deferredPresetReloadId_.clear();
 
     Bank* bank = findBank(bankId.empty() ? browseBankId() : bankId);
     if (!bank) {
@@ -4865,7 +4866,40 @@ bool Engine::validatePresetEvent(const std::string& expectedPresetId, std::strin
     return true;
 }
 
+bool Engine::immediatePresetTapAllowed(const ControllerControl* control) const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    const Preset* preset = activePreset();
+    const bool baseReady = preset && !snapshotMode_.load(std::memory_order_relaxed)
+        && !bypassAll_.load(std::memory_order_relaxed) && !activeSessionDraft()
+        && preset->activeSnapshot < 0 && preset->rememberedSnapshotSlot < 0
+        && activeChainReadyForPreset(*preset);
+    if (!baseReady || !control) return baseReady;
+    if (control->binding.action != "selectPreset" || control->binding.doubleAction != "reloadPreset"
+        || control->kind != ControlKind::Momentary) return false;
+    std::string bankId = control->binding.bankId.empty() ? browseBankId() : control->binding.bankId;
+    std::string presetId = control->binding.presetId;
+    // Session browsing can point tap and reload at different targets.
+    if (sessionPresetForControl(control->id, bankId, presetId)) return false;
+    if (presetId.empty()) presetId = assignedPresetForControl(settings_.controller, bankId, control->id);
+    const auto bank = std::find_if(banks_.begin(), banks_.end(),
+        [&](const Bank& candidate) { return candidate.id == bankId; });
+    if (bank == banks_.end()) return false;
+    for (const Preset& target : bank->presets) if (target.id == presetId)
+        return target.activeSnapshot < 0 && target.rememberedSnapshotSlot < 0
+            && sessionPresetDrafts_.find(target.id) == sessionPresetDrafts_.end();
+    return false;
+}
+
+std::vector<std::string> Engine::immediatePresetTapControls() const {
+    std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+    std::vector<std::string> controls;
+    if (immediatePresetTapAllowed()) for (const auto& control : settings_.controller.controls)
+        if (immediatePresetTapAllowed(&control)) controls.push_back(control.id);
+    return controls;
+}
+
 bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std::string& error) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     const ControllerConfig config = controller_.config();
     for (const ControllerControl& control : config.controls) {
         if (control.id != controlId) {
@@ -4877,7 +4911,7 @@ bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std
         if (continuous) {
             return true;
         }
-        for (const ActionRequest& request : controller_.virtualPress(controlId, pressed)) {
+        for (const ActionRequest& request : controller_.virtualPress(controlId, pressed, immediatePresetTapAllowed(&control))) {
             runAction(request);
         }
         return true;
@@ -4886,12 +4920,22 @@ bool Engine::pressVirtualControl(const std::string& controlId, bool pressed, std
     return false;
 }
 
-bool Engine::fireVirtualAction(const std::string& controlId, const std::string& fire, std::string& error) {
+bool Engine::fireVirtualAction(const std::string& controlId, const std::string& fire, std::string& error,
+                              bool immediate) {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     const ControllerConfig config = controller_.config();
     for (const ControllerControl& control : config.controls) {
         if (control.id != controlId) {
             continue;
         }
+        // Another screen/controller may have changed snapshot or draft state
+        // since this screen rendered. Recheck before accepting an eager tap.
+        if (fire == "tap" && immediate && !immediatePresetTapAllowed(&control)) {
+            for (const bool pressed : {true, false})
+                for (const auto& action : controller_.virtualPress(controlId, pressed, false)) runAction(action);
+            return true;
+        }
+        if (fire == "double" || fire == "hold") controller_.cancelHold(controlId);
         ActionRequest request;
         request.controlId = control.id;
         request.binding = control.binding;
@@ -4980,7 +5024,7 @@ void Engine::handleMidiMessage(const MidiMessage& message) {
     if (controllerConnecting_) return;
     if (controllerHardware_.busy()) return;
     if (controllerHardwareCapable_ && !controllerHardware_.accepts(message, controller_.config())) return;
-    const auto actions = controller_.handleMessage(message);
+    const auto actions = controller_.handleMessage(message, immediatePresetTapControls());
     stateLock.unlock();
     bool encoderUi = false;
     for (const ActionRequest& request : actions) {
@@ -5300,6 +5344,7 @@ void Engine::runAction(const ActionRequest& incoming) {
             selectSnapshot(binding.snapshotId, error);
         }
     } else if (request.action == "reloadPreset") {
+        std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
         const ControllerConfig config = controller_.config();
         std::string bankId = binding.bankId.empty() ? browseBankId() : binding.bankId;
         std::string presetId = binding.presetId;
@@ -5312,7 +5357,13 @@ void Engine::runAction(const ActionRequest& incoming) {
                 return;
             }
         }
-        reloadStoredPreset(error);
+        // A fast second tap may arrive before the first selection has swapped.
+        // Reload only that target after publication; a newer selection cancels it.
+        const Preset* target = activePreset();
+        if (request.fromDouble && binding.action == "selectPreset"
+            && target && !activeChainReadyForPreset(*target)) {
+            deferredPresetReloadId_ = target->id;
+        } else reloadStoredPreset(error);
     } else if (request.action == "toggleEffect") {
         if (latching) {
             setEffectEnabled(binding.slotId, latchOn(request), error, request.persist);
@@ -6247,6 +6298,18 @@ void Engine::housekeepingThread() {
             refreshLeds();
             notifyPublishedChain();
         }
+        {
+            std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+            if (!deferredPresetReloadId_.empty()) {
+                const Preset* preset = activePreset();
+                if (!preset || preset->id != deferredPresetReloadId_) deferredPresetReloadId_.clear();
+                else if (activeChainReadyForPreset(*preset)) {
+                    deferredPresetReloadId_.clear();
+                    std::string error;
+                    if (!reloadStoredPreset(error)) logDebug("deferred preset reload: " + error);
+                }
+            }
+        }
         flushPendingPersistence();
         if (recorderOwnsTransport_.load(std::memory_order_acquire) && recorder_
             && !recorder_->recording() && !recorder_->playing()) {
@@ -6580,6 +6643,10 @@ Json Engine::stateSnapshot(bool includeBanks) const {
 
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
+    json.set("immediatePresetTapAllowed", immediatePresetTapAllowed());
+    Json immediateControls = Json::array();
+    for (const auto& id : immediatePresetTapControls()) immediateControls.push(id);
+    json.set("immediatePresetTapControls", std::move(immediateControls));
     json.set("presetReloadCount", presetReloadCount_);
     json.set("audioRunning", backend_ && backend_->isRunning());
     json.set("audioBackend", backend_ ? backend_->name() : std::string("none"));
@@ -6694,6 +6761,10 @@ Json Engine::performanceState() const {
     json.set("activePresetId", activePresetId_);
     json.set("bypassAll", bypassAll_.load(std::memory_order_relaxed));
     json.set("snapshotMode", snapshotMode_.load(std::memory_order_relaxed));
+    json.set("immediatePresetTapAllowed", immediatePresetTapAllowed());
+    Json immediateControls = Json::array();
+    for (const auto& id : immediatePresetTapControls()) immediateControls.push(id);
+    json.set("immediatePresetTapControls", std::move(immediateControls));
     json.set("presetReloadCount", presetReloadCount_);
     json.set("activeVirtualControlId", activeVirtualControlId_);
     json.set("virtualControlRevision", static_cast<double>(virtualControlRevision_));

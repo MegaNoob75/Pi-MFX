@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <thread>
 
 using namespace pimfx;
 namespace hw = pimfxhw;
@@ -214,9 +215,64 @@ static void templateRestoreDelete() {
     const auto learned=runtime.handleMessage(MidiMessage{0xB2,50,127});
     require(learned.size()==1 && learned[0].action=="learned" && runtime.config().controls[0].midiChannel==3,"legacy MIDI Learn regressed");
 }
+static void immediatePresetGestures() {
+    ControllerRuntime runtime;
+    ControllerConfig config;
+    ControllerControl control;
+    control.id="fast-preset"; control.channel=27; control.midiChannel=1;
+    control.binding.action="selectPreset"; control.binding.doubleAction="reloadPreset";
+    control.binding.doubleTapMilliseconds=80;
+    config.controls.push_back(control);
+    runtime.setConfig(config);
+    require(runtime.virtualPress(control.id,true,true).empty(),"preset must wait for release to preserve hold");
+    auto actions=runtime.virtualPress(control.id,false,true);
+    require(actions.size()==1 && actions[0].action=="selectPreset","compatible first release did not fire immediately");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    require(runtime.pollHolds().empty(),"eager tap fired twice when double window expired");
+
+    runtime.virtualPress(control.id,true,true);
+    require(runtime.virtualPress(control.id,false,true).size()==1,"first tap lost");
+    // Eligibility can change when the first selection loads a remembered snapshot.
+    actions=runtime.virtualPress(control.id,true,false);
+    require(actions.size()==1 && actions[0].action=="reloadPreset" && actions[0].fromDouble,"fast pair lost double recognition");
+    require(runtime.virtualPress(control.id,false,false).empty(),"double release fired an extra tap");
+
+    runtime.setConfig(config);
+    runtime.virtualPress(control.id,true,false);
+    require(runtime.virtualPress(control.id,false,false).empty(),"snapshot/draft policy did not retain delayed tap");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    actions=runtime.pollHolds();
+    require(actions.size()==1 && actions[0].action=="selectPreset","delayed tap disappeared");
+
+    config.controls[0].binding.doubleAction="bankUp"; runtime.setConfig(config);
+    runtime.virtualPress(control.id,true,true);
+    require(runtime.virtualPress(control.id,false,true).empty(),"incompatible double action fired first tap early");
+    actions=runtime.virtualPress(control.id,true,true);
+    require(actions.size()==1 && actions[0].action=="bankUp","bank double action changed");
+    runtime.virtualPress(control.id,false,true);
+
+    config.controls[0].binding.doubleAction="reloadPreset";
+    config.controls[0].binding.holdAction="tuner";
+    config.controls[0].binding.holdMilliseconds=250; runtime.setConfig(config);
+    runtime.virtualPress(control.id,true,true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(275));
+    actions=runtime.pollHolds();
+    require(actions.size()==1 && actions[0].action=="tuner" && actions[0].fromHold,"hold action lost");
+    require(runtime.virtualPress(control.id,false,true).empty(),"hold release selected a preset");
+
+    runtime.setConfig(config);
+    require(runtime.handleMessage(MidiMessage{0xB0,27,127},{control.id}).empty(),"physical press selected before release");
+    actions=runtime.handleMessage(MidiMessage{0xB0,27,0},{control.id});
+    require(actions.size()==1 && actions[0].action=="selectPreset","physical MIDI release did not use fast policy");
+    actions=runtime.handleMessage(MidiMessage{0xB0,27,127},{control.id});
+    require(actions.size()==1 && actions[0].action=="reloadPreset","physical double tap lost reload");
+    runtime.handleMessage(MidiMessage{0xB0,27,0},{control.id});
+    require(runtime.pollHolds().empty(),"physical double generated another action");
+}
+
 int main() {
     try {
-        validation(); learnAndPersist(); guidedAnalogCalibration(); failuresAndRecovery(); templateRestoreDelete();
+        validation(); learnAndPersist(); guidedAnalogCalibration(); failuresAndRecovery(); templateRestoreDelete(); immediatePresetGestures();
         std::cout << "Controller hardware protocol tests passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

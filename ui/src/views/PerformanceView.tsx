@@ -2,7 +2,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { findBank, findPreset, isAnalogKind, isEncoderKind, isEncoderPushKind, isLatchingKind, normalizeControlKind, useMeters, type EngineSnapshot } from "../api";
-import { bool, num, obj, str, objects, type JsonObject } from "../json";
+import { arr, bool, num, obj, str, objects, type JsonObject } from "../json";
 import { askText } from "../keyboard/ask";
 import { loadUiBehavior } from "../uiBehavior";
 import { hardwareNavBlocksPerformance } from "../hardwareNav";
@@ -335,8 +335,8 @@ export function PerformanceView({
         return client.request("controller/assignments", { bankId, changes });
     };
 
-    const fireControl = (id: string, fire: "tap" | "hold" | "double") => {
-        void client.request("controller/press", { controlId: id, fire }).catch(() => undefined);
+    const fireControl = (id: string, fire: "tap" | "hold" | "double", immediate = false) => {
+        void client.request("controller/press", { controlId: id, fire, immediate }).catch(() => undefined);
     };
 
     const closeMenu = () => {
@@ -806,6 +806,9 @@ export function PerformanceView({
                         : valueForAction(action, sessionEntry?.presetName || str(obj(presetItem).name), empty),
                     holdLabel: analog || encoder || latching ? undefined : actionLabelFor(holdAction),
                     doubleLabel: analog || encoder || latching ? undefined : actionLabelFor(doubleAction),
+                    immediateTap: arr(state.immediatePresetTapControls).includes(controlId) && !sessionEntry && !empty
+                        && !analog && !encoder && !latching
+                        && action === "selectPreset" && doubleAction === "reloadPreset",
                     empty,
                     role: analog || encoder ? "utility" : roleForAction(action),
                     lightState: action === "selectPreset" || sessionEntry
@@ -843,7 +846,7 @@ export function PerformanceView({
                             height: Math.max(minSize.height, num(control.height, 0.2))
                         })
                         : gridCellRect(index, columns, rows),
-                    onPress: () => {
+                    onPress: (immediate = false) => {
                         if (encoder) {
                             if (navigationEncoder) screenEncoderSelectRef.current();
                             else if (pairId) fireControl(pairId, "tap");
@@ -863,7 +866,7 @@ export function PerformanceView({
                             }));
                             return;
                         }
-                        fireControl(controlId, "tap");
+                        fireControl(controlId, "tap", immediate);
                     },
                     onValue: analogAssigned
                         ? (value: number) => {

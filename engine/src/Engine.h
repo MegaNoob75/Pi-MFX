@@ -186,7 +186,8 @@ public:
     /// Presses a control from the browser. This is what makes a tablet a
     /// complete control surface with no hardware attached.
     bool pressVirtualControl(const std::string& controlId, bool pressed, std::string& error);
-    bool fireVirtualAction(const std::string& controlId, const std::string& fire, std::string& error);
+    bool fireVirtualAction(const std::string& controlId, const std::string& fire, std::string& error,
+                           bool immediate = false);
     void cancelVirtualHold(const std::string& controlId);
     /// Sets a pot, slider or expression pedal from the screen. `value` is 0-1
     /// as the on-screen control is pointing.
@@ -341,6 +342,8 @@ private:
     void collectRetiredChains();
     bool swapPendingChainFromAudio();
     bool activeChainReadyForPreset(const Preset& preset) const noexcept;
+    bool immediatePresetTapAllowed(const ControllerControl* control = nullptr) const;
+    std::vector<std::string> immediatePresetTapControls() const;
     void beginAudioTransitionBlock();
     bool applyDeferredTransitionStateFromAudio();
     bool activeChainTransitionPending() const;
@@ -458,6 +461,7 @@ private:
     // publish a full library after the chain swap.
     bool fullStatePending_ = true;
     uint64_t bankLibraryRevision_ = 1;
+    std::string deferredPresetReloadId_; // Control-side double tap during chain preparation.
     std::atomic<bool> chainPreparationTimedOut_{false};
     mutable std::mutex chainMutex_;
 

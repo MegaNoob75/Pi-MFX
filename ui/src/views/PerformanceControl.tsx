@@ -51,12 +51,13 @@ export interface PerformanceTile {
     encoderSelected?: boolean;
     freeform?: boolean;
     scrollFriendly?: boolean;
-    onPress: () => void;
+    onPress: (immediate?: boolean) => void;
     onValue?: (value: number) => void;
     onStep?: (delta: number) => void;
     onPageSwipe?: (delta: -1 | 1) => void;
     onLongPress?: () => void;
     onDoublePress?: () => void;
+    immediateTap?: boolean;
     onMenu?: () => void;
     onEngage?: () => void;
     onRelease?: () => void;
@@ -584,10 +585,12 @@ export function PerformanceControl({
     const queueTap = () => {
         if (tile.onDoublePress) {
             clearDouble();
+            const fired = tile.immediateTap === true;
             hold.current.doubleTimer = window.setTimeout(() => {
                 hold.current.doubleTimer = null;
-                tile.onPress();
+                if (!fired) tile.onPress();
             }, DOUBLE_TAP_MS);
+            if (fired) tile.onPress(true);
             return;
         }
         tile.onPress();

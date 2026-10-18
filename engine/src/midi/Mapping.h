@@ -58,11 +58,13 @@ public:
 
     /// Interprets one MIDI message. Returns the actions to run, which may be
     /// empty when the message belongs to a control the user has not bound.
-    std::vector<ActionRequest> handleMessage(const MidiMessage& message);
+    std::vector<ActionRequest> handleMessage(const MidiMessage& message,
+                                            const std::vector<std::string>& immediatePresetTaps = {});
 
     /// Screen or tablet press of a named control. Uses the same tap/hold
     /// rules as MIDI so a finger-down can fire the hold action.
-    std::vector<ActionRequest> virtualPress(const std::string& controlId, bool pressed);
+    std::vector<ActionRequest> virtualPress(const std::string& controlId, bool pressed,
+                                          bool immediatePresetTap = false);
 
     /// Drop a pending tap/hold without running either action (drag started).
     void cancelHold(const std::string& controlId);
@@ -113,10 +115,12 @@ private:
     struct PendingTap {
         std::string controlId;
         std::chrono::steady_clock::time_point due;
+        bool fired = false;
     };
 
     const ControllerControl* matchControl(const MidiMessage& message) const;
-    std::vector<ActionRequest> discretePressUnlocked(const ControllerControl& control, bool pressed);
+    std::vector<ActionRequest> discretePressUnlocked(const ControllerControl& control, bool pressed,
+                                                   bool immediatePresetTap);
     void cancelPendingTapUnlocked(const std::string& controlId);
     bool switchDebouncedUnlocked(const std::string& controlId);
 

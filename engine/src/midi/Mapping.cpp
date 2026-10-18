@@ -118,7 +118,8 @@ const ControllerControl* ControllerRuntime::matchControl(const MidiMessage& mess
     return nullptr;
 }
 
-std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& message) {
+std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& message,
+                                                          const std::vector<std::string>& immediatePresetTaps) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<ActionRequest> actions;
 
@@ -244,6 +245,8 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
         return actions;
     }
     const bool pressed = message.isNoteOn() || (message.isControlChange() && message.data2 >= 64);
+    const bool immediatePresetTap = std::find(immediatePresetTaps.begin(), immediatePresetTaps.end(), control->id)
+        != immediatePresetTaps.end();
     if (control->kind == ControlKind::EncoderPush) {
         visual = pressed ? 1.0f : 0.0f;
     }
@@ -270,7 +273,7 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
     }
 
     if (control->kind == ControlKind::EncoderPush) {
-        std::vector<ActionRequest> pressActions = discretePressUnlocked(*control, pressed);
+        std::vector<ActionRequest> pressActions = discretePressUnlocked(*control, pressed, immediatePresetTap);
         if (pressActions.empty()) {
             ActionRequest tick;
             tick.controlId = control->id;
@@ -283,7 +286,7 @@ std::vector<ActionRequest> ControllerRuntime::handleMessage(const MidiMessage& m
         }
         return pressActions;
     }
-    return discretePressUnlocked(*control, pressed);
+    return discretePressUnlocked(*control, pressed, immediatePresetTap);
 }
 
 bool ControllerRuntime::switchDebouncedUnlocked(const std::string& controlId) {
@@ -308,7 +311,7 @@ bool ControllerRuntime::switchDebouncedUnlocked(const std::string& controlId) {
 }
 
 std::vector<ActionRequest> ControllerRuntime::discretePressUnlocked(
-        const ControllerControl& control, bool pressed) {
+        const ControllerControl& control, bool pressed, bool immediatePresetTap) {
     std::vector<ActionRequest> actions;
     ActionRequest request;
     request.controlId = control.id;
@@ -377,10 +380,18 @@ std::vector<ActionRequest> ControllerRuntime::discretePressUnlocked(
             return actions;
         }
         if (dbl) {
+            const bool fireNow = immediatePresetTap
+                && control.binding.action == "selectPreset"
+                && control.binding.doubleAction == "reloadPreset";
             pendingTaps_.push_back({
                 control.id,
-                std::chrono::steady_clock::now() + std::chrono::milliseconds(doubleDelayMs(control.binding))
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(doubleDelayMs(control.binding)),
+                fireNow
             });
+            if (fireNow) {
+                request.pressed = true;
+                actions.push_back(std::move(request));
+            }
             return actions;
         }
         request.pressed = true;
@@ -397,7 +408,8 @@ void ControllerRuntime::cancelPendingTapUnlocked(const std::string& controlId) {
                        pendingTaps_.end());
 }
 
-std::vector<ActionRequest> ControllerRuntime::virtualPress(const std::string& controlId, bool pressed) {
+std::vector<ActionRequest> ControllerRuntime::virtualPress(const std::string& controlId, bool pressed,
+                                                         bool immediatePresetTap) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const ControllerControl& control : config_.controls) {
         if (control.id != controlId) {
@@ -409,7 +421,7 @@ std::vector<ActionRequest> ControllerRuntime::virtualPress(const std::string& co
         if (continuous) {
             return {};
         }
-        return discretePressUnlocked(control, pressed);
+        return discretePressUnlocked(control, pressed, immediatePresetTap);
     }
     return {};
 }
@@ -471,7 +483,9 @@ std::vector<ActionRequest> ControllerRuntime::pollHolds() {
             continue;
         }
         const std::string controlId = pendingTaps_[i].controlId;
+        const bool fired = pendingTaps_[i].fired;
         pendingTaps_.erase(pendingTaps_.begin() + static_cast<long>(i));
+        if (fired) continue; // Keep recognizing a double without repeating the first tap.
         const ControllerControl* control = nullptr;
         for (const ControllerControl& candidate : config_.controls) {
             if (candidate.id == controlId) {

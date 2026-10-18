@@ -861,7 +861,8 @@ Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
         }
         const std::string fire = payload["fire"].asString();
         if (fire == "tap" || fire == "hold" || fire == "double") {
-            ok = engine_.fireVirtualAction(payload["controlId"].asString(), fire, error);
+            ok = engine_.fireVirtualAction(payload["controlId"].asString(), fire, error,
+                                            payload["immediate"].asBool(false));
             return Json::object();
         }
         ok = engine_.pressVirtualControl(payload["controlId"].asString(),

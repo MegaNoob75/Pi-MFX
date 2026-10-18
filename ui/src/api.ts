@@ -426,6 +426,8 @@ export class EngineClient {
                 activePresetId: message.activePresetId ?? this.snapshot.state.activePresetId,
                 bypassAll: message.bypassAll ?? this.snapshot.state.bypassAll,
                 snapshotMode: message.snapshotMode ?? this.snapshot.state.snapshotMode,
+                immediatePresetTapAllowed: message.immediatePresetTapAllowed ?? this.snapshot.state.immediatePresetTapAllowed,
+                immediatePresetTapControls: message.immediatePresetTapControls ?? this.snapshot.state.immediatePresetTapControls,
                 presetReloadCount: message.presetReloadCount ?? this.snapshot.state.presetReloadCount,
                 tempo: message.tempo ?? this.snapshot.state.tempo,
                 routing: message.routing ?? this.snapshot.state.routing,
