@@ -1376,6 +1376,8 @@ export function PerformanceView({
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
                                     ) : id === "memoryUsage" ? (
                                         <LiveMemoryWidget client={client} showLabel={widget.showLabel} />
+                                    ) : id === "temperature" ? (
+                                        <LiveTemperatureWidget client={client} showLabel={widget.showLabel} />
                                     ) : id === "bankPreload" ? (
                                         <LiveBankPreloadWidget client={client} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
@@ -1837,6 +1839,22 @@ export function LiveBankPreloadWidget({ client, showLabel }: {
         {showLabel && <div className="field-label mfx-performance-ui-label">BANK PRELOAD</div>}
         <strong className="mfx-performance-ui-value memory-readings">
             {`${str(preload.status, "Waiting for engine")}\nASSIGNED ${num(preload.prepared)} / ${num(preload.total)} READY\nCACHE ≈ ${(num(preload.estimatedBytes) / 1024 ** 2).toFixed(0)} MiB\nLAST: ${str(preload.lastSelection, "—")}`}
+        </strong>
+    </>;
+}
+
+export function LiveTemperatureWidget({ client, showLabel }: {
+    client: import("../api").EngineClient;
+    showLabel: boolean;
+}) {
+    const meters = useMeters(client);
+    const temperature = num(meters.cpuTemperatureC, NaN);
+    const available = bool(meters.cpuTemperatureAvailable) && Number.isFinite(temperature);
+    return <>
+        {showLabel && <div className="field-label mfx-performance-ui-label">TEMPERATURE</div>}
+        <strong className="mfx-performance-ui-value"
+            title={available ? "Pi CPU temperature" : "CPU temperature sensor unavailable"}>
+            {available ? `${temperature.toFixed(1)} °C` : "—"}
         </strong>
     </>;
 }

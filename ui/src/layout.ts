@@ -17,13 +17,14 @@ export const STATUS_WIDGET_IDS = [
     "recorderControl",
     "drumMachine",
     "memoryUsage",
-    "bankPreload"
+    "bankPreload",
+    "temperature"
 ] as const;
 
 export type StatusWidgetId = (typeof STATUS_WIDGET_IDS)[number];
 
 export function isScalableStatusWidget(id: string): boolean {
-    return ["currentBank", "activePreset", "xruns", "tuner", "audioStatus", "cpuUsage", "memoryUsage", "bankPreload"].includes(id);
+    return ["currentBank", "activePreset", "xruns", "tuner", "audioStatus", "cpuUsage", "memoryUsage", "bankPreload", "temperature"].includes(id);
 }
 
 export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
@@ -31,6 +32,7 @@ export const STATUS_WIDGET_LABELS: Record<StatusWidgetId, string> = {
     activePreset: "Active Preset",
     cpuUsage: "Load",
     memoryUsage: "Memory",
+    temperature: "Temperature",
     bankPreload: "Bank Preload",
     xruns: "XRuns",
     audioStatus: "Audio",

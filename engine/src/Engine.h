@@ -466,6 +466,9 @@ private:
     // System-wide RAM snapshot, protected by stateMutex_; sampled by housekeeping.
     int64_t memoryTotalBytes_ = 0;
     int64_t memoryFreeBytes_ = 0;
+    // CPU temperature snapshot, protected by stateMutex_; sampled by housekeeping.
+    double cpuTemperatureC_ = 0.0;
+    bool cpuTemperatureAvailable_ = false;
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 
     std::atomic<Chain*> activeChain_{nullptr};

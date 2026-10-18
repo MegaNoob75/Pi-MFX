@@ -6444,6 +6444,15 @@ void Engine::housekeepingThread() {
             previousProcessCpuWall = processCpuWall;
 
             if (ticks == 4 || ticks % 40 == 0) {
+                double temperatureMilliC = 0.0;
+                bool temperatureAvailable = false;
+#ifdef __linux__
+                // Raspberry Pi CPU sensor. Keep sysfs reads off the audio thread.
+                std::ifstream temperatureInfo("/sys/class/thermal/thermal_zone0/temp");
+                temperatureAvailable = static_cast<bool>(temperatureInfo >> temperatureMilliC)
+                    && std::isfinite(temperatureMilliC)
+                    && temperatureMilliC >= 0.0 && temperatureMilliC <= 150000.0;
+#endif
                 int64_t totalKb = 0;
                 int64_t availableKb = -1;
 #ifdef __linux__
@@ -6461,6 +6470,8 @@ void Engine::housekeepingThread() {
 #endif
                 const bool valid = totalKb > 0 && availableKb >= 0 && availableKb <= totalKb;
                 std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                cpuTemperatureAvailable_ = temperatureAvailable;
+                cpuTemperatureC_ = temperatureAvailable ? temperatureMilliC / 1000.0 : 0.0;
                 memoryTotalBytes_ = valid ? totalKb * 1024 : 0;
                 memoryFreeBytes_ = valid ? availableKb * 1024 : 0;
             }
@@ -7223,6 +7234,8 @@ Json Engine::meterState() const {
     json.set("engineCpuLoadAvailable",
         engineCpuLoadAvailable_.load(std::memory_order_acquire));
     json.set("memoryAvailable", memoryTotalBytes_ > 0);
+    json.set("cpuTemperatureAvailable", cpuTemperatureAvailable_);
+    json.set("cpuTemperatureC", cpuTemperatureC_);
     json.set("memoryTotalBytes", memoryTotalBytes_);
     json.set("memoryUsedBytes", memoryTotalBytes_ - memoryFreeBytes_);
     json.set("memoryFreeBytes", memoryFreeBytes_);
