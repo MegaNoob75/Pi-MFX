@@ -36,7 +36,7 @@ assert.match(engine, /request\.action == "tuner"[\s\S]*notifyUiView\("tunerToggl
 assert.match(engine, /tunerOutputGain_[\s\S]*outputs\[channel\]\[frame\] \*= tunerOutputGain_/);
 assert.match(engine, /cumulative mean normalized difference[\s\S]*difference\[lag\] < 0\.18/);
 assert.match(engine, /tunerDryMix_[\s\S]*dry - outputs\[channel\]\[frame\]/);
-assert.match(engine, /tunerRing_\[write\] = source\[frame\] \* inputGain/);
+assert.match(engine, /tunerRing_\[write\]\.store\(source\[frame\] \* inputGain, std::memory_order_relaxed\)/);
 assert.match(engine, /tunerExtendedRange_[\s\S]*captured\[i \* 2\]/);
 assert.match(engine, /tunerAutoBoost_[\s\S]*0\.12f \/ std::max\(rms/);
 assert.match(engine, /tunerJson\.set\("confidence", reading\.confidence\)/);

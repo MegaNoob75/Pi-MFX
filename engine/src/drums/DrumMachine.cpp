@@ -462,8 +462,12 @@ bool DrumMachine::applyPattern(const Json& root, bool persist, std::string& erro
             error = "that drum pattern file is invalid"; return false;
         }
     if (!patternFromJson(root["fill"], next.fill)) { error = "that drum fill is invalid"; return false; }
+    // Do not change the editable pattern if the audio queue rejects the update.
+    sequencer_.setSwing(controlSwing_);
+    sequencer_.setHumanization(controlHumanization_);
+    if (!sequencer_.setProgram(next, error)) return false;
     program_ = next;
-    if (!publishProgramUnlocked(error) || (persist && !saveStateUnlocked())) {
+    if (persist && !saveStateUnlocked()) {
         if (error.empty()) error = "could not load the drum pattern";
         return false;
     }

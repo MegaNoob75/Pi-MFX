@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace pimfx {
 namespace {
@@ -6348,6 +6350,28 @@ void Engine::housekeepingThread() {
             previousProcessCpu = processCpu;
             previousProcessCpuWall = processCpuWall;
 
+            if (ticks == 4 || ticks % 40 == 0) {
+                int64_t totalKb = 0;
+                int64_t availableKb = -1;
+#ifdef __linux__
+                // MemAvailable includes reclaimable cache. Keep file I/O off the audio thread.
+                std::ifstream memoryInfo("/proc/meminfo");
+                std::string line;
+                while (std::getline(memoryInfo, line)) {
+                    std::istringstream entry(line);
+                    std::string key, unit;
+                    int64_t value = 0;
+                    if (!(entry >> key >> value >> unit) || unit != "kB") continue;
+                    if (key == "MemTotal:") totalKb = value;
+                    else if (key == "MemAvailable:") availableKb = value;
+                }
+#endif
+                const bool valid = totalKb > 0 && availableKb >= 0 && availableKb <= totalKb;
+                std::lock_guard<std::recursive_mutex> lock(stateMutex_);
+                memoryTotalBytes_ = valid ? totalKb * 1024 : 0;
+                memoryFreeBytes_ = valid ? availableKb * 1024 : 0;
+            }
+
             StateListener listener;
             {
                 std::lock_guard<std::mutex> lock(listenerMutex_);
@@ -7101,6 +7125,10 @@ Json Engine::meterState() const {
     json.set("engineCpuLoad", engineCpuLoad_.load(std::memory_order_relaxed));
     json.set("engineCpuLoadAvailable",
         engineCpuLoadAvailable_.load(std::memory_order_acquire));
+    json.set("memoryAvailable", memoryTotalBytes_ > 0);
+    json.set("memoryTotalBytes", memoryTotalBytes_);
+    json.set("memoryUsedBytes", memoryTotalBytes_ - memoryFreeBytes_);
+    json.set("memoryFreeBytes", memoryFreeBytes_);
     json.set("inputPeak", metrics_.inputPeak.load(std::memory_order_relaxed));
     json.set("outputPeak", metrics_.outputPeak.load(std::memory_order_relaxed));
     json.set("guitarInputPeak", guitarInputPeak_.load(std::memory_order_relaxed));

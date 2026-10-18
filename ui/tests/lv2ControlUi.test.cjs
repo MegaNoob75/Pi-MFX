@@ -90,7 +90,9 @@ assert.match(engine, /slot\.plugin->setControl\(port\.index, clamped\)[\s\S]*not
     'engine acknowledgement must expose the requested control value immediately');
 assert.match(engine, /port\.rangeSteps > 1/,
     'hardware encoders must honor declared range steps');
-assert.match(engine, /mappedBindingValue\(request, boundPort\)/,
+assert.match(engine, /mappedBindingValue\(request, boundPort \? &\*boundPort : nullptr\)/,
     'continuous hardware bindings must honor logarithmic port metadata');
+assert.match(engine, /port && port->logarithmic[\s\S]*minimum != 0\.0f && maximum != 0\.0f[\s\S]*minimum \* std::pow\([\s\S]*static_cast<double>\(maximum\) \/ minimum, visual\)/,
+    'logarithmic hardware mapping must interpolate geometrically for valid same-sign bounds');
 
 console.log('LV2 control UI regression tests passed');

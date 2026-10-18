@@ -1374,6 +1374,8 @@ export function PerformanceView({
                                         />
                                     ) : id === "audioStatus" ? (
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
+                                    ) : id === "memoryUsage" ? (
+                                        <LiveMemoryWidget client={client} showLabel={widget.showLabel} />
                                     ) : isLiveMeterText(id) ? (
                                         <>
                                             {widget.showLabel && id !== "cpuUsage" && (
@@ -1821,6 +1823,24 @@ function formatWidgetTime(seconds: number): string {
 
 function isLiveMeterText(id: string): boolean {
     return id === "cpuUsage" || id === "xruns" || id === "audioStatus" || id === "tuner";
+}
+
+export function LiveMemoryWidget({ client, showLabel }: {
+    client: import("../api").EngineClient;
+    showLabel: boolean;
+}) {
+    const meters = useMeters(client);
+    const available = bool(meters.memoryAvailable);
+    const format = (bytes: number) => available
+        ? `${(Math.max(0, bytes) / (1024 ** 3)).toFixed(2)} GiB`
+        : "—";
+    return <>
+        {showLabel && <div className="field-label mfx-performance-ui-label">MEMORY</div>}
+        <strong className="mfx-performance-ui-value memory-readings"
+            title="System RAM reported by Linux. Free includes reclaimable cache; used is installed minus free.">
+            {`INSTALLED ${format(num(meters.memoryTotalBytes))}\nUSED ${format(num(meters.memoryUsedBytes))}\nFREE ${format(num(meters.memoryFreeBytes))}`}
+        </strong>
+    </>;
 }
 
 function LiveGainMeter({

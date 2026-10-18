@@ -9,8 +9,10 @@ const css = fs.readFileSync(path.join(__dirname, '../src/index.css'), 'utf8');
 
 assert.match(engineHeader, /ChainSlot[\s\S]*atomic<float> inputPeak[\s\S]*atomic<float> outputPeak/,
     'each live LV2 slot must own lock-free pre/post peak readings');
-assert.match(engine, /sourcePeak = audioBufferPeak\(\*source, channels, frames\)[\s\S]*inputPeak\.store\(sourcePeak[\s\S]*plugin->process[\s\S]*sourcePeak = audioBufferPeak\(\*destination, channels, frames\)/,
-    'the audio callback must measure immediately before and after each plugin');
+assert.match(engine, /const auto runSlot =[\s\S]*slot\.inputPeak\.store\(peak[\s\S]*slot\.plugin->process[\s\S]*peak = audioBufferPeak\(\*slotDestination, channels, frames\);\s*slot\.outputPeak\.store\(peak/,
+    'slot processing must retain the incoming peak and measure the plugin output');
+assert.match(engine, /float peak = audioBufferPeak\(\*in, channels, frames\);\s*if \(node\.slot\) runSlot\(\*node\.slot, in, out, peak\)/,
+    'each routing node must measure its input before processing its effect');
 assert.match(engine, /Json effectMeters = Json::array\(\)[\s\S]*meter\.set\("slotId"[\s\S]*json\.set\("effects"/,
     'the off-thread meter message must publish readings by stable slot id');
 assert.match(editor, /useMeters\(client\)[\s\S]*meters\.effects[\s\S]*hasAudioPorts[\s\S]*LIVE SIGNAL[\s\S]*GainMeter label="In"[\s\S]*GainMeter label="Out"/,

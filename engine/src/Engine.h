@@ -446,6 +446,9 @@ private:
     AudioMetrics metrics_;
     std::atomic<float> engineCpuLoad_{0.0f};
     std::atomic<bool> engineCpuLoadAvailable_{false};
+    // System-wide RAM snapshot, protected by stateMutex_; sampled by housekeeping.
+    int64_t memoryTotalBytes_ = 0;
+    int64_t memoryFreeBytes_ = 0;
     std::unique_ptr<rt::CpuLatencyGuard> latencyGuard_;
 
     std::atomic<Chain*> activeChain_{nullptr};

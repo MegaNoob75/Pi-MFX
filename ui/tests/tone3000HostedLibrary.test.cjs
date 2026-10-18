@@ -56,7 +56,7 @@ assert.match(library, /safeLibraryFolderName[\s\S]*library\/mkdir[\s\S]*onPick\(
     'the folder picker must safely create a tone-named folder before downloading into it');
 assert.match(library, /library\/delete-impact[\s\S]*DELETE FILES AND PRESETS[\s\S]*bank\/delete/,
     'deleting required models must warn and remove affected Community Presets');
-assert.match(router, /library\/delete-impact[\s\S]*jsonReferencesLibraryTarget[\s\S]*affectedPresets/,
+assert.match(router, /library\/delete-impact[\s\S]*referencesLibraryPath\(preset, target, index\)[\s\S]*affectedPresets/,
     'the engine must report Community Presets that reference a deleted library target');
 assert.match(client, /"menubar", "preview"/, 'the backend must forward hosted browser options');
 assert.match(client, /pendingRedirectUri_/, 'the token exchange must reuse the initiating browser callback');

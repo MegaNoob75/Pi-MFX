@@ -72,5 +72,10 @@ for (const file of ['BackingTracksView.tsx', 'BackupView.tsx', 'BanksView.tsx', 
     assert.doesNotMatch(read(uiRoot, 'views', file), /type="file"/,
         `${file} must import through the shared file manager`);
 }
+const banksView = read(uiRoot, 'views', 'BanksView.tsx');
+assert.match(banksView, /<LibraryFileImport[^>]*label="IMPORT BANK"[\s\S]*?onFile=\{importBankFile\}/,
+    'bank device imports must use the shared library import control');
+assert.match(banksView, /<LibraryFileImport[^>]*label="IMPORT PRESET"[\s\S]*?onFile=\{importPresetFile\}/,
+    'preset device imports must use the shared library import control');
 
 console.log('Setup profiles and organized media regression tests passed');

@@ -3,7 +3,7 @@ import { findBank, findPreset, type EngineSnapshot } from "../api";
 import { askText } from "../keyboard/ask";
 import { arr, isObj, obj, str, objects, type Json, type JsonObject } from "../json";
 import { MarqueeText } from "./MarqueeText";
-import { LibraryJsonPicker } from "./LibraryManager";
+import { LibraryFileImport, LibraryJsonPicker } from "./LibraryManager";
 import { NewPresetDialog } from "./NewPresetDialog";
 
 type PresetDrag = {
@@ -36,8 +36,6 @@ export function BanksView({
     const [presetDrag, setPresetDrag] = useState<PresetDrag | null>(null);
     const [dropBankId, setDropBankId] = useState("");
     const suppressPresetClickRef = useRef(false);
-    const bankImportRef = useRef<HTMLInputElement>(null);
-    const presetImportRef = useRef<HTMLInputElement>(null);
 
     const bankId = str(obj(activeBank).id);
     const presetId = str(obj(activePreset).id);
@@ -325,17 +323,10 @@ export function BanksView({
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={cloneBank}>CLONE</button>
                     <button type="button" className="btn" disabled={!activeBank || busy} onClick={saveBankToPi}>SAVE</button>
                     <button type="button" className="btn" disabled={busy} onClick={() => setPicker("load")}>LOAD</button>
-                    <button type="button" className="btn" disabled={busy}
-                        title="Import a bank JSON file from this device"
-                        onClick={() => bankImportRef.current?.click()}>IMPORT BANK</button>
+                    <LibraryFileImport accept=".json,application/json" label="IMPORT BANK"
+                        disabled={busy} onFile={importBankFile} />
                     <button type="button" className="btn" disabled={!activeBank || busy}
                         title="Download this bank's saved presets as JSON" onClick={exportBankFile}>EXPORT BANK</button>
-                    <input ref={bankImportRef} type="file" accept=".json,application/json" hidden
-                        aria-label="Choose a Pi-MFX bank file" onChange={(event) => {
-                            const file = event.currentTarget.files?.[0];
-                            event.currentTarget.value = "";
-                            if (file) importBankFile(file);
-                        }} />
                 </div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={busy} onClick={createBank}>NEW</button>
@@ -372,16 +363,11 @@ export function BanksView({
                 onPointerDown={() => focusPane("presets")}>
                 <div className="split-pane-title">PRESETS</div>
                 <div className="split-tools">
-                    <button type="button" className="btn" disabled={!activeBank || busy || obj(activeBank).communityHolding === true}
-                        title="Import a preset JSON file into this bank" onClick={() => presetImportRef.current?.click()}>IMPORT PRESET</button>
+                    <LibraryFileImport accept=".json,application/json" label="IMPORT PRESET"
+                        disabled={!activeBank || busy || obj(activeBank).communityHolding === true}
+                        onFile={importPresetFile} />
                     <button type="button" className="btn" disabled={presetIndex < 0 || busy}
                         title="Download the selected preset's saved settings as JSON" onClick={exportPresetFile}>EXPORT PRESET</button>
-                    <input ref={presetImportRef} type="file" accept=".json,application/json" hidden
-                        aria-label="Choose a Pi-MFX preset file" onChange={event => {
-                            const file = event.currentTarget.files?.[0];
-                            event.currentTarget.value = "";
-                            if (file) importPresetFile(file);
-                        }} />
                 </div>
                 <div className="split-toolbar">
                     <button type="button" className="btn" disabled={busy || obj(activeBank).communityHolding === true}

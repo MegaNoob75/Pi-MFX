@@ -34,7 +34,7 @@ import {
 } from "../layout";
 import { GainMeter } from "./GainMeter";
 import { AutoFitStatusWidget } from "./AutoFitStatusWidget";
-import { LiveAudioWidget } from "./PerformanceView";
+import { LiveAudioWidget, LiveMemoryWidget } from "./PerformanceView";
 import { analogFeedback, PerformanceControl, type SwitchRole } from "./PerformanceControl";
 import { LibraryJsonPicker, utf8ToBase64 } from "./LibraryManager";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -1362,6 +1362,8 @@ export function LayoutEditorView({
                                         />
                                     ) : id === "audioStatus" ? (
                                         <LiveAudioWidget engine={engine} showLabel={widget.showLabel} />
+                                    ) : id === "memoryUsage" ? (
+                                        <LiveMemoryWidget client={engine.client} showLabel={widget.showLabel} />
                                     ) : (
                                         <>
                                             {widget.showLabel && id !== "cpuUsage" && (
