@@ -296,6 +296,7 @@ private:
         unsigned channels = 2;
         float outputGain = 1.0f;
         uint64_t publicationGeneration = 0;
+        bool presetSelection = false; // Immutable control-side notification hint.
         bool rebindOnSwap = false;
     };
 
@@ -388,6 +389,10 @@ private:
     void flushPendingPersistence(bool force = false);
     bool persistSettings(std::string* error = nullptr);
     void notify();
+    void notifyPresetSelection();
+    void notifyPublishedChain();
+    void notifyState(bool allowPresetSwitch);
+    Json stateSnapshot(bool includeBanks) const;
     void notifyPerformance();
     void notifyUiNav(int delta, bool select, const std::string& virtualControlAction = "");
     void notifyUiView(const std::string& view);
@@ -449,6 +454,10 @@ private:
     mutable std::atomic<uint32_t> chainReaders_{0};
     std::atomic<uint64_t> chainPublicationGeneration_{0};
     std::atomic<bool> chainStateDirty_{false};
+    // Protected by stateMutex_. A general edit during preparation must still
+    // publish a full library after the chain swap.
+    bool fullStatePending_ = true;
+    uint64_t bankLibraryRevision_ = 1;
     std::atomic<bool> chainPreparationTimedOut_{false};
     mutable std::mutex chainMutex_;
 

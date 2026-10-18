@@ -17,12 +17,16 @@ assert.doesNotMatch(swap, /notify\(/,
     'the audio thread must never serialize or broadcast UI state');
 
 const housekeeping = engine.match(/void Engine::housekeepingThread\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
-assert.match(housekeeping, /chainStateDirty_\.exchange\(false[\s\S]*notify\(\)/,
+assert.match(housekeeping, /chainStateDirty_\.exchange\(false[\s\S]*notifyPublishedChain\(\)/,
     'housekeeping must broadcast state after the deferred chain becomes active');
 
-const notify = engine.match(/void Engine::notify\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const notify = engine.match(/void Engine::notifyState\(bool allowPresetSwitch\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
 assert.match(notify, /pendingChain_\.peek[\s\S]*return/,
     'state broadcasts must not mix new preset metadata with the outgoing live chain');
+assert.match(engine, /void Engine::notify\(\)[\s\S]*fullStatePending_ = true;[\s\S]*notifyState\(false\)/,
+    'general edits must require a full publication even if a preset swap is pending');
+assert.match(notify, /stateSnapshot\(!allowPresetSwitch \|\| fullStatePending_\)/,
+    'a deferred general edit must override a compact preset-selection notification');
 
 const notifyPerformance = engine.match(/void Engine::notifyPerformance\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
 assert.match(notifyPerformance, /pendingChain_\.peek[\s\S]*return/,

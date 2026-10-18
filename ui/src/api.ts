@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { arr, bool, isObj, num, obj, objects, str, type Json, type JsonObject } from "./json";
+import { mergePresetSwitch } from "./presetSwitchState";
 
 export interface EngineSnapshot {
     connected: boolean;
@@ -37,6 +38,9 @@ function websocketUrl(): string {
 }
 
 export class EngineClient {
+    private stateProtocolSent = false;
+    private stateResyncPending = false;
+    private stateResyncTimer: number | undefined;
     private socket: WebSocket | undefined;
     private reconnectTimer: number | undefined;
     private recoveryReturn: JsonObject | undefined;
@@ -50,6 +54,18 @@ export class EngineClient {
     private viewListeners = new Set<(message: JsonObject) => void>();
     snapshot: EngineSnapshot = emptySnapshot();
 
+    private sendSocketCommand(command: string, payload: JsonObject): void {
+        if (this.socket?.readyState === WebSocket.OPEN)
+            this.socket.send(JSON.stringify({ command, payload }));
+    }
+
+    private requestStateResync(): void {
+        if (this.closed || this.stateResyncPending || this.socket?.readyState !== WebSocket.OPEN) return;
+        this.stateResyncPending = true;
+        this.stateProtocolSent = false;
+        this.sendSocketCommand("ui/stateResync", {});
+    }
+
     start(): void {
         if (this.socket) return;
         this.closed = false;
@@ -58,6 +74,8 @@ export class EngineClient {
 
     stop(): void {
         this.closed = true;
+        if (this.stateResyncTimer !== undefined) window.clearTimeout(this.stateResyncTimer);
+        this.stateResyncTimer = undefined;
         if (this.reconnectTimer !== undefined) {
             window.clearTimeout(this.reconnectTimer);
             this.reconnectTimer = undefined;
@@ -209,6 +227,10 @@ export class EngineClient {
             this.stateEpoch = "";
             this.fullStateRevision = 0;
             this.latestPerformance = undefined;
+            this.stateProtocolSent = false;
+            this.stateResyncPending = false;
+            if (this.stateResyncTimer !== undefined) window.clearTimeout(this.stateResyncTimer);
+            this.stateResyncTimer = undefined;
             this.patch({ connected: true, lastError: "" });
         };
         socket.onmessage = (event) => {
@@ -216,7 +238,16 @@ export class EngineClient {
             try {
                 const parsed: unknown = JSON.parse(String(event.data));
                 if (isObj(parsed as Json)) {
-                    this.ingest(parsed as JsonObject, true);
+                    const message = parsed as JsonObject;
+                    const stateMessage = str(message.type) === "state" || str(message.type) === "presetSwitch";
+                    this.ingest(message, true);
+                    const accepted = stateMessage && str(this.snapshot.state.stateEpoch) === str(message.stateEpoch)
+                        && num(this.snapshot.state.revision) === num(message.revision);
+                    if (accepted && !this.stateProtocolSent && num(message.presetSwitchProtocol) === 1) {
+                        this.stateProtocolSent = true;
+                        this.sendSocketCommand("ui/stateProtocol", { presetSwitch: 1 });
+                    }
+
                 }
             } catch {
                 // ignore a single bad frame
@@ -246,6 +277,32 @@ export class EngineClient {
 
     private ingest(message: JsonObject, fromSocket = false): void {
         const type = str(message.type);
+        if (type === "presetSwitch") {
+            if (str(message.stateEpoch) === this.stateEpoch && num(message.revision) < this.fullStateRevision) return;
+            const merged = this.fullStateRevision > 0 ? mergePresetSwitch(this.snapshot.state, message) : undefined;
+            if (!merged) { this.requestStateResync(); return; }
+            this.ingest(merged, fromSocket);
+            return;
+        }
+        if (type === "state") {
+            const epoch = str(message.stateEpoch);
+            // Stale HTTP replies must not cancel or restart cache recovery.
+            if (epoch && this.stateEpoch && epoch !== this.stateEpoch && !fromSocket) return;
+            if ((!epoch || epoch === this.stateEpoch) && num(message.revision) > 0
+                && num(message.revision) < this.fullStateRevision) return;
+            this.stateResyncPending = false;
+            if (this.stateResyncTimer !== undefined) window.clearTimeout(this.stateResyncTimer);
+            this.stateResyncTimer = undefined;
+            if (num(message.presetSwitchProtocol) === 1 && bool(message.chainPreparing)) {
+                // A recovery HTTP/socket read can land during preparation. Wait
+                // for a coherent publication rather than exposing an old chain.
+                this.stateResyncTimer = window.setTimeout(() => {
+                    this.stateResyncTimer = undefined;
+                    this.requestStateResync();
+                }, 100);
+                return;
+            }
+        }
         if (type === "state" || type === "performance") {
             const epoch = str(message.stateEpoch);
             if (epoch && epoch !== this.stateEpoch) {
@@ -278,7 +335,9 @@ export class EngineClient {
                 drums: isObj(message.drums as Json) ? message.drums as JsonObject : this.snapshot.drums,
                 lastError: str(message.audioError) || str(message.chainPreparationError) || str(message.persistenceError)
             };
-            if (this.latestPerformance && num(this.latestPerformance.revision) > num(message.revision)) {
+            if (this.latestPerformance && num(this.latestPerformance.revision) > num(message.revision)
+                && (this.latestPerformance.chainGeneration === undefined
+                    || num(this.latestPerformance.chainGeneration) === num(message.chainGeneration))) {
                 // A newer partial update must not hide unrelated full-state
                 // fields (for example a renamed bank). Overlay it before notifying.
                 this.snapshot = { ...this.snapshot, ...partial };
@@ -352,6 +411,11 @@ export class EngineClient {
             return;
         }
         if (type === "performance") {
+            // A parameter update may arrive before its new chain's full/switch
+            // message. Retain it above, then overlay it once that chain arrives.
+            if (message.chainGeneration !== undefined
+                && (num(message.chainGeneration) !== num(this.snapshot.state.chainGeneration)
+                    || str(message.stateEpoch) !== str(this.snapshot.state.stateEpoch))) return;
             const nextState: JsonObject = {
                 ...this.snapshot.state,
                 stateEpoch: message.stateEpoch ?? this.snapshot.state.stateEpoch,

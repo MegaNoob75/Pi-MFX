@@ -71,6 +71,8 @@ private:
     HttpServer& server_;
     std::mutex mediaMessagesMutex_;
     std::unordered_map<std::string, std::string> lastMediaMessages_;
+    std::mutex stateProtocolsMutex_;
+    std::unordered_map<uint64_t, bool> presetSwitchClients_;
     std::atomic<uint64_t> uiNavClient_{0};
     std::mutex uiSessionMutex_;
     Json uiSession_ = Json::object();

@@ -183,7 +183,22 @@ void ApiRouter::attach() {
             if (previous == serialized) return;
             previous = serialized;
         }
-        server_.broadcast(serialized);
+        if (type == "presetSwitch") {
+            std::vector<uint64_t> compactClients, legacyClients;
+            {
+                std::lock_guard<std::mutex> lock(stateProtocolsMutex_);
+                for (const auto& entry : presetSwitchClients_)
+                    (entry.second ? compactClients : legacyClients).push_back(entry.first);
+            }
+            for (uint64_t client : compactClients) server_.sendTo(client, serialized);
+            // Cached/older browsers retain their original full-state protocol.
+            // No protocol lock is held while acquiring engine state.
+            if (!legacyClients.empty()) {
+                const std::string full = engine_.fullState().dump();
+                for (uint64_t client : legacyClients) server_.sendTo(client, full);
+            }
+        } else server_.broadcast(serialized);
+
     });
 }
 
@@ -357,6 +372,10 @@ bool ApiRouter::handleRequestNow(const HttpRequest& request, HttpResponse& respo
 }
 
 void ApiRouter::handleSocketOpen(uint64_t clientId) {
+    {
+        std::lock_guard<std::mutex> lock(stateProtocolsMutex_);
+        presetSwitchClients_[clientId] = false;
+    }
     uint64_t noOwner = 0;
     uiNavClient_.compare_exchange_strong(noOwner, clientId, std::memory_order_acq_rel);
     // A new client gets everything it needs to render, in one burst, rather
@@ -376,6 +395,10 @@ void ApiRouter::handleSocketOpen(uint64_t clientId) {
 }
 
 void ApiRouter::handleSocketClose(uint64_t clientId) {
+    {
+        std::lock_guard<std::mutex> lock(stateProtocolsMutex_);
+        presetSwitchClients_.erase(clientId);
+    }
     uint64_t closingOwner = clientId;
     uiNavClient_.compare_exchange_strong(closingOwner, 0, std::memory_order_acq_rel);
 }
@@ -391,6 +414,27 @@ void ApiRouter::handleSocketMessage(uint64_t clientId, const std::string& messag
     if (command.empty()) {
         return;
     }
+
+    if (command == "ui/stateProtocol") {
+        std::lock_guard<std::mutex> lock(stateProtocolsMutex_);
+        const auto client = presetSwitchClients_.find(clientId);
+        if (client != presetSwitchClients_.end())
+            client->second = json["payload"]["presetSwitch"].asInt() == 1;
+        return;
+    }
+    if (command == "ui/stateResync") {
+        {
+            std::lock_guard<std::mutex> lock(stateProtocolsMutex_);
+            const auto client = presetSwitchClients_.find(clientId);
+            if (client != presetSwitchClients_.end()) client->second = false;
+        }
+        const Json state = engine_.fullState();
+        // If loading is in progress, the committed publication will deliver
+        // this client a full snapshot. Do not repeatedly transmit stale chains.
+        if (!state["chainPreparing"].asBool()) server_.sendTo(clientId, state.dump());
+        return;
+    }
+
     if (command == "ui/focus") {
         uiNavClient_.store(clientId, std::memory_order_release);
         return;

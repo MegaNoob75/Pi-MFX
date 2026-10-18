@@ -2202,6 +2202,9 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
 
     std::string chainError;
     std::unique_ptr<Chain> chain = buildChain(effectivePreset, chainError);
+    if (chain) {
+        chain->presetSelection = true;
+    }
     if (!chainError.empty()) {
         logWarn("preset '" + target->name + "': " + chainError);
     }
@@ -2213,7 +2216,7 @@ bool Engine::selectPreset(const std::string& bankId, const std::string& presetId
     requestBankPersist(bank->id);
     armAnalogCatchUnlocked();
     refreshLeds();
-    notify();
+    notifyPresetSelection();
     return true;
 }
 
@@ -2253,7 +2256,8 @@ bool Engine::selectBank(const std::string& bankId, std::string& error) {
     if (browseBankId() != bankId) sessionPresets_.clear();
     browseBankId_ = bankId;
     refreshLeds();
-    notify();
+    if (activePreset()) notifyPresetSelection();
+    else notify(); // Empty libraries have no selected preset to patch.
     return true;
 }
 
@@ -6241,7 +6245,7 @@ void Engine::housekeepingThread() {
         collectRetiredChains();
         if (chainStateDirty_.exchange(false, std::memory_order_acq_rel)) {
             refreshLeds();
-            notify();
+            notifyPublishedChain();
         }
         flushPendingPersistence();
         if (recorderOwnsTransport_.load(std::memory_order_acquire) && recorder_
@@ -6410,6 +6414,26 @@ bool Engine::prepareBackup(bool includeLoop, std::string& error) {
 }
 
 void Engine::notify() {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ++bankLibraryRevision_;
+    fullStatePending_ = true;
+    notifyState(false);
+}
+
+void Engine::notifyPresetSelection() {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    notifyState(true);
+}
+
+void Engine::notifyPublishedChain() {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
+    ActiveChainReadGuard guard(*this);
+    const Chain* chain = guard.get();
+    if (chain && chain->presetSelection) notifyPresetSelection();
+    else notify();
+}
+
+void Engine::notifyState(bool allowPresetSwitch) {
     // publishChain() now hands ownership to the audio thread. Broadcasting
     // before that swap would serialize the outgoing chain alongside the new
     // preset metadata. The swap marks chainStateDirty_, and housekeeping sends
@@ -6423,7 +6447,11 @@ void Engine::notify() {
         std::lock_guard<std::mutex> lock(listenerMutex_);
         listener = listener_;
     }
-    if (listener) listener(fullState());
+    if (listener) {
+        Json state = stateSnapshot(!allowPresetSwitch || fullStatePending_);
+        listener(state);
+        fullStatePending_ = false;
+    }
 }
 
 void Engine::publishState() {
@@ -6431,6 +6459,7 @@ void Engine::publishState() {
 }
 
 void Engine::notifyPerformance() {
+    std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     if (pendingChain_.peek() != nullptr
         || chainPublicationExpected_.load(std::memory_order_acquire)) {
         return;
@@ -6462,9 +6491,15 @@ void Engine::notifyUiNav(int delta, bool select, const std::string& virtualContr
 }
 
 Json Engine::fullState() const {
+    return stateSnapshot(true);
+}
+
+Json Engine::stateSnapshot(bool includeBanks) const {
     std::lock_guard<std::recursive_mutex> lock(stateMutex_);
     Json json = Json::object();
-    json.set("type", "state");
+    json.set("type", includeBanks ? "state" : "presetSwitch");
+    json.set("presetSwitchProtocol", 1);
+    json.set("bankLibraryRevision", static_cast<int64_t>(bankLibraryRevision_));
     json.set("persistenceError", persistenceError_);
     json.set("stateEpoch", stateEpoch_);
     json.set("revision", static_cast<int64_t>(++stateRevision_));
@@ -6475,11 +6510,20 @@ Json Engine::fullState() const {
     json.set("gitSha", PIMFX_GIT_SHA);
 #endif
 
-    Json bankArray = Json::array();
-    for (const Bank& bank : banks_) {
-        bankArray.push(bank.toJson());
+    if (includeBanks) {
+        Json bankArray = Json::array();
+        for (const Bank& bank : banks_) bankArray.push(bank.toJson());
+        json.set("banks", std::move(bankArray));
+    } else {
+        // Selection changes only these library fields. Send the complete
+        // selected stored preset, keeping live/draft data in the usual fields.
+        if (const Preset* preset = activePreset()) json.set("selectedPreset", preset->toJson());
+        Json selections = Json::array();
+        for (const Bank& bank : banks_) selections.push(Json::object({
+            {"id", bank.id}, {"lastPresetId", bank.lastPresetId}
+        }));
+        json.set("bankSelections", std::move(selections));
     }
-    json.set("banks", bankArray);
     json.set("activeBankId", activeBankId_);
     json.set("browseBankId", browseBankId());
     json.set("activePresetId", activePresetId_);
@@ -6640,6 +6684,8 @@ Json Engine::performanceState() const {
     std::lock_guard<std::recursive_mutex> stateLock(stateMutex_);
     Json json = Json::object();
     json.set("type", "performance");
+    json.set("chainGeneration", static_cast<int64_t>(
+        metrics_.chainGeneration.load(std::memory_order_relaxed)));
     json.set("persistenceError", persistenceError_);
     json.set("stateEpoch", stateEpoch_);
     json.set("revision", static_cast<int64_t>(++stateRevision_));
