@@ -586,6 +586,12 @@ to six slots. The Performance snapshot stage is arranged separately under
 5. Place snapshot tiles under **Layout → Snapshots** and assign learned controls
    to snapshot slots where needed.
 
+In snapshot mode, preset footswitches select Snapshot 1, Snapshot 2, and so on
+in controller order. **Hardware Setup → Snapshot mode slot** can override that
+order for each switch. Press the active snapshot's switch again to return to
+the base sound. The switch LEDs follow the active snapshot; leaving snapshot
+mode restores their preset indications.
+
 Snapshots reuse the preset's topology. They change parameters, bypass, and mix
 without adding/replacing plugins. Return to the base sound before restructuring
 the rig or saving base-preset changes. The last chosen snapshot can be remembered

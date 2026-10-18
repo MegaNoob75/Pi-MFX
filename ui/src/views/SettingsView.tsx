@@ -1649,6 +1649,8 @@ function HardwareControlDetail({
     const usesSnapshot = (!encoder && action === "selectSnapshot")
         || holdAction === "selectSnapshot"
         || doubleAction === "selectSnapshot";
+    const snapshotModeSwitch = !analog && !encoder && !encoderPush
+        && (action === "selectPreset" || action === "none");
     const actionOptions = (includeEmpty: boolean, actions: readonly string[] = functionActions) => (
         <>
             {includeEmpty && <option value="">None</option>}
@@ -1755,14 +1757,14 @@ function HardwareControlDetail({
                         </select>
                     </label>
                 )}
-                {!analog && usesSnapshot && (
+                {!analog && (usesSnapshot || snapshotModeSwitch) && (
                     <label className="field">
-                        <span>Snapshot slot</span>
+                        <span>{snapshotModeSwitch ? "Snapshot mode slot" : "Snapshot slot"}</span>
                         <select
                             value={assignedSnapshot}
                             onChange={(event) => patchBinding({ ...binding, snapshotSlot: Number(event.target.value) })}
                         >
-                            <option value={-1}>Choose slot</option>
+                            <option value={-1}>{snapshotModeSwitch && !usesSnapshot ? "Automatic (switch order)" : "Choose slot"}</option>
                             {snapshotOptions.map((slot) => (
                                 <option key={slot} value={slot}>Snapshot {slot + 1}</option>
                             ))}

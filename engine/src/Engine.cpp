@@ -362,6 +362,24 @@ std::string assignedPresetForControl(const ControllerConfig& config,
     return bankMap[controlId].asString();
 }
 
+// Preset switches become snapshot switches in controller order. Keep explicit
+// slot assignments authoritative, including those in older controller profiles.
+int snapshotSlotForControl(const ControllerConfig& config, const std::string& controlId) {
+    int presetSwitchIndex = 0;
+    for (const ControllerControl& control : config.controls) {
+        const bool presetSwitch = (control.kind == ControlKind::Momentary
+                || control.kind == ControlKind::Latching)
+            && (control.binding.action == "selectPreset" || control.binding.action == "none"
+                || control.binding.action.empty());
+        if (control.id == controlId) {
+            return control.binding.snapshotSlot >= 0 ? control.binding.snapshotSlot
+                : (presetSwitch ? presetSwitchIndex : -1);
+        }
+        if (presetSwitch) ++presetSwitchIndex;
+    }
+    return -1;
+}
+
 const char* kNoteNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 
 TunerReading analysePitch(const std::vector<float>& samples, unsigned sampleRate, float threshold) {
@@ -4056,6 +4074,7 @@ bool Engine::colorSnapshot(const std::string& snapshotId, const std::string& col
 
 bool Engine::setSnapshotMode(bool enabled) {
     snapshotMode_.store(enabled, std::memory_order_relaxed);
+    refreshLeds();
     notify();
     notifyPerformance();
     return true;
@@ -5275,11 +5294,14 @@ void Engine::runAction(const ActionRequest& incoming) {
         && request.action != "drumView"
         && request.action != "navigate"
         && request.action != "select") {
-        if (binding.snapshotSlot >= 0) {
+        const int snapshotSlot = (request.action == "selectPreset" || request.action == "none")
+            ? snapshotSlotForControl(controller_.config(), request.controlId)
+            : binding.snapshotSlot;
+        if (snapshotSlot >= 0) {
             std::lock_guard<std::recursive_mutex> lock(stateMutex_);
             Preset* preset = activePreset();
             if (preset) {
-                pressSnapshotSlotUnlocked(*preset, binding.snapshotSlot, error);
+                pressSnapshotSlotUnlocked(*preset, snapshotSlot, error);
                 persistActiveBankUnlocked();
                 refreshLeds();
                 notify();
@@ -5552,6 +5574,7 @@ void Engine::refreshLeds() {
             }
             const ParameterBinding* presetBind = preset
                 ? preset->findParameterBinding(control.id) : nullptr;
+            const int snapshotSlot = snapshotSlotForControl(config, control.id);
             const std::string effectSlot = (presetBind && presetBind->action == "toggleEffect")
                 ? presetBind->slotId
                 : (control.binding.action == "toggleEffect" ? control.binding.slotId : std::string());
@@ -5563,10 +5586,10 @@ void Engine::refreshLeds() {
                         break;
                     }
                 }
-            } else if (snapshotMode_.load(std::memory_order_relaxed) && control.binding.snapshotSlot >= 0) {
+            } else if (!presetBind && snapshotMode_.load(std::memory_order_relaxed) && snapshotSlot >= 0) {
                 state.on = preset
                     && preset->rememberedSnapshotEnabled
-                    && preset->activeSnapshot == control.binding.snapshotSlot;
+                    && preset->activeSnapshot == snapshotSlot;
                 colourRole = "snapshot";
             } else if (control.binding.action == "selectPreset") {
                 std::string bankId = control.binding.bankId.empty() ? browseBankId() : control.binding.bankId;

@@ -148,7 +148,8 @@ struct ControlBinding {
     std::string bankId;
     std::string presetId;
     std::string snapshotId;
-    /// Snapshot-view slot for this switch (0 = Snapshot 1). -1 = none.
+    /// Snapshot-view slot (0 = Snapshot 1). -1 uses switch order for preset
+    /// switches in snapshot mode; other actions require an explicit target.
     int snapshotSlot = -1;
     /// Legacy hardware bind fields. Migrated onto Preset::parameterBindings on load.
     std::string slotId;
