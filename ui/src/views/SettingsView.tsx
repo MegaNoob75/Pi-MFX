@@ -66,6 +66,7 @@ function SystemHub({
     const [realtime, setRealtime] = useState(false);
     const [confirm, setConfirm] = useState<"reboot" | "shutdown" | null>(null);
     const [busy, setBusy] = useState<"reboot" | "shutdown" | null>(null);
+    const powerDisconnected = useRef(false);
     const [message, setMessage] = useState("");
     const sharedSettings = obj(engine.uiSession.settings);
     const unsavedPresetCount = num(engine.state.sessionPresetDirtyCount);
@@ -78,6 +79,18 @@ function SystemHub({
         const nextConfirm = str(sharedSettings.systemConfirm);
         setConfirm(nextConfirm === "reboot" || nextConfirm === "shutdown" ? nextConfirm : null);
     }, [engine.uiSession.settings]);
+
+    useEffect(() => {
+        if (!busy) {
+            powerDisconnected.current = false;
+        } else if (!engine.connected) {
+            powerDisconnected.current = true;
+        } else if (powerDisconnected.current) {
+            powerDisconnected.current = false;
+            setBusy(null);
+            setMessage("Pi-MFX reconnected.");
+        }
+    }, [busy, engine.connected]);
 
     const openRealtime = (open: boolean) => {
         setRealtime(open);
@@ -101,6 +114,11 @@ function SystemHub({
                 setMessage(str(next.message) || (action === "reboot" ? "Rebooting…" : "Shutting down…"));
             } catch (error) {
                 setBusy(null);
+                if (error instanceof TypeError) {
+                    const connectionError = new Error("Lost contact with Pi-MFX; the power request could not be confirmed. If the Pi does not respond, use SSH or its terminal and collect a diagnostic report.");
+                    setMessage(connectionError.message);
+                    throw connectionError;
+                }
                 setMessage(error instanceof Error ? error.message : String(error));
                 throw error;
             }

@@ -98,6 +98,9 @@ rm -f /etc/udev/rules.d/95-pimfx-audio.rules
 rm -f /etc/sysctl.d/95-pimfx-audio.conf
 rm -f /etc/modprobe.d/95-pimfx-audio.conf
 rm -f "$PREFIX/bin/pimfx"
+rm -f "$PREFIX/bin/pimfx-diagnostics"
+rm -f /etc/systemd/journald.conf.d/90-pimfx-persistent.conf
+systemctl restart systemd-journald.service || true
 rm -f "$PREFIX/libexec/pimfx/plugin-helper.py"
 rm -f "$PREFIX/libexec/pimfx/controller_firmware.py"
 rm -f "$PREFIX/libexec/pimfx/backup.py"

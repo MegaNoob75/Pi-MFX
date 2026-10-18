@@ -18,6 +18,8 @@ RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=restart
 Restart=on-failure
 RestartSec=2
+StandardOutput=journal
+StandardError=journal
 
 # Update discovery is deliberately background work. The engine's SCHED_FIFO
 # audio thread must always win CPU and storage contention during a boot check.

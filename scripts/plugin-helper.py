@@ -263,41 +263,34 @@ def download_key(repo_id: str, key_url: str, timeout: int) -> str:
 
 
 def power_pi(action: str) -> dict:
-    """Reboot or power off through logind, then systemctl if that fails."""
+    """Queue power outside this service so HTTP can acknowledge it first."""
     if action == "reboot":
-        method = "Reboot"
         unit = "reboot"
-        message = "Rebooting…"
+        message = "Reboot scheduled. Reconnecting when the Pi returns…"
     elif action == "poweroff":
-        method = "PowerOff"
         unit = "poweroff"
-        message = "Shutting down…"
+        message = "Shutdown scheduled. The Pi will disconnect shortly."
     else:
         return {"ok": False, "error": "unknown power action"}
 
-    result = run(
-        [
-            "busctl",
-            "call",
-            "org.freedesktop.login1",
-            "/org/freedesktop/login1",
-            "org.freedesktop.login1.Manager",
-            method,
-            "b",
-            "false",
-        ],
-        timeout=8,
-    )
+    # A transient timer survives this helper stopping. Starting power directly
+    # can kill the engine before its HTTP response reaches the browser, which
+    # reports "Failed to fetch" even though the reboot was accepted.
+    try:
+        result = run(
+            ["systemd-run", "--quiet", "--collect", "--on-active=3s",
+             "--timer-property=AccuracySec=100ms",
+             "--unit=pimfx-power", "/usr/bin/systemctl", unit, "--no-block"],
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"Power scheduling failed ({action}): {exc}", file=sys.stderr, flush=True)
+        return {"ok": False, "error": f"Could not schedule {action}: {exc}"}
     if result.returncode != 0:
-        fallback = run(["systemctl", unit, "--no-block"], timeout=8)
-        if fallback.returncode != 0:
-            detail = (
-                (result.stderr or "")
-                or (fallback.stderr or "")
-                or (result.stdout or "")
-                or (fallback.stdout or "")
-            ).strip()
-            return {"ok": False, "error": detail or f"could not {action} this Pi"}
+        detail = (result.stderr or result.stdout or "").strip()
+        print(f"Power scheduling failed ({action}): {detail}", file=sys.stderr, flush=True)
+        return {"ok": False, "error": detail or f"could not schedule {action} on this Pi"}
+    print(f"Power requested: {action}; queued for 3 seconds from now", file=sys.stderr, flush=True)
     return {"ok": True, "action": action, "message": message}
 
 

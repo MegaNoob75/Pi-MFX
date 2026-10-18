@@ -255,6 +255,7 @@ fi
 # ---------------------------------------------------------------------------
 
 log "Installing the pimfx service"
+PREFIX="$PREFIX" bash "$REPO_DIR/scripts/install-logging.sh"
 sed -e "s|@USER@|$PIMFX_USER|g" \
     -e "s|@PREFIX@|$PREFIX|g" \
     -e "s|@DATA_ROOT@|$DATA_ROOT|g" \
@@ -311,6 +312,7 @@ Pi-MFX is installed and running.
               http://${ADDRESS:-<this-pi>}:$PIMFX_PORT
   Service     systemctl status pimfx
   Logs        journalctl -u pimfx -f
+  Diagnostics sudo pimfx-diagnostics > pimfx-diagnostics.txt
   Data        $DATA_ROOT
   Remove      sudo ./scripts/uninstall.sh
 

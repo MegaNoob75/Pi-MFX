@@ -152,6 +152,7 @@ if [[ -f /etc/systemd/system/pimfx.service ]]; then
     EXISTING_PORT="$(sed -n 's/.*--port \([0-9][0-9]*\).*/\1/p' /etc/systemd/system/pimfx.service | head -1)"
     PIMFX_PORT="${PIMFX_PORT:-${EXISTING_PORT:-8080}}"
     log "Refreshing the pimfx service unit"
+    PREFIX="$PREFIX" bash "$REPO_DIR/scripts/install-logging.sh"
     sed -e "s|@USER@|$PIMFX_USER|g" \
         -e "s|@PREFIX@|$PREFIX|g" \
         -e "s|@DATA_ROOT@|$DATA_ROOT|g" \

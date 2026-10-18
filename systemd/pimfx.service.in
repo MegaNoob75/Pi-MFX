@@ -36,6 +36,8 @@ CPUSchedulingPolicy=other
 # on a stage. The rate limit stops a crash loop from thrashing the card.
 Restart=always
 RestartSec=2
+StandardOutput=journal
+StandardError=journal
 
 # The service needs the sound devices, its own data directory, and the network.
 # It needs nothing else, so it gets nothing else.
