@@ -81,7 +81,7 @@ textarea[data-pimfx-osk="1"] {
 
 .pimfx-keyboard-selection {
     background: var(--mfx-cyan);
-    color: var(--mfx-bg);
+    color: var(--mfx-keyboard-value-color);
 }
 
 .pimfx-keyboard-caret {

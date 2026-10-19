@@ -16,6 +16,7 @@ import {
     saveCustomMultiFXTheme,
     saveMultiFXTheme,
     resolveTheme,
+    recolorMultiFXTheme,
     themePaintToCss,
     validateMultiFXTheme,
     MULTIFX_FONT_OPTIONS,
@@ -24,9 +25,7 @@ import {
     multiFXFontFamilyToCss,
     multiFXSurfaceBackground
 } from "../theme/theme";
-import MultiFXFootswitchGraphic, {
-    MultiFXArcadeButtonGraphic
-} from "../theme/FootswitchGraphic";
+import { PerformanceControl, type SwitchRole } from "./PerformanceControl";
 import "../theme/performance.css";
 import {
     CUSTOM_KEYBOARD_THEMES_STORAGE_KEY,
@@ -421,15 +420,11 @@ export default function ThemeManagerView({
         value: string
     ) => {
         setTheme((current) => ({
-            ...current,
+            ...recolorMultiFXTheme(current, key, value),
             name: current.name.startsWith("Custom")
                 ? current.name
                 : `Custom - ${current.name}`,
             author: "User",
-            colors: {
-                ...current.colors,
-                [key]: value
-            }
         }));
     };
 
@@ -1547,7 +1542,7 @@ function ControlStyleEditor({
                             });
                         }} />
                     <SelectEditorField label="Panel shape" value={controls.switchShape}
-                        options={[["rounded", "Rounded"], ["square", "Square"], ["pill", "Pill"], ["bevel", "Beveled"], ["hexagon", "Hexagonal"]]}
+                        options={[["rounded", "Rounded"], ["square", "Square"], ["pill", "Pill"]]}
                         onChange={(switchShape) => patch({ switchShape: switchShape as typeof controls.switchShape })} />
                     <SelectEditorField label="Analog controls" value={controls.analogStyle}
                         options={[["modern", "Modern"], ["vintage", "Vintage"], ["neon", "Neon"], ["minimal", "Minimal"]]}
@@ -1732,77 +1727,29 @@ function ControlStylePreview({
 }: {
     theme: MultiFXThemeDefinition;
 }) {
-    const tile = (
-        roleName: keyof MultiFXThemeDefinition["appearance"]["roles"],
-        active: boolean,
-        label: string,
-        value: string
-    ) => {
-        const state = theme.appearance.roles[roleName][
-            active ? "active" : "normal"
-        ];
-        const indicatorColor = active
-            ? state.indicator
-            : theme.appearance.controls.indicatorInactive;
-        return (
-            <button
-                type="button"
-                className="mfx-performance-switch"
-                data-mfx-role={roleName}
-                data-mfx-active={active ? "true" : "false"}
-                style={{
-                    position: "relative",
-                    minWidth: 0,
-                    minHeight: 92,
-                    overflow: "hidden",
-                    containerType: "size",
-                    padding: 8,
-                    border: "var(--mfx-control-border-width) solid transparent",
-                    borderRadius: "var(--mfx-control-radius)",
-                    background: `${themePaintToCss(state.background)} padding-box, ${themePaintToCss(state.border)} border-box`,
-                    color: state.value,
-                    boxShadow: state.shadow,
-                    font: "inherit"
+    const tile = (role: SwitchRole, active: boolean, kind: string, value: string) => (
+        <div style={{ minWidth: 0, height: 152 }}>
+            <PerformanceControl
+                tile={{
+                    id: `theme-preview-${role}`,
+                    switchLabel: kind,
+                    valueText: value,
+                    holdLabel: "TUNER",
+                    doubleLabel: "RELOAD",
+                    kind,
+                    role,
+                    lightState: active ? "active" : "inactive",
+                    active,
+                    freeform: true,
+                    onPress: () => undefined
                 }}
-            >
-                <MultiFXFootswitchGraphic color={indicatorColor} />
-                <MultiFXArcadeButtonGraphic color={indicatorColor} />
-                <span
-                    aria-hidden="true"
-                    className="mfx-performance-indicator"
-                    style={{
-                        position: "absolute",
-                        right: 7,
-                        top: 7,
-                        width: 14,
-                        height: 14,
-                        borderRadius: "50%",
-                        color: indicatorColor,
-                        background: indicatorColor,
-                        border: "2px solid currentColor",
-                        boxShadow: active
-                            ? "0 0 calc(14px * var(--mfx-control-glow-strength)) currentColor"
-                            : "none"
-                    }}
-                />
-                <span className="mfx-performance-switch__content" style={{
-                    position: "relative",
-                    zIndex: 1,
-                    display: "grid",
-                    height: "100%",
-                    gridTemplateRows: "auto minmax(0,1fr) auto",
-                    textAlign: "center"
-                }}>
-                    <span className="mfx-performance-switch__label-row mfx-performance-switch__label" style={{ color: state.label, fontSize: 10, fontWeight: 900 }}>
-                        {label}
-                    </span>
-                    <span className="mfx-performance-switch__value-row mfx-performance-switch__value" style={{ gridRow: 3, alignSelf: "end", color: state.value, fontSize: 13, fontWeight: 900 }}>
-                        {value}
-                    </span>
-                </span>
-            </button>
-        );
-    };
+                switchStyle={theme.appearance.controls.switchStyle}
+                bypassed={false}
+                showControlLabel={false}
+                renderMenu={false}
+            />
+        </div>
+    );
 
     return (
         <section style={editorCardStyle}>
@@ -1818,10 +1765,10 @@ function ControlStylePreview({
                     gridTemplateColumns: "repeat(auto-fit,minmax(110px,1fr))",
                     gap: 8
                 }}>
-                    {tile("preset", true, "SW 1", "ACTIVE PRESET")}
-                    {tile("navigation", true, "SW 7", "BANK PRESSED")}
-                    {tile("bypass", true, "SW 5", "BYPASS ON")}
-                    {tile("snapshot", true, "SW 6", "SNAPSHOT")}
+                    {tile("preset", true, "momentary", "ACTIVE PRESET")}
+                    {tile("navigation", false, "latching", "BANK UP")}
+                    {tile("bypass", true, "toggle", "BYPASS ON")}
+                    {tile("snapshot", true, "momentary", "SNAPSHOT")}
                 </div>
                 <div style={{
                     display: "grid",

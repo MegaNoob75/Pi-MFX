@@ -76,6 +76,7 @@ function visualVars(role: SwitchRole, active: boolean) {
     return {
         background: `var(${prefix}-bg)`,
         border: `var(${prefix}-border)`,
+        borderColor: `var(${prefix}-border-color)`,
         label: `var(${prefix}-label)`,
         value: `var(${prefix}-value)`,
         indicator: `var(${prefix}-indicator)`,
@@ -776,6 +777,9 @@ export function PerformanceControl({
             className="mfx-performance-switch"
             data-mfx-role={displayRole}
             data-control-kind={tile.kind || undefined}
+            data-has-control-label={named ? "true" : "false"}
+            data-has-alternates={holdText ? "true" : "false"}
+            data-mfx-empty={empty && !holdText ? "true" : undefined}
             data-show-control-label={showControlLabel ? undefined : "false"}
             aria-label={showControlLabel ? undefined : `${tile.switchLabel}: ${tile.valueText}`}
             data-mfx-active={visualActive ? "true" : "false"}
@@ -794,17 +798,13 @@ export function PerformanceControl({
                 boxSizing: "border-box",
                 pointerEvents: "auto",
                 background: `${vars.background} padding-box, ${vars.border} border-box`,
+                ["--mfx-tile-border" as string]: vars.border,
+                ["--mfx-tile-border-color" as string]: vars.borderColor,
                 border: "var(--mfx-control-border-width) solid transparent",
                 outline: "none",
                 borderRadius: "var(--mfx-control-radius)",
-                padding: tile.freeform ? 2 : undefined,
-                containerType: tile.freeform ? "size" : undefined,
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: (empty || !named) && !holdText ? "center" : "space-between",
-                alignItems: (empty || !named) && !holdText ? "center" : "stretch",
                 boxShadow: tile.dropTarget
-                    ? `${vars.shadow}, inset 0 0 0 4px var(--mfx-role-preset-active-border)`
+                    ? "inset 0 0 0 4px var(--mfx-role-preset-active-border-color)"
                     : vars.shadow,
                 overflow: "hidden",
                 opacity: tile.dragging ? 0.38 : 1,
@@ -817,26 +817,10 @@ export function PerformanceControl({
                 touchAction: tile.scrollFriendly ? "pan-y" : "none"
             }}
         >
-            {tile.kind === "toggle" ? (
-                <ToggleSwitchGraphic active={visualActive} valueText={tile.valueText} />
-            ) : tile.kind === "momentary" ? (
-                <MultiFXFootswitchGraphic color={led} />
-            ) : tile.kind === "latching" ? (
-                <MultiFXArcadeButtonGraphic color={led} />
-            ) : (
-                <><MultiFXFootswitchGraphic color={led} /><MultiFXArcadeButtonGraphic color={led} /></>
-            )}
             <span
                 aria-hidden="true"
                 className="mfx-performance-indicator"
                 style={{
-                    position: "absolute",
-                    top: tile.freeform ? "clamp(1px, 3cqh, 6px)" : 6,
-                    right: hasMenu
-                        ? "clamp(40px, 26cqmin, 56px)"
-                        : tile.freeform ? "clamp(1px, 3cqw, 7px)" : 7,
-                    width: tile.freeform ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
-                    height: tile.freeform ? "clamp(5px, min(11cqw, 20cqh), 16px)" : 16,
                     borderRadius: "50%",
                     color: led,
                     border: "2px solid currentColor",
@@ -845,119 +829,46 @@ export function PerformanceControl({
                     boxSizing: "border-box"
                 }}
             />
-            {empty && !holdText ? (
-                <MarqueeText
-                    text="+"
-                    color={vars.value}
-                    fontSize="clamp(24px, min(34px, 60cqh), 34px)"
-                    fontWeight={900}
-                    enabled={false}
-                />
-            ) : tile.freeform ? (
-                <div
-                    className="mfx-performance-switch__content"
-                    style={{
-                        width: "100%",
-                        height: "100%",
-                        minWidth: 0,
-                        minHeight: 0,
-                        display: "grid",
-                        gridTemplateRows: named && holdText
-                            ? "minmax(0,.78fr) minmax(0,1.55fr) minmax(0,.67fr)"
-                            : named || holdText
-                            ? "minmax(0,.82fr) minmax(0,1.78fr)"
-                            : "minmax(0,1fr)",
-                        gap: 1
-                    }}
-                >
-                    {named ? (
-                    <div
-                        className="mfx-performance-switch__label-row"
-                        style={{
-                            minWidth: 0,
-                            minHeight: 0,
-                            paddingRight: hasMenu
-                                ? "clamp(48px, 34cqmin, 76px)"
-                                : tile.presetSlotIndex != null
-                                ? "clamp(8px, min(17cqw, 28cqh), 26px)"
-                                : 0
-                        }}
-                    >
+            <div className="mfx-performance-switch__content">
+                {named && !(empty && !holdText) ? (
+                    <div className="mfx-performance-switch__label-row">
                         <MarqueeText
                             className="mfx-performance-switch__label"
                             text={tile.switchLabel.toUpperCase()}
                             color={vars.label}
-                            fontSize="var(--mfx-font-switch-label-size, clamp(10px, min(14px, 23cqh), 14px))"
                             fontWeight={800}
                             textTransform="uppercase"
                         />
                     </div>
-                    ) : null}
-                    <div className="mfx-performance-switch__value-row" style={{ minWidth: 0, minHeight: 0 }}>
-                        <MarqueeText
-                            className="mfx-performance-switch__value"
-                            text={tile.valueText}
-                            color={vars.value}
-                            fontSize="var(--mfx-font-switch-value-size, clamp(18px, min(28px, 50cqh), 28px))"
-                            fontWeight={900}
-                        />
-                    </div>
-                    {holdText && (
-                        <div className="mfx-performance-switch__hold-row" style={{ minWidth: 0, minHeight: 0 }}>
-                            <MarqueeText
-                                className="mfx-performance-switch__hold"
-                                text={holdText.toUpperCase()}
-                                color={vars.label}
-                                fontSize="var(--mfx-font-switch-secondary-size, clamp(8px, min(11px, 18cqh), 11px))"
-                                fontWeight={800}
-                                textTransform="uppercase"
-                                opacity={0.82}
-                            />
-                        </div>
-                    )}
-                </div>
-            ) : (
-                <>
-                    {named ? (
-                    <span
-                        className="mfx-performance-switch__label"
-                        style={{
-                            width: "100%",
-                            textAlign: "center",
-                            fontWeight: 800,
-                            color: vars.label,
-                            textTransform: "uppercase",
-                            fontSize: "var(--mfx-font-switch-label-size, 0.72rem)"
-                        }}
-                    >
-                        {tile.switchLabel}
-                    </span>
-                    ) : null}
+                ) : null}
+                <div className="mfx-performance-switch__value-row">
                     <MarqueeText
                         className="mfx-performance-switch__value"
-                        text={tile.valueText}
+                        text={empty && !holdText ? "+" : tile.valueText}
                         color={vars.value}
-                        fontSize="var(--mfx-font-switch-value-size, 1.05rem)"
                         fontWeight={900}
+                        enabled={!(empty && !holdText)}
                     />
-                    {holdText && (
-                        <span
+                </div>
+                {holdText && (
+                    <div className="mfx-performance-switch__hold-row">
+                        <MarqueeText
                             className="mfx-performance-switch__hold"
-                            style={{
-                                width: "100%",
-                                color: vars.label,
-                                fontSize: "clamp(.48rem, 1.05vw, .62rem)",
-                                fontWeight: 800,
-                                textAlign: "center",
-                                textTransform: "uppercase",
-                                opacity: 0.82
-                            }}
-                        >
-                            {holdText}
-                        </span>
-                    )}
-                </>
-            )}
+                            text={holdText.toUpperCase()}
+                            color={vars.label}
+                            fontWeight={800}
+                            textTransform="uppercase"
+                            opacity={0.9}
+                        />
+                    </div>
+                )}
+                {!(empty && !holdText) && (
+                    <div className="mfx-performance-switch__graphic" aria-hidden="true">
+                        <MultiFXFootswitchGraphic color={led} />
+                        <MultiFXArcadeButtonGraphic color={led} />
+                    </div>
+                )}
+            </div>
         </button>
             {renderMenu && hasMenu && tile.onMenu ? (
                 <TileMenuButton color={vars.label} onMenu={tile.onMenu} />
@@ -1078,17 +989,6 @@ function ControlGraphic({ kind, range, active, pressed, orientation = "vertical"
                 }}
             />
         </div>
-    );
-}
-
-function ToggleSwitchGraphic({ active, valueText }: { active: boolean; valueText: string }) {
-    return (
-        <span className="mfx-toggle-hardware" data-active={active ? "true" : "false"} aria-hidden="true">
-            <span className="mfx-toggle-hardware__track">
-                <span className="mfx-toggle-hardware__thumb" />
-            </span>
-            {valueText && <span className="mfx-toggle-hardware__value">{valueText}</span>}
-        </span>
     );
 }
 

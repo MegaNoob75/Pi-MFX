@@ -55,7 +55,7 @@
     animation: mfx-control-popout-in 140ms ease-out both;
     isolation: isolate;
     backdrop-filter: none !important;
-    background: var(--mfx-surface-panel-bg, var(--mfx-panel)) padding-box,
+    background: var(--mfx-surface-panel-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
         var(--mfx-surface-panel-border) border-box !important;
     color: var(--mfx-surface-panel-text) !important;
     box-shadow: var(--mfx-surface-popup-shadow), 0 0 0 2px
@@ -434,20 +434,6 @@
     white-space: nowrap;
 }
 
-.mfx-performance-switch[data-control-kind="toggle"] .mfx-performance-indicator {
-    display: none;
-}
-
-.mfx-performance-switch[data-control-kind="momentary"] .mfx-footswitch-hardware,
-.mfx-performance-switch[data-control-kind="latching"] .mfx-arcade-hardware {
-    display: block;
-}
-
-.mfx-performance-switch[data-control-kind="momentary"] .mfx-arcade-hardware,
-.mfx-performance-switch[data-control-kind="latching"] .mfx-footswitch-hardware {
-    display: none;
-}
-
 .mfx-hardware-slider[data-orientation="horizontal"] {
     width: 86%;
     height: min(22cqh, 18px);
@@ -501,7 +487,6 @@ html[data-mfx-analog-style="neon"] .mfx-hardware-slider {
 }
 
 html[data-mfx-analog-style="minimal"] .mfx-performance-control {
-    background: transparent;
     box-shadow: none;
 }
 
@@ -515,6 +500,9 @@ html[data-mfx-analog-style="minimal"] .mfx-hardware-button {
 .mfx-performance-switch {
     container-type: size;
     isolation: isolate;
+    position: relative;
+    display: block;
+    padding: clamp(4px, 3cqmin, 10px);
     touch-action: none;
     -webkit-touch-callout: none;
     user-select: none;
@@ -541,7 +529,7 @@ html[data-mfx-analog-style="minimal"] .mfx-hardware-button {
     z-index: 8;
     pointer-events: none;
     border: 3px solid var(--mfx-cyan);
-    border-radius: 12px;
+    border-radius: var(--mfx-control-radius);
     box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
 }
 
@@ -589,81 +577,144 @@ html[data-mfx-switch-shape="pill"] .mfx-performance-switch__menu {
     right: 8%;
 }
 
-html[data-mfx-switch-shape="bevel"] .mfx-performance-switch__menu {
-    top: 2%;
-    right: 8%;
+/* Geometry and borders belong to the enclosure, independently of the
+   control's interaction type or the decorative graphic selected by the theme. */
+html[data-mfx-switch-shape="rounded"] :is(.mfx-performance-switch, .mfx-performance-control:not(.mfx-performance-control--popout)) {
+    border-radius: var(--mfx-control-radius);
 }
 
-html[data-mfx-switch-shape="hexagon"] .mfx-performance-switch__menu {
-    top: 2%;
-    right: 6%;
+html[data-mfx-switch-shape="square"] :is(.mfx-performance-switch, .mfx-performance-control:not(.mfx-performance-control--popout)) {
+    border-radius: 0 !important;
 }
 
-/* Decorative glass and hardware layers stay behind every label, value and
-   indicator, including the compact grid layout as well as freeform layouts. */
-.mfx-performance-switch > :not(.mfx-footswitch-hardware):not(.mfx-arcade-hardware) {
+html[data-mfx-switch-shape="square"] .mfx-performance-switch-wrap::after {
+    border-radius: 0;
+}
+
+html[data-mfx-switch-shape="pill"] :is(.mfx-performance-switch, .mfx-performance-control:not(.mfx-performance-control--popout)) {
+    border-radius: 999px !important;
+}
+
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch-wrap::after {
+    border-radius: 999px;
+}
+
+html[data-mfx-switch-shape="pill"] .mfx-performance-control:not(.mfx-performance-control--popout) > :is(.mfx-performance-control__source, .mfx-performance-control__function, .mfx-performance-control__value) {
+    left: 13%;
+    right: 13%;
+    width: 74%;
+}
+
+/* All switch layouts share real grid rows. No graphic sits behind text and
+   the same markup is used for compact tiles, freeform controls and previews. */
+.mfx-performance-switch__content {
+    --mfx-switch-label-row: .65fr;
+    --mfx-switch-alt-row: .8fr;
     position: relative;
     z-index: 1;
+    display: grid;
+    grid-template-areas: "label" "value" "hold" "graphic";
+    grid-template-rows: minmax(0, var(--mfx-switch-label-row)) minmax(0, 1.5fr)
+        minmax(0, var(--mfx-switch-alt-row)) minmax(0, 2fr);
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+    padding: clamp(12px, 12cqh, 22px) 2px 2px;
+    text-align: center;
+    pointer-events: none;
 }
 
-html[data-mfx-switch-shape="rounded"] .mfx-performance-switch {
-    border-radius: var(--mfx-control-radius) !important;
-    clip-path: none;
+.mfx-performance-switch[data-has-control-label="false"] .mfx-performance-switch__content {
+    --mfx-switch-label-row: 0fr;
 }
 
-html[data-mfx-switch-shape="square"] .mfx-performance-switch {
-    border-radius: 0 !important;
-    clip-path: none;
+.mfx-performance-switch[data-has-alternates="false"] .mfx-performance-switch__content {
+    --mfx-switch-alt-row: 0fr;
 }
 
-html[data-mfx-switch-shape="pill"] .mfx-performance-switch {
-    border-radius: 999px !important;
-    clip-path: none;
+.mfx-performance-switch__label-row { grid-area: label; }
+.mfx-performance-switch__value-row { grid-area: value; }
+.mfx-performance-switch__hold-row { grid-area: hold; }
+
+:is(.mfx-performance-switch__label-row, .mfx-performance-switch__value-row, .mfx-performance-switch__hold-row) {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 0;
 }
 
-html[data-mfx-switch-shape="bevel"] .mfx-performance-switch {
-    border-radius: 0 !important;
-    clip-path: polygon(10% 0, 90% 0, 100% 14%, 100% 86%, 90% 100%, 10% 100%, 0 86%, 0 14%);
+.mfx-performance-switch__label {
+    font-size: min(var(--mfx-font-switch-label-size, 14px), 11cqh);
 }
 
-html[data-mfx-switch-shape="hexagon"] .mfx-performance-switch {
-    border-radius: 0 !important;
-    clip-path: polygon(4% 0, 96% 0, 100% 50%, 96% 100%, 4% 100%, 0 50%);
+.mfx-performance-switch__value {
+    font-size: min(var(--mfx-font-switch-value-size, 28px), 24cqh);
 }
 
-/* Non-rectangular panels need their content and corner indicator pulled away
-   from the clipped edges. Standalone hardware styles override this padding. */
-html:not([data-mfx-switch-style="footswitch"]):not([data-mfx-switch-style="arcade"])[data-mfx-switch-shape="pill"]
-    .mfx-performance-switch {
-    padding-left: 12% !important;
-    padding-right: 12% !important;
+.mfx-performance-switch__hold {
+    font-size: min(var(--mfx-font-switch-secondary-size, 11px), 10cqh);
 }
 
-html:not([data-mfx-switch-style="footswitch"]):not([data-mfx-switch-style="arcade"])[data-mfx-switch-shape="bevel"]
-    .mfx-performance-switch {
-    padding-left: 10% !important;
-    padding-right: 10% !important;
+.mfx-performance-switch-wrap[data-mfx-has-menu="true"] .mfx-performance-switch__label-row,
+.mfx-performance-switch-wrap[data-mfx-has-menu="true"] .mfx-performance-switch[data-has-control-label="false"] .mfx-performance-switch__value-row {
+    padding-inline: clamp(20px, 24cqmin, 38px);
 }
 
-html:not([data-mfx-switch-style="footswitch"]):not([data-mfx-switch-style="arcade"])[data-mfx-switch-shape="hexagon"]
-    .mfx-performance-switch {
-    padding-left: 6% !important;
-    padding-right: 6% !important;
+.mfx-performance-switch__graphic {
+    grid-area: graphic;
+    display: none;
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+    height: 100%;
+    container-type: size;
+    pointer-events: none;
 }
 
-html[data-mfx-switch-shape="pill"] .mfx-performance-indicator {
-    top: 7% !important;
-    right: 18% !important;
+html:is([data-mfx-switch-style="footswitch"], [data-mfx-switch-style="arcade"]) .mfx-performance-switch__graphic {
+    display: grid;
+    place-items: center;
 }
 
-html[data-mfx-switch-shape="bevel"] .mfx-performance-indicator {
-    top: 5% !important;
-    right: 12% !important;
+/* A pill's middle row always holds its title; the light is above the graphic
+   and the alternate actions have their own row at the bottom. Empty graphic
+   space is retained for text-only styles so the title stays centered. */
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch__content {
+    grid-template-areas: "label" "graphic" "value" "hold";
+    grid-template-rows: minmax(0, .8fr) minmax(0, 1.2fr) minmax(0, 2fr) minmax(0, 2fr);
+    padding: clamp(10px, 10cqh, 18px) 13%;
 }
 
-html[data-mfx-switch-shape="hexagon"] .mfx-performance-indicator {
-    top: 5% !important;
-    right: 7% !important;
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch[data-has-control-label="false"] .mfx-performance-switch__content {
+    grid-template-rows: minmax(0, 0fr) minmax(0, 2fr) minmax(0, 2fr) minmax(0, 2fr);
+}
+
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch__label-row,
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch__value-row {
+    padding-inline: 0;
+}
+
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch-wrap[data-mfx-has-menu="true"] .mfx-performance-switch[data-has-control-label="false"] .mfx-performance-switch__value-row {
+    /* The title sits below the corner menu in a pill, so it can use the full
+       safe width instead of inheriting the top-row menu clearance. */
+    padding-inline: 0;
+}
+
+html[data-mfx-switch-shape="pill"] .mfx-performance-switch__hold-row {
+    align-self: center;
+}
+
+.mfx-performance-switch[data-mfx-empty="true"] .mfx-performance-switch__content {
+    display: grid;
+    grid-template: "value" minmax(0, 1fr) / minmax(0, 1fr);
+    padding: 0;
+}
+
+.mfx-performance-switch[data-mfx-empty="true"] .mfx-performance-indicator {
+    display: none;
 }
 
 /* A compact stage-style stomp switch. Its proportions follow real pedal
@@ -672,71 +723,12 @@ html[data-mfx-switch-shape="hexagon"] .mfx-performance-indicator {
     display: none;
     position: absolute;
     left: 50%;
-    top: 49%;
-    width: min(34cqw, 31cqh, 88px);
+    top: 50%;
+    width: min(76cqw, 86cqh, 88px);
     aspect-ratio: 1;
     transform: translate(-50%, -50%);
     z-index: 0;
     pointer-events: none;
-}
-
-html[data-mfx-switch-style="footswitch"] .mfx-performance-switch {
-    --mfx-hardware-label-radius: min(17cqw, 15.5cqh, 44px);
-    background: transparent !important;
-    border: none !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    clip-path: none !important;
-    outline: none !important;
-    padding: 0 !important;
-    text-align: center;
-}
-
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__content {
-    display: block !important;
-    position: relative !important;
-    gap: 0 !important;
-}
-
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__content > .mfx-performance-switch__label-row,
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch > .mfx-performance-switch__label {
-    position: absolute !important;
-    left: 0;
-    right: 0;
-    top: calc(49% - var(--mfx-hardware-label-radius) - 1.25em);
-    padding-right: 0 !important;
-}
-
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__content > .mfx-performance-switch__value-row,
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch > .mfx-performance-switch__value {
-    position: absolute !important;
-    left: 0;
-    right: 0;
-    top: calc(49% + var(--mfx-hardware-label-radius) + .25em);
-}
-
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__content > .mfx-performance-switch__hold-row,
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch > .mfx-performance-switch__hold {
-    position: absolute !important;
-    left: 0;
-    right: 0;
-    top: calc(49% + var(--mfx-hardware-label-radius) + 2.15em);
-}
-
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__label,
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__value,
-html[data-mfx-switch-style="footswitch"]
-    .mfx-performance-switch__hold {
-    text-align: center !important;
 }
 
 html[data-mfx-switch-style="footswitch"] .mfx-footswitch-hardware {
@@ -869,10 +861,6 @@ html[data-mfx-switch-style="footswitch"]
         0 0 calc(15px * var(--mfx-control-glow-strength)) currentColor;
 }
 
-html[data-mfx-switch-style="footswitch"] .mfx-performance-indicator {
-    display: none !important;
-}
-
 html[data-mfx-switch-style="footswitch"][data-mfx-indicator-style="halo"]
     .mfx-performance-switch[data-mfx-active="true"]
     .mfx-footswitch-hardware__led-ring {
@@ -881,71 +869,12 @@ html[data-mfx-switch-style="footswitch"][data-mfx-indicator-style="halo"]
         0 0 calc(48px * var(--mfx-control-glow-strength)) currentColor;
 }
 
-html[data-mfx-switch-style="arcade"] .mfx-performance-switch {
-    --mfx-hardware-label-radius: min(25cqw, 20cqh, 61px);
-    background: transparent !important;
-    border: none !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    clip-path: none !important;
-    outline: none !important;
-    padding: 0 !important;
-    text-align: center;
-}
-
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__content {
-    display: block !important;
-    position: relative !important;
-    gap: 0 !important;
-}
-
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__content > .mfx-performance-switch__label-row,
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch > .mfx-performance-switch__label {
-    position: absolute !important;
-    left: 0;
-    right: 0;
-    top: calc(49% - var(--mfx-hardware-label-radius) - 1.25em);
-    padding-right: 0 !important;
-}
-
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__content > .mfx-performance-switch__value-row,
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch > .mfx-performance-switch__value {
-    position: absolute !important;
-    left: 0;
-    right: 0;
-    top: calc(49% + var(--mfx-hardware-label-radius) + .25em);
-}
-
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__content > .mfx-performance-switch__hold-row,
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch > .mfx-performance-switch__hold {
-    position: absolute !important;
-    left: 0;
-    right: 0;
-    top: calc(49% + var(--mfx-hardware-label-radius) + 2.15em);
-}
-
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__label,
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__value,
-html[data-mfx-switch-style="arcade"]
-    .mfx-performance-switch__hold {
-    text-align: center !important;
-}
-
 .mfx-arcade-hardware {
     display: none;
     position: absolute;
     left: 50%;
-    top: 49%;
-    width: min(50cqw, 40cqh, 122px);
+    top: 50%;
+    width: min(82cqw, 84cqh, 110px);
     aspect-ratio: 1;
     transform: translate(-50%, -50%);
     pointer-events: none;
@@ -954,10 +883,6 @@ html[data-mfx-switch-style="arcade"]
 
 html[data-mfx-switch-style="arcade"] .mfx-arcade-hardware {
     display: block;
-}
-
-html[data-mfx-switch-style="arcade"] .mfx-performance-indicator {
-    display: none !important;
 }
 
 .mfx-arcade-hardware__rim,
@@ -1020,21 +945,28 @@ html[data-mfx-switch-style="glass"] .mfx-performance-switch::after {
 }
 
 html[data-mfx-switch-style="minimal"] .mfx-performance-switch {
-    background: transparent !important;
+    /* Keep the configured enclosure and border while reducing visual weight. */
+    background: var(--mfx-surface-page-bg) padding-box, var(--mfx-tile-border) border-box !important;
     box-shadow: none !important;
-    border-width: 0 0 var(--mfx-control-border-width) 0 !important;
-    border-radius: 0 !important;
 }
 
 .mfx-performance-indicator {
+    position: absolute;
+    z-index: 2;
+    top: clamp(3px, 3cqh, 7px);
+    left: clamp(4px, 3cqw, 8px);
+    right: auto;
+    width: clamp(6px, 10cqmin, 16px);
+    height: clamp(6px, 10cqmin, 16px);
+    pointer-events: none;
     transition: background-color 100ms linear, box-shadow 100ms linear;
 }
 
 html[data-mfx-indicator-style="ring"] .mfx-performance-indicator {
-    width: 20px !important;
-    height: 20px !important;
+    width: clamp(8px, 12cqmin, 20px) !important;
+    height: clamp(8px, 12cqmin, 20px) !important;
     background: transparent !important;
-    border: 4px solid currentColor;
+    border: clamp(1px, 2cqmin, 4px) solid currentColor !important;
     box-sizing: border-box;
 }
 
@@ -1044,7 +976,7 @@ html[data-mfx-indicator-style="halo"] .mfx-performance-indicator {
     top: 50% !important;
     width: min(72cqw, 72cqh, 150px) !important;
     height: min(72cqw, 72cqh, 150px) !important;
-    transform: translate(-50%, -50%);
+    translate: -50% -50%;
     border: 2px solid color-mix(in srgb, currentColor 55%, transparent) !important;
     border-radius: 50% !important;
     background: transparent !important;
@@ -1066,6 +998,35 @@ html[data-mfx-indicator-style="bar"] .mfx-performance-indicator {
 
 html[data-mfx-indicator-style="none"] .mfx-performance-indicator {
     display: none !important;
+}
+
+/* Pill indicators stay at the top center for every light style. */
+html[data-mfx-switch-shape="pill"] .mfx-performance-indicator {
+    left: 50% !important;
+    right: auto !important;
+    top: clamp(3px, 3cqh, 7px) !important;
+    bottom: auto !important;
+    translate: -50% 0;
+}
+
+html[data-mfx-switch-shape="pill"][data-mfx-indicator-style="halo"] .mfx-performance-indicator {
+    width: clamp(8px, 12cqmin, 20px) !important;
+    height: clamp(8px, 12cqmin, 20px) !important;
+}
+
+html[data-mfx-switch-shape="pill"][data-mfx-indicator-style="bar"] .mfx-performance-indicator {
+    width: 30% !important;
+    height: clamp(2px, 3cqh, 5px) !important;
+    border-radius: 99px !important;
+}
+
+html[data-mfx-indicator-style="none"] .mfx-footswitch-hardware__led-ring {
+    display: none;
+}
+
+html[data-mfx-indicator-style="none"] .mfx-arcade-hardware__button {
+    box-shadow: inset 0 -4px 8px #0007 !important;
+    animation: none !important;
 }
 
 html[data-mfx-indicator-animation="pulse"]:not([data-mfx-indicator-style="halo"])
@@ -1126,7 +1087,7 @@ html[data-mfx-indicator-style="ring"][data-mfx-indicator-animation="spin"]
 @keyframes mfx-indicator-breathe { 50% { opacity: .42; filter: brightness(1.5); } }
 @keyframes mfx-indicator-spin { to { transform: rotate(360deg); } }
 @keyframes mfx-halo-pulse {
-    50% { transform: translate(-50%, -50%) scale(1.12); opacity: .95; }
+    50% { transform: scale(1.12); opacity: .95; }
 }
 @keyframes mfx-arcade-pulse {
     50% { transform: translateY(7%) scale(.89); filter: brightness(1.18); }
@@ -1175,50 +1136,15 @@ html[data-mfx-indicator-style="ring"][data-mfx-indicator-animation="spin"]
     height: min(18cqh, 22px);
 }
 
-.mfx-performance-switch[data-show-control-label="false"] > .mfx-footswitch-hardware,
-.mfx-performance-switch[data-show-control-label="false"] > .mfx-arcade-hardware {
-    top: 28%;
-    width: min(84cqw, 50cqh);
-}
-
-html[data-mfx-switch-style="footswitch"] .mfx-performance-switch[data-show-control-label="false"],
-html[data-mfx-switch-style="arcade"] .mfx-performance-switch[data-show-control-label="false"] {
-    --mfx-hardware-label-radius: min(42cqw, 25cqh);
-}
-
-html[data-mfx-switch-style="footswitch"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__value-row,
-html[data-mfx-switch-style="arcade"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__value-row {
-    top: calc(28% + var(--mfx-hardware-label-radius) + .25em);
-}
-
-html[data-mfx-switch-style="footswitch"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__hold-row,
-html[data-mfx-switch-style="arcade"] .mfx-performance-switch[data-show-control-label="false"] .mfx-performance-switch__hold-row {
-    top: auto;
-    bottom: 2px;
-}
-
-.mfx-performance-switch[data-show-control-label="false"] .mfx-toggle-hardware {
-    --mfx-toggle-track-width: min(72cqw, 104cqh);
-    --mfx-toggle-track-height: min(34cqh, 36cqw);
-    position: absolute;
-    top: 38%;
-    width: 88%;
-}
-
-.mfx-performance-switch[data-show-control-label="false"] .mfx-toggle-hardware__track {
-    width: var(--mfx-toggle-track-width);
-    height: var(--mfx-toggle-track-height);
-    min-height: 0;
-}
-
-.mfx-performance-switch[data-show-control-label="false"] .mfx-toggle-hardware[data-active="true"] .mfx-toggle-hardware__thumb {
-    transform: translateX(calc(var(--mfx-toggle-track-width) - var(--mfx-toggle-track-height) - 6px));
+html[data-mfx-motion-enabled="false"] :is(.mfx-performance-control--popout, .mfx-performance-indicator, .mfx-footswitch-hardware__led-ring, .mfx-arcade-hardware__button) {
+    animation: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
     html[data-mfx-respect-reduced-motion="true"] .mfx-performance-indicator,
     html[data-mfx-respect-reduced-motion="true"] .mfx-footswitch-hardware__led-ring,
-    html[data-mfx-respect-reduced-motion="true"] .mfx-arcade-hardware__button {
+    html[data-mfx-respect-reduced-motion="true"] .mfx-arcade-hardware__button,
+    html[data-mfx-respect-reduced-motion="true"] .mfx-performance-control--popout {
         animation: none !important;
     }
 }

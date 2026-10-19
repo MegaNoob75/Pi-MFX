@@ -38,9 +38,7 @@ export type MultiFXSwitchVisualStyle =
 export type MultiFXSwitchShape =
     | "rounded"
     | "square"
-    | "pill"
-    | "bevel"
-    | "hexagon";
+    | "pill";
 export type MultiFXAnalogVisualStyle =
     | "modern"
     | "vintage"
@@ -3076,7 +3074,7 @@ function makeTheme(
             );
             Object.assign(controls, {
                 switchStyle: "footswitch",
-                switchShape: "bevel",
+                switchShape: "rounded",
                 analogStyle: "vintage",
                 indicatorStyle: "ring",
                 indicatorAnimation: "breathe",
@@ -3574,7 +3572,7 @@ function validAppearance(value: unknown): value is MultiFXThemeAppearance {
         ])
         || !["tiles", "footswitch", "arcade", "glass", "minimal"]
             .includes(String(value.controls.switchStyle))
-        || !["rounded", "square", "pill", "bevel", "hexagon"]
+        || !["rounded", "square", "pill"]
             .includes(String(value.controls.switchShape))
         || !["modern", "vintage", "neon", "minimal"]
             .includes(String(value.controls.analogStyle))
@@ -3630,6 +3628,11 @@ function upgradeLegacyTheme(value: unknown): unknown {
     }
     if (!isRecord(next.appearance)) return next;
     const appearance = next.appearance;
+    // Retired shapes migrate without discarding the rest of a saved theme.
+    if (isRecord(appearance.controls)
+        && ["bevel", "hexagon"].includes(String(appearance.controls.switchShape))) {
+        appearance.controls.switchShape = "rounded";
+    }
     if (isRecord(appearance.fonts)) {
         for (const role of [
             "interface", "heading", "label", "value", "switchLabel",
@@ -3734,6 +3737,59 @@ export function themePaintToCss(paint: MultiFXThemePaint): string {
         return `conic-gradient(from ${paint.angle}deg, ${colors})`;
     }
     return `linear-gradient(${paint.angle}deg, ${colors})`;
+}
+
+/** Every non-final background layer must be an image, even for solid paint. */
+export function themePaintToImageCss(paint: MultiFXThemePaint): string {
+    return paint.kind === "solid"
+        ? `linear-gradient(${paint.colors[0]}, ${paint.colors[0]})`
+        : themePaintToCss(paint);
+}
+
+/** Recolor appearance values that still use the edited palette color.
+ * Independently customized colors and the theme's geometry remain intact. */
+export function recolorMultiFXTheme(
+    theme: MultiFXThemeDefinition,
+    key: keyof MultiFXThemeDefinition["colors"],
+    color: string
+): MultiFXThemeDefinition {
+    const next = structuredClone(theme);
+    const previous = theme.colors[key].toLowerCase();
+    next.colors[key] = color;
+    // Icon and shortcut colors have their own dedicated palette settings.
+    if (key === "icon" || key === "iconActive" || key.startsWith("shortcut")) {
+        return next;
+    }
+    const replace = (value: string) => value.toLowerCase() === previous ? color : value;
+    const replacePaint = (paint: MultiFXThemePaint) => {
+        paint.colors = paint.colors.map(replace);
+    };
+    const replaceShadow = (shadow: string) => shadow.replace(
+        /#[0-9a-f]{6}(?![0-9a-f])/gi, replace
+    );
+    for (const surface of Object.values(next.appearance.surfaces)) {
+        replacePaint(surface.background);
+        replacePaint(surface.border);
+        surface.text = replace(surface.text);
+        surface.label = replace(surface.label);
+        surface.accent = replace(surface.accent);
+        surface.shadow = replaceShadow(surface.shadow);
+    }
+    for (const role of Object.values(next.appearance.roles)) {
+        for (const state of [role.normal, role.active]) {
+            replacePaint(state.background);
+            replacePaint(state.border);
+            state.label = replace(state.label);
+            state.value = replace(state.value);
+            state.indicator = replace(state.indicator);
+            state.shadow = replaceShadow(state.shadow);
+        }
+    }
+    const controls = next.appearance.controls;
+    controls.indicatorInactive = replace(controls.indicatorInactive);
+    controls.indicatorActive = replace(controls.indicatorActive);
+    controls.indicatorChanged = replace(controls.indicatorChanged);
+    return next;
 }
 
 export function loadMultiFXTheme(): MultiFXThemeDefinition {
@@ -3900,7 +3956,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
             const prefix = `--mfx-surface-${name}`;
             target.style.setProperty(
                 `${prefix}-bg`,
-                themePaintToCss(surfaceValue.background)
+                themePaintToImageCss(surfaceValue.background)
             );
             target.style.setProperty(
                 `${prefix}-border`,
@@ -3910,6 +3966,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
             target.style.setProperty(`${prefix}-label`, surfaceValue.label);
             target.style.setProperty(`${prefix}-accent`, surfaceValue.accent);
             target.style.setProperty(`${prefix}-shadow`, surfaceValue.shadow);
+            target.style.setProperty(`${prefix}-bg-color`, surfaceValue.background.colors[0]);
         }
 
         for (const [roleName, role] of Object.entries(appearance.roles)) {
@@ -3917,7 +3974,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
                 const state = role[stateName];
                 const prefix = `--mfx-role-${roleName}-${stateName}`;
                 target.style.setProperty(
-                    `${prefix}-bg`, themePaintToCss(state.background)
+                    `${prefix}-bg`, themePaintToImageCss(state.background)
                 );
                 target.style.setProperty(
                     `${prefix}-border`, themePaintToCss(state.border)
@@ -3928,6 +3985,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
                     `${prefix}-indicator`, state.indicator
                 );
                 target.style.setProperty(`${prefix}-shadow`, state.shadow);
+                target.style.setProperty(`${prefix}-border-color`, state.border.colors[0]);
             }
         }
 
@@ -4087,6 +4145,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
             : "none";
     root.dataset.mfxRespectReducedMotion =
         appearance.motion.respectReducedMotion ? "true" : "false";
+    root.dataset.mfxMotionEnabled = appearance.motion.enabled ? "true" : "false";
     root.dataset.mfxColorScheme = paletteLuminance(c.background) >= 0.4
         ? "light"
         : "dark";
@@ -4117,6 +4176,7 @@ export function clearAppliedMultiFXTheme(): void {
     ].flatMap((name) => [
         `--mfx-surface-${name}-bg`,
         `--mfx-surface-${name}-border`,
+        `--mfx-surface-${name}-bg-color`,
         `--mfx-surface-${name}-text`,
         `--mfx-surface-${name}-label`,
         `--mfx-surface-${name}-accent`,
@@ -4127,6 +4187,7 @@ export function clearAppliedMultiFXTheme(): void {
     ].flatMap((role) => ["normal", "active"].flatMap((state) => [
         `--mfx-role-${role}-${state}-bg`,
         `--mfx-role-${role}-${state}-border`,
+        `--mfx-role-${role}-${state}-border-color`,
         `--mfx-role-${role}-${state}-label`,
         `--mfx-role-${role}-${state}-value`,
         `--mfx-role-${role}-${state}-indicator`,
@@ -4185,6 +4246,7 @@ export function clearAppliedMultiFXTheme(): void {
     delete document.documentElement.dataset.mfxIndicatorStyle;
     delete document.documentElement.dataset.mfxIndicatorAnimation;
     delete document.documentElement.dataset.mfxRespectReducedMotion;
+    delete document.documentElement.dataset.mfxMotionEnabled;
     delete document.documentElement.dataset.mfxColorScheme;
 }
 

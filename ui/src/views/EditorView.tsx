@@ -80,6 +80,7 @@ export function EditorView({
     const [pendingTrashId, setPendingTrashId] = useState("");
     const [newPresetOpen, setNewPresetOpen] = useState(false);
     const [pickerOpen, setPickerOpen] = useState(false);
+    const presetDragCleanup = useRef<(() => void) | null>(null);
     const [bindTarget, setBindTarget] = useState<BindTarget | null>(null);
     const [dropBankId, setDropBankId] = useState("");
     const [sessionAction, setSessionAction] = useState<"save" | "reload" | "">("");
@@ -90,6 +91,14 @@ export function EditorView({
     const presetName = str(obj(preset).name, "No preset");
     const sessionPresetId = str(obj(preset).id, str(state.activePresetId));
     const activeSnapshot = num(obj(preset).activeSnapshot, -1);
+
+    useEffect(() => {
+        if (!pickerOpen) {
+            presetDragCleanup.current?.();
+            setDropBankId("");
+        }
+        return () => presetDragCleanup.current?.();
+    }, [pickerOpen]);
 
     const waitForChainGeneration = (generation: number) => new Promise<void>((resolve, reject) => {
         let finished = false;
@@ -441,6 +450,7 @@ export function EditorView({
                                                 onPointerDown={(event) => {
                                                     event.preventDefault();
                                                     event.stopPropagation();
+                                                    presetDragCleanup.current?.();
                                                     const pointerId = event.pointerId;
                                                     const handle = event.currentTarget as HTMLElement;
                                                     handle.setPointerCapture(pointerId);
@@ -458,9 +468,8 @@ export function EditorView({
                                                         if (upEvent.pointerId !== pointerId) {
                                                             return;
                                                         }
-                                                        window.removeEventListener("pointermove", move);
-                                                        window.removeEventListener("pointerup", up);
                                                         const targetBank = handle.dataset.dropBank ?? "";
+                                                        presetDragCleanup.current?.();
                                                         setDropBankId("");
                                                         if (targetBank && targetBank !== str(item.id)) {
                                                             void run(() => client.request("preset/move", {
@@ -470,8 +479,24 @@ export function EditorView({
                                                             }));
                                                         }
                                                     };
+                                                    const cancel = (cancelEvent: PointerEvent) => {
+                                                        if (cancelEvent.pointerId !== pointerId) return;
+                                                        presetDragCleanup.current?.();
+                                                        setDropBankId("");
+                                                    };
+                                                    presetDragCleanup.current = () => {
+                                                        window.removeEventListener("pointermove", move);
+                                                        window.removeEventListener("pointerup", up);
+                                                        window.removeEventListener("pointercancel", cancel);
+                                                        handle.removeEventListener("lostpointercapture", cancel);
+                                                        presetDragCleanup.current = null;
+                                                        handle.dataset.dropBank = "";
+                                                        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+                                                    };
                                                     window.addEventListener("pointermove", move);
                                                     window.addEventListener("pointerup", up);
+                                                    window.addEventListener("pointercancel", cancel);
+                                                    handle.addEventListener("lostpointercapture", cancel);
                                                 }}
                                             >
                                                 ☰

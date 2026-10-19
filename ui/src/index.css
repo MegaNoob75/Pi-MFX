@@ -3,7 +3,12 @@
     --mfx-bg: #0d0b12;
     --mfx-panel: #18151e;
     --mfx-panel-alt: #211d27;
-    --mfx-panel-raised: #27212f;
+    --mfx-panel-raised: color-mix(in srgb, var(--mfx-panel-alt) 94%, var(--mfx-text));
+    /* Compatibility names used by recorder, tuner, drums and library views. */
+    --mfx-background: var(--mfx-bg);
+    --mfx-surface: var(--mfx-panel);
+    --mfx-selected: var(--mfx-cyan);
+    --mfx-radius: var(--mfx-control-radius, 8px);
     --mfx-purple: #a770e4;
     --mfx-purple-light: #d8b4fe;
     --mfx-purple-surface: #2b1e3b;
@@ -1105,7 +1110,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     padding: 10px;
     border-radius: 12px;
     border: 2px solid transparent;
-    background: var(--mfx-surface-menu-bg, var(--mfx-panel)) padding-box,
+    background: var(--mfx-surface-menu-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
         var(--mfx-surface-menu-border, var(--mfx-border)) border-box;
     color: var(--mfx-surface-menu-text, var(--mfx-text));
     box-shadow: var(--mfx-surface-menu-shadow, 0 16px 46px var(--mfx-shadow));
@@ -2574,7 +2579,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     padding: 8px 12px 10px;
     border-radius: 14px;
     border: 1px solid transparent;
-    background: var(--mfx-surface-header-bg, var(--mfx-panel)) padding-box,
+    background: var(--mfx-surface-header-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
         var(--mfx-surface-header-border, var(--mfx-border)) border-box;
     box-shadow: var(--mfx-surface-header-shadow, 0 8px 20px var(--mfx-shadow));
     color: var(--mfx-surface-header-text, var(--mfx-text));
@@ -3050,8 +3055,9 @@ button.list-item {
     box-sizing: border-box;
     padding: 8px 10px;
     border-radius: 10px;
-    border: 1px solid var(--mfx-surface-panel-border, var(--mfx-border));
-    background: var(--mfx-surface-panel-bg, var(--mfx-panel-alt));
+    border: 1px solid transparent;
+    background: var(--mfx-surface-panel-bg, linear-gradient(var(--mfx-panel-alt), var(--mfx-panel-alt))) padding-box,
+        var(--mfx-surface-panel-border, var(--mfx-border)) border-box;
     color: var(--mfx-surface-panel-text, var(--mfx-text));
     overflow: visible;
     z-index: 2;
@@ -3518,8 +3524,9 @@ button.list-item {
 }
 
 .footswitch.is-active {
-    border-color: var(--mfx-role-preset-active-border, var(--mfx-cyan));
-    background: var(--mfx-role-preset-active-bg, var(--mfx-cyan-surface));
+    border-color: transparent;
+    background: var(--mfx-role-preset-active-bg, linear-gradient(var(--mfx-cyan-surface), var(--mfx-cyan-surface))) padding-box,
+        var(--mfx-role-preset-active-border, var(--mfx-cyan)) border-box;
     color: var(--mfx-role-preset-active-label, var(--mfx-cyan-text));
 }
 
@@ -3528,7 +3535,9 @@ button.list-item {
 }
 
 .footswitch.is-bypass {
-    border-color: var(--mfx-role-bypass-active-border, var(--mfx-danger));
+    border-color: transparent;
+    background: var(--mfx-role-bypass-active-bg, linear-gradient(var(--mfx-panel-alt), var(--mfx-panel-alt))) padding-box,
+        var(--mfx-role-bypass-active-border, var(--mfx-danger)) border-box;
 }
 
 .footswitch.is-bypass .led {
@@ -3921,8 +3930,9 @@ button.list-item {
     align-items: center;
     padding: 10px;
     border-radius: 14px;
-    border: 2px solid var(--mfx-role-preset-active-border, var(--mfx-cyan));
-    background: var(--mfx-role-preset-active-bg, var(--mfx-cyan-surface));
+    border: 2px solid transparent;
+    background: var(--mfx-role-preset-active-bg, linear-gradient(var(--mfx-cyan-surface), var(--mfx-cyan-surface))) padding-box,
+        var(--mfx-role-preset-active-border, var(--mfx-cyan)) border-box;
     color: var(--mfx-role-preset-active-value, var(--mfx-cyan-text));
     box-shadow: 0 14px 34px rgba(0, 0, 0, 0.62);
     opacity: 0.82;
@@ -3950,15 +3960,16 @@ button.list-item {
     align-items: center;
     justify-content: center;
     border-radius: 12px;
-    border: 2px solid var(--mfx-role-navigation-normal-border, var(--mfx-border));
-    background: var(--mfx-role-navigation-normal-bg, var(--mfx-panel-alt));
+    border: 2px solid transparent;
+    background: var(--mfx-role-navigation-normal-bg, linear-gradient(var(--mfx-panel-alt), var(--mfx-panel-alt))) padding-box,
+        var(--mfx-role-navigation-normal-border, var(--mfx-border)) border-box;
     pointer-events: none;
     font-size: 1.4rem;
 }
 
 .performance-trash.active {
-    border-color: var(--mfx-role-danger-normal-border, var(--mfx-danger));
-    background: #7f1d1d;
+    background: var(--mfx-role-danger-normal-bg, linear-gradient(#7f1d1d, #7f1d1d)) padding-box,
+        var(--mfx-role-danger-normal-border, var(--mfx-danger)) border-box;
 }
 
 .performance-feedback {
@@ -3971,7 +3982,7 @@ button.list-item {
     padding: 11px 14px 10px;
     border-radius: 12px;
     border: 2px solid transparent;
-    background: var(--mfx-surface-toast-bg, var(--mfx-panel)) padding-box,
+    background: var(--mfx-surface-toast-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
         var(--mfx-surface-toast-border, var(--mfx-cyan)) border-box;
     color: var(--mfx-surface-toast-text, var(--mfx-text));
     box-shadow: var(--mfx-surface-toast-shadow);
@@ -6217,7 +6228,7 @@ button.list-item {
     overflow: hidden;
     border: 1px solid var(--mfx-border);
     border-radius: 6px;
-    background: color-mix(in srgb, var(--mfx-surface-panel-bg, var(--mfx-panel)) 88%, black);
+    background: color-mix(in srgb, var(--mfx-surface-panel-bg-color, var(--mfx-panel)) 88%, black);
 }
 .waveform-timeline svg { display: block; width: 100%; height: 100%; }
 .waveform-timeline.seekable svg { cursor: crosshair; touch-action: manipulation; }
