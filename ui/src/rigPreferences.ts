@@ -2,10 +2,10 @@ import { useEffect, useRef } from "react";
 import type { EngineClient, EngineSnapshot } from "./api";
 import { obj, type JsonObject } from "./json";
 import { isKioskDisplay } from "./keyboard/mode";
-import { CUSTOM_KEYBOARD_THEMES_STORAGE_KEY } from "./keyboard/keyboardTheme";
+import { CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, KEYBOARD_THEMES_CHANGED_EVENT } from "./keyboard/keyboardTheme";
 
 const keys = ["pimfx-keyboard-mode", "pimfx-keyboard-appearance", "pimfx-ui-behavior", CUSTOM_KEYBOARD_THEMES_STORAGE_KEY];
-const events = ["pimfx-keyboard-mode", "pimfx-keyboard-appearance", "pimfx-ui-behavior", "storage"];
+const events = ["pimfx-keyboard-mode", "pimfx-keyboard-appearance", "pimfx-ui-behavior", KEYBOARD_THEMES_CHANGED_EVENT, "storage"];
 
 function localPreferences(): JsonObject {
     const values: JsonObject = {};
@@ -68,7 +68,7 @@ export function useRigPreferences(engine: EngineSnapshot & { client: EngineClien
             }).catch(() => undefined).finally(() => { pending = false; });
         };
         for (const event of events) window.addEventListener(event, save);
-        // Keyboard theme saves currently have no same-window change event.
+        // Retry changes that arrived while an earlier preferences save was pending.
         const timer = window.setInterval(save, 1500);
         return () => {
             window.clearInterval(timer);

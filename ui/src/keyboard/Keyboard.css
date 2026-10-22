@@ -58,7 +58,7 @@ textarea[data-pimfx-osk="1"] {
 }
 
 .pimfx-keyboard-label {
-    color: var(--mfx-cyan);
+    color: var(--mfx-keyboard-secondary-text, var(--mfx-text));
     font-weight: 900;
     letter-spacing: 0.04em;
     cursor: default;
@@ -93,6 +93,7 @@ textarea[data-pimfx-osk="1"] {
 }
 
 .pimfx-keyboard-rows {
+    --pimfx-key-gap: clamp(4px, 0.7vw, 8px);
     min-height: 0;
     flex: 4 1 0;
     display: flex;
@@ -107,7 +108,7 @@ textarea[data-pimfx-osk="1"] {
     flex: 1 1 0;
     display: flex;
     justify-content: center;
-    gap: clamp(4px, 0.7vw, 8px);
+    gap: var(--pimfx-key-gap, clamp(4px, 0.7vw, 8px));
     overflow: hidden;
 }
 
@@ -116,6 +117,7 @@ textarea[data-pimfx-osk="1"] {
 }
 
 .pimfx-keyboard-key {
+    box-sizing: border-box;
     min-width: 0;
     min-height: 0;
     height: 100%;
@@ -132,6 +134,12 @@ textarea[data-pimfx-osk="1"] {
     box-shadow: 0 3px 0 rgba(0, 0, 0, 0.48);
 }
 
+/* One ten-column unit across letters, symbols and numeric entry. Shorter
+   rows remain centered instead of stretching their character keys. */
+.pimfx-keyboard-key.is-character {
+    flex: 0 0 calc((100% - 9 * var(--pimfx-key-gap)) / 10);
+}
+
 .pimfx-keyboard-key:active,
 .pimfx-keyboard-key.is-active {
     transform: translateY(2px);
@@ -143,6 +151,10 @@ textarea[data-pimfx-osk="1"] {
 .pimfx-keyboard-key.is-wide { flex-grow: 1.8; }
 .pimfx-keyboard-key.is-space { flex-grow: 4; }
 .pimfx-keyboard-key.is-cancel { color: var(--mfx-danger); }
+.pimfx-keyboard-key.is-done { color: var(--mfx-cyan); }
+.pimfx-keyboard-key:is(:active, .is-active):is(.is-done, .is-cancel) {
+    color: var(--mfx-cyan-text);
+}
 .pimfx-keyboard-backdrop.is-transparent {
     background: rgba(3, 4, 8, 0.35);
 }

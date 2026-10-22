@@ -39,6 +39,21 @@ export type MultiFXSwitchShape =
     | "rounded"
     | "square"
     | "pill";
+
+/** Settings, imports and rendering use one list of supported light effects. */
+export function indicatorAnimationOptions(
+    switchStyle: MultiFXSwitchVisualStyle,
+    indicatorStyle: MultiFXIndicatorStyle
+): readonly (readonly [MultiFXIndicatorAnimation, string])[] {
+    const quiet = [["none", "Off"]] as const;
+    const light = [...quiet, ["pulse", "Pulse"], ["breathe", "Breathe"]] as const;
+    if (indicatorStyle === "none") return quiet;
+    if (indicatorStyle === "bar") return [...light, ["chase", "Chase across bar"]];
+    if (indicatorStyle === "ring" || switchStyle === "footswitch") {
+        return [...light, ["spin", "Spin around ring"]];
+    }
+    return light;
+}
 export type MultiFXAnalogVisualStyle =
     | "modern"
     | "vintage"
@@ -239,6 +254,10 @@ export interface MultiFXThemeDefinition {
         shortcutActiveBorder: string;
     };
     appearance: MultiFXThemeAppearance;
+    /** Preserve palette relationships after renaming or changing graphical style. */
+    paletteProfile?: BuiltInThemeProfile;
+    /** Appearance fields explicitly customized independently of the palette. */
+    paletteOverrides?: string[];
 }
 
 interface MultiFXThemePaletteDefinition {
@@ -2927,7 +2946,8 @@ function makeThemeFonts(profile: BuiltInThemeProfile): MultiFXThemeFonts {
 
 /** Build a complete version-4 visual system from one curated color palette. */
 function makeTheme(
-    palette: MultiFXThemePaletteDefinition
+    palette: MultiFXThemePaletteDefinition,
+    forcedProfile?: BuiltInThemeProfile
 ): MultiFXThemeDefinition {
     const base = structuredClone(palette.colors);
     const c: MultiFXThemeDefinition["colors"] = {
@@ -2949,7 +2969,7 @@ function makeTheme(
         c.selectedSurface,
         c.text
     );
-    const profile = getBuiltInThemeProfile(palette);
+    const profile = forcedProfile ?? getBuiltInThemeProfile(palette);
     let normal = controlState(
         solid(c.panel),
         solid(c.border),
@@ -3309,7 +3329,7 @@ function makeTheme(
         roleNormal: MultiFXThemeControlState,
         roleActive: MultiFXThemeControlState
     ): MultiFXThemeControlRole => ({
-        normal: structuredClone(roleNormal),
+        normal: { ...structuredClone(roleNormal), indicator: controls.indicatorInactive },
         active: structuredClone(roleActive)
     });
 
@@ -3317,6 +3337,8 @@ function makeTheme(
         name: palette.name,
         author: palette.author,
         version: 4,
+        paletteProfile: profile,
+        paletteOverrides: [],
         colors: structuredClone(c),
         appearance: {
             surfaces: {
@@ -3342,7 +3364,7 @@ function makeTheme(
 }
 
 export const BUILT_IN_THEMES: MultiFXThemeDefinition[] =
-    BUILT_IN_THEME_PALETTES.map(makeTheme);
+    BUILT_IN_THEME_PALETTES.map((palette) => makeTheme(palette));
 
 export const THEME_STORAGE_KEY = "pimfx-theme-v4";
 export const CUSTOM_THEMES_STORAGE_KEY =
@@ -3458,7 +3480,8 @@ function hasOnlyKeys(
 function validShadow(value: unknown): value is string {
     return typeof value === "string"
         && value.length <= 160
-        && !/[;{}]|url\s*\(/i.test(value);
+        && !/[;{}]|url\s*\(/i.test(value)
+        && (typeof CSS === "undefined" || CSS.supports("box-shadow", value));
 }
 
 function validPaint(value: unknown): value is MultiFXThemePaint {
@@ -3670,7 +3693,7 @@ export function validateMultiFXTheme(
     const upgraded = upgradeLegacyTheme(value);
     if (!isRecord(upgraded)
         || !hasOnlyKeys(upgraded, [
-            "name", "author", "version", "colors", "appearance"
+            "name", "author", "version", "colors", "appearance", "paletteProfile", "paletteOverrides"
         ])) return undefined;
 
     const source = upgraded;
@@ -3722,8 +3745,21 @@ export function validateMultiFXTheme(
         if (!isHexColor(colors[key])) return undefined;
     }
     if (!validAppearance(source.appearance)) return undefined;
+    if (source.paletteProfile !== undefined
+        && !["modern", "stompbox", "glass", "arcade", "studio", "minimal"].includes(String(source.paletteProfile))) return undefined;
+    if (source.paletteOverrides !== undefined) {
+        const fields = new Set(paletteFields(source.appearance).map(({ path }) => path));
+        if (!Array.isArray(source.paletteOverrides) || source.paletteOverrides.length > fields.size
+            || !source.paletteOverrides.every((path) => typeof path === "string" && fields.has(path))) return undefined;
+    }
 
-    return structuredClone(source) as unknown as MultiFXThemeDefinition;
+    const result = structuredClone(source) as unknown as MultiFXThemeDefinition;
+    const controls = result.appearance.controls;
+    if (!indicatorAnimationOptions(controls.switchStyle, controls.indicatorStyle)
+        .some(([animation]) => animation === controls.indicatorAnimation)) {
+        controls.indicatorAnimation = "none";
+    }
+    return result;
 }
 
 /** Convert a validated paint token into one CSS background value. */
@@ -3746,49 +3782,118 @@ export function themePaintToImageCss(paint: MultiFXThemePaint): string {
         : themePaintToCss(paint);
 }
 
-/** Recolor appearance values that still use the edited palette color.
- * Independently customized colors and the theme's geometry remain intact. */
+type PaletteFieldValue = MultiFXThemePaint | string;
+interface PaletteField {
+    path: string;
+    value: PaletteFieldValue;
+    set: (value: PaletteFieldValue) => void;
+}
+
+/** Enumerate only appearance paints and colors; geometry, fonts and motion
+ * are never rebuilt as a side effect of editing a palette swatch. */
+function paletteFields(appearance: MultiFXThemeAppearance): PaletteField[] {
+    const fields: PaletteField[] = [];
+    const add = (prefix: string, state: MultiFXThemeSurface | MultiFXThemeControlState) => {
+        for (const key of ["background", "border"] as const) {
+            fields.push({ path: `${prefix}.${key}`, value: state[key],
+                set: (value) => { state[key] = structuredClone(value as MultiFXThemePaint); } });
+        }
+        for (const key of ["label", "shadow"] as const) {
+            fields.push({ path: `${prefix}.${key}`, value: state[key],
+                set: (value) => { state[key] = value as string; } });
+        }
+        if ("indicator" in state) {
+            for (const key of ["value", "indicator"] as const) {
+                fields.push({ path: `${prefix}.${key}`, value: state[key],
+                    set: (value) => { state[key] = value as string; } });
+            }
+        } else {
+            for (const key of ["text", "accent"] as const) {
+                fields.push({ path: `${prefix}.${key}`, value: state[key],
+                    set: (value) => { state[key] = value as string; } });
+            }
+        }
+    };
+    for (const [name, surface] of Object.entries(appearance.surfaces)) add(`surfaces.${name}`, surface);
+    for (const [name, role] of Object.entries(appearance.roles)) {
+        add(`roles.${name}.normal`, role.normal);
+        add(`roles.${name}.active`, role.active);
+    }
+    for (const key of ["indicatorInactive", "indicatorActive", "indicatorChanged"] as const) {
+        fields.push({ path: `controls.${key}`, value: appearance.controls[key],
+            set: (value) => { appearance.controls[key] = value as string; } });
+    }
+    return fields;
+}
+
+function paletteProfile(theme: MultiFXThemeDefinition): BuiltInThemeProfile {
+    if (theme.paletteProfile) return theme.paletteProfile;
+    const originalName = theme.name.replace(/^(Custom - )+/, "");
+    const original = BUILT_IN_THEMES.find((item) => item.name === originalName);
+    if (original?.paletteProfile) return original.paletteProfile;
+    switch (theme.appearance.controls.switchStyle) {
+        case "footswitch": return "stompbox";
+        case "glass": return "glass";
+        case "arcade": return "arcade";
+        case "minimal": return "minimal";
+        default: return theme.appearance.controls.indicatorAnimation === "none" ? "studio" : "modern";
+    }
+}
+
+function samePaletteField(left: PaletteFieldValue, right: PaletteFieldValue): boolean {
+    if (typeof left === "string") {
+        return typeof right === "string" && left.toLowerCase() === right.toLowerCase();
+    }
+    return typeof right !== "string" && left.kind === right.kind && left.angle === right.angle
+        && left.colors.length === right.colors.length
+        && left.colors.every((color, index) => color.toLowerCase() === right.colors[index].toLowerCase());
+}
+
+/** Explicit appearance edits detach only their own fields from the palette.
+ * Remember the detachment even if a later palette edit happens to match them. */
+export function customizeMultiFXTheme(
+    theme: MultiFXThemeDefinition,
+    update: (next: MultiFXThemeDefinition) => void
+): MultiFXThemeDefinition {
+    const next = structuredClone(theme);
+    next.paletteProfile = paletteProfile(theme);
+    const before = new Map(paletteFields(theme.appearance).map(({ path, value }) => [path, value]));
+    update(next);
+    const overrides = new Set(theme.paletteOverrides ?? []);
+    for (const field of paletteFields(next.appearance)) {
+        if (!samePaletteField(field.value, before.get(field.path)!)) overrides.add(field.path);
+    }
+    next.paletteOverrides = [...overrides];
+    return next;
+}
+
+/** Follow the selected palette's semantic defaults, never global hex matches.
+ * Existing custom/imported appearance fields are preserved and detached. */
 export function recolorMultiFXTheme(
     theme: MultiFXThemeDefinition,
     key: keyof MultiFXThemeDefinition["colors"],
     color: string
 ): MultiFXThemeDefinition {
     const next = structuredClone(theme);
-    const previous = theme.colors[key].toLowerCase();
+    const profile = paletteProfile(theme);
+    next.paletteProfile = profile;
     next.colors[key] = color;
-    // Icon and shortcut colors have their own dedicated palette settings.
-    if (key === "icon" || key === "iconActive" || key.startsWith("shortcut")) {
-        return next;
-    }
-    const replace = (value: string) => value.toLowerCase() === previous ? color : value;
-    const replacePaint = (paint: MultiFXThemePaint) => {
-        paint.colors = paint.colors.map(replace);
-    };
-    const replaceShadow = (shadow: string) => shadow.replace(
-        /#[0-9a-f]{6}(?![0-9a-f])/gi, replace
-    );
-    for (const surface of Object.values(next.appearance.surfaces)) {
-        replacePaint(surface.background);
-        replacePaint(surface.border);
-        surface.text = replace(surface.text);
-        surface.label = replace(surface.label);
-        surface.accent = replace(surface.accent);
-        surface.shadow = replaceShadow(surface.shadow);
-    }
-    for (const role of Object.values(next.appearance.roles)) {
-        for (const state of [role.normal, role.active]) {
-            replacePaint(state.background);
-            replacePaint(state.border);
-            state.label = replace(state.label);
-            state.value = replace(state.value);
-            state.indicator = replace(state.indicator);
-            state.shadow = replaceShadow(state.shadow);
+    const reference = (colors: MultiFXThemeDefinition["colors"]) => makeTheme({
+        name: theme.name, author: theme.author, version: 1, colors
+    }, profile);
+    const before = new Map(paletteFields(reference(theme.colors).appearance).map(({ path, value }) => [path, value]));
+    const after = new Map(paletteFields(reference(next.colors).appearance).map(({ path, value }) => [path, value]));
+    const overrides = new Set(theme.paletteOverrides ?? []);
+    for (const field of paletteFields(next.appearance)) {
+        const previous = before.get(field.path)!;
+        if (overrides.has(field.path)) continue;
+        if (!samePaletteField(field.value, previous)) {
+            overrides.add(field.path);
+            continue;
         }
+        field.set(after.get(field.path)!);
     }
-    const controls = next.appearance.controls;
-    controls.indicatorInactive = replace(controls.indicatorInactive);
-    controls.indicatorActive = replace(controls.indicatorActive);
-    controls.indicatorChanged = replace(controls.indicatorChanged);
+    next.paletteOverrides = [...overrides];
     return next;
 }
 
@@ -3865,20 +3970,7 @@ export function saveCustomMultiFXTheme(
         return loadCustomMultiFXThemes();
     }
 
-    const current = loadCustomMultiFXThemes();
-
-    // Custom theme names are unique, case-insensitively. Saving the same
-    // name updates that custom theme rather than creating duplicates.
-    const filtered = current.filter(
-        (item) =>
-            item.name.trim().toLowerCase()
-            !== valid.name.trim().toLowerCase()
-    );
-
-    const next = [
-        ...filtered,
-        JSON.parse(JSON.stringify(valid)) as MultiFXThemeDefinition
-    ].sort((a, b) => a.name.localeCompare(b.name));
+    const next = mergeCustomMultiFXTheme(loadCustomMultiFXThemes(), valid);
 
     window.localStorage.setItem(
         CUSTOM_THEMES_STORAGE_KEY,
@@ -3886,6 +3978,18 @@ export function saveCustomMultiFXTheme(
     );
 
     return next;
+}
+
+/** Build a library update before writing either Pi settings or browser caches. */
+export function mergeCustomMultiFXTheme(
+    current: unknown[], theme: MultiFXThemeDefinition
+): MultiFXThemeDefinition[] {
+    const valid = validateMultiFXTheme(theme);
+    if (!valid) throw new Error("Theme is invalid");
+    return [...current.map(validateMultiFXTheme)
+        .filter((item): item is MultiFXThemeDefinition => !!item
+            && item.name.trim().toLowerCase() !== valid.name.trim().toLowerCase()), valid]
+        .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function deleteCustomMultiFXTheme(
@@ -3965,7 +4069,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
             target.style.setProperty(`${prefix}-text`, surfaceValue.text);
             target.style.setProperty(`${prefix}-label`, surfaceValue.label);
             target.style.setProperty(`${prefix}-accent`, surfaceValue.accent);
-            target.style.setProperty(`${prefix}-shadow`, surfaceValue.shadow);
+            target.style.setProperty(`${prefix}-shadow`, surfaceValue.shadow.trim().toLowerCase() === "none" ? "0 0 0 transparent" : surfaceValue.shadow);
             target.style.setProperty(`${prefix}-bg-color`, surfaceValue.background.colors[0]);
         }
 
@@ -3984,7 +4088,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
                 target.style.setProperty(
                     `${prefix}-indicator`, state.indicator
                 );
-                target.style.setProperty(`${prefix}-shadow`, state.shadow);
+                target.style.setProperty(`${prefix}-shadow`, state.shadow.trim().toLowerCase() === "none" ? "0 0 0 transparent" : state.shadow);
                 target.style.setProperty(`${prefix}-border-color`, state.border.colors[0]);
             }
         }
@@ -4099,6 +4203,7 @@ export function applyMultiFXTheme(theme: MultiFXThemeDefinition): void {
         );
 
         const popupScale = fonts.controlPopupSizePercent / 100;
+        target.style.setProperty("--mfx-control-popup-scale", String(popupScale));
         target.style.setProperty(
             "--mfx-font-control-label-popout-size",
             scaledPx(
@@ -4220,6 +4325,7 @@ export function clearAppliedMultiFXTheme(): void {
         "--mfx-font-control-function-size",
         "--mfx-font-control-value-size",
         "--mfx-font-control-label-popout-size",
+        "--mfx-control-popup-scale",
         "--mfx-font-control-function-popout-size",
         "--mfx-font-control-value-popout-size",
         "--mfx-font-feedback-source-size",

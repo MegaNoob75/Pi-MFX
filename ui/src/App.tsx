@@ -21,7 +21,7 @@ import { PluginsView } from "./views/PluginsView";
 import { Tone3000View } from "./views/Tone3000View";
 import { FilesView } from "./views/LibraryManager";
 import { ThemeRoot, persistThemeSettings } from "./theme/ThemeRoot";
-import { saveCustomMultiFXTheme, themeLedColors } from "./theme/theme";
+import { mergeCustomMultiFXTheme, themeLedColors } from "./theme/theme";
 import { MarqueeText } from "./views/MarqueeText";
 import { ConfirmDialog } from "./views/ConfirmDialog";
 import { TransportView } from "./views/TransportView";
@@ -141,7 +141,7 @@ const titles: Record<string, string> = {
     controller: "CONTROLLER",
     layout: "LAYOUT",
     theme: "THEME",
-    keyboard: "KEYBOARD",
+    keyboard: "THEMES · KEYBOARD",
     ui: "PI-MFX UI",
     tone3000: "MODEL LIBRARY",
     backup: "BACKUP",
@@ -1140,12 +1140,13 @@ export function App() {
                 {view === "settings" && (
                     <SettingsHub onOpen={(page) => goTo(page)} />
                 )}
-                {view === "theme" && (
+                {(view === "theme" || view === "keyboard") && (
                     <ThemeManagerView
+                        initialTab={view === "keyboard" ? "KEYBOARD" : undefined}
                         engine={engine}
                         run={run}
                         persistTheme={async (theme) => {
-                            const customThemes = saveCustomMultiFXTheme(theme);
+                            const customThemes = mergeCustomMultiFXTheme(arr(obj(engine.state.ui).customThemes), theme);
                             await engine.client.request("ui/settings", persistThemeSettings(
                                 obj(engine.state.ui),
                                 theme.name,
@@ -1162,7 +1163,7 @@ export function App() {
                     <VirtualControlsLayoutEditorView engine={engine} run={run} onDirtyChange={setVirtualLayoutDirty} />
                 )}
                 {view === "updates" && <UpdatesView engine={engine} run={run} />}
-                {(view === "audio" || view === "controller" || view === "ui" || view === "keyboard"
+                {(view === "audio" || view === "controller" || view === "ui"
                     || view === "tone3000" || view === "system" || view === "backup"
                     || view === "hotspot" || view === "profiles") && (
                     <SettingsDetail page={view} engine={engine} run={run} onOpen={(page) => goTo(page)} />

@@ -6,7 +6,6 @@ import { DEFAULT_UI_BEHAVIOR, loadUiBehavior, saveUiBehavior, type UiBehavior } 
 import { listenForKeyboardCommit } from "../keyboard/utils";
 import { updateUiSessionSection } from "../uiSession";
 import { Tone3000View } from "./Tone3000View";
-import { KeyboardSettingsView } from "./KeyboardSettingsView";
 import { BackupView } from "./BackupView";
 import { LibraryJsonPicker } from "./LibraryManager";
 import { HotspotView } from "./HotspotView";
@@ -26,7 +25,7 @@ export type SettingsPage =
     | "theme"
     | "layout"
     | "virtualLayout"
-    | "keyboard"
+    | "keyboard" // Legacy shared-session route; App opens Themes > Keyboard.
     | "backup"
     | "hotspot"
     | "updates"
@@ -42,8 +41,7 @@ export function SettingsHub({ onOpen }: { onOpen: (page: SettingsPage) => void }
             <div className="mfx-hub-grid" data-mfx-nav-list="settings">
                 <HubCard title="CONTROLLER" subtitle="Switch layout, hardware inputs and actions" onClick={() => onOpen("controller")} />
                 <HubCard title="VIRTUAL CONTROLS" subtitle="Build the touchscreen control surface and its preset bindings" onClick={() => onOpen("virtualLayout")} />
-                <HubCard title="THEME" subtitle="Built-in themes, custom colors, import and export" onClick={() => onOpen("theme")} />
-                <HubCard title="KEYBOARD" subtitle="On-screen keyboard mode and overlay appearance" onClick={() => onOpen("keyboard")} />
+                <HubCard title="THEMES & KEYBOARD" subtitle="App and keyboard themes, keyboard behavior, colors, import and export" onClick={() => onOpen("theme")} />
                 <HubCard title="PI-MFX UI" subtitle="Encoder, floorboard feel and interface options" onClick={() => onOpen("ui")} />
                 <HubCard title="BACKUP & RESTORE" subtitle="Export the complete rig or selected content; recover after a fresh OS install" onClick={() => onOpen("backup")} />
                 <HubCard title="SETUP PROFILES" subtitle="Save or load the complete rig setup at once" onClick={() => onOpen("profiles")} />
@@ -433,9 +431,6 @@ export function SettingsPage({
     if (page === "controller") {
         return <ControllerHub engine={engine} run={run} onOpenLayout={() => onOpen?.("layout")}
             onOpenVirtualLayout={() => onOpen?.("virtualLayout")} />;
-    }
-    if (page === "keyboard") {
-        return <KeyboardSettingsView engine={engine} />;
     }
     if (page === "backup") {
         return <BackupView engine={engine} run={run} />;

@@ -733,7 +733,15 @@ button {
 .mfx-app-root {
     font-family: var(--mfx-font-interface-family, Inter, Segoe UI, system-ui, sans-serif);
     font-size: var(--mfx-font-interface-size, 16px);
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    background: var(--mfx-surface-page-bg, linear-gradient(var(--mfx-bg), var(--mfx-bg))) padding-box,
+        var(--mfx-surface-page-border, var(--mfx-border)) border-box;
+    color: var(--mfx-surface-page-text, var(--mfx-text));
+    box-shadow: var(--mfx-surface-page-shadow, none);
 }
+
+.mfx-app-root .muted { color: var(--mfx-surface-page-label, var(--mfx-muted)); }
 
 .mfx-app-root button,
 .mfx-app-root input,
@@ -782,10 +790,18 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 
 .mfx-performance-ui-label {
     font-family: var(--mfx-font-label-family, inherit);
+    font-size: var(--mfx-font-system-label-size, 10px);
 }
 
 .mfx-performance-ui-value {
     font-family: var(--mfx-font-value-family, inherit);
+    font-size: var(--mfx-font-system-value-size, 12px);
+}
+
+.mfx-app-root :is(h1, h2, h3, .shell-title),
+.mfx-font-heading {
+    font-family: var(--mfx-font-heading-family, inherit) !important;
+    font-size: var(--mfx-font-heading-size, 16px) !important;
 }
 
 .shell {
@@ -800,8 +816,10 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     align-items: center;
     gap: clamp(4px, 1.2vw, 10px);
     padding: 6px 8px;
-    border-bottom: 1px solid var(--mfx-border);
-    background: var(--mfx-surface-header-bg, linear-gradient(90deg, #21172e 0%, var(--mfx-purple-surface) 58%, #15262a 100%));
+    border-bottom: 1px solid transparent;
+    background: var(--mfx-surface-header-bg, linear-gradient(90deg, #21172e 0%, var(--mfx-purple-surface) 58%, #15262a 100%)) padding-box,
+        var(--mfx-surface-header-border, var(--mfx-border)) border-box;
+    color: var(--mfx-surface-header-text, var(--mfx-text));
     box-shadow: var(--mfx-surface-header-shadow, 0 1px 0 var(--mfx-border), 0 5px 18px rgba(0, 0, 0, 0.35));
 }
 
@@ -1187,7 +1205,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 }
 
 .menu-brand span {
-    color: var(--mfx-cyan);
+    color: var(--mfx-surface-menu-accent, var(--mfx-cyan));
     font-weight: 900;
 }
 
@@ -1316,8 +1334,11 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 }
 
 .panel {
-    background: var(--mfx-panel);
-    border: 1px solid var(--mfx-border);
+    background: var(--mfx-surface-panel-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
+        var(--mfx-surface-panel-border, var(--mfx-border)) border-box;
+    border: 1px solid transparent;
+    color: var(--mfx-surface-panel-text, var(--mfx-text));
+    box-shadow: var(--mfx-surface-panel-shadow, none);
     border-radius: 12px;
     padding: 12px;
 }
@@ -1325,10 +1346,12 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .panel h2,
 .panel h3 {
     margin: 0 0 10px;
-    color: var(--mfx-purple-light);
+    color: var(--mfx-surface-panel-accent, var(--mfx-purple-light));
     font-size: 0.95rem;
     letter-spacing: 0.06em;
 }
+
+.panel .muted { color: var(--mfx-surface-panel-label, var(--mfx-muted)); }
 
 .muted {
     color: var(--mfx-muted);
@@ -1437,7 +1460,8 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 .field label,
 .field-label {
     color: var(--mfx-muted);
-    font-size: 0.72rem;
+    font-family: var(--mfx-font-label-family, inherit);
+    font-size: var(--mfx-font-label-size, 12px);
     font-weight: 800;
     letter-spacing: 0.06em;
 }
@@ -1656,7 +1680,8 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
     color: var(--mfx-text);
     font: inherit;
     font-weight: 900;
-    font-size: 1.05rem;
+    font-family: var(--mfx-font-value-family, inherit);
+    font-size: var(--mfx-font-value-size, 16px);
     text-align: left;
 }
 
@@ -2997,9 +3022,11 @@ button.list-item {
     overflow: auto;
     padding: 18px;
     border-radius: 14px;
-    border: 1px solid var(--mfx-border);
-    background: var(--mfx-panel);
-    box-shadow: 0 16px 46px var(--mfx-shadow);
+    border: 1px solid transparent;
+    background: var(--mfx-surface-popup-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
+        var(--mfx-surface-popup-border, var(--mfx-border)) border-box;
+    color: var(--mfx-surface-popup-text, var(--mfx-text));
+    box-shadow: var(--mfx-surface-popup-shadow, 0 16px 46px var(--mfx-shadow));
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -3007,9 +3034,11 @@ button.list-item {
 
 .dialog h2 {
     margin: 0;
-    color: var(--mfx-cyan);
+    color: var(--mfx-surface-popup-accent, var(--mfx-cyan));
     font-weight: 900;
 }
+
+.dialog .muted { color: var(--mfx-surface-popup-label, var(--mfx-muted)); }
 
 .about-logo {
     width: 42px;
@@ -3990,17 +4019,23 @@ button.list-item {
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 6px 12px;
+    font-family: var(--mfx-font-feedback-family, inherit);
+    font-size: var(--mfx-font-feedback-text-size, 16px);
 }
 
 .performance-feedback-source {
     color: var(--mfx-surface-toast-label, var(--mfx-muted));
-    font-size: 0.72rem;
+    font-size: var(--mfx-font-feedback-source-size, 10.72px);
     font-weight: 800;
 }
 
 .performance-feedback-param {
     color: var(--mfx-surface-toast-accent, var(--mfx-cyan));
     font-weight: 900;
+}
+
+.performance-feedback > strong {
+    font-size: var(--mfx-font-feedback-value-size, 19.2px);
 }
 
 .performance-feedback-track {

@@ -84,7 +84,7 @@ function visualVars(role: SwitchRole, active: boolean) {
     };
 }
 
-function indicatorColor(tile: PerformanceTile, active: boolean, vars: ReturnType<typeof visualVars>) {
+function indicatorColor(tile: PerformanceTile, vars: ReturnType<typeof visualVars>) {
     if (tile.lightState === "bypass") {
         return "var(--mfx-role-bypass-active-indicator)";
     }
@@ -94,7 +94,7 @@ function indicatorColor(tile: PerformanceTile, active: boolean, vars: ReturnType
     if (tile.lightState === "modified") {
         return "var(--mfx-control-indicator-changed)";
     }
-    return active ? vars.indicator : "var(--mfx-control-indicator-inactive)";
+    return vars.indicator;
 }
 
 export function PerformanceControl({
@@ -113,7 +113,6 @@ export function PerformanceControl({
     void _switchStyle;
     const analog = tile.analog || isAnalogKind(tile.kind ?? "") || isEncoderKind(tile.kind ?? "");
     const assigned = tile.assigned ?? Boolean(tile.analogFunction && tile.analogFunction !== "UNASSIGNED");
-    const popoutScale = loadUiBehavior().controlPopoutScale;
     const [popout, setPopout] = useState(false);
     const popoutCloseTimer = useRef<number | null>(null);
     const popoutCard = useRef<HTMLDivElement | null>(null);
@@ -150,7 +149,7 @@ export function PerformanceControl({
             : tile.role;
     const visualActive = analog ? tile.active : (tile.pressed || tile.active || tile.lightState === "snapshot" || tile.lightState === "bypass");
     const vars = visualVars(displayRole, visualActive);
-    const led = indicatorColor(tile, visualActive, vars);
+    const led = indicatorColor(tile, vars);
 
     const clearPopoutClose = () => {
         if (popoutCloseTimer.current !== null) {
@@ -747,8 +746,8 @@ export function PerformanceControl({
                     >
                         {analogCard(" mfx-performance-control--popout", {
                             position: "relative",
-                            width: `min(calc(100vw - 32px), ${Math.round(190 * popoutScale)}px)`,
-                            height: `min(calc(100vh - 32px), ${Math.round(230 * popoutScale)}px)`
+                            width: "min(calc(100vw - 32px), calc(190px * var(--mfx-control-popup-scale, 1.45)))",
+                            height: "min(calc(100vh - 32px), calc(230px * var(--mfx-control-popup-scale, 1.45)))"
                         })}
                     </div>,
                     document.body
@@ -799,6 +798,8 @@ export function PerformanceControl({
                 pointerEvents: "auto",
                 background: `${vars.background} padding-box, ${vars.border} border-box`,
                 ["--mfx-tile-border" as string]: vars.border,
+                ["--mfx-tile-bg" as string]: vars.background,
+                ["--mfx-tile-shadow" as string]: vars.shadow,
                 ["--mfx-tile-border-color" as string]: vars.borderColor,
                 border: "var(--mfx-control-border-width) solid transparent",
                 outline: "none",

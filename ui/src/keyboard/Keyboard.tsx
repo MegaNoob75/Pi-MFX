@@ -160,6 +160,7 @@ export function Keyboard({
 
     const key = (label: string, action: () => void, className = "") => (
         <button
+            key={label}
             type="button"
             className={`pimfx-keyboard-key ${className}`}
             onPointerDown={(event) => event.preventDefault()}
@@ -189,6 +190,7 @@ export function Keyboard({
                 ["--mfx-panel-alt" as string]: themePaintToCss(keyboardTheme.key),
                 ["--mfx-bg" as string]: themePaintToCss(keyboardTheme.valueBox),
                 ["--mfx-keyboard-value-color" as string]: keyboardTheme.valueBox.colors[0],
+                ["--mfx-keyboard-secondary-text" as string]: keyboardTheme.secondaryText,
                 ["--mfx-cyan" as string]: keyboardTheme.accent,
                 ["--mfx-cyan-text" as string]: keyboardTheme.pressedText,
                 ["--mfx-cyan-surface" as string]: themePaintToCss(keyboardTheme.pressedKey),
@@ -259,7 +261,7 @@ export function Keyboard({
                 <div className="pimfx-keyboard-rows">
                     {rows.map((row, rowIndex) => (
                         <div className="pimfx-keyboard-row" key={rowIndex}>
-                            {row.map((character) => key(character, () => insert(character)))}
+                            {row.map((character) => key(character, () => insert(character), "is-character"))}
                         </div>
                     ))}
                     {session.layout === "text" && layer === "letters" && (

@@ -1,3 +1,4 @@
+import { KEYBOARD_THEMES_CHANGED_EVENT } from "./keyboardTheme";
 import { loadKeyboardMode, saveKeyboardMode, type KeyboardMode } from "./mode";
 
 export type KeyboardKeyShape = "rounded" | "square";
@@ -77,9 +78,11 @@ export function saveKeyboardAppearance(settings: KeyboardAppearance): void {
 
 export function onKeyboardAppearanceChange(listener: () => void): () => void {
     window.addEventListener(KEYBOARD_APPEARANCE_EVENT, listener);
+    window.addEventListener(KEYBOARD_THEMES_CHANGED_EVENT, listener);
     window.addEventListener("storage", listener);
     return () => {
         window.removeEventListener(KEYBOARD_APPEARANCE_EVENT, listener);
+        window.removeEventListener(KEYBOARD_THEMES_CHANGED_EVENT, listener);
         window.removeEventListener("storage", listener);
     };
 }
@@ -88,8 +91,23 @@ export interface KeyboardSettings extends KeyboardAppearance {
     mode: KeyboardMode;
 }
 
+export function normalizeKeyboardSettings(value: unknown): KeyboardSettings {
+    const source = value && typeof value === "object" ? value as Partial<KeyboardSettings> : {};
+    return {
+        ...DEFAULT_KEYBOARD_APPEARANCE,
+        mode: source.mode === "on" || source.mode === "off" ? source.mode : "auto",
+        themeId: typeof source.themeId === "string" ? source.themeId.replace(/^custom:/, "ui-custom:") : "current",
+        keyShape: isKeyShape(source.keyShape) ? source.keyShape : DEFAULT_KEYBOARD_APPEARANCE.keyShape,
+        textSize: isTextSize(source.textSize) ? source.textSize : DEFAULT_KEYBOARD_APPEARANCE.textSize,
+        size: isSize(source.size) ? source.size : DEFAULT_KEYBOARD_APPEARANCE.size,
+        placement: isPlacement(source.placement) ? source.placement : DEFAULT_KEYBOARD_APPEARANCE.placement,
+        hapticFeedback: typeof source.hapticFeedback === "boolean" ? source.hapticFeedback : DEFAULT_KEYBOARD_APPEARANCE.hapticFeedback,
+        transparentBackground: typeof source.transparentBackground === "boolean" ? source.transparentBackground : false
+    };
+}
+
 export function loadKeyboardSettings(): KeyboardSettings {
-    return { ...loadKeyboardAppearance(), mode: loadKeyboardMode() };
+    return normalizeKeyboardSettings({ ...loadKeyboardAppearance(), mode: loadKeyboardMode() });
 }
 
 export function saveKeyboardSettings(settings: KeyboardSettings): void {

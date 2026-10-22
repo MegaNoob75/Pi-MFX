@@ -25,6 +25,14 @@ export interface MultiFXKeyboardThemeDefinition {
 
 export const CUSTOM_KEYBOARD_THEMES_STORAGE_KEY =
     "pimfx-custom-keyboard-themes-v1";
+export const KEYBOARD_THEMES_CHANGED_EVENT = "pimfx-keyboard-themes-changed";
+
+export function storeKeyboardThemeLibrary(themes: MultiFXKeyboardThemeDefinition[]): void {
+    const serialized = JSON.stringify(themes, null, 2);
+    if (window.localStorage.getItem(CUSTOM_KEYBOARD_THEMES_STORAGE_KEY) === serialized) return;
+    window.localStorage.setItem(CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, serialized);
+    window.dispatchEvent(new Event(KEYBOARD_THEMES_CHANGED_EVENT));
+}
 
 export function keyboardThemeFromUITheme(
     theme: MultiFXThemeDefinition
@@ -103,7 +111,7 @@ export function saveCustomMultiFXKeyboardTheme(
         .filter((item) => item.name.toLowerCase() !== valid.name.toLowerCase());
     next.push(valid);
     next.sort((a, b) => a.name.localeCompare(b.name));
-    window.localStorage.setItem(CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, JSON.stringify(next, null, 2));
+    storeKeyboardThemeLibrary(next);
     return next;
 }
 
@@ -112,7 +120,7 @@ export function deleteCustomMultiFXKeyboardTheme(
 ): MultiFXKeyboardThemeDefinition[] {
     const next = loadCustomMultiFXKeyboardThemes()
         .filter((item) => item.name.toLowerCase() !== name.toLowerCase());
-    window.localStorage.setItem(CUSTOM_KEYBOARD_THEMES_STORAGE_KEY, JSON.stringify(next, null, 2));
+    storeKeyboardThemeLibrary(next);
     return next;
 }
 

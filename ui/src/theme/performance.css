@@ -52,11 +52,14 @@
 }
 
 .mfx-performance-control--popout {
+    --mfx-surface-panel-text: var(--mfx-surface-popup-text);
+    --mfx-surface-panel-label: var(--mfx-surface-popup-label);
+    --mfx-surface-panel-accent: var(--mfx-surface-popup-accent);
     animation: mfx-control-popout-in 140ms ease-out both;
     isolation: isolate;
     backdrop-filter: none !important;
-    background: var(--mfx-surface-panel-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
-        var(--mfx-surface-panel-border) border-box !important;
+    background: var(--mfx-surface-popup-bg, linear-gradient(var(--mfx-panel), var(--mfx-panel))) padding-box,
+        var(--mfx-surface-popup-border) border-box !important;
     color: var(--mfx-surface-panel-text) !important;
     box-shadow: var(--mfx-surface-popup-shadow), 0 0 0 2px
         var(--mfx-surface-panel-accent) !important;
@@ -256,7 +259,7 @@
     border-radius: 99px;
     transform: translateX(-50%);
     background: var(--mfx-surface-panel-accent);
-    box-shadow: 0 0 7px var(--mfx-surface-panel-accent);
+    box-shadow: 0 0 calc(7px * var(--mfx-control-glow-strength, 1)) var(--mfx-surface-panel-accent);
 }
 
 .mfx-hardware-knob__arc {
@@ -279,7 +282,7 @@
         inset 0 0 0 max(1px, .9cqw) #050505,
         inset 0 -8px 12px #000a,
         0 0 0 3px var(--mfx-surface-panel-accent),
-        0 0 18px var(--mfx-surface-panel-accent);
+        0 0 calc(18px * var(--mfx-control-glow-strength, 1)) var(--mfx-surface-panel-accent);
 }
 
 .mfx-hardware-knob[data-encoder="true"][data-pressed="true"]::before {
@@ -318,7 +321,7 @@
     max-height: calc(100% - 4px);
     border-radius: 99px;
     background: var(--mfx-surface-panel-accent);
-    box-shadow: 0 0 8px var(--mfx-surface-panel-accent);
+    box-shadow: 0 0 calc(8px * var(--mfx-control-glow-strength, 1)) var(--mfx-surface-panel-accent);
 }
 
 .mfx-hardware-slider__thumb {
@@ -372,7 +375,7 @@
     width: 4px;
     height: 13%;
     background: var(--mfx-surface-panel-accent);
-    box-shadow: 0 0 7px var(--mfx-surface-panel-accent);
+    box-shadow: 0 0 calc(7px * var(--mfx-control-glow-strength, 1)) var(--mfx-surface-panel-accent);
     opacity: 1;
 }
 
@@ -469,11 +472,12 @@
 
 .mfx-hardware-button[data-active="true"] {
     background: var(--mfx-surface-panel-accent);
-    box-shadow: 0 0 14px var(--mfx-surface-panel-accent), inset 0 -4px 8px #0005;
+    box-shadow: 0 0 calc(14px * var(--mfx-control-glow-strength, 1)) var(--mfx-surface-panel-accent), inset 0 -4px 8px #0005;
 }
 
 html[data-mfx-analog-style="vintage"] .mfx-hardware-knob,
-html[data-mfx-analog-style="vintage"] .mfx-hardware-button {
+html[data-mfx-analog-style="vintage"] .mfx-hardware-button,
+html[data-mfx-analog-style="vintage"] .mfx-hardware-slider {
     background-color: #4a2b18;
     border-color: #d2a46a;
     filter: sepia(.35);
@@ -483,7 +487,7 @@ html[data-mfx-analog-style="neon"] .mfx-hardware-knob,
 html[data-mfx-analog-style="neon"] .mfx-hardware-button,
 html[data-mfx-analog-style="neon"] .mfx-hardware-slider {
     border-color: var(--mfx-surface-panel-accent);
-    box-shadow: 0 0 12px var(--mfx-surface-panel-accent), inset 0 0 7px #000;
+    box-shadow: 0 0 calc(12px * var(--mfx-control-glow-strength, 1)) var(--mfx-surface-panel-accent), inset 0 0 7px #000;
 }
 
 html[data-mfx-analog-style="minimal"] .mfx-performance-control {
@@ -491,7 +495,8 @@ html[data-mfx-analog-style="minimal"] .mfx-performance-control {
 }
 
 html[data-mfx-analog-style="minimal"] .mfx-hardware-knob,
-html[data-mfx-analog-style="minimal"] .mfx-hardware-button {
+html[data-mfx-analog-style="minimal"] .mfx-hardware-button,
+html[data-mfx-analog-style="minimal"] .mfx-hardware-slider {
     background: transparent;
     box-shadow: none;
 }
@@ -752,7 +757,7 @@ html[data-mfx-switch-style="footswitch"] .mfx-footswitch-hardware {
     background: color-mix(in srgb, currentColor 84%, black 16%);
     border: max(1px, .8cqw) solid color-mix(in srgb, currentColor 70%, white 30%);
     box-shadow: inset 0 2px 4px #000a, 0 3px 5px #000a,
-        0 0 7px color-mix(in srgb, currentColor 72%, transparent);
+        0 0 calc(7px * var(--mfx-control-glow-strength, 1)) color-mix(in srgb, currentColor 72%, transparent);
     opacity: .42;
 }
 
@@ -931,7 +936,7 @@ html[data-mfx-switch-style="arcade"][data-mfx-indicator-animation="breathe"]
 
 html[data-mfx-switch-style="glass"] .mfx-performance-switch {
     backdrop-filter: blur(var(--mfx-control-glass-blur)) saturate(1.25);
-    box-shadow: inset 0 1px 0 #fff5, var(--mfx-surface-panel-shadow) !important;
+    box-shadow: inset 0 1px 0 #fff5, var(--mfx-tile-shadow) !important;
 }
 
 html[data-mfx-switch-style="glass"] .mfx-performance-switch::after {
@@ -946,8 +951,7 @@ html[data-mfx-switch-style="glass"] .mfx-performance-switch::after {
 
 html[data-mfx-switch-style="minimal"] .mfx-performance-switch {
     /* Keep the configured enclosure and border while reducing visual weight. */
-    background: var(--mfx-surface-page-bg) padding-box, var(--mfx-tile-border) border-box !important;
-    box-shadow: none !important;
+    background: var(--mfx-tile-bg) padding-box, var(--mfx-tile-border) border-box !important;
 }
 
 .mfx-performance-indicator {
@@ -980,8 +984,9 @@ html[data-mfx-indicator-style="halo"] .mfx-performance-indicator {
     border: 2px solid color-mix(in srgb, currentColor 55%, transparent) !important;
     border-radius: 50% !important;
     background: transparent !important;
-    box-shadow: 0 0 12px currentColor, 0 0 30px currentColor,
-        inset 0 0 22px color-mix(in srgb, currentColor 70%, transparent) !important;
+    box-shadow: 0 0 calc(12px * var(--mfx-control-glow-strength, 1)) currentColor,
+        0 0 calc(30px * var(--mfx-control-glow-strength, 1)) currentColor,
+        inset 0 0 calc(22px * var(--mfx-control-glow-strength, 1)) color-mix(in srgb, currentColor 70%, transparent) !important;
     opacity: .72;
 }
 

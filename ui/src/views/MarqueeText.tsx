@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useThemeMotion } from "../theme/motion";
 
 export function MarqueeText({
     className,
@@ -32,6 +33,7 @@ export function MarqueeText({
     const viewportRef = useRef<HTMLSpanElement>(null);
     const textRef = useRef<HTMLSpanElement>(null);
     const [overflow, setOverflow] = useState(0);
+    const motionEnabled = useThemeMotion();
 
     useLayoutEffect(() => {
         const viewport = viewportRef.current;
@@ -40,12 +42,14 @@ export function MarqueeText({
             return;
         }
         let frame = 0;
+        let disposed = false;
         const measure = () => {
             frame = 0;
             textElement.style.transform = "translateX(0)";
             setOverflow(enabled ? Math.max(0, textElement.scrollWidth - viewport.clientWidth) : 0);
         };
         const schedule = () => {
+            if (disposed) return;
             if (frame) {
                 window.cancelAnimationFrame(frame);
             }
@@ -57,6 +61,7 @@ export function MarqueeText({
         schedule();
         void document.fonts?.ready.then(schedule).catch(() => undefined);
         return () => {
+            disposed = true;
             observer.disconnect();
             if (frame) {
                 window.cancelAnimationFrame(frame);
@@ -66,7 +71,7 @@ export function MarqueeText({
 
     useEffect(() => {
         const textElement = textRef.current;
-        if (!textElement || overflow <= 0 || pixelsPerSecond <= 0) {
+        if (!textElement || !motionEnabled || overflow <= 0 || pixelsPerSecond <= 0) {
             return;
         }
         const scrollSeconds = overflow / pixelsPerSecond;
@@ -83,7 +88,7 @@ export function MarqueeText({
             { duration: total * 1000, iterations: Infinity, easing: "linear" }
         );
         return () => animation.cancel();
-    }, [overflow, delaySeconds, pixelsPerSecond, endPauseSeconds]);
+    }, [overflow, delaySeconds, pixelsPerSecond, endPauseSeconds, motionEnabled]);
 
     const justify = overflow > 0
         ? "flex-start"
@@ -97,6 +102,7 @@ export function MarqueeText({
         <span
             ref={viewportRef}
             className={className}
+            title={text}
             style={{
                 display: "flex",
                 width: "100%",
