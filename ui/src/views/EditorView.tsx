@@ -242,6 +242,20 @@ export function EditorView({
         });
     };
 
+    const savePresetAs = async () => {
+        const presetId = sessionPresetId;
+        const name = await askText("Save preset as (same bank)", `${presetName} copy`);
+        if (!name?.trim()) return;
+        setSessionStatus("SAVING COPY…");
+        try {
+            await client.request("preset/saveAs", { presetId, name: name.trim() });
+            setSessionStatus("NEW PRESET SAVED");
+            window.setTimeout(() => setSessionStatus(""), 2200);
+        } catch (error) {
+            setSessionStatus(error instanceof Error ? error.message : "SAVE AS FAILED");
+        }
+    };
+
     const openControls = (slotId: string) => {
         setSelectedId(slotId);
         setPage("controls");
@@ -256,6 +270,8 @@ export function EditorView({
     const sessionButtons = <>
         <button type="button" className="btn" disabled={structureBusy || bool(state.chainPreparing) || !sessionDirty || activeSnapshot >= 0}
             onClick={() => setSessionAction("save")}><span className="routing-long-label">SAVE CHANGES</span><span className="routing-short-label">SAVE</span></button>
+        <button type="button" className="btn" disabled={!preset || lockChain || structureBusy || bool(state.chainPreparing) || activeSnapshot >= 0}
+            title="Save the current sound as a new preset in this bank" onClick={() => void savePresetAs()}>SAVE AS</button>
         <button type="button" className="btn" disabled={structureBusy || bool(state.chainPreparing) || !sessionDirty}
             onClick={() => setSessionAction("reload")}><span className="routing-long-label">RELOAD SAVED</span><span className="routing-short-label">RELOAD</span></button>
     </>;

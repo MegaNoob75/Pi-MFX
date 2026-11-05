@@ -636,6 +636,7 @@ Json ApiRouter::dispatchCommand(const std::string& command, const Json& payload,
         return Json::object();
     }
     if (command == "preset/saveAs") {
+        if (!engine_.validatePresetEvent(payload["presetId"].asString(), error)) { ok = false; return Json::object(); }
         ok = engine_.savePresetAs(payload["name"].asString(), error);
         Json result = Json::object();
         if (ok) {

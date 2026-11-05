@@ -1979,7 +1979,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 }
 
 .routing-editor { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; }
-.routing-header { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 4px 8px; flex-shrink: 0; border-bottom: 1px solid var(--mfx-border); background: var(--mfx-panel); }
+.routing-header { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 6px; padding: 4px 8px; flex-shrink: 0; border-bottom: 1px solid var(--mfx-border); background: var(--mfx-panel); }
 .routing-header > .btn { min-height: 44px; white-space: nowrap; padding: 8px 10px; }
 .routing-header .routing-preset-selector { width: 100%; justify-self: stretch; min-height: 44px; padding: 4px 8px; }
 .routing-preset-copy { min-width: 0; flex: 1; display: grid; }
@@ -2002,7 +2002,7 @@ html[data-mfx-color-scheme="light"] .mfx-app-root {
 }
 @media (max-width: 600px) {
     .routing-header { grid-template-columns: auto auto minmax(0, 1fr); }
-    .routing-header .routing-preset-selector { grid-column: 3; grid-row: 1 / 3; }
+    .routing-header .routing-preset-selector { grid-column: 3; grid-row: 1; }
 }
 .routing-toolbar, .routing-connections, .routing-view-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .routing-toolbar .btn, .routing-ports .btn, .routing-view-choice .btn { min-height: 44px; min-width: 44px; }
@@ -5178,6 +5178,7 @@ button.list-item {
     flex: 0 0 auto;
     min-height: 34px;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     padding: 6px 10px;
