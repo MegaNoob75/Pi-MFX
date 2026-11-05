@@ -2532,6 +2532,9 @@ bool Engine::savePresetAs(const std::string& name, std::string& error) {
         error = "could not write the bank file";
         return false;
     }
+    // The edits now belong to the saved copy. Revisiting the source should
+    // load its stored sound rather than the temporary editing session.
+    clearSessionDraft(previousPresetId);
     settings_.activePresetId = activePresetId_;
     publishChain(std::move(nextChain));
     if (!persistSettings(&error)) { notify(); return false; }
